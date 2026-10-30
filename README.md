@@ -180,6 +180,9 @@ swift test --package-path Vendor/SwiftTerm
 `HerdrKit` contains no UIKit or SwiftUI, so it stays Linux-buildable and can be exercised against a real
 herdr server; the iOS app consumes it unchanged. Floors: macOS 14+, iOS 17+ (declared in `Package.swift`
 — macOS 14 because Citadel requires it).
+The streaming upload channel requires macOS 15; macOS 14 keeps the per-chunk path.
+Tests that open the streaming channel skip on macOS 14, matching the production
+availability guard; teardown and never-started-channel checks still run there.
 
 The reconnect-history UI receipt recognizes the fixture's numbered history rows
 before and after real swipes, requiring earlier rows to become visible instead of
