@@ -201,7 +201,9 @@ final class ServerUpdateUITests: XCTestCase {
         let reason = app.staticTexts["mac-mini couldn't reach the update server."]
         XCTAssertTrue(reason.waitForExistence(timeout: 15), "Try again should say why nothing was installed")
         XCTAssertTrue(card(app).exists, "the card must stay")
-        XCTAssertTrue(waitForTitle(app, "Update didn't finish", timeout: 2))
+        // The failed-check reason is already visible. Read the retained state now;
+        // a second two-second waiter can expire while XCTest retrieves its label.
+        XCTAssertEqual(title(app).label, "Update didn't finish", "the failed state must stay")
         record(app, "retry-check-failed")
     }
 
