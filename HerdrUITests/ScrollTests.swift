@@ -199,27 +199,42 @@ final class ScrollTests: XCTestCase {
 
         let after = viewport.screenshot()
         attach(after, "kh-02-after-swipe")
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = false
-        request.recognitionLanguages = ["en-US"]
-        let historyRow = try NSRegularExpression(pattern: #"history\s+([0-9]+)"#,
+        // Vision sometimes returns no text for a legible screenshot (#592: the row numbers
+        // were plainly on screen). Use a fresh request per read, read again when nothing
+        // matched, and attach what Vision saw so a real failure explains itself.
+        let historyRow = try NSRegularExpression(pattern: #"history\s*([0-9]{1,3})"#,
                                                 options: .caseInsensitive)
-        func visibleHistoryRows(in screenshot: XCUIScreenshot) throws -> [Int] {
-            let image = try XCTUnwrap(screenshot.image.cgImage)
+        func recognizedLines(in image: CGImage) throws -> [String] {
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            request.usesLanguageCorrection = false
+            request.recognitionLanguages = ["en-US"]
             try VNImageRequestHandler(cgImage: image).perform([request])
-            return (request.results ?? []).compactMap { observation in
-                guard let text = observation.topCandidates(1).first?.string,
-                      let match = historyRow.firstMatch(in: text,
-                          range: NSRange(text.startIndex..., in: text)),
-                      let range = Range(match.range(at: 1), in: text) else { return nil }
-                return Int(text[range])
+            return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+        }
+        func historyRows(in lines: [String]) -> [Int] {
+            lines.flatMap { text in
+                historyRow.matches(in: text, range: NSRange(text.startIndex..., in: text))
+                    .compactMap { Range($0.range(at: 1), in: text).flatMap { Int(text[$0]) } }
             }
         }
-        let beforeRows = try visibleHistoryRows(in: before)
-        let afterRows = try visibleHistoryRows(in: after)
+        func visibleHistoryRows(in screenshot: XCUIScreenshot, _ name: String) throws -> [Int] {
+            let image = try XCTUnwrap(screenshot.image.cgImage)
+            var lines: [String] = []
+            for _ in 0..<3 {
+                lines = try recognizedLines(in: image)
+                if !historyRows(in: lines).isEmpty { break }
+            }
+            let text = XCTAttachment(string: lines.joined(separator: "\n"))
+            text.name = "\(name)-ocr"
+            text.lifetime = .keepAlways
+            add(text)
+            return historyRows(in: lines)
+        }
+        let beforeRows = try visibleHistoryRows(in: before, "kh-01-before")
+        let afterRows = try visibleHistoryRows(in: after, "kh-02-after-swipe")
         let earliestAfter = try XCTUnwrap(afterRows.min(),
-            "No numbered history visible after swiping the reconnected terminal.")
+            "No numbered history visible after swiping the reconnected terminal (see kh-02-after-swipe-ocr).")
         // The fixture has rows 1...300. If none were visible at the live screen,
         // any historical row is earlier; otherwise the swipe must reveal older rows.
         XCTAssertLessThan(earliestAfter, beforeRows.min() ?? 301,
