@@ -1,6 +1,13 @@
-import { SELF, env, evictDurableObject, listDurableObjectIds, runInDurableObject } from "cloudflare:test";
+import {
+  SELF,
+  env,
+  evictDurableObject,
+  listDurableObjectIds,
+  runDurableObjectAlarm,
+  runInDurableObject,
+} from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { invitePayload } from "../public/static/invite.js";
+import { invitePayload, openShortInvite, shortInvite } from "../public/static/invite.js";
 
 // Everything here runs against the real Worker and Durable Object in workerd. Each test
 // uses its own host_id and client IPs, so storage and rate-limit state never collide.
@@ -152,6 +159,62 @@ async function expectError(response: Response, status: number, code: string): Pr
 
 const stub = (hostId: string) => env.HOSTS.get(env.HOSTS.idFromName(hostId));
 
+const newInviteId = () => b64url(crypto.getRandomValues(new Uint8Array(9)));
+const nowUnix = () => Math.floor(Date.now() / 1000);
+
+/** Enrolls a host with the relay, as its daemon does by connecting, and hangs up. */
+async function enrolledHost(): Promise<{ hostId: string; secret: string }> {
+  const hostId = newHostId();
+  const secret = newSecret();
+  const host = await connectHost(hostId, secret);
+  host.ws.close(1000);
+  await host.closed;
+  return { hostId, secret };
+}
+
+/** A short-invite blob: nonce (12) || AES-128-GCM ciphertext || tag (16), with the id as AAD. */
+async function seal(id: string, key: Uint8Array, plaintext: Uint8Array): Promise<ArrayBuffer> {
+  const aes = await crypto.subtle.importKey("raw", key, "AES-GCM", false, ["encrypt"]);
+  const nonce = crypto.getRandomValues(new Uint8Array(12));
+  const sealed = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce, additionalData: utf8(id) }, aes, plaintext));
+  const blob = new Uint8Array(12 + sealed.byteLength);
+  blob.set(nonce);
+  blob.set(sealed, 12);
+  return blob.buffer;
+}
+
+interface InviteOptions {
+  hostId?: string;
+  authorization?: string;
+  expires?: string;
+  body?: Uint8Array;
+}
+
+function inviteRequest(method: string, id: string, options: InviteOptions = {}): Promise<Response> {
+  const headers: Record<string, string> = {};
+  if (options.authorization !== undefined) headers.Authorization = options.authorization;
+  if (options.hostId !== undefined) headers["X-Herdr-Host"] = options.hostId;
+  if (options.expires !== undefined) headers["X-Herdr-Expires"] = options.expires;
+  if (options.body !== undefined) headers["Content-Type"] = "application/octet-stream";
+  return SELF.fetch(`${ORIGIN}/v1/invite/${id}`, { method, headers, body: options.body });
+}
+
+function putInvite(host: { hostId: string; secret: string }, id: string, options: InviteOptions = {}): Promise<Response> {
+  return inviteRequest("PUT", id, {
+    hostId: host.hostId,
+    authorization: `Bearer ${host.secret}`,
+    expires: String(nowUnix() + 3600),
+    body: crypto.getRandomValues(new Uint8Array(600)),
+    ...options,
+  });
+}
+
+function deleteInvite(host: { hostId: string; secret: string }, id: string): Promise<Response> {
+  return inviteRequest("DELETE", id, { hostId: host.hostId, authorization: `Bearer ${host.secret}` });
+}
+
+const inviteStub = (id: string) => env.INVITES.get(env.INVITES.idFromName(id));
+
 describe("routing", () => {
   it("answers health", async () => {
     const response = await SELF.fetch(`${ORIGIN}/v1/health`);
@@ -166,6 +229,8 @@ describe("routing", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toMatch(/^text\/html/);
     expect(response.headers.get("content-security-policy")).toContain("default-src 'none'");
+    // The page fetches a short invite's blob from its own origin, and nowhere else.
+    expect(response.headers.get("content-security-policy")).toContain("connect-src 'self';");
     expect(response.headers.get("referrer-policy")).toBe("no-referrer");
     const html = await response.text();
     expect(html).toContain('href="https://apps.apple.com/app/id6798087089"');
@@ -183,7 +248,8 @@ describe("routing", () => {
 
   it("serves the landing page for /i/<payload> with the /i headers", async () => {
     const page = await (await env.ASSETS.fetch(`${ORIGIN}/i`)).text();
-    for (const payload of [newInvitePayload(), "A", "-_".repeat(2048)]) {
+    const shortLink = newInviteId() + b64url(crypto.getRandomValues(new Uint8Array(16)));
+    for (const payload of [newInvitePayload(), shortLink, "A", "-_".repeat(2048)]) {
       const response = await SELF.fetch(`${ORIGIN}/i/${payload}`);
       expect(response.status).toBe(200);
       expect(response.headers.get("content-type")).toMatch(/^text\/html/);
@@ -522,6 +588,133 @@ describe("limits", () => {
   });
 });
 
+describe("short invites", () => {
+  it("stores a blob, serves it to anyone uncached, and deletes it for its host", async () => {
+    const host = await enrolledHost();
+    const id = newInviteId();
+    const blob = crypto.getRandomValues(new Uint8Array(700));
+    const put = await putInvite(host, id, { body: blob });
+    expect(put.status).toBe(201);
+
+    const get = await SELF.fetch(`${ORIGIN}/v1/invite/${id}`);
+    expect(get.status).toBe(200);
+    expect(get.headers.get("content-type")).toBe("application/octet-stream");
+    expect(get.headers.get("cache-control")).toBe("no-store");
+    expect(new Uint8Array(await get.arrayBuffer())).toEqual(blob);
+
+    expect((await deleteInvite(host, id)).status).toBe(204);
+    await expectError(await SELF.fetch(`${ORIGIN}/v1/invite/${id}`), 404, "not_found");
+    // Already gone still counts as deleted.
+    expect((await deleteInvite(host, id)).status).toBe(204);
+  });
+
+  it("authenticates PUT and DELETE against the host's stored secret, like the host socket", async () => {
+    const host = await enrolledHost();
+    const id = newInviteId();
+    await expectError(await putInvite(host, id, { authorization: undefined }), 401, "unauthorized");
+    await expectError(await putInvite(host, id, { authorization: "Bearer short" }), 401, "unauthorized");
+    await expectError(await putInvite(host, id, { authorization: `Bearer ${newSecret()}` }), 401, "unauthorized");
+    // Trust on first use, as for /v1/host: a first PUT enrolls the secret for the host socket too.
+    const fresh = { hostId: newHostId(), secret: newSecret() };
+    expect((await putInvite(fresh, newInviteId())).status).toBe(201);
+    await expectError(await hostRequest(fresh.hostId, `Bearer ${newSecret()}`), 401, "unauthorized");
+    expect((await hostRequest(fresh.hostId, `Bearer ${fresh.secret}`)).status).toBe(101);
+
+    expect((await putInvite(host, id)).status).toBe(201);
+    await expectError(await deleteInvite({ ...host, secret: newSecret() }, id), 401, "unauthorized");
+    expect((await SELF.fetch(`${ORIGIN}/v1/invite/${id}`)).status).toBe(200);
+  });
+
+  it("lets only the owning host delete a blob", async () => {
+    const owner = await enrolledHost();
+    const other = await enrolledHost();
+    const id = newInviteId();
+    expect((await putInvite(owner, id)).status).toBe(201);
+    await expectError(await deleteInvite(other, id), 403, "forbidden");
+    expect((await SELF.fetch(`${ORIGIN}/v1/invite/${id}`)).status).toBe(200);
+  });
+
+  it("refuses a duplicate id, from the same host or another", async () => {
+    const host = await enrolledHost();
+    const id = newInviteId();
+    const blob = crypto.getRandomValues(new Uint8Array(100));
+    expect((await putInvite(host, id, { body: blob })).status).toBe(201);
+    await expectError(await putInvite(host, id), 409, "exists");
+    await expectError(await putInvite(await enrolledHost(), id), 409, "exists");
+    expect(new Uint8Array(await (await SELF.fetch(`${ORIGIN}/v1/invite/${id}`)).arrayBuffer())).toEqual(blob);
+  });
+
+  it("caps a blob at 2048 bytes and refuses one too short to hold nonce and tag", async () => {
+    const host = await enrolledHost();
+    await expectError(await putInvite(host, newInviteId(), { body: new Uint8Array(2049) }), 413, "too_large");
+    await expectError(await putInvite(host, newInviteId(), { body: new Uint8Array(28) }), 400, "bad_request");
+    await expectError(await putInvite(host, newInviteId(), { body: new Uint8Array(0) }), 400, "bad_request");
+    expect((await putInvite(host, newInviteId(), { body: new Uint8Array(2048) })).status).toBe(201);
+  });
+
+  it("needs an expiry in the future and at most 30 days away", async () => {
+    const host = await enrolledHost();
+    const now = nowUnix();
+    for (const expires of [String(now - 1), String(now), String(now + 30 * 86400 + 60), "", "soon", "1.5", "-5", `${now + 60}x`]) {
+      await expectError(await putInvite(host, newInviteId(), { expires }), 400, "bad_expiry");
+    }
+    expect((await putInvite(host, newInviteId(), { expires: String(now + 30 * 86400 - 60) })).status).toBe(201);
+  });
+
+  it("needs a well-formed X-Herdr-Host", async () => {
+    const host = await enrolledHost();
+    await expectError(await putInvite(host, newInviteId(), { hostId: host.hostId.slice(1) }), 400, "bad_request");
+    await expectError(await deleteInvite({ ...host, hostId: `${host.hostId}+` }, newInviteId()), 400, "bad_request");
+  });
+
+  it("answers not_found for a malformed id or another method", async () => {
+    const id = newInviteId();
+    for (const path of [`/v1/invite/${id.slice(1)}`, `/v1/invite/${id}A`, `/v1/invite/${id.slice(1)}+`, `/v1/invite/${id}/`]) {
+      await expectError(await SELF.fetch(`${ORIGIN}${path}`), 404, "not_found");
+    }
+    await expectError(await SELF.fetch(`${ORIGIN}/v1/invite/${id}`, { method: "POST" }), 404, "not_found");
+  });
+
+  it("treats a blob past its expiry as gone, and its alarm deletes it at expiry", async () => {
+    const host = await enrolledHost();
+    const lapsed = newInviteId();
+    expect((await putInvite(host, lapsed)).status).toBe(201);
+    // As if the expiry passed before the alarm ran.
+    await runInDurableObject(inviteStub(lapsed), async (_, state) => {
+      await state.storage.put("expires", nowUnix() - 1);
+    });
+    await expectError(await SELF.fetch(`${ORIGIN}/v1/invite/${lapsed}`), 404, "not_found");
+    expect(await runInDurableObject(inviteStub(lapsed), (_, state) => state.storage.list())).toEqual(new Map());
+
+    const id = newInviteId();
+    const expires = nowUnix() + 600;
+    expect((await putInvite(host, id, { expires: String(expires) })).status).toBe(201);
+    expect(await runInDurableObject(inviteStub(id), (_, state) => state.storage.getAlarm())).toBe(expires * 1000);
+    expect(await runDurableObjectAlarm(inviteStub(id))).toBe(true);
+    expect(await runInDurableObject(inviteStub(id), (_, state) => state.storage.list())).toEqual(new Map());
+    await expectError(await SELF.fetch(`${ORIGIN}/v1/invite/${id}`), 404, "not_found");
+  });
+
+  it("holds at most 200 live invites per host", async () => {
+    const host = await enrolledHost();
+    const ids = Array.from({ length: 4 }, newInviteId);
+    expect((await putInvite(host, ids[0])).status).toBe(201);
+    // 197 more live invites, plus one expired that no longer counts.
+    await runInDurableObject(stub(host.hostId), (_, state) => {
+      for (let i = 0; i < 197; i++) state.storage.sql.exec("INSERT INTO invite (id, expires_unix) VALUES (?, ?)", `filler${i}`, nowUnix() + 3600);
+      state.storage.sql.exec("INSERT INTO invite (id, expires_unix) VALUES (?, ?)", "lapsed", nowUnix() - 1);
+    });
+    // Concurrent, so the cap also holds while PUTs interleave.
+    const statuses = await Promise.all(ids.slice(1).map(async (id) => (await putInvite(host, id)).status));
+    expect(statuses.sort()).toEqual([201, 201, 429]);
+    await expectError(await putInvite(host, newInviteId()), 429, "too_many_invites");
+    // Other hosts are unaffected, and deleting one frees a slot.
+    expect((await putInvite(await enrolledHost(), newInviteId())).status).toBe(201);
+    expect((await deleteInvite(host, ids[0])).status).toBe(204);
+    expect((await putInvite(host, newInviteId())).status).toBe(201);
+  });
+});
+
 describe("landing page script", () => {
   it("takes the payload from the /i/<payload> path, else from the older /i#<payload> fragment", () => {
     expect(invitePayload("/i/eyJ2IjoxfQ", "")).toBe("eyJ2IjoxfQ");
@@ -529,6 +722,36 @@ describe("landing page script", () => {
     expect(invitePayload("/i", "#eyJ2IjoxfQ")).toBe("eyJ2IjoxfQ");
     expect(invitePayload("/i", "")).toBe("");
     expect(invitePayload("/i/", "#eyJ2IjoxfQ")).toBe("eyJ2IjoxfQ");
+  });
+
+  it("reads a short link as one 34-character segment, id then key, and anything else as long", () => {
+    const id = newInviteId();
+    const key = b64url(crypto.getRandomValues(new Uint8Array(16)));
+    expect(shortInvite(`/i/${id}${key}`)).toEqual({ id, key });
+    expect(shortInvite(`/i/${id}${key}A`)).toBeNull();
+    expect(shortInvite(`/i/${id}${key.slice(1)}`)).toBeNull();
+    expect(shortInvite(`/i/${id}${key.slice(1)}+`)).toBeNull();
+    expect(shortInvite(`/i/${id}/${key}`)).toBeNull();
+    expect(shortInvite(`/i/${newInvitePayload()}`)).toBeNull();
+    expect(shortInvite("/i")).toBeNull();
+  });
+
+  it("decrypts a short invite into the payload a long link carries, bound to its id, key and relay", async () => {
+    const id = newInviteId();
+    const keyBytes = crypto.getRandomValues(new Uint8Array(16));
+    const key = b64url(keyBytes);
+    const payload = newInvitePayload();
+    const plaintext = Uint8Array.from(atob(payload.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((payload.length + 3) % 4)), (c) => c.charCodeAt(0));
+    const blob = await seal(id, keyBytes, plaintext);
+
+    expect(await openShortInvite({ id, key }, blob, ORIGIN)).toBe(payload);
+    await expect(openShortInvite({ id: newInviteId(), key }, blob, ORIGIN)).rejects.toThrow();
+    await expect(openShortInvite({ id, key: b64url(crypto.getRandomValues(new Uint8Array(16))) }, blob, ORIGIN)).rejects.toThrow();
+    await expect(openShortInvite({ id, key }, blob, "https://evil.example")).rejects.toThrow();
+    const tampered = new Uint8Array(blob.slice(0));
+    tampered[20] ^= 1;
+    await expect(openShortInvite({ id, key }, tampered.buffer, ORIGIN)).rejects.toThrow();
+    await expect(openShortInvite({ id, key }, new ArrayBuffer(28), ORIGIN)).rejects.toThrow();
   });
 });
 
@@ -597,5 +820,41 @@ describe("logging", () => {
     await SELF.fetch(`${ORIGIN}/v1/guest/${payload}`, { headers: { Upgrade: "websocket" } });
     const all = lines.join("\n");
     expect(all).not.toContain(payload.slice(0, 40));
+  });
+
+  it("never logs a short invite's id, key, host or secret", async () => {
+    const host = await enrolledHost();
+    const other = await enrolledHost();
+    const id = newInviteId();
+    const key = b64url(crypto.getRandomValues(new Uint8Array(16)));
+    await putInvite(host, id);
+    await putInvite(host, id);
+    await putInvite(host, id, { authorization: `Bearer ${newSecret()}` });
+    await putInvite(host, newInviteId(), { expires: "0" });
+    await putInvite(host, newInviteId(), { body: new Uint8Array(4096) });
+    await SELF.fetch(`${ORIGIN}/i/${id}${key}`);
+    await SELF.fetch(`${ORIGIN}/v1/invite/${id}`);
+    await deleteInvite(other, id);
+    await deleteInvite(host, id);
+    await SELF.fetch(`${ORIGIN}/v1/invite/${id}`);
+
+    const outcomes = lines.map((line) => {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      expect(Object.keys(parsed).every((k) => ["endpoint", "outcome", "code"].includes(k))).toBe(true);
+      return `${parsed.endpoint} ${parsed.outcome}`;
+    });
+    expect(outcomes.filter((o) => o.startsWith("/v1/invite "))).toEqual([
+      "/v1/invite stored",
+      "/v1/invite exists",
+      "/v1/invite unauthorized",
+      "/v1/invite bad_expiry",
+      "/v1/invite too_large",
+      "/v1/invite fetched",
+      "/v1/invite forbidden",
+      "/v1/invite deleted",
+      "/v1/invite not_found",
+    ]);
+    const all = lines.join("\n");
+    for (const secretText of [id, key, host.hostId, host.secret, other.hostId, other.secret]) expect(all).not.toContain(secretText);
   });
 });
