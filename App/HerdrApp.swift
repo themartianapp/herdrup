@@ -2507,12 +2507,12 @@ struct TerminalHomeView: View {
                         Group {
                             if hSizeClass == .regular {
                                 // The tab paints its own opaque background over the detail
-                                // ground, so the field must reach the status bar and home
-                                // indicator itself or those bands show black. Vertical only:
-                                // the column's leading safe area is the sidebar, and extending
-                                // under it moves "Select an agent" off the column's centre.
+                                // ground, so the field brings that ground under the status bar,
+                                // home indicator and side bands itself, or they show black. The
+                                // field stays inside the safe area so "Select an agent" keeps the
+                                // column's centre (the leading inset lies under the sidebar).
                                 SelectAgentPlaceholder(lines: glyphFieldLines, spotlight: glyphFieldSpotlight)
-                                    .ignoresSafeArea(.container, edges: .vertical)
+                                    .background { Palette.groundMachine.ignoresSafeArea() }
                             } else {
                                 agentsTab
                             }
