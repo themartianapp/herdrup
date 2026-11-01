@@ -37,12 +37,12 @@ extension Pairing {
         public let user: String
         /// Single-use pairing token.
         public let token: String
-        /// The machine's SSH host-key fingerprint, `SHA256:...`.
+        /// The machine's SSH host-key fingerprint as `ssh-keygen -lf` prints it: `SHA256:`
+        /// followed by the unpadded base64 of the 32-byte digest.
         ///
         /// EMPTY MEANS UNKNOWN, not "no pinning needed". The daemon sends an empty string
-        /// when it could not read its own host key; the app must then either warn or fall
-        /// back to trust-on-first-use, and `hostKeyFingerprint` makes that explicit rather
-        /// than letting an empty string flow into a pin call.
+        /// when it could not read its own host key; `hostKeyFingerprint` is then `nil`, so an
+        /// empty string never flows into a pin call.
         public let fp: String
 
         public init(v: Int, host: String, port: Int, user: String, token: String, fp: String) {
@@ -54,10 +54,27 @@ extension Pairing {
             self.fp = fp
         }
 
-        /// `nil` when the machine could not report its host key — the caller must not pin.
+        /// The host-key digest in the form the SSH verifier presents
+        /// (`sshHostKeyFingerprintSHA256`): 64 lowercase hex characters.
+        ///
+        /// The QR and the verifier encode the same SHA-256 of the wire-form key differently.
+        /// Pinning the QR text verbatim would reject the first connection to an unchanged
+        /// host, so the digest is decoded here and re-encoded once, in the verifier's form.
+        /// `nil` when the machine could not report its host key, or when `fp` is not a
+        /// canonical 32-byte `SHA256:` digest — the caller must not pin either way.
         public var hostKeyFingerprint: String? {
             let trimmed = fp.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : trimmed
+            let prefix = "SHA256:"
+            guard trimmed.hasPrefix(prefix) else { return nil }
+            let encoded = String(trimmed.dropFirst(prefix.count))
+            // 32 bytes is 43 unpadded base64 characters. Re-encoding must reproduce the
+            // input, so stray trailing bits cannot give one digest two spellings.
+            guard encoded.count == 43,
+                  let digest = Data(base64Encoded: encoded + "="),
+                  digest.count == 32,
+                  digest.base64EncodedString() == encoded + "="
+            else { return nil }
+            return digest.map { String(format: "%02x", $0) }.joined()
         }
     }
 
@@ -83,7 +100,11 @@ extension Pairing {
         guard !payload.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !payload.user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !payload.token.isEmpty,
-              (1...65535).contains(payload.port)
+              (1...65535).contains(payload.port),
+              // Empty means the daemon could not read its host key; anything else must
+              // decode, or it is not a code a real daemon printed.
+              payload.fp.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || payload.hostKeyFingerprint != nil
         else { throw Error.notAPairingCode }
         return payload
     }

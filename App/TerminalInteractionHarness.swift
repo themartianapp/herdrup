@@ -982,6 +982,9 @@ final class TerminalInteractionHarness: ObservableObject {
 
 struct TerminalInteractionRoot: View {
     let control: Bool
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    @State private var compactLayout = false
+    private let layoutTransitions = ProcessInfo.processInfo.environment["HERDR_LAYOUT_TRANSITIONS"] == "1"
     /// ONLY the spacer, never the harness itself: the probe's ten-per-second tick would
     /// otherwise re-render the pane under test (see `KeyboardSpacerBox`).
     @ObservedObject private var spacer = TerminalInteractionHarness.shared.spacer
@@ -989,6 +992,17 @@ struct TerminalInteractionRoot: View {
     var body: some View {
         VStack(spacing: 0) {
             TerminalInteractionControls()
+            if layoutTransitions {
+                HStack {
+                    Button("Compact") { compactLayout = true }
+                        .accessibilityIdentifier("fixture-layout-compact")
+                    Button("Regular") { compactLayout = false }
+                        .accessibilityIdentifier("fixture-layout-regular")
+                    Text(compactLayout ? "compact" : "regular")
+                        .accessibilityIdentifier("fixture-layout-state")
+                }
+                .buttonStyle(.bordered)
+            }
             if control {
                 NavigationStack {
                     TerminalPaneContent(client: client, paneID: "ix:a", title: "CONTROL",
@@ -997,6 +1011,9 @@ struct TerminalInteractionRoot: View {
             } else {
                 TerminalHomeView(client: client, onDisconnect: {}, onTrustHostKey: { _ in false },
                                  livePaneIDs: ["ix:a", "ix:b"])
+                    .frame(width: layoutTransitions && compactLayout ? 390 : nil)
+                    .environment(\.horizontalSizeClass,
+                                 layoutTransitions ? (compactLayout ? .compact : .regular) : sizeClass)
             }
         }
         // The keyboard's share of the pane, animated by `sweepKeyboard`. SwiftUI's own

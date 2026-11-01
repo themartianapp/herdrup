@@ -1,5 +1,6 @@
 import XCTest
 import UIKit
+import Vision
 
 /// The automated SCROLL RECEIPT (JARVIS standing-rule 47874: no scroll change ships on
 /// static review alone — a real drag must be exercised). Launches the app into a REAL
@@ -173,7 +174,7 @@ final class ScrollTests: XCTestCase {
     /// history (`history_b64`); `agent.read` has none. A swipe can therefore reveal earlier
     /// output only if the app seeds scrollback from a reconnect's keyframe. RED before that
     /// (the history prepend ran on the first keyframe only, from the backfill); GREEN after.
-    func testReconnectKeyframeRestoresHistory() {
+    func testReconnectKeyframeRestoresHistory() throws {
         let app = XCUIApplication.launched(mock: "keyframehistory")
         let viewport = app.terminalSurface
         XCTAssertTrue(viewport.waitForExistence(timeout: 10))
@@ -198,9 +199,31 @@ final class ScrollTests: XCTestCase {
 
         let after = viewport.screenshot()
         attach(after, "kh-02-after-swipe")
-        let movedDiff = pixelDiffFraction(before, after)
-        XCTAssertGreaterThan(movedDiff, 0.10,
-            "No history after an in-place reconnect: content unchanged after swiping (diff=\(movedDiff)). The reconnect's keyframe history did not reach SwiftTerm's scrollback.")
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        request.recognitionLanguages = ["en-US"]
+        let historyRow = try NSRegularExpression(pattern: #"history\s+([0-9]+)"#,
+                                                options: .caseInsensitive)
+        func visibleHistoryRows(in screenshot: XCUIScreenshot) throws -> [Int] {
+            let image = try XCTUnwrap(screenshot.image.cgImage)
+            try VNImageRequestHandler(cgImage: image).perform([request])
+            return (request.results ?? []).compactMap { observation in
+                guard let text = observation.topCandidates(1).first?.string,
+                      let match = historyRow.firstMatch(in: text,
+                          range: NSRange(text.startIndex..., in: text)),
+                      let range = Range(match.range(at: 1), in: text) else { return nil }
+                return Int(text[range])
+            }
+        }
+        let beforeRows = try visibleHistoryRows(in: before)
+        let afterRows = try visibleHistoryRows(in: after)
+        let earliestAfter = try XCTUnwrap(afterRows.min(),
+            "No numbered history visible after swiping the reconnected terminal.")
+        // The fixture has rows 1...300. If none were visible at the live screen,
+        // any historical row is earlier; otherwise the swipe must reveal older rows.
+        XCTAssertLessThan(earliestAfter, beforeRows.min() ?? 301,
+            "Swipe did not reveal earlier history: before=\(beforeRows), after=\(afterRows)")
     }
 
     /// The REDUNDANT-HISTORY-READ receipt (#459). On a current server (herdr#301) every keyframe

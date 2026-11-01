@@ -466,12 +466,12 @@ case "$shard" in
     # a slow hosted runner): with them in the app round, #433's run 38703928881 ran out of
     # its 30 m on the last class.
     run_suite iPhoneStatusMotion "$IPHONE_UDID" 10m -only-testing:HerdrUITests/StatusMotionTests || failed=1
-    # Round 4's agent-list classes own a round (#551, #552): with them in the app round, run
-    # 40589424949 spent 1761 s on 84 cases (AgentFoldersTests 170 s, NeedsYouPillTests 122 s)
-    # and ran out of the 30 m on the last class, every case passing.
-    run_suite iPhoneAgentList "$IPHONE_UDID" 10m -only-testing:HerdrUITests/AgentFoldersTests \
-      -only-testing:HerdrUITests/NeedsYouPillTests || failed=1
-    check_classes_ran TestReceipts/iPhoneAgentList-first.xcresult AgentFoldersTests NeedsYouPillTests || failed=1
+    # Keep both classes, each within the existing 10m deadline. In 41177678247 the
+    # six folder cases passed in 449s, leaving insufficient time for NeedsYou.
+    run_suite iPhoneAgentFolders "$IPHONE_UDID" 10m -only-testing:HerdrUITests/AgentFoldersTests || failed=1
+    check_classes_ran TestReceipts/iPhoneAgentFolders-first.xcresult AgentFoldersTests || failed=1
+    run_suite iPhoneNeedsYouPill "$IPHONE_UDID" 10m -only-testing:HerdrUITests/NeedsYouPillTests || failed=1
+    check_classes_ran TestReceipts/iPhoneNeedsYouPill-first.xcresult NeedsYouPillTests || failed=1
     # Update-card scenarios take ~4 minutes (243 s in run 40900275118). Keeping them
     # in iPhoneApp repeatedly exhausted its 30-minute cap before the last classes.
     run_suite iPhoneServerUpdate "$IPHONE_UDID" 10m -only-testing:HerdrUITests/ServerUpdateUITests || failed=1
@@ -499,7 +499,9 @@ case "$shard" in
     xcrun simctl io "$IPAD_UDID" recordVideo TestReceipts/terminal-resize-iPad.mp4 \
       > TestReceipts/terminal-resize-iPad-video.log 2>&1 &
     recorder=$!
-    run_suite iPadResize "$IPAD_UDID" 25m -only-testing:HerdrUITests/TerminalResizeTests || failed=1
+    run_suite iPadResize "$IPAD_UDID" 25m \
+      -only-testing:HerdrUITests/TerminalResizeTests \
+      -only-testing:HerdrUITests/DuoTransitionTests || failed=1
     stop_recording
     if [ ! -s TestReceipts/terminal-resize-iPad.mp4 ]; then
       echo "::warning::iPad video unavailable; consult recording log and xcresult screenshots"
