@@ -1907,52 +1907,20 @@ struct TerminalHomeView: View {
         case rename(AgentFolder)
     }
     @State private var activeCover: ActiveCover?
-    /// The selected bottom tab (Agents / Gram / Settings). Terminal is NOT a tab — it
-    /// fronts a keep-mounted pane OVER the tabs (see PaneKeepAliveContainer). Gram and
-    /// Settings were modal covers before #88; they are persistent tabs now.
+    /// The terminal belongs to the persistent Agents tab; Gram and Settings own their
+    /// native pages, so a covered terminal cannot receive their touches.
     @State private var selectedTab: HomeTab = .agents
-    /// On iPad (regular width) the app becomes a NavigationSplitView (sidebar + detail);
-    /// on iPhone / narrow it stays the tab bar + terminal-over layout. Same views either way.
+    /// Both size classes share the split/detail tree; only navigation chrome adapts.
     @Environment(\.horizontalSizeClass) private var hSizeClass
     /// Row separators are one device pixel, like the system's and Messages'.
     @Environment(\.displayScale) private var displayScale
-    /// BORN IN THE FINAL CONFIGURATION, not flipped after the first layout pass.
-    ///
-    /// This was `.all` unconditionally, with `.onChange(of: sidebarMinimized, initial: true)`
-    /// flipping it to `.detailOnly` for an owner whose stored preference is "minimised".
-    ///
-    /// WHEN that flip landed relative to the split view's first layout pass is NOT
-    /// established. Apple documents `initial:` only as "whether the action should be run
-    /// when this view initially appears", with no ordering guarantee against the layout
-    /// phase and no definition of "initially appears" in those terms. So on one reading
-    /// this removes a real layout pass in a configuration about to be left, and on the
-    /// other it is a no-op. I cannot tell which from the documentation, and nothing here
-    /// measures it.
-    ///
-    /// NOT A DIAGNOSIS OF ANY REPORTED BUG. An earlier version of this comment claimed
-    /// that pre-flip pass WAS the owner's "sometimes, for no reason" symptom. There is no
-    /// reproduction of that anywhere, no instrument in the repo that could produce one,
-    /// and no mechanism I can point to in the code: flipping `columnVisibility` re-lays
-    /// the split view out with fresh proposals, and nothing caches a page width across
-    /// it. The claim also contradicted this same file, which records the symptom as
-    /// undiagnosed. It was a fifth guess written as a fact, and it is withdrawn.
-    ///
-    /// What is left as justification is therefore only this, and it does not depend on
-    /// the ordering: the state is born in the configuration the preference already names,
-    /// so there is one fewer launch-time transition to reason about and no window in
-    /// which `columnVisibility` and `sidebarMinimized` disagree. If the flip in fact
-    /// landed before first layout, this change costs nothing and buys that; it is not
-    /// offered as a fix for anything.
-    ///
-    /// Read straight from `UserDefaults` because `@AppStorage` is not available during
-    /// property initialisation ("cannot use instance member within property
-    /// initializer"). Both readers name `Self.sidebarMinimizedKey` so a rename cannot
-    /// desync them — and the desync would be SILENT, since the layout would simply be
-    /// born expanded while the preference said otherwise.
-    /// Internal, not private, only so the DEBUG `desktopref` mock can start expanded.
+    /// Internal only so the DEBUG desktop reference can start expanded.
     static let sidebarMinimizedKey = "ui.sidebarMinimized"
-    @State private var columnVisibility: NavigationSplitViewVisibility =
-        UserDefaults.standard.bool(forKey: Self.sidebarMinimizedKey) ? .detailOnly : .all
+    /// The user owns regular-width visibility. Compact adaptation is a derived
+    /// request, not another writer that can leave the sidebar collapsed on expansion.
+    private var columnVisibility: NavigationSplitViewVisibility {
+        hSizeClass == .compact || sidebarMinimized ? .detailOnly : .all
+    }
     /// Whether the sidebar is MINIMISED to the icon rail, remembered across launches.
     ///
     /// There is deliberately no fully-hidden state. Hiding the column outright loses
@@ -1960,9 +1928,7 @@ struct TerminalHomeView: View {
     /// only way back was ⌘K on a hardware keyboard; the rail keeps a compact signal
     /// and a one-click way back, which makes a third state pure surface area.
     ///
-    /// Persisted because `columnVisibility` is `@State`: on its own the choice lasts
-    /// only until relaunch, which is wrong for a preference set deliberately to give
-    /// the terminal full width.
+    /// Remember deliberate changes across launches, never system adaptation.
     @AppStorage(Self.sidebarMinimizedKey) private var sidebarMinimized = false
     /// The sidebar's width, remembered across launches.
     ///
@@ -2367,10 +2333,11 @@ struct TerminalHomeView: View {
     /// pill + the agents list; detail = the selected agent's LIVE TERMINAL (or Gram / Settings for
     /// those sections). Reuses the SAME views + terminal machinery as the phone layout — only the
     /// arrangement differs. iPhone / narrow width keeps the tab-bar-with-terminal-over layout.
-    private var iPadLayout: some View {
+    private var adaptiveLayout: some View {
         GeometryReader { geometry in
         agentActions(
-        NavigationSplitView(columnVisibility: $columnVisibility) {
+        NavigationSplitView(columnVisibility: .constant(columnVisibility),
+                            preferredCompactColumn: .constant(.detail)) {
             ZStack {
                 Palette.ground.ignoresSafeArea()
                 VStack(spacing: 0) {
@@ -2468,14 +2435,10 @@ struct TerminalHomeView: View {
             // seen its target either way. If it returns, the instrument is a TestFlight
             // build and the owner's account of what preceded it, not another commit here.
             HStack(spacing: 0) {
-                // Keyed on `columnVisibility`, the LAYOUT TRUTH, not on the persisted
-                // preference: iPadOS collapses this column on its own (rotation, Stage
-                // Manager, any transition it cannot honour at `.balanced`), and when it
-                // does, the rail must still appear or there is no way back at all.
-                //
+                // Compact adaptation never changes the user's regular-width choice.
                 // No transition: a sliding rail animates the detail column's width, and
                 // every intermediate width reflows the live terminal (see `toggleSidebar`).
-                if columnVisibility == .detailOnly { sidebarRail }
+                if hSizeClass == .regular && columnVisibility == .detailOnly { sidebarRail }
                 detailColumn
             }
             // A floor under the detail column, so a window just wider than two columns keeps
@@ -2516,35 +2479,7 @@ struct TerminalHomeView: View {
             .toolbar(.hidden, for: .navigationBar)
         }
         .navigationSplitViewStyle(.balanced)
-        // The split's own sidebar carries the FULL list; minimising hides that column and
-        // hands its job to the rail.
-        //
-        // ONE-WAY on purpose. The preference -> layout edge restores the owner's choice at
-        // launch. The reverse edge (layout -> preference) is deliberately absent: this
-        // binding is written by iPadOS itself, and a handler cannot tell an owner gesture
-        // from a system layout decision. Persisting the latter meant one system collapse
-        // (a rotation, a Stage Manager resize) silently rewrote a durable preference, and
-        // since only an explicit expand clears it, the app would then open on the rail
-        // forever with no record that the owner ever asked for it. `sidebarMinimized` is
-        // now written ONLY by `toggleSidebar` and `railSectionButton` - real gestures.
-        // `initial: true` IS LOAD-BEARING and was wrongly removed for one round.
-        //
-        // The initialiser above runs once per view LIFETIME; this handler re-fires on
-        // every REMOUNT. `iPadLayout` unmounts and remounts across compact<->regular
-        // transitions (Stage Manager, a window resize), while `columnVisibility` is
-        // `@State` on `TerminalHomeView`, whose identity survives them. Because the
-        // layout -> preference edge is deliberately absent, an iPadOS-initiated collapse
-        // leaves `columnVisibility == .detailOnly` with `sidebarMinimized == false`; this
-        // handler is what re-applied the real preference on reappearance and self-healed
-        // it. Without it, a system collapse STICKS until an explicit ⌘K or rail tap.
-        //
-        // It is not redundant with the initialiser and it is not merely "for later
-        // preference changes": both in-scene writers (`toggleSidebar`, `railSectionButton`)
-        // set `columnVisibility` themselves in the same transaction, so a same-value
-        // re-apply is all this can ever do for a gesture. Its real job is the remount.
-        .onChange(of: sidebarMinimized, initial: true) { _, minimized in
-            columnVisibility = minimized ? .detailOnly : .all
-        }
+        // Visibility is derived above, with no system-writeback or restoration race.
         .tint(Palette.brand)
         // Hardware-keyboard shortcuts (iPad): ⌘K minimises/expands the sidebar, ⌘/ opens the
         // shortcut reference. Hidden zero-size buttons carry the key bindings.
@@ -2565,22 +2500,44 @@ struct TerminalHomeView: View {
     private var detailColumn: some View {
         ZStack(alignment: .topLeading) {
                 Palette.groundMachine.ignoresSafeArea()
-                // Base layer: the switch renders Gram / Settings and the agents placeholder.
-                // The terminal container is deliberately NOT in here — it is the
-                // always-mounted overlay below.
-                switch selectedTab {
-                case .agents:
-                    if frontID == nil {
-                        SelectAgentPlaceholder(lines: glyphFieldLines, spotlight: glyphFieldSpotlight)
+                // One tab tree and one terminal container survive compact/regular changes.
+                // Only the surrounding navigation chrome and the Agents list placement vary.
+                TabView(selection: tabSelection) {
+                    ZStack(alignment: .topLeading) {
+                        Group {
+                            if hSizeClass == .regular {
+                                SelectAgentPlaceholder(lines: glyphFieldLines, spotlight: glyphFieldSpotlight)
+                            } else {
+                                agentsTab
+                            }
+                        }
+                        // The tab owns native presentation; the pane tree stays in this
+                        // same slot across both size classes and tab switches.
+                        PaneKeepAliveContainer(
+                            client: client, slots: slots, frontID: frontID,
+                            isPresented: selectedTab == .agents,
+                            onClose: { frontID = nil; Task { await load() } },
+                            onNavigate: { slot, delta in navigate(from: slot, delta: delta) })
+                            .opacity(frontID != nil ? 1 : 0)
+                            .offset(x: frontID != nil ? 0 : 40)
+                            .allowsHitTesting(frontID != nil)
+                            .animation(.easeOut(duration: 0.26), value: frontID != nil)
                     }
-                case .gram:
+                    .tag(HomeTab.agents)
+                    .tabItem { Label(HomeTab.agents.label, systemImage: HomeTab.agents.icon) }
+                    .toolbar(hSizeClass == .regular || frontID != nil ? .hidden : .visible, for: .tabBar)
+
                     GramView(client: client, unread: gramUnread,
                              showingSaved: $gramShowingSaved,
                              refreshToken: gramRefreshToken,
                              readAllToken: gramReadAllToken,
                              searchText: $gramSearch,
                              newestToken: gramNewestToken)
-                case .settings:
+                        .tag(HomeTab.gram)
+                        .tabItem { Label(HomeTab.gram.label, systemImage: HomeTab.gram.icon) }
+                        .modifier(GramUnreadBadge(unread: gramUnread))
+                        .toolbar(hSizeClass == .regular ? .hidden : .visible, for: .tabBar)
+
                     SettingsView(
                         client: client,
                         agents: agents,
@@ -2588,24 +2545,14 @@ struct TerminalHomeView: View {
                         connected: error == nil && !loading,
                         canReconnect: rejectedFingerprint == nil,
                         onReconnect: onReconnect,
-                        detail: settingsAnchor ?? .machines,
+                        detail: hSizeClass == .regular ? (settingsAnchor ?? .machines) : nil,
                         serverUpdate: serverUpdate)
+                        .tag(HomeTab.settings)
+                        .badge(settingsBadge)
+                        .tabItem { Label(HomeTab.settings.label, systemImage: HomeTab.settings.icon) }
+                        .toolbar(hSizeClass == .regular ? .hidden : .visible, for: .tabBar)
                 }
-                // Keep-mounted terminal container, hoisted ABOVE the `switch` so switching to
-                // Settings/Gram never removes it from the view tree. Previously it lived inside
-                // `case .agents`, so navigating away unmounted every pane and closed its
-                // pane.stream — which is what forced a full reconnect/reload on return. Now it
-                // mirrors the phone's sibling overlay (`:1297`): visible + interactive only when
-                // an agent pane is fronted, otherwise fully inert, and the panes stay warm.
-                PaneKeepAliveContainer(
-                    client: client, slots: slots, frontID: frontID,
-                    // Hidden behind Settings/Gram (frontID stays set here) → not presented, so
-                    // the front pane drops key focus + the PTY lock instead of leaking input.
-                    isPresented: selectedTab == .agents,
-                    onClose: { frontID = nil; Task { await load() } },
-                    onNavigate: { slot, delta in navigate(from: slot, delta: delta) })
-                    .opacity(selectedTab == .agents && frontID != nil ? 1 : 0)
-                    .allowsHitTesting(selectedTab == .agents && frontID != nil)
+                .tint(Palette.text)
         }
     }
 
@@ -2625,10 +2572,9 @@ struct TerminalHomeView: View {
                 .keyboardShortcut("-", modifiers: .command)
             Button("Reset zoom") { terminalFontSize = 12.5 }
                 .keyboardShortcut("0", modifiers: .command)
-            // ⌘F on Gram puts the cursor in the sidebar search. Registered only while Gram is
-            // the section: the terminal's own ⌘F lives on the front pane, which is not
-            // presented then, so the two bindings never compete.
-            if selectedTab == .gram {
+            // The sidebar owns Gram's ⌘F only at regular width. The compact header
+            // registers its own shortcut against the same search state.
+            if selectedTab == .gram && hSizeClass == .regular {
                 Button("Search Gram") { focusGramSearch() }
                     .keyboardShortcut("f", modifiers: .command)
             }
@@ -2928,16 +2874,10 @@ struct TerminalHomeView: View {
 
     /// Records a measured sidebar width, ignoring anything that is not a real resize.
     ///
-    /// Filters three cases that would corrupt the stored value: a column that is not
-    /// actually open (it collapses toward zero), a width outside the modifier's own
-    /// bounds (transient layout passes report those), and sub-point jitter, which would
-    /// otherwise write to `AppStorage` on every layout.
-    ///
-    /// The first guard reads `columnVisibility`, the LAYOUT, not the persisted
-    /// preference: after a layout-initiated collapse the preference still says
-    /// "expanded", so guarding on it would admit the collapse sweep's own widths.
+    /// Ignore compact adaptation, minimised columns, out-of-bounds animation samples
+    /// and sub-point jitter. The caller also requires a settled measurement.
     private func recordSidebarWidth(_ width: CGFloat) {
-        guard columnVisibility != .detailOnly else { return }
+        guard hSizeClass == .regular, !sidebarMinimized else { return }
         guard Self.sidebarWidthRange.contains(width) else { return }
         guard abs(width - CGFloat(sidebarWidth)) >= 1 else { return }
         sidebarWidth = Double(width)
@@ -2951,17 +2891,9 @@ struct TerminalHomeView: View {
     /// reflows and a `set_pty_size` round-trip for each distinct width. That is the
     /// visible re-scrolling/re-wrapping churn. One step = one reflow.
     ///
-    /// Intent is read from the LAYOUT and both variables are written directly. Deriving
-    /// it from the preference instead (`sidebarMinimized.toggle()`) desyncs the moment
-    /// iPadOS collapses the column itself: the flag still says "expanded", so a tap
-    /// meaning "expand" computed "minimise", the `onChange` re-applied the state the
-    /// layout was already in, and the control did nothing — while persisting
-    /// "minimised", which is the durable corruption removing the layout->preference
-    /// edge was meant to prevent. Setting `columnVisibility` here rather than relying
-    /// on the `onChange` is required: when the flag already equals the new value, that
-    /// handler does not fire at all.
+    /// Only explicit user actions change the persisted regular-width choice.
     private func toggleSidebar() {
-        let minimize = columnVisibility != .detailOnly
+        let minimize = !sidebarMinimized
         // Commit any pending measurement before collapsing: the debounce is 500ms, and
         // a drag followed straight away by a minimise would otherwise lose the width
         // the owner just chose. Runs while the column is still open, so the layout
@@ -2980,7 +2912,6 @@ struct TerminalHomeView: View {
             recordSidebarWidth(measuredSidebarWidth)
         }
         sidebarMinimized = minimize
-        columnVisibility = minimize ? .detailOnly : .all
     }
 
     /// The minimised sidebar: a 64pt icon rail that keeps the section badges and the
@@ -3037,11 +2968,8 @@ struct TerminalHomeView: View {
     private func railSectionButton(_ tab: HomeTab, badge: Int = 0) -> some View {
         Button {
             select(tab)
-            // Both variables, for the same reason `toggleSidebar` writes both: the rail
-            // is only on screen when the LAYOUT is collapsed, which the preference may
-            // not reflect, and `onChange` does not fire when the flag is already false.
+            // Selecting a rail section explicitly expands the regular-width sidebar.
             sidebarMinimized = false
-            columnVisibility = .all      // unanimated: see `toggleSidebar`
         } label: {
             Image(systemName: tab.icon)
                 .environment(\.symbolVariants, .fill)
@@ -3113,73 +3041,7 @@ struct TerminalHomeView: View {
         // Observe the text-size setting so the home re-renders at the new
         // `Typography.scale` on change (identity unchanged → @State preserved).
         let _ = uiFontScale
-        return Group {
-            if hSizeClass == .regular {
-                iPadLayout
-            } else {
-            ZStack {
-            // Apple's standard tab bar (Liquid Glass automatically on iOS 26, the clean
-            // standard bar below that) replaces the old hand-built pill (#88). Terminal
-            // is NOT a tab — it fronts a keep-mounted pane over everything (below).
-            TabView(selection: tabSelection) {
-                agentsTab
-                    .tag(HomeTab.agents)
-                    .tabItem { Label(HomeTab.agents.label, systemImage: HomeTab.agents.icon) }
-
-                // Gram and Settings were modal covers; they are persistent tabs now.
-                // Both are nav-agnostic and take no onClose as tabs (no close button).
-                GramView(client: client, unread: gramUnread,
-                         showingSaved: $gramShowingSaved,
-                         newestToken: gramNewestToken)
-                    .tag(HomeTab.gram)
-                    .tabItem { Label(HomeTab.gram.label, systemImage: HomeTab.gram.icon) }
-                    .modifier(GramUnreadBadge(unread: gramUnread))
-
-                SettingsView(
-                    client: client,
-                    agents: agents,
-                    host: host,
-                    connected: error == nil && !loading,
-                    // Withhold reconnect during a host-key rejection — reconnecting then
-                    // would first-contact-trust the next key (same gate as the recovery
-                    // screen's withheld retry).
-                    canReconnect: rejectedFingerprint == nil,
-                    onReconnect: onReconnect,
-                    serverUpdate: serverUpdate)
-                    .tag(HomeTab.settings)
-                    .badge(settingsBadge)
-                    .tabItem { Label(HomeTab.settings.label, systemImage: HomeTab.settings.icon) }
-            }
-            .tint(Palette.text)
-            // Recently-opened terminals kept MOUNTED so reopening + swiping between them is
-            // instant (nothing torn down or re-streamed). Overlays the list: a fronted pane
-            // covers it and captures touches; otherwise the overlay is fully inert.
-            PaneKeepAliveContainer(
-                client: client, slots: slots, frontID: frontID,
-                // Always presented on iPhone: a fronted pane covers the whole screen and the
-                // tab bar hides, so there is no foreground-while-hidden state to guard against.
-                isPresented: true,
-                onClose: { frontID = nil; Task { await load() } },
-                onNavigate: { slot, delta in navigate(from: slot, delta: delta) })
-                .opacity(frontID != nil ? 1 : 0)
-                // Ease the list<->terminal transition instead of a hard cut: the terminal
-                // slides in from the right (and back out on close) while it fades. We animate
-                // the `frontID` STATE, not a gesture, so BOTH entry points — the header
-                // chevron and the left-edge swipe (EdgeSwipeBack fires a discrete onClose) —
-                // get the same motion, and neither EdgeSwipeBack nor the pane's
-                // foreground/PTY handoff is touched. Only nil<->non-nil animates; paging
-                // between panes (frontID stays non-nil) is unaffected.
-                .offset(x: frontID != nil ? 0 : 40)
-                .allowsHitTesting(frontID != nil)
-                // Key the animation on the BOOLEAN (shown vs not), NOT on frontID itself:
-                // frontID also changes when swipe-paging A->B (both non-nil), and
-                // `value: frontID` would fire the animation into the subtree then —
-                // cross-fading the inner pane swap and disturbing the paging XCUITest.
-                // `frontID != nil` only flips on the list<->terminal open/close.
-                .animation(.easeOut(duration: 0.26), value: frontID != nil)
-            }
-            }
-        }
+        return adaptiveLayout
         #if DEBUG
         .overlay(alignment: .topLeading) {
             if ScreenshotMock.mode != nil { StatusMotionProbe() }
@@ -3531,8 +3393,7 @@ struct TerminalHomeView: View {
     }
 
     private var agentsTab: some View {
-        agentActions(
-            NavigationStack {
+        NavigationStack {
             ZStack {
                 Palette.ground.ignoresSafeArea()
                 VStack(spacing: 0) {
@@ -3550,12 +3411,7 @@ struct TerminalHomeView: View {
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
-            // Hide the tab bar while a terminal is fronted so the pane is truly
-            // full-screen (the pane overlay covers it too; this animates it away and
-            // guards against the bar drawing over the overlay on some iOS versions).
-            .toolbar(frontID != nil ? .hidden : .automatic, for: .tabBar)
         }
-        )
     }
 
     /// The rename form for an agent or a terminal. Agent names are coerced to the server grammar
@@ -3821,10 +3677,8 @@ struct TerminalHomeView: View {
         }
     }
 
-    /// Compact layouts cover the roster when a terminal is fronted. Regular-width
-    /// Mac/iPad layouts keep it visible in the split-view sidebar, unless that column
-    /// is explicitly collapsed to detail-only. Bind observation to that actual
-    /// presentation instead of treating any selected terminal as list disappearance.
+    /// Compact layouts cover the roster when a terminal is fronted. Regular layouts
+    /// keep it beside the terminal unless the user minimises the sidebar.
     private var agentRosterIsVisible: Bool {
         guard selectedTab == .agents, scenePhase == .active else { return false }
         if hSizeClass == .regular {
@@ -5201,6 +5055,7 @@ struct ComposerTextField: UIViewRepresentable {
     let isEnabled: Bool
     let isFocused: Bool
     let onFocusChange: (Bool) -> Void
+    var isPresented = true
     var placeholder = "Type a reply…"
     var accessibilityIdentifier = "terminal-reply-input"
     var capitalization: UITextAutocapitalizationType = .none
@@ -5253,6 +5108,10 @@ struct ComposerTextField: UIViewRepresentable {
         // Selection changes made from here are this update's own, not the reader's.
         view.isApplyingUpdate = true
         defer { view.isApplyingUpdate = false }
+        // SwiftUI opacity does not hide the retained UITextView from UIKit/AX.
+        // Keep the native editor mounted, but make its visibility match its pane.
+        view.isHidden = !isPresented
+        if !isPresented { context.coordinator.nativeFocusPendingStateSync = false }
         view.onPasteFile = onPasteFile
         view.onCommandReturn = onCommandReturn
         view.configureTypography()
@@ -5267,7 +5126,7 @@ struct ComposerTextField: UIViewRepresentable {
             view.refreshScrollMode()
         }
         view.isEditable = isEnabled
-        if isFocused {
+        if isFocused && isPresented {
             context.coordinator.nativeFocusPendingStateSync = false
             if !view.isFirstResponder {
                 view.becomeFirstResponder()
@@ -6630,6 +6489,7 @@ struct TerminalPaneContent: View {
                     replyFocused = focused
                     if focused { terminalInputFocused = false }
                 },
+                isPresented: isForeground,
                 onChange: { oldValue, newValue in
                     handleReplyChange(old: oldValue, new: newValue)
                 },
