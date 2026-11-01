@@ -149,7 +149,7 @@ final class GuestPaneTests: XCTestCase {
     }
 
     /// Watching never sends anything a guest may not send: no keyboard from the terminal, no
-    /// quick keys, and a sent message goes out as a prompt.
+    /// quick keys while the agent isn't asking anything, and a sent message goes out as a prompt.
     func testTerminalIsViewOnly() {
         let app = XCUIApplication.launched(mock: "guestpane")
 
@@ -173,7 +173,8 @@ final class GuestPaneTests: XCTestCase {
         }
         XCTAssertEqual(app.keyboards.count, 0, "tapping the terminal must not raise a keyboard")
         XCTAssertFalse(app.buttons["terminal-ctrl"].exists, "a guest pane has no quick keys")
-        XCTAssertFalse(app.buttons["esc"].exists, "a guest pane has no quick keys")
+        XCTAssertFalse(app.descendants(matching: .any)["guest-menu-keys"].exists,
+                       "no menu keys while the agent isn't asking anything")
 
         Thread.sleep(forTimeInterval: 3)
         XCTAssertEqual(forbiddenCalls(app), "", "watching must not call anything a guest may not call")
@@ -262,16 +263,44 @@ final class GuestPaneTests: XCTestCase {
         attach(app, "guest-paused")
     }
 
-    /// A question only the owner can answer is called out above the composer.
-    func testBlockedAgentShowsTheOwnerBanner() {
+    /// A blocked agent's menu (a plan approval, a permission prompt) is the guest's to
+    /// answer: the owner's menu keys show under the terminal and go out as `pane.send_keys`,
+    /// and nothing types text.
+    func testBlockedAgentOffersTheMenuKeys() {
         let app = XCUIApplication.launched(mock: "guestblocked")
 
-        XCTAssertTrue(app.staticTexts["llm-opt is asking a question only Jerry can answer"]
-            .waitForExistence(timeout: 10), "the blocked banner should render")
-        XCTAssertTrue(app.staticTexts["NEEDS JERRY"].exists)
+        XCTAssertTrue(app.staticTexts["llm-opt is asking a question · answer with the keys below"]
+            .waitForExistence(timeout: 10), "the question banner should render")
+        XCTAssertTrue(app.staticTexts["NEEDS YOU"].exists)
+        XCTAssertFalse(app.staticTexts["NEEDS JERRY"].exists, "the guest can answer, so it doesn't wait for Jerry")
+        XCTAssertTrue(app.descendants(matching: .any)["guest-menu-keys"].exists, "the menu keys should show")
         XCTAssertTrue(app.textViews["guest-composer-input"].exists, "the guest can still send a message")
         Thread.sleep(forTimeInterval: 2)
         attach(app, "guest-blocked")
+
+        app.buttons["Down"].tap()
+        app.buttons["Enter"].tap()
+        let hostCalls = app.descendants(matching: .any)["guest-host-calls"]
+        XCTAssertTrue(poll(6, every: 0.3) { hostCalls.label.contains("pane.send_keys:Down;pane.send_keys:Enter") },
+                      "the keys reach the host in order as pane.send_keys: \(hostCalls.label)")
+        XCTAssertEqual(forbiddenCalls(app), "", "menu keys are allowed while the agent is blocked")
+        XCTAssertFalse(app.descendants(matching: .any)["guest-note"].exists, "the keys should not fail")
+    }
+
+    /// A host older than guest answers refuses the guest's menu key: back to waiting for the
+    /// owner, with the banner and pill that say so and no keys.
+    func testBlockedAgentOnAnOlderHostWaitsForTheOwner() {
+        let app = XCUIApplication.launched(mock: "guestblocked", environment: ["HERDR_MOCK_GUEST_OWNER_ANSWERS": "1"])
+
+        let keys = app.descendants(matching: .any)["guest-menu-keys"]
+        XCTAssertTrue(keys.waitForExistence(timeout: 10), "the keys show until the host refuses one")
+        app.buttons["Enter"].tap()
+        XCTAssertTrue(app.staticTexts["llm-opt is asking a question only Jerry can answer"]
+            .waitForExistence(timeout: 10), "the owner banner should render")
+        XCTAssertTrue(app.staticTexts["NEEDS JERRY"].exists)
+        XCTAssertFalse(keys.exists, "no menu keys once the host keeps answers for the owner")
+        XCTAssertFalse(app.descendants(matching: .any)["guest-note"].exists, "the refusal is not an error")
+        attach(app, "guest-blocked-owner-answers")
     }
 
     // MARK: Header
@@ -287,7 +316,8 @@ final class GuestPaneTests: XCTestCase {
         }
         XCTAssertTrue(app.descendants(matching: .any)["guest-status-pill"].exists, "the status pill stays")
         XCTAssertTrue(app.staticTexts["Shared by Jerry"].exists, "the Shared by chip stays")
-        XCTAssertFalse(app.buttons["esc"].exists, "a guest pane has no quick keys")
+        XCTAssertFalse(app.descendants(matching: .any)["guest-menu-keys"].exists,
+                       "a guest pane has no quick keys while the agent isn't asking anything")
         XCTAssertFalse(app.buttons["guest-font-increase"].exists, "A+ moved into the ⋯ menu")
 
         app.buttons["guest-actions"].tap()

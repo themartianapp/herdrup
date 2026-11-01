@@ -181,7 +181,7 @@ struct GuestAcceptView: View {
     }
 }
 
-/// Scans an invite QR code. The decoded text goes through the same `GuestInvite.parse`
+/// Scans an invite QR code. The decoded text goes through the same `GuestInvite.resolve`
 /// as a tapped or pasted link; a code that is not an invite says so and keeps scanning.
 struct GuestInviteScanSheet: View {
     var onInvite: (GuestInvite) -> Void
@@ -224,14 +224,18 @@ struct GuestInviteScanSheet: View {
         }
     }
 
+    /// A short link's sealed invite is fetched first; a failure (including no network)
+    /// says why and restarts capture, so scanning again is the retry.
     private func found(_ text: String) {
-        do {
-            let invite = try GuestInvite.parse(text)
-            onInvite(invite)
-            dismiss()
-        } catch {
-            failure = GuestDevice.describe(error, machine: "")
-            generation += 1
+        Task { @MainActor in
+            do {
+                let invite = try await GuestInvite.resolve(text)
+                onInvite(invite)
+                dismiss()
+            } catch {
+                failure = GuestDevice.describe(error, machine: "")
+                generation += 1
+            }
         }
     }
 

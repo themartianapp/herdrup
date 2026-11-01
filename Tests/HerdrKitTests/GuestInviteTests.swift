@@ -225,6 +225,153 @@ final class GuestInviteTests: XCTestCase {
         XCTAssertEqual(endpoint.socketURL.absoluteString,
                        "wss://guest.herdrup.themartian.app/v1/guest/AAAAAAAAAAAAAAAAAAAAAA")
     }
+
+    // MARK: Short links
+
+    static let shortID = "k7Qp2xRmA1bC"
+    static let shortKey = Data((1...16).map { UInt8($0) })
+
+    /// What the daemon stores on the relay: nonce || ciphertext || tag, bound to `id`.
+    static func seal(_ fields: [String: Any], id: String = shortID, key: Data = shortKey) -> Data {
+        let json = try! JSONSerialization.data(withJSONObject: fields)
+        return try! AES.GCM.seal(json, using: SymmetricKey(data: key), authenticating: Data(id.utf8)).combined!
+    }
+
+    static func shortLink(relay: String = "https://guest.herdrup.themartian.app", id: String = shortID,
+                          key: Data = shortKey) -> String {
+        "\(relay)/i/\(id)\(Base64URL.encode(key))"
+    }
+
+    /// Records each fetched URL and answers with `answer`.
+    final class FakeRelay: @unchecked Sendable {
+        private let lock = NSLock()
+        private var fetched: [URL] = []
+        private let answer: @Sendable () throws -> Data
+
+        init(_ answer: @escaping @Sendable () throws -> Data) { self.answer = answer }
+
+        var urls: [URL] { lock.withLock { fetched } }
+
+        var fetch: GuestInvite.SealedInviteFetch {
+            { url in
+                self.lock.withLock { self.fetched.append(url) }
+                return try self.answer()
+            }
+        }
+    }
+
+    func testTellsShortLinksFromLongOnesAndJunk() {
+        let key = Base64URL.encode(Self.shortKey)
+        XCTAssertEqual(key.count, 22)
+        let short = GuestInvite.Link(Self.shortLink())
+        XCTAssertEqual(Self.shortLink().count, "https://guest.herdrup.themartian.app/i/".count + 34)
+        XCTAssertEqual(short?.content, .sealed(id: Self.shortID, key: key))
+        XCTAssertEqual(short?.web?.sealedInviteURL(id: Self.shortID).absoluteString,
+                       "https://guest.herdrup.themartian.app/v1/invite/\(Self.shortID)")
+        XCTAssertEqual(GuestInvite.Link("https://example.org/herdr/i/\(Self.shortID)\(key)")?
+            .web?.sealedInviteURL(id: Self.shortID).absoluteString,
+                       "https://example.org/herdr/v1/invite/\(Self.shortID)")
+        XCTAssertTrue(GuestInvite.isInviteLink(Self.shortLink()))
+
+        // Anything but exactly 34 base64url characters is the long form.
+        let payload = Self.payload(Self.fields())
+        let segment = Self.shortID + key
+        for long in [payload, String(segment.dropLast()), segment + "A", String(segment.dropLast()) + "!",
+                     String(segment.dropLast()) + "="] {
+            XCTAssertEqual(GuestInvite.Link("https://guest.herdrup.themartian.app/i/\(long)")?.content,
+                           .payload(long), long)
+        }
+
+        let base = "https://guest.herdrup.themartian.app/i/"
+        for junk in [base + "\(Self.shortID)#\(key)", base + "\(segment)#x", base + "\(segment)?q=1",
+                     base + "\(segment)/", base + "\(segment)/x", "http://guest.herdrup.themartian.app/i/\(segment)"] {
+            XCTAssertFalse(GuestInvite.isInviteLink(junk), junk)
+        }
+    }
+
+    func testResolvesAShortLinkFromItsOwnRelay() async throws {
+        let relay = FakeRelay { Self.seal(Self.fields()) }
+        let invite = try await GuestInvite.resolve(
+            "here you go: \(Self.shortLink()) enjoy", now: Self.now, fetch: relay.fetch)
+        XCTAssertEqual(invite, try GuestInvite.parse("herdrup://guest-invite#\(Self.payload(Self.fields()))", now: Self.now))
+        XCTAssertEqual(relay.urls.map(\.absoluteString),
+                       ["https://guest.herdrup.themartian.app/v1/invite/\(Self.shortID)"])
+
+        // The sync parser cannot open a short link.
+        XCTAssertThrowsError(try GuestInvite.parse(Self.shortLink(), now: Self.now)) {
+            XCTAssertEqual($0 as? GuestInvite.Failure, .notAnInvite)
+        }
+    }
+
+    func testResolveReadsLongLinksWithoutFetching() async throws {
+        let relay = FakeRelay { XCTFail("fetched"); return Data() }
+        let link = "https://guest.herdrup.themartian.app/i/\(Self.payload(Self.fields()))"
+        let invite = try await GuestInvite.resolve(link, now: Self.now, fetch: relay.fetch)
+        XCTAssertEqual(invite.agentName, "llm-opt")
+        XCTAssertTrue(relay.urls.isEmpty)
+    }
+
+    func testShortLinkSealMustMatchKeyAndID() async {
+        let cases: [(String, Data)] = [
+            ("wrong key", Self.seal(Self.fields(), key: Data(repeating: 9, count: 16))),
+            ("wrong aad", Self.seal(Self.fields(), id: "AAAAAAAAAAAA")),
+            ("tampered", { var blob = Self.seal(Self.fields()); blob[blob.count - 20] ^= 1; return blob }()),
+            ("truncated", Data(Self.seal(Self.fields()).prefix(28))),
+            ("too big", Data(count: GuestInvite.maxSealedInviteSize + 1)),
+        ]
+        for (name, blob) in cases {
+            await assertResolveFails(Self.shortLink(), blob: blob, .malformed("seal"), name)
+        }
+    }
+
+    /// A sealed invite opens only on the relay it names, so a relay cannot hand out an
+    /// invite that steers the guest somewhere else.
+    func testShortLinkRejectsAnInviteForAnotherRelay() async {
+        for relay in ["https://evil.example", "https://guest.herdrup.themartian.app/herdr",
+                      "https://guest.herdrup.themartian.app:8443"] {
+            await assertResolveFails(Self.shortLink(), blob: Self.seal(Self.fields(overriding: ["relay": relay])),
+                                     .malformed("relay"), relay)
+        }
+    }
+
+    func testShortLinkRunsTheUsualValidation() async {
+        await assertResolveFails(Self.shortLink(), blob: Self.seal(Self.fields(overriding: ["secret": "short"])),
+                                 .malformed("secret"), "secret")
+        await assertResolveFails(
+            Self.shortLink(),
+            blob: Self.seal(Self.fields(overriding: ["expires_unix": Int(Self.now.timeIntervalSince1970)])),
+            .expired, "expired")
+    }
+
+    func testShortLinkFetchFailures() async {
+        XCTAssertEqual(try GuestInvite.sealedInvite(status: 200, body: Data([1, 2])), Data([1, 2]))
+        for (status, expected) in [(404, GuestInvite.Failure.revoked), (500, .unreachable), (429, .unreachable)] {
+            XCTAssertThrowsError(try GuestInvite.sealedInvite(status: status, body: Data()), "\(status)") {
+                XCTAssertEqual($0 as? GuestInvite.Failure, expected, "\(status)")
+            }
+        }
+        XCTAssertEqual(GuestInvite.Failure.revoked.description, "this invite has expired or was revoked.")
+
+        let gone = FakeRelay { try GuestInvite.sealedInvite(status: 404, body: Data()) }
+        await assertResolveFails(Self.shortLink(), fetch: gone.fetch, .revoked, "404")
+        let offline = FakeRelay { throw URLError(.notConnectedToInternet) }
+        await assertResolveFails(Self.shortLink(), fetch: offline.fetch, .unreachable, "offline")
+    }
+
+    private func assertResolveFails(_ link: String, blob: Data, _ expected: GuestInvite.Failure, _ name: String,
+                                    line: UInt = #line) async {
+        await assertResolveFails(link, fetch: FakeRelay { blob }.fetch, expected, name, line: line)
+    }
+
+    private func assertResolveFails(_ link: String, fetch: @escaping GuestInvite.SealedInviteFetch,
+                                    _ expected: GuestInvite.Failure, _ name: String, line: UInt = #line) async {
+        do {
+            _ = try await GuestInvite.resolve(link, now: Self.now, fetch: fetch)
+            XCTFail("\(name): resolved", line: line)
+        } catch {
+            XCTAssertEqual(error as? GuestInvite.Failure, expected, name, line: line)
+        }
+    }
 }
 
 final class GuestNameTests: XCTestCase {

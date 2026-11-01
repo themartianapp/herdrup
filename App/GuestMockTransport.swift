@@ -34,9 +34,21 @@ struct GuestMockTransport: HerdrTransport {
     /// The host serves guests the shared agent's transcript (#482): its pong advertises
     /// `agent_transcript` and `agent.transcript` answers with the synthetic guest
     /// conversation. On under `HERDR_MOCK_GUEST_CHAT` or the `guestchat` mock; otherwise
-    /// the host predates it and the Chat tab stays hidden. `agent.answer` stays forbidden.
+    /// the host predates it and the Chat tab stays hidden.
     static let chat = ProcessInfo.processInfo.environment["HERDR_MOCK_GUEST_CHAT"] != nil
         || ScreenshotMock.mode == .guestChat
+
+    /// `HERDR_MOCK_GUEST_OWNER_ANSWERS`: a host older than guest answers. Its transcript
+    /// withholds `answerable` from the guest and it refuses `agent.answer` and
+    /// `pane.send_keys` with `guest_forbidden`. Unset, the host lets the guest answer
+    /// (`agent.answer`, and the menu keys while the agent is blocked).
+    static let ownerOnlyAnswers = ProcessInfo.processInfo.environment["HERDR_MOCK_GUEST_OWNER_ANSWERS"] != nil
+
+    /// The keys a guest may press while the agent waits on a menu, as the host's guest gate.
+    static let menuKeys: Set<String> = [
+        "Up", "Down", "Left", "Right", "Enter", "Tab", "Escape", "Space",
+        "1", "2", "3", "4", "5", "6", "7", "8", "9", "y", "n",
+    ]
 
     /// The APNs token the mock push system hands out once "permission" is granted.
     static let deviceToken = "mock-apns-token-guest"
@@ -84,6 +96,9 @@ struct GuestMockTransport: HerdrTransport {
         "gram.upload_chunk", "gram.upload.discard", "gram.post", "pane.set_pty_size",
     ]
 
+    /// Allowed only on a host that lets guests answer.
+    static let answerMethods: Set<String> = ["agent.answer", "pane.send_keys"]
+
     /// Allowed only where the host advertises the feature (herdrup#338).
     static let gramMethods: Set<String> = ["gram.list", "gram.get_file_chunk", "gram.mark_read"]
     static let pushMethods: Set<String> = ["notifications.register_device", "notifications.unregister_device"]
@@ -103,6 +118,7 @@ struct GuestMockTransport: HerdrTransport {
     private func allows(_ method: String) -> Bool {
         if Self.gramMethods.contains(method) { return Self.features?.gram == true }
         if Self.pushMethods.contains(method) { return Self.features?.push == true }
+        if Self.answerMethods.contains(method) { return !Self.ownerOnlyAnswers }
         if method == "agent.transcript" { return Self.chat }
         return Self.allowlist.contains(method) && !(scenario == .oldHost && method == "pane.set_pty_size")
     }
@@ -167,6 +183,26 @@ struct GuestMockTransport: HerdrTransport {
             return #"{"id":"\#(id)","result":{"type":"agent_list","agents":[\#(sharedAgentJSON),\#(Self.otherAgentJSON)]}}"#
         case "agent.get":
             return #"{"id":"\#(id)","result":{"type":"agent_info","agent":\#(sharedAgentJSON)}}"#
+        case "agent.answer":
+            // Only the shared agent, as `agent.prompt`.
+            guard params["target"] as? String == Self.access.agentTarget else {
+                Self.recorder.append(method)
+                return Self.errorLine(id: id, code: "guest_forbidden", message: "not your agent")
+            }
+            Self.hostRecorder.append("agent.answer:\(params["option"] as? String ?? "")")
+            return ChatMockConversation.guest.answer(id: id, params: params)
+        case "pane.send_keys":
+            // The shared agent's pane, only while it waits on a menu, and only menu keys:
+            // a guest never types into the pane.
+            let keys = params["keys"] as? [String] ?? []
+            guard params["pane_id"] as? String == Self.access.agentTarget, awaitingMenu,
+                  !keys.isEmpty, keys.allSatisfy(Self.menuKeys.contains)
+            else {
+                Self.recorder.append("\(method):\(keys.joined(separator: ","))")
+                return Self.errorLine(id: id, code: "guest_forbidden", message: "guests can't send those keys now")
+            }
+            Self.hostRecorder.append("pane.send_keys:\(keys.joined(separator: ","))")
+            return #"{"id":"\#(id)","result":{"type":"ok"}}"#
         case "gram.upload.discard":
             // A guest drops its own staged upload (a removed chip, an abandoned draft).
             let uploadID = params["upload_id"] as? String ?? ""
@@ -294,13 +330,18 @@ struct GuestMockTransport: HerdrTransport {
     /// spinner animate forever, which keeps XCUITest from ever seeing the app idle.
     private static let still = ProcessInfo.processInfo.environment["HERDR_MOCK_STILL"] == "1"
 
+    /// The blocked agent waits on its question until the guest answers it in the chat.
+    private var awaitingMenu: Bool {
+        scenario == .blocked && !ChatMockConversation.guest.isAnswered
+    }
+
     /// A guest sees a FIXED projection of an agent: exactly these keys, and name, agent and
     /// display_agent may be null. No cwd, titles, workspace, tab or session.
     private var sharedAgentJSON: String {
         let status = switch scenario {
         case .running, .oldHost: Self.still ? "idle" : "working"
         case .paused: "idle"
-        case .blocked: "blocked"
+        case .blocked: awaitingMenu ? "blocked" : Self.still ? "idle" : "working"
         }
         let running = scenario != .paused
         return #"{"terminal_id":"w1-3","avatar":{"style":"mascot","mascot":"pip","sha256":null,"updated_unix_ms":1723041000000},"pane_id":"w1-3","name":"llm-opt","agent":"omp","display_agent":"omp","agent_status":"\#(status)","guest_running":\#(running)}"#

@@ -153,6 +153,9 @@ struct RootView: View {
             get: { invites.failure != nil },
             set: { if !$0 { invites.failure = nil } }
         )) {
+            if invites.retryText != nil {
+                Button("Try Again") { invites.retry() }
+            }
             Button("OK", role: .cancel) {}
         } message: {
             Text(invites.failure ?? "")
