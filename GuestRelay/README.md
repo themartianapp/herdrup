@@ -56,7 +56,7 @@ The relay never holds a key that can read the traffic.
 | `GET /i` | The same page for older `/i#<payload>` links: its script falls back to `location.hash`. |
 | `GET /v1/host/<host_id>` | The host's WebSocket. Needs `Authorization: Bearer <relay_secret>`. |
 | `GET /v1/guest/<host_id>` | A guest WebSocket. No auth here: Noise authenticates the guest. |
-| `PUT /v1/invite/<id>` | Stores a short invite's blob. Needs `Authorization: Bearer <relay_secret>` and `X-Herdr-Host: <host_id>`, checked against that host's Durable Object exactly like `/v1/host` (including trust on first use). `X-Herdr-Expires: <unix seconds>` must be in the future and at most 30 days away. The body is the raw blob (`application/octet-stream`), 29 to 2048 bytes. 201 with no body when stored. |
+| `PUT /v1/invite/<id>` | Stores a short invite's blob. Needs `Authorization: Bearer <relay_secret>` and `X-Herdr-Host: <host_id>`, checked against that host's stored hash like `/v1/host`. The host must have connected at least once: the invite endpoints never enroll a `host_id` (see [Host authentication](#host-authentication)). Counts toward the per-IP host connect limit. `X-Herdr-Expires: <unix seconds>` must be in the future and at most 30 days away. The body is the raw blob (`application/octet-stream`), 29 to 2048 bytes. 201 with no body when stored. |
 | `GET /v1/invite/<id>` | The blob, `application/octet-stream` and `Cache-Control: no-store`. No auth. 404 `not_found` when absent or expired. |
 | `DELETE /v1/invite/<id>` | Same auth as `PUT`. 204 with no body, also when the blob is already gone. Only the host that stored it may delete it. |
 
@@ -71,10 +71,10 @@ is there because URLSessionWebSocketTask can't read the body of a failed upgrade
 
 | Status | Code | When |
 | --- | --- | --- |
-| 401 | `unauthorized` | Host socket and invite `PUT`/`DELETE`. The bearer is missing or malformed (refused in the Worker, before any Durable Object), or its hash doesn't match the stored one. |
+| 401 | `unauthorized` | Host socket and invite `PUT`/`DELETE`. The bearer is missing or malformed (refused in the Worker, before any Durable Object), or its hash doesn't match the stored one. For invite `PUT`/`DELETE`, also a `host_id` with no stored hash yet. |
 | 503 | `host_offline` | Guest only. No host socket is connected. |
 | 503 | `host_busy` | Guest only. The host already has 32 open sessions. |
-| 429 | `rate_limited` | Either role, keyed by `CF-Connecting-IP`: more than 30 guest connects, or more than 10 host connects, in 60 s. Checked before the Durable Object is reached. |
+| 429 | `rate_limited` | Keyed by `CF-Connecting-IP`: more than 30 guest connects, or more than 10 host connects and invite `PUT`/`DELETE` together, in 60 s. Checked in the Worker before any Durable Object is reached. |
 | 426 | `upgrade_required` | Either role. The request isn't a WebSocket upgrade. |
 | 404 | `not_found` | Any other method or path, or a malformed `host_id` or invite `id`. Also `GET /v1/invite/<id>` when the blob is absent or expired. |
 | 400 | `bad_request` | Invite `PUT`/`DELETE`. `X-Herdr-Host` isn't a `host_id`, or the `PUT` body is under 29 bytes (nonce, one byte, tag). |
@@ -87,8 +87,10 @@ is there because URLSessionWebSocketTask can't read the body of a failed upgrade
 ### Host authentication
 
 The relay uses trust on first use:
-- The first host connect (or invite `PUT`/`DELETE`) for a `host_id` stores SHA-256 of
-  its secret.
+- The first host connect for a `host_id` stores SHA-256 of its secret. Only a host
+  connect enrolls: invite `PUT`/`DELETE` for a `host_id` with no stored hash get 401 and
+  store nothing. The daemon always has its host socket connected before it creates an
+  invite, so it is always enrolled by then.
 - Every later connect and invite request must match that hash. The relay compares with
   `crypto.subtle.timingSafeEqual`. A mismatch gets 401.
 
@@ -162,7 +164,7 @@ key (16 random bytes). Any other `/i/<payload>` is a long v1 link, which stays v
 | `HOSTS` | Durable Object `HostRelay` (SQLite, migration `v1`) | One object per `host_id` |
 | `INVITES` | Durable Object `InviteBlob` (SQLite, migration `v2`) | One object per short invite `id` |
 | `GUEST_CONNECT_LIMIT` | Rate limit, 30 per 60 s | Guest connects, keyed by `CF-Connecting-IP` |
-| `HOST_CONNECT_LIMIT` | Rate limit, 10 per 60 s | Host connects, keyed by `CF-Connecting-IP` |
+| `HOST_CONNECT_LIMIT` | Rate limit, 10 per 60 s | Host connects plus invite `PUT`/`DELETE`, keyed by `CF-Connecting-IP` |
 | `ASSETS` | Static assets from `public/` | The `/i` page. The Worker serves it for `/i/<payload>`, which matches no file. |
 
 The Worker needs no secrets.

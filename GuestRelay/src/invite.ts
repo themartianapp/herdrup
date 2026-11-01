@@ -42,7 +42,18 @@ export async function handleInvite(request: Request, env: Env, id: string): Prom
       });
     }
 
-    // Refused here, before any Durable Object, as for the host socket.
+    // Both run in the Worker, before any Durable Object, as for the host socket: PUT and
+    // DELETE share the per-IP host connect limit, so floods neither create objects nor
+    // cost hashing.
+    if (env.HOST_CONNECT_LIMIT === undefined) {
+      log({ endpoint, outcome: "not_configured" });
+      return errorResponse(500, "not_configured");
+    }
+    const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+    if (!(await env.HOST_CONNECT_LIMIT.limit({ key: ip })).success) {
+      log({ endpoint, outcome: "rate_limited" });
+      return errorResponse(429, "rate_limited");
+    }
     const secret = BEARER.exec(request.headers.get("Authorization") ?? "")?.[1];
     if (secret === undefined) {
       log({ endpoint, outcome: "unauthorized" });

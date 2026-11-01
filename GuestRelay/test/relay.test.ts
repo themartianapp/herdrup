@@ -188,10 +188,12 @@ interface InviteOptions {
   authorization?: string;
   expires?: string;
   body?: Uint8Array;
+  /** CF-Connecting-IP; a fresh one by default, so the per-IP host limit never trips. */
+  ip?: string;
 }
 
 function inviteRequest(method: string, id: string, options: InviteOptions = {}): Promise<Response> {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { "CF-Connecting-IP": options.ip ?? freshIp() };
   if (options.authorization !== undefined) headers.Authorization = options.authorization;
   if (options.hostId !== undefined) headers["X-Herdr-Host"] = options.hostId;
   if (options.expires !== undefined) headers["X-Herdr-Expires"] = options.expires;
@@ -209,8 +211,8 @@ function putInvite(host: { hostId: string; secret: string }, id: string, options
   });
 }
 
-function deleteInvite(host: { hostId: string; secret: string }, id: string): Promise<Response> {
-  return inviteRequest("DELETE", id, { hostId: host.hostId, authorization: `Bearer ${host.secret}` });
+function deleteInvite(host: { hostId: string; secret: string }, id: string, options: InviteOptions = {}): Promise<Response> {
+  return inviteRequest("DELETE", id, { hostId: host.hostId, authorization: `Bearer ${host.secret}`, ...options });
 }
 
 const inviteStub = (id: string) => env.INVITES.get(env.INVITES.idFromName(id));
@@ -608,21 +610,54 @@ describe("short invites", () => {
     expect((await deleteInvite(host, id)).status).toBe(204);
   });
 
-  it("authenticates PUT and DELETE against the host's stored secret, like the host socket", async () => {
+  it("authenticates PUT and DELETE against the host's stored secret", async () => {
     const host = await enrolledHost();
     const id = newInviteId();
     await expectError(await putInvite(host, id, { authorization: undefined }), 401, "unauthorized");
     await expectError(await putInvite(host, id, { authorization: "Bearer short" }), 401, "unauthorized");
     await expectError(await putInvite(host, id, { authorization: `Bearer ${newSecret()}` }), 401, "unauthorized");
-    // Trust on first use, as for /v1/host: a first PUT enrolls the secret for the host socket too.
-    const fresh = { hostId: newHostId(), secret: newSecret() };
-    expect((await putInvite(fresh, newInviteId())).status).toBe(201);
-    await expectError(await hostRequest(fresh.hostId, `Bearer ${newSecret()}`), 401, "unauthorized");
-    expect((await hostRequest(fresh.hostId, `Bearer ${fresh.secret}`)).status).toBe(101);
-
     expect((await putInvite(host, id)).status).toBe(201);
     await expectError(await deleteInvite({ ...host, secret: newSecret() }, id), 401, "unauthorized");
     expect((await SELF.fetch(`${ORIGIN}/v1/invite/${id}`)).status).toBe(200);
+  });
+
+  it("never enrolls a host_id: only a host connect does", async () => {
+    const storedSecrets = (hostId: string) =>
+      runInDurableObject(stub(hostId), (_, state) => state.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM host").one().n);
+    const unknown = { hostId: newHostId(), secret: newSecret() };
+    await expectError(await putInvite(unknown, newInviteId()), 401, "unauthorized");
+    await expectError(await deleteInvite(unknown, newInviteId()), 401, "unauthorized");
+    expect(await storedSecrets(unknown.hostId)).toBe(0);
+    // A later host connect, with any secret, still enrolls as usual; then invites work.
+    const secret = newSecret();
+    expect((await hostRequest(unknown.hostId, `Bearer ${secret}`)).status).toBe(101);
+    expect(await storedSecrets(unknown.hostId)).toBe(1);
+    await expectError(await putInvite(unknown, newInviteId()), 401, "unauthorized");
+    expect((await putInvite({ hostId: unknown.hostId, secret }, newInviteId())).status).toBe(201);
+  });
+
+  it("counts PUT and DELETE toward the per-IP host limit before any Durable Object is reached", async () => {
+    const host = await enrolledHost();
+    const ip = freshIp();
+    const hostIds: string[] = [];
+    for (let i = 0; i < 10; i++) {
+      const hostId = newHostId();
+      hostIds.push(hostId);
+      // Host connects and invite requests share the budget; malformed bearers are refused in the Worker.
+      const response = i % 2 === 0
+        ? await putInvite({ hostId, secret: "" }, newInviteId(), { authorization: "Bearer short", ip })
+        : await hostRequest(hostId, "Bearer short", true, ip);
+      await expectError(response, 401, "unauthorized");
+    }
+    const id = newInviteId();
+    await expectError(await putInvite(host, id, { ip }), 429, "rate_limited");
+    await expectError(await deleteInvite(host, id, { ip }), 429, "rate_limited");
+    const stranger = newHostId();
+    await expectError(await putInvite({ hostId: stranger, secret: newSecret() }, newInviteId(), { ip }), 429, "rate_limited");
+    expect((await putInvite(host, id)).status).toBe(201);
+
+    const hosts = new Set((await listDurableObjectIds(env.HOSTS)).map((d) => d.toString()));
+    for (const hostId of [...hostIds, stranger]) expect(hosts.has(env.HOSTS.idFromName(hostId).toString())).toBe(false);
   });
 
   it("lets only the owning host delete a blob", async () => {

@@ -67,7 +67,7 @@ export class HostRelay extends DurableObject<Env> {
       log({ endpoint, outcome: "unauthorized" });
       return errorResponse(401, "unauthorized");
     }
-    const trust = await this.authenticate(secret);
+    const trust = await this.authenticate(secret, "enroll");
     if (trust === "refused") {
       log({ endpoint, outcome: "unauthorized" });
       return errorResponse(401, "unauthorized");
@@ -87,15 +87,19 @@ export class HostRelay extends DurableObject<Env> {
 
   /**
    * Checks a relay secret against the stored SHA-256, for the host socket and the invite
-   * endpoints alike. A host_id with no hash yet trusts this secret (trust on first use).
+   * endpoints alike. Only the host socket (`"enroll"`) trusts the secret of a host_id with
+   * no hash yet (trust on first use); the invite endpoints (`"verify"`) refuse it, so they
+   * never enroll a host_id. The daemon always connects its host socket before it stores
+   * an invite.
    */
-  private async authenticate(secret: string): Promise<"enrolled" | "connected" | "refused"> {
+  private async authenticate(secret: string, mode: "enroll" | "verify"): Promise<"enrolled" | "connected" | "refused"> {
     const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret));
     // Synchronous from here on, so no other connect can interleave between the read and
     // the trust-on-first-use insert.
     const sql = this.ctx.storage.sql;
     const stored = sql.exec<{ secret_sha256: ArrayBuffer }>("SELECT secret_sha256 FROM host WHERE id = 1").toArray()[0];
     if (stored === undefined) {
+      if (mode === "verify") return "refused";
       sql.exec("INSERT INTO host (id, secret_sha256, next_session) VALUES (1, ?, 1)", hash);
       return "enrolled";
     }
@@ -104,7 +108,7 @@ export class HostRelay extends DurableObject<Env> {
 
   /** Stores a short-invite blob for this host, within its cap of live invites. */
   async putInvite(hostId: string, secret: string, id: string, expiresUnix: number, blob: ArrayBuffer): Promise<InviteOutcome> {
-    if ((await this.authenticate(secret)) === "refused") return "unauthorized";
+    if ((await this.authenticate(secret, "verify")) === "refused") return "unauthorized";
     const sql = this.ctx.storage.sql;
     sql.exec("DELETE FROM invite WHERE expires_unix <= ?", Math.floor(Date.now() / 1000));
     if (sql.exec("SELECT 1 FROM invite WHERE id = ?", id).toArray().length > 0) return "exists";
@@ -122,7 +126,7 @@ export class HostRelay extends DurableObject<Env> {
 
   /** Deletes a short-invite blob this host stored. One that is already gone counts as deleted. */
   async deleteInvite(hostId: string, secret: string, id: string): Promise<InviteOutcome> {
-    if ((await this.authenticate(secret)) === "refused") return "unauthorized";
+    if ((await this.authenticate(secret, "verify")) === "refused") return "unauthorized";
     const outcome = await this.env.INVITES.get(this.env.INVITES.idFromName(id)).remove(hostId);
     if (outcome === "deleted") this.ctx.storage.sql.exec("DELETE FROM invite WHERE id = ?", id);
     return outcome;
