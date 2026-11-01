@@ -236,8 +236,10 @@ The manual [`Duo screenshots` workflow](.github/workflows/duo-screenshots.yml)
 captures nine screens in six simulator poses: closed portrait, closed landscape,
 tent, open wide, open tall, and laptop. It reads back the display, fold angle and
 orientation after every launch; `POSES.md` records the result and `FAILURES.txt`
-records capture failures. These mock-data screenshots verify layout, not a live
-connection or physical-device fold transitions.
+records capture failures. The requested display and hinge angle must still match
+after rotation and before each screenshot; an unreadable final state fails the pose.
+Rotation's physical-orientation fallback remains recorded in `pose.notes`.
+These mock-data screenshots verify layout, not a live connection or physical-device fold transitions.
 
 The shared native composer reconciles external text edits after the SwiftUI layout pass,
 using the current binding rather than a captured layout value. This preserves newer

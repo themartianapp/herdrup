@@ -212,7 +212,11 @@ set_pose() { # <pose>
     sleep 1
     echo "rotate $ui: $err (device orientation set to $device directly)" >> "$dir/pose.notes"
   fi
-  state > "$dir/pose.state.json"
+  state > "$dir/pose.state.json" || { echo "duoctl state failed after rotation" > "$dir/pose.err"; return 1; }
+  if ! why=$(ANGLE_TOLERANCE=$ANGLE_TOLERANCE verify_hinge "$dir/pose.state.json" "$angle" "$screen"); then
+    echo "after rotation: $why" > "$dir/pose.err"
+    return 1
+  fi
   echo "angle=$angle screen=$screen ui=$ui device=$device" >> "$dir/pose.notes"
   return 0
 }
@@ -243,14 +247,16 @@ for pose in $POSES; do
     continue
   fi
   [ "$pose" = tent ] && echo "tent angle used: $TENT_ANGLE" >> "$dir/pose.notes"
-  pose_screen=$(field "$dir/pose.state.json" activeScreen)
+  read -r pose_angle pose_screen pose_ui pose_device <<<"$(pose_spec "$pose")"
 
   for screen in $SCREENS; do
     log "--- $pose / $screen"
     if ! launch "$screen"; then fail "$pose/$screen: launch failed"; continue; fi
     if ! state > "$dir/$screen.state.json"; then fail "$pose/$screen: duoctl state failed twice (300 s each)"; continue; fi
-    now=$(field "$dir/$screen.state.json" activeScreen)
-    [ "$now" = "$pose_screen" ] || fail "$pose/$screen: active screen changed to $now after relaunch"
+    if ! why=$(ANGLE_TOLERANCE=$ANGLE_TOLERANCE verify_hinge "$dir/$screen.state.json" "$pose_angle" "$pose_screen"); then
+      fail "$pose/$screen: $why"
+      continue
+    fi
     # The first capture after boot can take minutes (run 40731654683 lost one at 120 s),
     # so a timed-out capture gets one more, longer try.
     if ! err=$(t 300 duoctl screenshot "$dir/$screen.png" 2>&1) &&
