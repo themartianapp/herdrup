@@ -87,7 +87,8 @@ final class PairingCoordinatorTests: XCTestCase {
         }
     }
 
-    private func payload(host: String = "100.64.1.2", fp: String = "SHA256:abc") -> Pairing.Payload {
+    private func payload(host: String = "100.64.1.2",
+                         fp: String = PairingFixture.qrFingerprint) -> Pairing.Payload {
         Pairing.Payload(v: 1, host: host, port: 4021, user: "jerry", token: "tok", fp: fp)
     }
 
@@ -142,7 +143,9 @@ final class PairingCoordinatorTests: XCTestCase {
         try await makeCoordinator(recorder).completePairing(payload: payload(), deviceLabel: "iPhone")
         XCTAssertEqual(recorder.pinnedPort, 22, "4021 is the pairing listener, not sshd")
         XCTAssertEqual(recorder.pinnedHost, "100.64.1.2")
-        XCTAssertEqual(recorder.pinnedFingerprint, "SHA256:abc")
+        XCTAssertEqual(recorder.pinnedFingerprint, PairingFixture.verifierFingerprint,
+                       "the pin must be in the form the SSH verifier presents, or the first "
+                       + "connection to this unchanged host is rejected")
     }
 
     /// An explicit ":port" in the host is an SSH port and must be honoured, and must not

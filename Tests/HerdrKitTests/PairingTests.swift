@@ -4,6 +4,7 @@ import Glibc
 #else
 import Darwin
 #endif
+import NIOSSH
 @testable import HerdrKit
 
 /// The phone's half of QR pairing, driven over REAL loopback sockets.
@@ -20,7 +21,7 @@ final class PairingTests: XCTestCase {
         XCTAssertEqual(payload.host, "100.64.1.2")
         XCTAssertEqual(payload.port, 4021)
         XCTAssertEqual(payload.user, "root")
-        XCTAssertEqual(payload.hostKeyFingerprint, "SHA256:abc")
+        XCTAssertEqual(payload.hostKeyFingerprint, PairingFixture.verifierFingerprint)
     }
 
     /// A camera hands us whatever QR is in frame. Every one of these must fail as "not a
@@ -37,6 +38,12 @@ final class PairingTests: XCTestCase {
             #"{"v":1,"host":"h","port":4021,"user":"root","token":"","fp":""}"#,
             #"{"v":1,"host":"h","port":0,"user":"root","token":"t","fp":""}"#,
             #"{"v":1,"host":"h","port":70000,"user":"root","token":"t","fp":""}"#,
+            // A fingerprint that is present must be the 32-byte SHA256 digest ssh-keygen prints.
+            sampleJSON(fp: "SHA256:abc"),
+            sampleJSON(fp: PairingFixture.verifierFingerprint),
+            sampleJSON(fp: "MD5:" + PairingFixture.qrFingerprint.dropFirst("SHA256:".count)),
+            sampleJSON(fp: PairingFixture.qrFingerprint + "="),
+            sampleJSON(fp: String(PairingFixture.qrFingerprint.dropLast())),
         ] {
             XCTAssertThrowsError(try Pairing.parse(qrText: junk), "accepted junk: \(junk)") { error in
                 XCTAssertEqual(error as? Pairing.Error, .notAPairingCode, "for \(junk)")
@@ -59,6 +66,20 @@ final class PairingTests: XCTestCase {
         XCTAssertNil(payload.hostKeyFingerprint,
                      "an empty fp must not flow into a pin call as a valid fingerprint")
         XCTAssertNil(try Pairing.parse(qrText: sampleJSON(fp: "   ")).hostKeyFingerprint)
+    }
+
+    /// THE QR AND THE SSH VERIFIER MUST NAME A HOST KEY THE SAME WAY.
+    ///
+    /// The daemon prints `ssh-keygen -lf` output (`SHA256:` + base64); the verifier presents
+    /// lowercase hex. Both are the SHA-256 of the same wire-form key. If the pinned value is
+    /// in one spelling and the presented value in the other, the exact comparison rejects
+    /// the first connection to a freshly paired, unchanged host.
+    func testTheScannedFingerprintMatchesWhatTheSSHVerifierPresents() throws {
+        let key = try NIOSSHPublicKey(openSSHPublicKey: PairingFixture.publicKeyLine)
+        XCTAssertEqual(sshHostKeyFingerprintSHA256(key), PairingFixture.verifierFingerprint,
+                       "the fixture's digest must be what the verifier computes for its key")
+        let payload = try Pairing.parse(qrText: sampleJSON(fp: PairingFixture.qrFingerprint))
+        XCTAssertEqual(payload.hostKeyFingerprint, sshHostKeyFingerprintSHA256(key))
     }
 
     // MARK: - The wire contract with the Rust daemon
@@ -220,11 +241,22 @@ final class PairingTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func sampleJSON(v: Int = 1, fp: String = "SHA256:abc") -> String {
+    private func sampleJSON(v: Int = 1, fp: String = PairingFixture.qrFingerprint) -> String {
         let payload = Pairing.Payload(
             v: v, host: "100.64.1.2", port: 4021, user: "root", token: "tok", fp: fp)
         return String(decoding: try! JSONEncoder().encode(payload), as: UTF8.self)
     }
+}
+
+/// One real host key and its two spellings. `publicKeyLine` and `qrFingerprint` came
+/// from `ssh-keygen -t ed25519` and `ssh-keygen -lf` on that key; `verifierFingerprint` is
+/// the same 32 bytes as hex, which the agreement test checks against the SSH verifier.
+enum PairingFixture {
+    static let publicKeyLine =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOghQ4P9xzhQk7cVQkuP07258+uGtw6lKieEGilwdrEZ fixture"
+    static let qrFingerprint = "SHA256:Ngt93tunTdupZrmZMz3HbnXnwF/wXCHFPz/+zkz9dr4"
+    static let verifierFingerprint =
+        "360b7ddedba74ddba966b999333dc76e75e7c05ff05c21c53f3ffece4cfd76be"
 }
 
 /// A minimal stand-in for `serve_one_pairing`: accept one connection, read one line, send
