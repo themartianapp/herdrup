@@ -2506,7 +2506,11 @@ struct TerminalHomeView: View {
                     ZStack(alignment: .topLeading) {
                         Group {
                             if hSizeClass == .regular {
+                                // The tab paints its own opaque background over the detail
+                                // ground, so the field must reach the status bar and home
+                                // indicator itself or those bands show black.
                                 SelectAgentPlaceholder(lines: glyphFieldLines, spotlight: glyphFieldSpotlight)
+                                    .ignoresSafeArea()
                             } else {
                                 agentsTab
                             }
