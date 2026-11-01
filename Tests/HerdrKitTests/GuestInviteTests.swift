@@ -289,6 +289,37 @@ final class GuestInviteTests: XCTestCase {
         }
     }
 
+    /// The vector the daemon, the relay page and this app all check (made independently with
+    /// Python `cryptography` AESGCM; synthetic identifiers), so the three cannot drift.
+    func testShortLinkKnownAnswer() async throws {
+        let link = "https://guest.herdrup.themartian.app/i/AQIDBAUGBwgJEBESExQVFhcYGRobHB0eHw"
+        let short = GuestInvite.Link.shortForm(path: "/i/AQIDBAUGBwgJEBESExQVFhcYGRobHB0eHw", fragment: nil)
+        XCTAssertEqual(short?.basePath, "")
+        XCTAssertEqual(short?.id, "AQIDBAUGBwgJ")
+        XCTAssertEqual(short?.key, "EBESExQVFhcYGRobHB0eHw")
+        XCTAssertEqual(GuestInvite.Link(link)?.content, .sealed(id: "AQIDBAUGBwgJ", key: "EBESExQVFhcYGRobHB0eHw"))
+
+        let blob = Data(base64Encoded:
+            "MDEyMzQ1Njc4OTo76HmMcTjDzE3OdSaDaK9beuTqzPLVVEUBKIa8OWJbqs8XDxQL0uQJSTWFeZvgkikIe1wxOA3sk7Hb4x6wjfHjOvVi"
+            + "3zfizc3/SM6+90bB9XIi6BXSmuiq8Z6OGZXR7UrLkh6Inxwh/qbAALuB4Rutr24iIC1sU1lG5r7/RWTqMxLRqqDKR32zUCL9iDYu8gaE"
+            + "rdUgZeTfpeik9cwTC2mS9pAAakSI/hIczZymbpBb/IrgIv1W3sHDAfC08BLtejXbbxeRGf9jCWTISaVmJu0US2YeF36Re83O9PTtHSl9"
+            + "52NNjZtz9hsOMylQomFWeNSDDtRe9oRVNidH/AW4KZnvLpFPC8I0/kZw6IIj18rkR0tEUuZ6ftnsFbrAvQs7hsQn4o6LtYtbJsZ6qhrg"
+            + "lLQsb2yiyz5ilcqpXIOl+XaAEjfijL7c8KyX2hbUvWFDH6GS2VWqnlXnKt0SW0rQEaZ4ZBTtBAhU9uehul9N9CJXoQq1")!
+        let plaintext = #"{"agent_name":"demo","expires_unix":4102444800,"guest_name":"guest","host_id":"QUFBQUFBQUFBQUFBQUFBQQ","host_pub":"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI","invite_id":"Q0NDQ0NDQ0NDQ0NDQ0NDQw","machine_label":"test-box","owner_name":"Owner","relay":"https://guest.herdrup.themartian.app","secret":"REREREREREREREREREREREREREREREREREREREREREQ","v":1}"#
+        XCTAssertEqual(try GuestInvite.open(sealed: blob, id: "AQIDBAUGBwgJ", key: "EBESExQVFhcYGRobHB0eHw"),
+                       Data(plaintext.utf8))
+
+        let relay = FakeRelay { blob }
+        let invite = try await GuestInvite.resolve(link, now: Self.now, fetch: relay.fetch)
+        XCTAssertEqual(relay.urls.map(\.absoluteString), ["https://guest.herdrup.themartian.app/v1/invite/AQIDBAUGBwgJ"])
+        XCTAssertEqual(invite, GuestInvite(
+            relay: URL(string: "https://guest.herdrup.themartian.app")!,
+            hostID: "QUFBQUFBQUFBQUFBQUFBQQ", hostPublicKey: Data(repeating: UInt8(ascii: "B"), count: 32),
+            inviteID: "Q0NDQ0NDQ0NDQ0NDQ0NDQw", secret: "REREREREREREREREREREREREREREREREREREREREREQ",
+            machineLabel: "test-box", ownerName: "Owner", agentName: "demo", guestName: "guest",
+            expires: Date(timeIntervalSince1970: 4_102_444_800)))
+    }
+
     func testResolvesAShortLinkFromItsOwnRelay() async throws {
         let relay = FakeRelay { Self.seal(Self.fields()) }
         let invite = try await GuestInvite.resolve(
