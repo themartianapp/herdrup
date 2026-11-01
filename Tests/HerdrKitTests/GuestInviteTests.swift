@@ -374,19 +374,95 @@ final class GuestInviteTests: XCTestCase {
             .expired, "expired")
     }
 
-    func testShortLinkFetchFailures() async {
-        XCTAssertEqual(try GuestInvite.sealedInvite(status: 200, body: Data([1, 2])), Data([1, 2]))
-        for (status, expected) in [(404, GuestInvite.Failure.revoked), (500, .unreachable), (429, .unreachable)] {
-            XCTAssertThrowsError(try GuestInvite.sealedInvite(status: status, body: Data()), "\(status)") {
-                XCTAssertEqual($0 as? GuestInvite.Failure, expected, "\(status)")
-            }
+    /// A relay's answer, chunk by chunk, counting how many chunks were pulled; after
+    /// `chunks` it keeps sending `endless` forever, as a hostile host streaming without end.
+    final class ChunkSource: @unchecked Sendable {
+        private let lock = NSLock()
+        private var pulled = 0
+        private let chunks: [GuestInvite.SealedInviteChunk]
+        private let endless: Data?
+
+        init(_ chunks: [GuestInvite.SealedInviteChunk], endless: Data? = nil) {
+            self.chunks = chunks
+            self.endless = endless
         }
+
+        var pulls: Int { lock.withLock { pulled } }
+
+        var stream: AsyncStream<GuestInvite.SealedInviteChunk> {
+            AsyncStream(unfolding: {
+                let index = self.lock.withLock { () -> Int in
+                    self.pulled += 1
+                    return self.pulled - 1
+                }
+                if index < self.chunks.count { return self.chunks[index] }
+                return self.endless.map { .body($0) }
+            })
+        }
+    }
+
+    private func read(_ source: ChunkSource) async -> Result<Data, GuestInvite.Failure> {
+        do {
+            return .success(try await GuestInvite.readSealedInvite(source.stream))
+        } catch {
+            return .failure(error as? GuestInvite.Failure ?? .notAnInvite)
+        }
+    }
+
+    func testShortLinkFetchFailures() async {
+        let ok = ChunkSource([.response(status: 200, expectedLength: 2), .body(Data([1])), .body(Data([2]))])
+        let whole = await read(ok)
+        XCTAssertEqual(whole, .success(Data([1, 2])))
+        for (status, expected) in [(404, GuestInvite.Failure.revoked), (500, .unreachable), (429, .unreachable),
+                                   (302, .unreachable)] {
+            let result = await self.read(ChunkSource([.response(status: status, expectedLength: nil), .body(Data([1]))]))
+            XCTAssertEqual(result, .failure(expected), "\(status)")
+        }
+        let headless = await self.read(ChunkSource([.body(Data([1]))]))
+        XCTAssertEqual(headless, .failure(.unreachable), "a body without a response")
         XCTAssertEqual(GuestInvite.Failure.revoked.description, "this invite has expired or was revoked.")
 
-        let gone = FakeRelay { try GuestInvite.sealedInvite(status: 404, body: Data()) }
+        let gone = FakeRelay { throw GuestInvite.Failure.revoked }
         await assertResolveFails(Self.shortLink(), fetch: gone.fetch, .revoked, "404")
         let offline = FakeRelay { throw URLError(.notConnectedToInternet) }
         await assertResolveFails(Self.shortLink(), fetch: offline.fetch, .unreachable, "offline")
+    }
+
+    /// A hostile host naming itself in a QR code cannot make the phone buffer an endless
+    /// body: reading stops at the first chunk past the cap, as a damaged invite.
+    func testSealedInviteReadStopsPastTheCap() async {
+        let endless = ChunkSource([.response(status: 200, expectedLength: nil)], endless: Data(count: 1000))
+        let result = await read(endless)
+        XCTAssertEqual(result, .failure(.malformed("seal")))
+        XCTAssertEqual(endless.pulls, 4, "the head and three 1000-byte chunks, then no more")
+
+        let declared = ChunkSource([.response(status: 200, expectedLength: Int64(GuestInvite.maxSealedInviteSize + 1))],
+                                   endless: Data(count: 1000))
+        let early = await read(declared)
+        XCTAssertEqual(early, .failure(.malformed("seal")))
+        XCTAssertEqual(declared.pulls, 1, "an oversized Content-Length is refused before any body")
+
+        let exact = ChunkSource([.response(status: 200, expectedLength: nil),
+                                 .body(Data(count: GuestInvite.maxSealedInviteSize))])
+        let full = await read(exact)
+        XCTAssertEqual(full, .success(Data(count: GuestInvite.maxSealedInviteSize)))
+    }
+
+    /// The deadline covers the whole fetch: a host that never finishes is cut off.
+    func testSealedInviteFetchHasATotalDeadline() async {
+        let started = Date()
+        do {
+            _ = try await GuestInvite.withinDeadline(0.05) {
+                try await Task.sleep(nanoseconds: 10_000_000_000)
+                return Data()
+            }
+            XCTFail("no deadline")
+        } catch {
+            XCTAssertEqual(error as? GuestInvite.Failure, .unreachable)
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5)
+        let quick = try? await GuestInvite.withinDeadline(5) { Data([7]) }
+        XCTAssertEqual(quick, Data([7]))
     }
 
     private func assertResolveFails(_ link: String, blob: Data, _ expected: GuestInvite.Failure, _ name: String,

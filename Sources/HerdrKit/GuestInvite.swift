@@ -140,25 +140,83 @@ public struct GuestInvite: Equatable, Sendable {
         }
     }
 
-    /// What a relay's answer to `GET /v1/invite/{id}` means: 200 is the sealed invite,
-    /// 404 an invite it no longer holds, anything else a relay that could not answer.
-    static func sealedInvite(status: Int, body: Data) throws -> Data {
-        switch status {
-        case 200: return body
-        case 404: throw Failure.revoked
-        default: throw Failure.unreachable
+    /// What arrives for `GET /v1/invite/{id}`: the response head, then the body in pieces.
+    enum SealedInviteChunk: Sendable {
+        /// `expectedLength` is the Content-Length, when the relay sent one.
+        case response(status: Int, expectedLength: Int64?)
+        case body(Data)
+    }
+
+    /// Reads a relay's answer to `GET /v1/invite/{id}`: 200 is the sealed invite, 404 an
+    /// invite it no longer holds, anything else (a redirect included) a relay that could not
+    /// answer. A body declared or found to be longer than `maxSealedInviteSize` is not a
+    /// sealed invite: reading stops at the first byte past the cap, so a hostile host
+    /// cannot make the phone hold more than that.
+    static func readSealedInvite<Chunks: AsyncSequence>(_ chunks: Chunks) async throws -> Data
+    where Chunks.Element == SealedInviteChunk {
+        var answered = false
+        var body = Data()
+        for try await chunk in chunks {
+            switch chunk {
+            case .response(let status, let expectedLength):
+                guard !answered else { throw Failure.unreachable }
+                answered = true
+                switch status {
+                case 200: break
+                case 404: throw Failure.revoked
+                default: throw Failure.unreachable
+                }
+                if let expectedLength, expectedLength > Int64(maxSealedInviteSize) { throw Failure.malformed("seal") }
+            case .body(let data):
+                guard answered else { throw Failure.unreachable }
+                guard body.count + data.count <= maxSealedInviteSize else { throw Failure.malformed("seal") }
+                body.append(data)
+            }
+        }
+        try Task.checkCancellation()
+        guard answered else { throw Failure.unreachable }
+        return body
+    }
+
+    /// The whole fetch, connecting included, gets this long; a trickling host is cut off.
+    static let fetchDeadline: TimeInterval = 15
+
+    /// `operation`, or `Failure.unreachable` once `seconds` have passed, whichever is first.
+    static func withinDeadline<T: Sendable>(
+        _ seconds: TimeInterval, _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask(operation: operation)
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw Failure.unreachable
+            }
+            defer { group.cancelAll() }
+            // The first child to finish decides; the other is cancelled.
+            return try await group.next()!
         }
     }
 
-    /// The real `SealedInviteFetch`: one uncached GET.
+    /// The real `SealedInviteFetch`: one uncached GET that stays on the link's relay (no
+    /// redirects), streamed through `readSealedInvite` and cut off after `fetchDeadline`.
     public static let fetchSealedInvite: SealedInviteFetch = { url in
-        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: fetchDeadline)
         request.httpMethod = "GET"
-        let session = URLSession(configuration: .ephemeral)
-        defer { session.finishTasksAndInvalidate() }
-        let (body, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw Failure.unreachable }
-        return try sealedInvite(status: http.statusCode, body: body)
+        let config = URLSessionConfiguration.ephemeral
+        config.urlCache = nil
+        config.timeoutIntervalForRequest = fetchDeadline
+        config.timeoutIntervalForResource = fetchDeadline
+        let (chunks, continuation) = AsyncThrowingStream<SealedInviteChunk, Error>.makeStream()
+        let download = SealedInviteDownload(continuation)
+        let session = URLSession(configuration: config, delegate: download, delegateQueue: nil)
+        let task = session.dataTask(with: request)
+        continuation.onTermination = { _ in task.cancel() }
+        defer {
+            task.cancel()
+            session.invalidateAndCancel()
+        }
+        task.resume()
+        return try await withinDeadline(fetchDeadline) { try await readSealedInvite(chunks) }
     }
 
     /// The text itself, then each whitespace-separated word in it.
@@ -424,6 +482,54 @@ public struct GuestInvite: Equatable, Sendable {
         var base = relay.absoluteString
         while base.hasSuffix("/") { base.removeLast() }
         return URL(string: "\(base)/i/\(payload)")!
+    }
+}
+
+/// Feeds one `GET /v1/invite/{id}` into `GuestInvite.readSealedInvite` as it arrives,
+/// refuses every redirect (the GET must stay on the link's relay) and cancels the task
+/// itself once more than `maxSealedInviteSize` bytes came in.
+private final class SealedInviteDownload: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let chunks: AsyncThrowingStream<GuestInvite.SealedInviteChunk, Error>.Continuation
+    private let lock = NSLock()
+    private var received = 0
+
+    init(_ chunks: AsyncThrowingStream<GuestInvite.SealedInviteChunk, Error>.Continuation) {
+        self.chunks = chunks
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        guard let http = response as? HTTPURLResponse else {
+            chunks.finish(throwing: GuestInvite.Failure.unreachable)
+            completionHandler(.cancel)
+            return
+        }
+        let length = http.expectedContentLength
+        chunks.yield(.response(status: http.statusCode, expectedLength: length >= 0 ? length : nil))
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        chunks.yield(.body(data))
+        let total = lock.withLock { () -> Int in
+            received += data.count
+            return received
+        }
+        if total > GuestInvite.maxSealedInviteSize { dataTask.cancel() }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        // The redirect response itself then completes the task, and reads as unreachable.
+        completionHandler(nil)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error {
+            chunks.finish(throwing: error)
+        } else {
+            chunks.finish()
+        }
     }
 }
 
