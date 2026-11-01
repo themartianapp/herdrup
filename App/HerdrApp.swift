@@ -2552,7 +2552,10 @@ struct TerminalHomeView: View {
                         .tabItem { Label(HomeTab.settings.label, systemImage: HomeTab.settings.icon) }
                         .toolbar(hSizeClass == .regular ? .hidden : .visible, for: .tabBar)
                 }
-                .tint(Palette.text)
+                // The bar is only visible in compact, where tab items use the text colour.
+                // Regular hides it, and its content keeps the split view's brand tint
+                // (Settings actions, Gram controls), as before the tab tree was shared.
+                .tint(hSizeClass == .regular ? Palette.brand : Palette.text)
         }
     }
 
