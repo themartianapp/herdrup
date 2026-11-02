@@ -199,37 +199,63 @@ final class ScrollTests: XCTestCase {
 
         let after = viewport.screenshot()
         attach(after, "kh-02-after-swipe")
-        // Vision sometimes returns no text for a legible screenshot (#592: the row numbers
-        // were plainly on screen). Use a fresh request per read, read again when nothing
-        // matched, and attach what Vision saw so a real failure explains itself.
-        let historyRow = try NSRegularExpression(pattern: #"history\s*([0-9]{1,3})"#,
-                                                options: .caseInsensitive)
-        func recognizedLines(in image: CGImage) throws -> [String] {
+        // Vision reads the terminal's columns separately (#592): the "history" labels come
+        // back as one block of observations and their row numbers as another, so a regex
+        // over one observation never sees "history 127". Pair them by position instead: a
+        // number is a history row only when a "history" label sits on the same line to its
+        // left. That keeps the live rows ("row 1"…"row 8") out. Vision has also read the
+        // live screenshot as if upside down, so read the image in both orientations.
+        // What Vision saw is attached so a real failure explains itself.
+        let label = try NSRegularExpression(pattern: #"^\s*histor[yv]\s*$"#, options: .caseInsensitive)
+        let labelled = try NSRegularExpression(pattern: #"histor[yv]\s*([0-9]{1,3})"#, options: .caseInsensitive)
+        let leading = try NSRegularExpression(pattern: #"^\s*([0-9]{1,3})\b"#)
+        func first(_ regex: NSRegularExpression, in text: String) -> Int? {
+            regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text))
+                .flatMap { $0.numberOfRanges > 1 ? Range($0.range(at: 1), in: text) : nil }
+                .flatMap { Int(text[$0]) }
+        }
+        func observations(in image: CGImage, _ orientation: CGImagePropertyOrientation)
+            throws -> [(text: String, box: CGRect)] {
             let request = VNRecognizeTextRequest()
             request.recognitionLevel = .accurate
             request.usesLanguageCorrection = false
             request.recognitionLanguages = ["en-US"]
-            try VNImageRequestHandler(cgImage: image).perform([request])
-            return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+            try VNImageRequestHandler(cgImage: image, orientation: orientation).perform([request])
+            return (request.results ?? []).compactMap { observation in
+                observation.topCandidates(1).first.map { ($0.string, observation.boundingBox) }
+            }
         }
-        func historyRows(in lines: [String]) -> [Int] {
-            lines.flatMap { text in
-                historyRow.matches(in: text, range: NSRange(text.startIndex..., in: text))
-                    .compactMap { Range($0.range(at: 1), in: text).flatMap { Int(text[$0]) } }
+        func historyRows(in seen: [(text: String, box: CGRect)]) -> [Int] {
+            let labels = seen.filter {
+                label.firstMatch(in: $0.text, range: NSRange($0.text.startIndex..., in: $0.text)) != nil
+            }.map(\.box)
+            return seen.compactMap { item in
+                if let row = first(labelled, in: item.text) { return row }
+                guard let row = first(leading, in: item.text) else { return nil }
+                let sameLineToTheLeft = labels.contains {
+                    abs($0.midY - item.box.midY) < max($0.height, item.box.height) / 2
+                        && $0.maxX <= item.box.minX + item.box.width
+                }
+                return sameLineToTheLeft ? row : nil
             }
         }
         func visibleHistoryRows(in screenshot: XCUIScreenshot, _ name: String) throws -> [Int] {
             let image = try XCTUnwrap(screenshot.image.cgImage)
-            var lines: [String] = []
-            for _ in 0..<3 {
-                lines = try recognizedLines(in: image)
-                if !historyRows(in: lines).isEmpty { break }
+            var transcript: [String] = []
+            var rows: [Int] = []
+            for orientation in [CGImagePropertyOrientation.up, .down] {
+                let seen = try observations(in: image, orientation)
+                transcript += ["-- \(orientation.rawValue)"] + seen.map {
+                    String(format: "%@  [x %.3f y %.3f]", $0.text, $0.box.minX, $0.box.midY)
+                }
+                rows = historyRows(in: seen)
+                if !rows.isEmpty { break }
             }
-            let text = XCTAttachment(string: lines.joined(separator: "\n"))
+            let text = XCTAttachment(string: transcript.joined(separator: "\n"))
             text.name = "\(name)-ocr"
             text.lifetime = .keepAlways
             add(text)
-            return historyRows(in: lines)
+            return rows
         }
         let beforeRows = try visibleHistoryRows(in: before, "kh-01-before")
         let afterRows = try visibleHistoryRows(in: after, "kh-02-after-swipe")
