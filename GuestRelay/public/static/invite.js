@@ -51,12 +51,27 @@ export async function openShortInvite(short, blob, origin) {
     bytes.subarray(NONCE_BYTES),
   ));
   var invite = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(plain));
-  if (invite === null || typeof invite !== "object" || invite.relay !== origin) {
+  if (invite === null || typeof invite !== "object" || !isRelay(invite.relay, origin)) {
     throw new Error("relay mismatch");
   }
   var binary = "";
   for (var i = 0; i < plain.length; i++) binary += String.fromCharCode(plain[i]);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/**
+ * Whether an invite's relay URL names this page's relay: same scheme, host and port as
+ * `origin`, at its root. A trailing slash is the same relay, as the app treats it
+ * (GuestInvite.Web.isOnRelay).
+ * @param {unknown} relay
+ * @param {string} origin
+ */
+export function isRelay(relay, origin) {
+  if (typeof relay !== "string") return false;
+  var url;
+  try { url = new URL(relay); } catch (_) { return false; }
+  if (url.username || url.password || url.search || url.hash) return false;
+  return url.origin === origin && url.pathname.replace(/\/+$/, "") === "";
 }
 
 function b64urlBytes(text) {

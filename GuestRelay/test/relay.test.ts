@@ -7,7 +7,7 @@ import {
   runInDurableObject,
 } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { invitePayload, openShortInvite, shortInvite } from "../public/static/invite.js";
+import { invitePayload, isRelay, openShortInvite, shortInvite } from "../public/static/invite.js";
 
 // Everything here runs against the real Worker and Durable Object in workerd. Each test
 // uses its own host_id and client IPs, so storage and rate-limit state never collide.
@@ -787,6 +787,25 @@ describe("landing page script", () => {
     tampered[20] ^= 1;
     await expect(openShortInvite({ id, key }, tampered.buffer, ORIGIN)).rejects.toThrow();
     await expect(openShortInvite({ id, key }, new ArrayBuffer(28), ORIGIN)).rejects.toThrow();
+  });
+
+  it("accepts the invite's relay with a trailing slash, as the app does, and nothing else", async () => {
+    expect(isRelay(ORIGIN, ORIGIN)).toBe(true);
+    expect(isRelay(`${ORIGIN}/`, ORIGIN)).toBe(true);
+    expect(isRelay("https://GUEST.herdrup.themartian.app:443/", ORIGIN)).toBe(true);
+    for (const other of ["http://guest.herdrup.themartian.app", "https://guest.herdrup.themartian.app:8443",
+      "https://evil.example", `${ORIGIN}/relay`, `${ORIGIN}/?x=1`, `${ORIGIN}#x`,
+      "https://user@guest.herdrup.themartian.app", "not a url", "", 7, null]) {
+      expect(isRelay(other, ORIGIN), String(other)).toBe(false);
+    }
+
+    const id = newInviteId();
+    const keyBytes = crypto.getRandomValues(new Uint8Array(16));
+    const plaintext = utf8(JSON.stringify({ v: 1, relay: `${ORIGIN}/` }));
+    const blob = await seal(id, keyBytes, plaintext);
+    const opened = await openShortInvite({ id, key: b64url(keyBytes) }, blob, ORIGIN);
+    expect(JSON.parse(atob(opened.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((opened.length + 3) % 4))).relay)
+      .toBe(`${ORIGIN}/`);
   });
 });
 
