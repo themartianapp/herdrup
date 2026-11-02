@@ -1,10 +1,10 @@
 import Foundation
 
-/// The one-time card asking the owner to star herdrup on GitHub (owner request, 2026-11-01).
+/// The one-time bar asking the owner to star HerdrUp on GitHub (owner request, 2026-11-01).
 ///
-/// After `threshold` successful owner prompts the app shows ONE dismissible card. Either
-/// answer, "Star on GitHub" or "Not now", retires it for good. Guests (shared-agent viewers)
-/// never see it and their sends never count.
+/// After `threshold` successful owner prompts the owner's agents home shows ONE dismissible
+/// bar. Either answer, "Star" (opens the repo) or × ("Not now"), retires it for good. Guests
+/// (shared-agent viewers) never see it and their sends never count.
 ///
 /// A prompt is one owner message the server accepted for delivery from the app's composers
 /// (Chat or the terminal reply bar): `agent.prompt` returned a `PromptDelivery`. Raw keys

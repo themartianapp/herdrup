@@ -1,9 +1,13 @@
+import UIKit
 import XCTest
 
-/// The one-time GitHub star card (`GitHubStarPrompt`), over the `chatview` mock with
-/// `HERDR_MOCK_STAR_PROMPT` (every other mock run keeps the card hidden): it appears after
-/// the fifth owner prompt, "Not now" removes it, and a relaunch does not bring it back.
+/// The one-time GitHub star bar (`GitHubStarPrompt`) on the owner's agents home, over the
+/// `chatview` mock with `HERDR_MOCK_STAR_PROMPT` (every other mock run keeps it hidden): it
+/// appears after the fifth owner prompt, × ("Not now") removes it, and a relaunch does not
+/// bring it back.
 final class GitHubStarPromptTests: XCTestCase {
+    private let pad = UIDevice.current.userInterfaceIdiom == .pad
+
     override func setUp() {
         continueAfterFailure = false
     }
@@ -25,7 +29,16 @@ final class GitHubStarPromptTests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["chat-view"].firstMatch.waitForExistence(timeout: 10))
     }
 
-    private func card(_ app: XCUIApplication) -> XCUIElement {
+    /// iPhone: the pane covers the home, so go back to it. iPad: the roster is beside the pane.
+    private func showHome(_ app: XCUIApplication) {
+        guard !pad else { return }
+        let back = app.buttons["Back"].firstMatch
+        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        back.tap()
+        XCTAssertTrue(app.staticTexts["herdr-app"].firstMatch.waitForExistence(timeout: 8))
+    }
+
+    private func bar(_ app: XCUIApplication) -> XCUIElement {
         app.descendants(matching: .any)["github-star-card"].firstMatch
     }
 
@@ -46,29 +59,36 @@ final class GitHubStarPromptTests: XCTestCase {
         XCTAssertTrue(sent.waitForExistence(timeout: 10), "the chat should show \"\(text)\"")
     }
 
-    func testCardAppearsAtFivePromptsAndNotNowRetiresIt() {
+    func testBarAppearsAfterFivePromptsAndNotNowRetiresIt() {
         let app = launch("1")
+        XCTAssertTrue(app.staticTexts["herdr-app"].firstMatch.waitForExistence(timeout: 12))
+        XCTAssertFalse(bar(app).exists, "a fresh install shows no bar")
         openHerdrApp(app)
-        XCTAssertFalse(card(app).exists, "a fresh install shows no card")
         for n in 1...4 {
             sendPrompt("Star prompt check \(n)", in: app)
-            XCTAssertFalse(card(app).exists, "no card after \(n) prompts")
+            XCTAssertFalse(bar(app).exists, "no bar after \(n) prompts")
         }
         sendPrompt("Star prompt check 5", in: app)
-        XCTAssertTrue(card(app).waitForExistence(timeout: 5), "the fifth prompt shows the card")
-        XCTAssertTrue(app.buttons["github-star-card-star"].exists)
-        attach(app, "github-star-card")
+        showHome(app)
+        XCTAssertTrue(bar(app).waitForExistence(timeout: 5), "the fifth prompt shows the bar on the agents home")
+        let star = app.buttons["github-star-card-star"]
+        let notNow = app.buttons["github-star-card-not-now"]
+        XCTAssertTrue(star.isHittable, "Star should be tappable over the list")
+        XCTAssertEqual(star.label, "Star on GitHub")
+        XCTAssertEqual(notNow.label, "Not now")
+        attach(app, "github-star-bar")
 
-        app.buttons["github-star-card-not-now"].tap()
-        XCTAssertTrue(card(app).waitForNonExistence(timeout: 5), "Not now removes the card")
-        sendPrompt("Star prompt check 6", in: app)
-        XCTAssertFalse(card(app).exists, "another prompt does not bring it back")
+        notNow.tap()
+        XCTAssertTrue(bar(app).waitForNonExistence(timeout: 5), "Not now removes the bar")
         app.terminate()
 
         let again = launch("keep")
+        XCTAssertTrue(again.staticTexts["herdr-app"].firstMatch.waitForExistence(timeout: 12))
+        XCTAssertFalse(bar(again).exists, "the answer survives a relaunch")
         openHerdrApp(again)
-        sendPrompt("Star prompt check 7", in: again)
-        XCTAssertFalse(card(again).exists, "the answer survives a relaunch")
+        sendPrompt("Star prompt check 6", in: again)
+        showHome(again)
+        XCTAssertFalse(bar(again).exists, "another prompt does not bring it back")
         again.terminate()
     }
 }

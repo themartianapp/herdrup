@@ -1,48 +1,66 @@
 import SwiftUI
 
-/// The one-time "star herdrup on GitHub" card (`GitHubStarPrompt`). The pane decides when it
-/// shows and what each button does; this view only draws it.
+/// The one-time "star HerdrUp on GitHub" bar (`GitHubStarPrompt`), proposal D: a raised
+/// capsule floating over the owner's agents list, just above the tab bar. The home decides
+/// when it shows and what each button does; this view only draws it.
 ///
-/// Drawn like the pane's other one-time offer (the classic-scrolling banner): a `surface`
-/// card with a hairline, a primary capsule and a quiet "Not now" capsule.
+/// Geometry from the proposal: 56 tall (it grows with the text size), a 40 pt ground-filled
+/// circle holding a star, the title and subtitle, an ink "Star" pill, and a 36 pt × target.
 struct GitHubStarPromptCard: View {
     let onStar: () -> Void
     let onNotNow: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: "star")
-                    .font(.system(size: 12, weight: .semibold))
+        HStack(spacing: 0) {
+            Image(systemName: "star.fill")
+                .font(.system(size: 19))
+                .foregroundStyle(Palette.text)
+                .frame(width: 40, height: 40)
+                .background(Palette.ground, in: Circle())
+                .padding(.leading, 8)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Enjoying HerdrUp?")
+                    .font(Typography.app(15, .semibold)).foregroundStyle(Palette.text)
+                    .frame(minHeight: 19 * Typography.scale)
+                Text("Star it on GitHub")
+                    .font(Typography.app(13)).foregroundStyle(Palette.textDim)
+                    .frame(minHeight: 17 * Typography.scale)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 11)
+            .accessibilityElement(children: .combine)
+            Button(action: onStar) {
+                Text("Star")
+                    .font(Typography.app(15, .semibold)).foregroundStyle(Palette.ground)
+                    .padding(.horizontal, 14)
+                    .frame(minHeight: 32)
+                    .background(Palette.text, in: Capsule())
+                    .fixedSize()
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Star on GitHub")
+            .accessibilityIdentifier("github-star-card-star")
+            Button(action: onNotNow) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(Palette.textDim)
-                Text("Enjoying herdrup?")
-                    .font(Typography.app(14, .semibold)).foregroundStyle(Palette.text)
+                    .frame(width: 36, height: 36)
+                    .contentShape(Rectangle())
             }
-            Text("A star on GitHub helps other people find it.")
-                .font(Typography.app(12)).foregroundStyle(Palette.textDim)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 8) {
-                Button(action: onStar) {
-                    Text("Star on GitHub").font(Typography.app(13, .semibold)).foregroundStyle(Palette.ground)
-                        .padding(.horizontal, 18).padding(.vertical, 8)
-                        .background(Palette.text).clipShape(Capsule())
-                }
-                .accessibilityIdentifier("github-star-card-star")
-                Button(action: onNotNow) {
-                    Text("Not now").font(Typography.app(13, .semibold)).foregroundStyle(Palette.textDim)
-                        .padding(.horizontal, 16).padding(.vertical, 8)
-                        .background(Palette.surfaceRaised).clipShape(Capsule())
-                }
-                .accessibilityIdentifier("github-star-card-not-now")
-                Spacer(minLength: 0)
-            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 6)
+            .accessibilityLabel("Not now")
+            .accessibilityIdentifier("github-star-card-not-now")
         }
-        .padding(.horizontal, 14).padding(.vertical, 12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.surface).clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Palette.hairline, lineWidth: 1))
-        .padding(.horizontal, 12).padding(.top, 10)
+        .padding(.vertical, 8)
+        .frame(minHeight: 56)
+        .background(Palette.surfaceRaised, in: Capsule())
+        .overlay(Capsule().stroke(Palette.hairline, lineWidth: 1))
+        .shadow(color: .black.opacity(0.45), radius: 15, y: 10)
         .accessibilityElement(children: .contain)
+        .accessibilityLabel("Enjoying HerdrUp? Star it on GitHub")
         .accessibilityIdentifier("github-star-card")
     }
 }

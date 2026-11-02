@@ -1979,6 +1979,14 @@ struct TerminalHomeView: View {
     /// re-renders at the new `Typography.scale` when it changes — WITHOUT the
     /// identity churn `.id()` would cause (which reset the tab / terminal panes).
     @AppStorage("ui.fontScale") private var uiFontScale: Double = 1.0
+    /// The one-time GitHub star bar (`GitHubStarPrompt`): owner prompts sent so far (counted
+    /// by the pane's `submitPrompt`) and whether the bar was answered. See `showStarPrompt`.
+    @AppStorage(GitHubStarPrompt.sentPromptsKey) private var starPromptSends = 0
+    @AppStorage(GitHubStarPrompt.answeredKey) private var starPromptAnswered = false
+    /// The bar's measured height (it grows with the text size), for the roster's bottom margin.
+    @State private var starPromptHeight: CGFloat = 56
+    @Environment(\.openURL) private var openURL
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Unread agent→owner grams, badged on the Gram tab. Session-scoped; written
     /// by GramView while visible and by an ambient poll (below) while it isn't.
     /// Only the badge/sidebar readers observe this object: publishing a count must not
@@ -3682,6 +3690,41 @@ struct TerminalHomeView: View {
                 }
             )
         }
+        // The one-time GitHub star bar, floating over the bottom of the roster: just above
+        // the tab bar on iPhone, above the sidebar's section bar on iPad. It covers the list
+        // rather than moving it; the margin lets the last row scroll clear of it.
+        .contentMargins(.bottom, showStarPrompt ? starPromptHeight + Self.starPromptBottomGap + 12 : 0,
+                        for: .scrollContent)
+        .overlay(alignment: .bottom) {
+            if showStarPrompt {
+                GitHubStarPromptCard(
+                    onStar: {
+                        starPromptAnswered = true
+                        openURL(GitHubStarPrompt.repositoryURL)
+                    },
+                    onNotNow: { starPromptAnswered = true })
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { starPromptHeight = $0 }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, Self.starPromptBottomGap)
+                    .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeOut(duration: 0.25), value: showStarPrompt)
+    }
+
+    private static let starPromptBottomGap: CGFloat = 12
+
+    /// Whether to show the one-time GitHub star bar: after `GitHubStarPrompt.threshold` owner
+    /// prompts, until Star or × answers it. Only the owner's home draws it, so guests never
+    /// see it (their home is `GuestHomeView`, and their sends never reach `submitPrompt`).
+    private var showStarPrompt: Bool {
+        // Screenshot mocks and UI tests keep their pixels unless they opt in.
+        #if DEBUG
+        if ScreenshotMock.mode != nil, !GitHubStarPrompt.mockShowsCard(ProcessInfo.processInfo.environment) {
+            return false
+        }
+        #endif
+        return GitHubStarPrompt.isDue(sentPrompts: starPromptSends, answered: starPromptAnswered)
     }
 
     /// Compact layouts cover the roster when a terminal is fronted. Regular layouts
@@ -5620,12 +5663,6 @@ struct TerminalPaneContent: View {
     /// Persisted app-wide via UserDefaults, so once the reader answers it once — Switch
     /// OR dismiss, for ANY Claude Code pane — it never shows again. See `showTuiBanner`.
     @AppStorage("tui.classicPrompted") private var tuiClassicPrompted = false
-    /// The one-time GitHub star card (`GitHubStarPrompt`): owner prompts sent so far and
-    /// whether the card was answered. App-wide; see `showStarPrompt`.
-    @AppStorage(GitHubStarPrompt.sentPromptsKey) private var starPromptSends = 0
-    @AppStorage(GitHubStarPrompt.answeredKey) private var starPromptAnswered = false
-    /// Opens the repo from the star card in the system browser.
-    @Environment(\.openURL) private var openURL
 
     private let router = InputRouter()
 
@@ -5716,19 +5753,6 @@ struct TerminalPaneContent: View {
         return (agent?.agent?.contains("claude") ?? false) && !tuiClassicPrompted
     }
 
-    /// Whether to show the one-time GitHub star card: after `GitHubStarPrompt.threshold`
-    /// owner prompts, until either button answers it. Only this owner pane mounts it, so
-    /// guests never see it. Never beside the classic-scrolling banner: one offer at a time.
-    private var showStarPrompt: Bool {
-        // Screenshot mocks and UI tests keep their pixels unless they opt in.
-        #if DEBUG
-        if ScreenshotMock.mode != nil, !GitHubStarPrompt.mockShowsCard(ProcessInfo.processInfo.environment) {
-            return false
-        }
-        #endif
-        return GitHubStarPrompt.isDue(sentPrompts: starPromptSends, answered: starPromptAnswered) && !showTuiBanner
-    }
-
     /// The UI text-size setting. Read in `body` only to observe it, so the pane
     /// CHROME (header/keycaps, which use Typography) re-renders at the new
     /// Typography.scale even while kept mounted. Terminal CONTENT is insulated —
@@ -5758,15 +5782,6 @@ struct TerminalPaneContent: View {
                 // never covers output or fights the header/edge-back gestures; Claude
                 // Code panes only, shown at most once (see showTuiBanner).
                 if showTuiBanner { tuiBanner }
-                // The one-time GitHub star card, in the same slot (see showStarPrompt).
-                if showStarPrompt {
-                    GitHubStarPromptCard(
-                        onStar: {
-                            starPromptAnswered = true
-                            openURL(GitHubStarPrompt.repositoryURL)
-                        },
-                        onNotNow: { starPromptAnswered = true })
-                }
                 // The live terminal: a real SwiftTerm VT fed by the pane.stream raw
                 // byte firehose (#40), full-bleed as the machine ground. A terminal
                 // tap enables direct PTY input; the reply bar remains the deliberate
