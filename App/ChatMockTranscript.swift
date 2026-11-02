@@ -29,8 +29,9 @@ struct ChatViewMockHome: View {
 /// `before` cursors, a pending question). Every word is made up for the mock.
 ///
 /// One conversation per process for the owner (agent `herdr-app`) and one for the guest
-/// (agent `llm-opt`, as a guest sees it: no notes, no step details, questions not
-/// answerable). The owner's can be answered through `agent.answer`.
+/// (agent `llm-opt`, as a guest sees it: no notes, no step details). Both can be answered
+/// through `agent.answer`; the guest's only on a host that lets guests answer
+/// (`GuestMockTransport.ownerOnlyAnswers` withholds `answerable` from the guest).
 final class ChatMockConversation: @unchecked Sendable {
     enum Audience { case owner, guest }
 
@@ -113,13 +114,14 @@ final class ChatMockConversation: @unchecked Sendable {
             "pending_ask": NSNull(),
         ]
         if lock.withLock({ answered != nil }) {
-            result["working"] = ["intent": "Merging #305", "tool": "bash",
+            result["working"] = ["intent": audience == .owner ? "Merging #305" : "Posting to the bench sheet",
+                                 "tool": "bash",
                                  "since_ms": Self.today(16, 52)]
         } else {
             result["pending_ask"] = [
                 "id": askID,
                 "questions": [["question": question, "options": options, "multi": false, "recommended": 0]],
-                "answerable": audience == .owner,
+                "answerable": audience == .owner || !GuestMockTransport.ownerOnlyAnswers,
             ]
         }
         if let subagents = subagents {
@@ -192,7 +194,7 @@ final class ChatMockConversation: @unchecked Sendable {
         return Self.encode(id: id, result: result)
     }
 
-    /// `agent.answer` (owner only): records the choice; the next page shows it answered.
+    /// `agent.answer`: records the choice; the next page shows it answered.
     func answer(id: String, params: [String: Any]) -> String {
         let option = params["option"] as? String ?? ""
         let ask = params["ask_id"] as? String ?? ""
@@ -349,9 +351,17 @@ final class ChatMockConversation: @unchecked Sendable {
             "kind": "reply", "final": false,
             "text": "Here are the Q5 numbers against the last baseline:\n\n| Metric | Q5 | Change |\n|---|---|---|\n| Decode | 41.2 tok/s | +36% |\n| Prefill | 1,180 tok/s | +4% |\n\nFull results are in `results/tensorfold-q5.md`.",
         ]))
-        second.append(Self.entry(askID, bench + 363_000, ["kind": "ask", "questions": [[
+        var ask: [String: Any] = ["kind": "ask", "questions": [[
             "question": question, "options": options, "multi": false, "recommended": 0,
-        ]]]))
+        ]]]
+        let answer = answered
+        if let answer { ask["answer"] = [answer] }
+        second.append(Self.entry(askID, bench + 363_000, ask))
+        if answer != nil {
+            second.append(Self.entry("g2post", bench + 370_000, [
+                "kind": "step", "tool": "bash", "intent": "Posting to the bench sheet", "status": "running",
+            ]))
+        }
         return [first, second]
     }
 

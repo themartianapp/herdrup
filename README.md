@@ -114,11 +114,16 @@ herdr's JSON API exposes both, so panes and agents become real UI objects instea
   Federated agents use readable machine names. Send stays above the keyboard while you
   search recipients or type a message.
 - **Guest access** — share one agent with someone outside your machines from its ••• menu. They
-  get a one-use invite (QR code or link), watch the live terminal and message the agent through
-  a relay, end to end encrypted, with every message labelled `<name> (via HerdrUp):`. Settings →
+  get a one-use invite (QR code or a short link; the relay keeps the invite encrypted under a
+  key only the link carries), watch the live terminal and message the agent through a relay,
+  end to end encrypted, with every message labelled `<name> (via HerdrUp):`. Settings →
   Shared access lists who has access on each machine, revokes it, and shows the activity log.
-  When the host serves it, a guest of an omp agent also gets a read-only Chat tab (no notes,
-  questions shown waiting for the owner).
+  When the host serves it, a guest of an omp agent also gets a Chat tab (no notes). Guests
+  answer the agent's questions as the owner does: the chat's answer buttons, and for plan
+  approvals, permission prompts and multi-part questions the owner's menu keys (arrows, Tab,
+  Space, esc, Return) under the terminal while the agent waits; nothing else reaches the
+  pane. A host older than guest answers keeps them for the owner, and questions show waiting
+  for the owner.
   Multiple shares from the same authenticated host appear in one agent list, with separate
   permissions and settings per agent. Owner setup stays collapsed under “Connect your own
   machine” when shares exist. Unavailable agents, offline hosts, and removed access are shown

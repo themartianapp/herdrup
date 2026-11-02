@@ -291,6 +291,23 @@ final class TranscriptGroupingTests: XCTestCase {
         XCTAssertEqual(turns[1].items.map(\.id), ["p3"])
     }
 
+    /// A host older than guest answers says `answerable: false` to a guest even for a
+    /// question the buttons could answer; a multi-part or multi-select one is never answerable.
+    func testPendingAskWithheldFromCallerOnlyForAnAnswerableShape() {
+        let single = [TranscriptQuestion(question: "Merge?", options: ["Yes", "Not yet"])]
+        XCTAssertTrue(TranscriptPendingAsk(id: "a", questions: single, answerable: false).isWithheldFromCaller)
+        XCTAssertFalse(TranscriptPendingAsk(id: "a", questions: single, answerable: true).isWithheldFromCaller)
+        for questions in [
+            [TranscriptQuestion(question: "Pick", options: ["A", "B"], multi: true)],
+            single + single,
+            [TranscriptQuestion(question: "Name?", options: [])],
+        ] {
+            let ask = TranscriptPendingAsk(id: "a", questions: questions, answerable: false)
+            XCTAssertFalse(ask.hasAnswerableShape)
+            XCTAssertFalse(ask.isWithheldFromCaller)
+        }
+    }
+
     func testAnsweredAskStaysAnsweredAndPendingAskIsMarked() {
         let question = [TranscriptQuestion(question: "Merge?", options: ["Yes", "Not yet"])]
         let pending = TranscriptPendingAsk(id: "a2", questions: question, answerable: true)

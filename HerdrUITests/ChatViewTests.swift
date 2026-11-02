@@ -204,8 +204,9 @@ final class ChatViewTests: XCTestCase {
     // MARK: - Guest
 
     /// A shared omp agent on a host serving guests its transcript: the Chat tab, first;
-    /// the question read-only; no note cards.
-    func testGuestChatTabIsReadOnly() {
+    /// no note cards; and the guest answers omp's question with the owner's buttons
+    /// (`agent.answer` on the shared agent), with no "waiting for the owner" footer.
+    func testGuestChatTabAnswersTheQuestion() {
         let app = launch("guestchat")
         let tab = app.buttons["guest-tab-chat"]
         XCTAssertTrue(tab.waitForExistence(timeout: 12), "the guest should get a Chat tab")
@@ -213,9 +214,10 @@ final class ChatViewTests: XCTestCase {
         XCTAssertTrue(app.buttons["guest-tab-terminal"].exists)
         let chat = app.descendants(matching: .any)["chat-view"].firstMatch
         XCTAssertTrue(chat.waitForExistence(timeout: 8))
-        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-waiting"].waitForExistence(timeout: 8),
-                      "the guest sees the question waiting for the owner")
-        XCTAssertFalse(app.buttons["chat-ask-option-0"].exists, "a guest cannot answer")
+        let option = app.buttons["chat-ask-option-0"]
+        XCTAssertTrue(option.waitForExistence(timeout: 8), "a guest answers with the owner's buttons")
+        XCTAssertFalse(app.descendants(matching: .any)["chat-ask-waiting"].exists,
+                       "an answerable question does not wait for the owner")
         XCTAssertFalse(app.descendants(matching: .any)["chat-note"].exists, "guests see no note cards")
         attach(app, "chat-guest")
 
@@ -223,8 +225,28 @@ final class ChatViewTests: XCTestCase {
         XCTAssertTrue(chat.waitForNonExistence(timeout: 6))
         tab.tap()
         XCTAssertTrue(chat.waitForExistence(timeout: 6))
+
+        app.buttons["chat-ask-option-0"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-chosen"].waitForExistence(timeout: 8),
+                      "the answered question shows the choice")
+        let hostCalls = app.descendants(matching: .any)["guest-host-calls"]
+        XCTAssertTrue(poll(6, every: 0.3) { hostCalls.label.contains("agent.answer:Yes, post them") },
+                      "the answer reaches the host as agent.answer: \(hostCalls.label)")
         let refused = app.descendants(matching: .any)["guest-forbidden-calls"].label
         XCTAssertFalse(refused.contains("agent.transcript"), "the transcript is on the guest allowlist: \(refused)")
+        XCTAssertFalse(refused.contains("agent.answer"), "a guest's answer is allowed: \(refused)")
+    }
+
+    /// A host older than guest answers withholds `answerable` from the guest: the question
+    /// shows read-only, waiting for the owner, as before.
+    func testGuestChatWaitsForTheOwnerOnAnOlderHost() {
+        let app = launch("guestchat", ["HERDR_MOCK_GUEST_OWNER_ANSWERS": "1"])
+        let chat = app.descendants(matching: .any)["chat-view"].firstMatch
+        XCTAssertTrue(chat.waitForExistence(timeout: 12))
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-waiting"].waitForExistence(timeout: 8),
+                      "the guest sees the question waiting for the owner")
+        XCTAssertFalse(app.buttons["chat-ask-option-0"].exists, "this host keeps answers for the owner")
+        attach(app, "chat-guest-owner-answers")
     }
 
     /// A paused share (its agent not in the pane's foreground) still has its conversation in
@@ -239,8 +261,10 @@ final class ChatViewTests: XCTestCase {
         XCTAssertTrue(poll(8, every: 0.3) { self.turns(chat) > 0 },
                       "a paused agent's chat should load its turns (turns=\(turns(chat)))")
         XCTAssertFalse(app.descendants(matching: .any)["chat-loading"].exists, "no endless spinner")
-        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-waiting"].waitForExistence(timeout: 8),
-                      "the conversation's question shows read-only")
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask"].waitForExistence(timeout: 8),
+                      "the conversation's question shows")
+        XCTAssertFalse(app.descendants(matching: .any)["chat-ask-waiting"].exists,
+                       "an answerable question does not wait for the owner")
         attach(app, "chat-guest-paused")
     }
 
@@ -267,7 +291,7 @@ final class ChatViewTests: XCTestCase {
 
     func testScreenshotSharedChat() {
         let app = launch("guestchat", ["HERDR_MOCK_GUEST_FEATURES": "gram"], still: false)
-        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-waiting"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["chat-ask-option-0"].waitForExistence(timeout: 15))
         sleep(2)
         attach(app, "shot-guest")
     }
