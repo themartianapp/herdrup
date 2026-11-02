@@ -2,18 +2,22 @@
 // the shared agent (herdrup#309). One Durable Object per host_id pipes Noise_IK
 // ciphertext between the host socket and its guest sockets, so it never sees plaintext.
 // Log lines carry only endpoint, outcome and close code: never payloads, secrets, host ids
-// or request paths (an invite link carries its secret in the path of /i/<payload>).
+// or request paths (an invite link carries its secret, or a short link its key, in the
+// path of /i/<payload>).
+import type { HostRelay } from "./host";
+import { handleInvite, type InviteBlob } from "./invite";
 
 export const VERSION = "1.0.0";
 
 export interface Env {
-  HOSTS: DurableObjectNamespace;
+  HOSTS: DurableObjectNamespace<HostRelay>;
+  INVITES: DurableObjectNamespace<InviteBlob>;
   GUEST_CONNECT_LIMIT?: RateLimit;
   HOST_CONNECT_LIMIT?: RateLimit;
   ASSETS: Fetcher;
 }
 
-export type Endpoint = "/v1/host" | "/v1/guest";
+export type Endpoint = "/v1/host" | "/v1/guest" | "/v1/invite";
 
 export interface LogLine {
   endpoint: Endpoint;
@@ -29,9 +33,12 @@ export function log(line: LogLine): void {
 const SOCKET_PATH = /^\/v1\/(host|guest)\/[A-Za-z0-9_-]{22}$/;
 // relay_secret is b64url of 32 bytes: 43 characters.
 export const BEARER = /^Bearer ([A-Za-z0-9_-]{43})$/;
-// An invite link: b64url of the invite JSON. A typical invite is under 1 KB; the cap leaves
-// room for four 128-character labels in any script.
+// An invite link: b64url of the invite JSON, or a short link's 12-character id and
+// 22-character key (34 characters). A typical invite is under 1 KB; the cap leaves room for
+// four 128-character labels in any script.
 const INVITE_PATH = /^\/i\/[A-Za-z0-9_-]{1,4096}$/;
+// A short invite's blob, by id only (9 random bytes as b64url), never the key.
+const INVITE_BLOB_PATH = /^\/v1\/invite\/([A-Za-z0-9_-]{12})$/;
 
 export async function handleRequest(request: Request, env: Env): Promise<Response> {
   const { pathname } = new URL(request.url);
@@ -42,6 +49,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     // The same page as /i; its script reads the payload from the path. The asset request
     // carries neither the path nor the original headers, and nothing here logs.
     return env.ASSETS.fetch(new URL("/i", request.url));
+  }
+  const invite = INVITE_BLOB_PATH.exec(pathname);
+  if (invite !== null && (request.method === "PUT" || request.method === "GET" || request.method === "DELETE")) {
+    return handleInvite(request, env, invite[1]);
   }
   const match = request.method === "GET" ? SOCKET_PATH.exec(pathname) : null;
   if (match === null) return errorResponse(404, "not_found");

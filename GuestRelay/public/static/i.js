@@ -1,10 +1,12 @@
 // Renders a guest invite from the URL: the path of /i/<payload>, or the fragment of older
 // /i#<payload> links. The payload is b64url(JSON) as defined in the guest access contract.
+// A short link /i/<id><key> instead names an encrypted blob on this relay: the page fetches
+// /v1/invite/<id> (never the key), decrypts it here, and renders the payload inside.
 // Every field is written with textContent, and only a b64url payload is ever placed in the
 // app link, which carries it in the fragment so it never leaves the device.
-import { invitePayload } from "./invite.js";
+import { invitePayload, openShortInvite, shortInvite } from "./invite.js";
 
-(function () {
+(async function () {
   var APP_LINK = "herdrup://guest-invite#";
   var B64URL = /^[A-Za-z0-9_-]+$/;
   var $ = function (id) { return document.getElementById(id); };
@@ -44,14 +46,42 @@ import { invitePayload } from "./invite.js";
   // Following an older /i#… invite link while this page is open changes only the hash.
   window.addEventListener("hashchange", function () { location.reload(); });
 
-  var payload = invitePayload(location.pathname, location.hash);
-  if (payload === "") {
-    problem("This page opens HerdrUp invites. The link you followed has no invite in it. Ask for the link again.");
-    return;
-  }
-  if (!B64URL.test(payload)) {
-    problem("This invite link is damaged. Ask for the link again, or paste the whole link into HerdrUp.");
-    return;
+  var short = shortInvite(location.pathname);
+  var payload;
+  if (short !== null) {
+    var blob = null;
+    var status = 0;
+    try {
+      var response = await fetch("/v1/invite/" + short.id, { cache: "no-store", credentials: "omit" });
+      status = response.status;
+      if (response.ok) blob = await response.arrayBuffer();
+    } catch (e) {
+      blob = null;
+    }
+    if (status === 404) {
+      problem("This invite has expired or was revoked.");
+      return;
+    }
+    if (blob === null) {
+      problem("Couldn't load this invite. Check your connection, then reload this page.");
+      return;
+    }
+    try {
+      payload = await openShortInvite(short, blob, location.origin);
+    } catch (e) {
+      problem("This invite link is damaged. Ask for the link again, or paste the whole link into HerdrUp.");
+      return;
+    }
+  } else {
+    payload = invitePayload(location.pathname, location.hash);
+    if (payload === "") {
+      problem("This page opens HerdrUp invites. The link you followed has no invite in it. Ask for the link again.");
+      return;
+    }
+    if (!B64URL.test(payload)) {
+      problem("This invite link is damaged. Ask for the link again, or paste the whole link into HerdrUp.");
+      return;
+    }
   }
 
   var open = $("open");
