@@ -294,7 +294,7 @@ private final class CookieRelay: @unchecked Sendable {
     private var heads: [String] = []
 
     init() throws {
-        let fd = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+        let fd = socket(AF_INET, sockStream, 0)
         guard fd >= 0 else { throw URLError(.cannotConnectToHost) }
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
@@ -302,7 +302,7 @@ private final class CookieRelay: @unchecked Sendable {
         inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr)
         let bound = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                platformBind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
         guard bound == 0, listen(fd, 4) == 0 else { close(fd); throw URLError(.cannotConnectToHost) }
