@@ -259,4 +259,95 @@ final class UsagePingTests: XCTestCase {
         let body = String(decoding: try XCTUnwrap(relay.requests.last?.httpBody), as: UTF8.self)
         XCTAssertTrue(body.contains(second), body)
     }
+
+    /// Review F1 on #607: the real session must not keep a cookie the relay sets, or a
+    /// response could link a new install ID to the old one across an off → on reset.
+    func testTheRealSessionNeverReplaysACookieAcrossAReset() async throws {
+        let server = try CookieRelay()
+        defer { server.stop() }
+        let clock = Clock(try date("2026-11-02 12:00", in: "UTC"))
+        let endpoint = try XCTUnwrap(URL(string: "http://127.0.0.1:\(server.port)/v1/ping"))
+        let pinger = UsagePing(endpoint: endpoint, defaults: defaults, now: { clock.now })
+        let first = await ping(pinger)
+        XCTAssertTrue(first, "the first ping is accepted")
+
+        UsagePing.setEnabled(false, in: defaults)
+        UsagePing.setEnabled(true, in: defaults)
+        clock.now += 86_400
+        let second = await ping(pinger)
+        XCTAssertTrue(second, "the second ping is accepted")
+
+        let heads = server.requestHeads()
+        XCTAssertEqual(heads.count, 2)
+        for head in heads {
+            XCTAssertFalse(head.lowercased().contains("\ncookie:"), "a ping carried a cookie:\n\(head)")
+        }
+    }
+}
+
+/// A loopback HTTP server that answers every request 204 with a `Set-Cookie` and records the
+/// request head. Plain sockets, as the pairing tests use, so the real URLSession is exercised.
+private final class CookieRelay: @unchecked Sendable {
+    let port: Int
+    private let fd: Int32
+    private let lock = NSLock()
+    private var heads: [String] = []
+
+    init() throws {
+        let fd = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+        guard fd >= 0 else { throw URLError(.cannotConnectToHost) }
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = 0
+        inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr)
+        let bound = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bound == 0, listen(fd, 4) == 0 else { close(fd); throw URLError(.cannotConnectToHost) }
+        var actual = sockaddr_in()
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        _ = withUnsafeMutablePointer(to: &actual) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) }
+        }
+        self.fd = fd
+        self.port = Int(UInt16(bigEndian: actual.sin_port))
+        Thread { [self] in serve() }.start()
+    }
+
+    func requestHeads() -> [String] { lock.withLock { heads } }
+
+    func stop() {
+        _ = shutdown(fd, Int32(SHUT_RDWR))
+        close(fd)
+    }
+
+    private func serve() {
+        while true {
+            let client = accept(fd, nil, nil)
+            guard client >= 0 else { return }
+            var data = [UInt8]()
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            // Read the head, then the body by Content-Length.
+            while true {
+                let n = recv(client, &buffer, buffer.count, 0)
+                if n <= 0 { break }
+                data.append(contentsOf: buffer[0..<n])
+                let text = String(decoding: data, as: UTF8.self)
+                guard let end = text.range(of: "\r\n\r\n") else { continue }
+                let head = String(text[..<end.lowerBound])
+                let length = head.split(separator: "\r\n")
+                    .first { $0.lowercased().hasPrefix("content-length:") }
+                    .flatMap { Int($0.split(separator: ":")[1].trimmingCharacters(in: .whitespaces)) } ?? 0
+                if data.count - text.utf8.distance(from: text.utf8.startIndex, to: end.upperBound) >= length {
+                    lock.withLock { heads.append(head.replacingOccurrences(of: "\r\n", with: "\n")) }
+                    break
+                }
+            }
+            let reply = "HTTP/1.1 204 No Content\r\nSet-Cookie: relay_tracking=stable-cookie; Path=/\r\nConnection: close\r\n\r\n"
+            _ = reply.withCString { send(client, $0, strlen($0), 0) }
+            close(client)
+        }
+    }
 }

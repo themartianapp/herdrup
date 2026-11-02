@@ -175,12 +175,24 @@ public actor UsagePing {
         return true
     }
 
-    /// An ephemeral session: no cookies, no cache, nothing kept between pings.
-    private static func urlSessionSend() -> Send {
+    /// A session that keeps nothing between pings: no cookie store (an ephemeral session still
+    /// keeps cookies in memory, which a response could use to link install IDs across a reset),
+    /// no cache, no credentials.
+    static func pingConfiguration() -> URLSessionConfiguration {
         let config = URLSessionConfiguration.ephemeral
+        config.httpCookieStorage = nil
+        config.httpCookieAcceptPolicy = .never
+        config.httpShouldSetCookies = false
+        config.urlCache = nil
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        config.urlCredentialStorage = nil
         config.timeoutIntervalForRequest = timeout
         config.timeoutIntervalForResource = timeout
-        let session = URLSession(configuration: config)
+        return config
+    }
+
+    private static func urlSessionSend() -> Send {
+        let session = URLSession(configuration: pingConfiguration())
         return { request in
             guard let (_, response) = try? await session.data(for: request) else { return nil }
             return (response as? HTTPURLResponse)?.statusCode
