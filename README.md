@@ -114,11 +114,16 @@ herdr's JSON API exposes both, so panes and agents become real UI objects instea
   Federated agents use readable machine names. Send stays above the keyboard while you
   search recipients or type a message.
 - **Guest access** — share one agent with someone outside your machines from its ••• menu. They
-  get a one-use invite (QR code or link), watch the live terminal and message the agent through
-  a relay, end to end encrypted, with every message labelled `<name> (via HerdrUp):`. Settings →
+  get a one-use invite (QR code or a short link; the relay keeps the invite encrypted under a
+  key only the link carries), watch the live terminal and message the agent through a relay,
+  end to end encrypted, with every message labelled `<name> (via HerdrUp):`. Settings →
   Shared access lists who has access on each machine, revokes it, and shows the activity log.
-  When the host serves it, a guest of an omp agent also gets a read-only Chat tab (no notes,
-  questions shown waiting for the owner).
+  When the host serves it, a guest of an omp agent also gets a Chat tab (no notes). Guests
+  answer the agent's questions as the owner does: the chat's answer buttons, and for plan
+  approvals, permission prompts and multi-part questions the owner's menu keys (arrows, Tab,
+  Space, esc, Return) under the terminal while the agent waits; nothing else reaches the
+  pane. A host older than guest answers keeps them for the owner, and questions show waiting
+  for the owner.
   Multiple shares from the same authenticated host appear in one agent list, with separate
   permissions and settings per agent. Owner setup stays collapsed under “Connect your own
   machine” when shares exist. Unavailable agents, offline hosts, and removed access are shown
@@ -180,10 +185,15 @@ swift test --package-path Vendor/SwiftTerm
 `HerdrKit` contains no UIKit or SwiftUI, so it stays Linux-buildable and can be exercised against a real
 herdr server; the iOS app consumes it unchanged. Floors: macOS 14+, iOS 17+ (declared in `Package.swift`
 — macOS 14 because Citadel requires it).
+The streaming upload channel requires macOS 15; macOS 14 keeps the per-chunk path.
+Tests that open the streaming channel skip on macOS 14, matching the production
+availability guard; teardown and never-started-channel checks still run there.
 
 The reconnect-history UI receipt recognizes the fixture's numbered history rows
 before and after real swipes, requiring earlier rows to become visible instead of
-requiring a fixed percentage of changed pixels.
+requiring a fixed percentage of changed pixels. Update-retry coverage reads the
+retained failed state directly after its failure reason appears; it does not add
+a second short polling deadline to that already-observed state.
 
 SwiftTerm is vendored at [`Vendor/SwiftTerm`](Vendor/SwiftTerm), based on upstream v1.15.0,
 commit `dd2fb8ac5b861e7bf617c872895e338f38165648`. Local changes retain viewport anchors and terminal

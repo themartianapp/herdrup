@@ -199,27 +199,68 @@ final class ScrollTests: XCTestCase {
 
         let after = viewport.screenshot()
         attach(after, "kh-02-after-swipe")
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = false
-        request.recognitionLanguages = ["en-US"]
-        let historyRow = try NSRegularExpression(pattern: #"history\s+([0-9]+)"#,
-                                                options: .caseInsensitive)
-        func visibleHistoryRows(in screenshot: XCUIScreenshot) throws -> [Int] {
-            let image = try XCTUnwrap(screenshot.image.cgImage)
-            try VNImageRequestHandler(cgImage: image).perform([request])
+        // Vision reads the terminal's columns separately (#592): the "history" labels come
+        // back as one block of observations and their row numbers as another, so a regex
+        // over one observation never sees "history 127". Pair them by position instead: a
+        // number is a history row only when a "history" label sits on the same line to its
+        // left. That keeps the live rows ("row 1"…"row 8") out. Vision has also read the
+        // live screenshot as if upside down, so read the image in both orientations.
+        // What Vision saw is attached so a real failure explains itself.
+        let label = try NSRegularExpression(pattern: #"^\s*histor[yv]\s*$"#, options: .caseInsensitive)
+        let labelled = try NSRegularExpression(pattern: #"histor[yv]\s*([0-9]{1,3})"#, options: .caseInsensitive)
+        let leading = try NSRegularExpression(pattern: #"^\s*([0-9]{1,3})\b"#)
+        func first(_ regex: NSRegularExpression, in text: String) -> Int? {
+            regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text))
+                .flatMap { $0.numberOfRanges > 1 ? Range($0.range(at: 1), in: text) : nil }
+                .flatMap { Int(text[$0]) }
+        }
+        func observations(in image: CGImage, _ orientation: CGImagePropertyOrientation)
+            throws -> [(text: String, box: CGRect)] {
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            request.usesLanguageCorrection = false
+            request.recognitionLanguages = ["en-US"]
+            try VNImageRequestHandler(cgImage: image, orientation: orientation).perform([request])
             return (request.results ?? []).compactMap { observation in
-                guard let text = observation.topCandidates(1).first?.string,
-                      let match = historyRow.firstMatch(in: text,
-                          range: NSRange(text.startIndex..., in: text)),
-                      let range = Range(match.range(at: 1), in: text) else { return nil }
-                return Int(text[range])
+                observation.topCandidates(1).first.map { ($0.string, observation.boundingBox) }
             }
         }
-        let beforeRows = try visibleHistoryRows(in: before)
-        let afterRows = try visibleHistoryRows(in: after)
+        func historyRows(in seen: [(text: String, box: CGRect)]) -> [Int] {
+            let labels = seen.filter {
+                label.firstMatch(in: $0.text, range: NSRange($0.text.startIndex..., in: $0.text)) != nil
+            }.map(\.box)
+            return seen.compactMap { item in
+                if let row = first(labelled, in: item.text) { return row }
+                guard let row = first(leading, in: item.text) else { return nil }
+                let sameLineToTheLeft = labels.contains {
+                    abs($0.midY - item.box.midY) < max($0.height, item.box.height) / 2
+                        && $0.maxX <= item.box.minX + item.box.width
+                }
+                return sameLineToTheLeft ? row : nil
+            }
+        }
+        func visibleHistoryRows(in screenshot: XCUIScreenshot, _ name: String) throws -> [Int] {
+            let image = try XCTUnwrap(screenshot.image.cgImage)
+            var transcript: [String] = []
+            var rows: [Int] = []
+            for orientation in [CGImagePropertyOrientation.up, .down] {
+                let seen = try observations(in: image, orientation)
+                transcript += ["-- \(orientation.rawValue)"] + seen.map {
+                    String(format: "%@  [x %.3f y %.3f]", $0.text, $0.box.minX, $0.box.midY)
+                }
+                rows = historyRows(in: seen)
+                if !rows.isEmpty { break }
+            }
+            let text = XCTAttachment(string: transcript.joined(separator: "\n"))
+            text.name = "\(name)-ocr"
+            text.lifetime = .keepAlways
+            add(text)
+            return rows
+        }
+        let beforeRows = try visibleHistoryRows(in: before, "kh-01-before")
+        let afterRows = try visibleHistoryRows(in: after, "kh-02-after-swipe")
         let earliestAfter = try XCTUnwrap(afterRows.min(),
-            "No numbered history visible after swiping the reconnected terminal.")
+            "No numbered history visible after swiping the reconnected terminal (see kh-02-after-swipe-ocr).")
         // The fixture has rows 1...300. If none were visible at the live screen,
         // any historical row is earlier; otherwise the swipe must reveal older rows.
         XCTAssertLessThan(earliestAfter, beforeRows.min() ?? 301,

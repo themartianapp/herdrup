@@ -114,14 +114,33 @@ final class GuestInviteRouter: ObservableObject {
     @Published var pending: PendingGuestInvite?
     /// Why the last link could not be read, shown as an alert.
     @Published var failure: String?
+    /// The link to try again from that alert, when it failed only for want of the network.
+    @Published private(set) var retryText: String?
+    private var resolving: Task<Void, Never>?
 
-    /// Parses `text` as an invite and presents it, or records why it isn't one.
+    /// Reads `text` as an invite (fetching a short link's sealed invite from its relay) and
+    /// presents it, or records why it isn't one. A newer link replaces one still resolving.
     func open(_ text: String) {
-        do {
-            pending = PendingGuestInvite(invite: try GuestInvite.parse(text))
-        } catch {
-            failure = GuestDevice.describe(error, machine: "")
+        resolving?.cancel()
+        failure = nil
+        retryText = nil
+        resolving = Task { [weak self] in
+            do {
+                let invite = try await GuestInvite.resolve(text)
+                guard !Task.isCancelled else { return }
+                self?.pending = PendingGuestInvite(invite: invite)
+            } catch {
+                guard !Task.isCancelled, let self else { return }
+                self.retryText = (error as? GuestInvite.Failure) == .unreachable ? text : nil
+                self.failure = GuestDevice.describe(error, machine: "")
+            }
         }
+    }
+
+    /// Opens the link whose fetch failed again.
+    func retry() {
+        guard let text = retryText else { return }
+        open(text)
     }
 
     /// Whether a URL is an invite link in any form.

@@ -181,7 +181,7 @@ struct GuestAcceptView: View {
     }
 }
 
-/// Scans an invite QR code. The decoded text goes through the same `GuestInvite.parse`
+/// Scans an invite QR code. The decoded text goes through the same `GuestInvite.resolve`
 /// as a tapped or pasted link; a code that is not an invite says so and keeps scanning.
 struct GuestInviteScanSheet: View {
     var onInvite: (GuestInvite) -> Void
@@ -191,6 +191,8 @@ struct GuestInviteScanSheet: View {
     @State private var failure: String?
     /// Bumped after a rejected code, so capture restarts cleanly.
     @State private var generation = 0
+    /// The scanned link being resolved (a short link's fetch); cancelled when the sheet goes.
+    @State private var resolving: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
@@ -218,20 +220,36 @@ struct GuestInviteScanSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Cancel") { dismiss() }.tint(Palette.text)
+                    Button("Cancel") {
+                        resolving?.cancel()
+                        dismiss()
+                    }.tint(Palette.text)
                 }
             }
         }
+        // Cancel or swipe-down while a short link is still fetching: nothing arrives later.
+        .onDisappear {
+            resolving?.cancel()
+            resolving = nil
+        }
     }
 
+    /// A short link's sealed invite is fetched first; a failure (including no network)
+    /// says why and restarts capture, so scanning again is the retry. A newer scan replaces
+    /// one still resolving, and a cancelled one never delivers.
     private func found(_ text: String) {
-        do {
-            let invite = try GuestInvite.parse(text)
-            onInvite(invite)
-            dismiss()
-        } catch {
-            failure = GuestDevice.describe(error, machine: "")
-            generation += 1
+        resolving?.cancel()
+        resolving = Task { @MainActor in
+            do {
+                let invite = try await GuestInvite.resolve(text)
+                guard !Task.isCancelled else { return }
+                onInvite(invite)
+                dismiss()
+            } catch {
+                guard !Task.isCancelled else { return }
+                failure = GuestDevice.describe(error, machine: "")
+                generation += 1
+            }
         }
     }
 

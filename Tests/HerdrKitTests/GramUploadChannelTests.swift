@@ -98,6 +98,9 @@ final class GramUploadChannelTests: XCTestCase {
     /// A started channel whose daemon is played by the test: the connection never
     /// resolves, so frames stay queued, and acks are fed through `handleLine`.
     private func openedChannel() async throws -> GramUploadChannel {
+        guard #available(macOS 15.0, *) else {
+            throw XCTSkip("Streaming uploads require macOS 15; macOS 14 uses per-chunk uploads")
+        }
         let channel = stalledChannel(closeGrace: 200_000_000)
         let start = Task { try await channel.start() }
         // The open line's ack. `start` parks until it lands (or picks it up if it
