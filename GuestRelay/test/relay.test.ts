@@ -6,7 +6,7 @@ import {
   runDurableObjectAlarm,
   runInDurableObject,
 } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { invitePayload, openShortInvite, shortInvite } from "../public/static/invite.js";
 
 // Everything here runs against the real Worker and Durable Object in workerd. Each test
@@ -216,6 +216,19 @@ function deleteInvite(host: { hostId: string; secret: string }, id: string, opti
 }
 
 const inviteStub = (id: string) => env.INVITES.get(env.INVITES.idFromName(id));
+
+const newInstall = () => b64url(crypto.getRandomValues(new Uint8Array(16)));
+const validPing = (fields: Record<string, unknown> = {}) => ({ v: 1, install: newInstall(), app: "ios", version: "1.4.0", build: "212", ...fields });
+
+/** `POST /v1/ping` from a fresh IP by default, so the per-IP ping limit never trips. */
+function ping(body: unknown, ip = freshIp(), method = "POST"): Promise<Response> {
+  const raw = typeof body === "string" || body instanceof Uint8Array ? body : JSON.stringify(body);
+  return SELF.fetch(`${ORIGIN}/v1/ping`, {
+    method,
+    headers: { "CF-Connecting-IP": ip, "Content-Type": "application/json" },
+    body: method === "GET" ? undefined : raw,
+  });
+}
 
 describe("routing", () => {
   it("answers health", async () => {
@@ -750,6 +763,104 @@ describe("short invites", () => {
   });
 });
 
+describe("usage ping", () => {
+  let writes: MockInstance<AnalyticsEngineDataset["writeDataPoint"]>;
+
+  beforeEach(() => {
+    writes = vi.spyOn(env.USAGE, "writeDataPoint");
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("writes one data point of install, app, version and build for an accepted ping", async () => {
+    const body = validPing({ app: "ipados", version: "2.10.1-beta_3", build: "4021" });
+    const response = await ping(body);
+    expect(response.status).toBe(204);
+    expect(await response.text()).toBe("");
+    expect(writes.mock.calls).toEqual([[{ indexes: [body.install], blobs: ["ipados", "2.10.1-beta_3", "4021"], doubles: [1] }]]);
+  });
+
+  it("accepts every client in the contract and a 32-character version and build", async () => {
+    const apps = ["ios", "ipados", "macos-catalyst", "desktop-macos", "desktop-linux", "desktop-windows"];
+    for (const app of apps) expect((await ping(validPing({ app, version: "v".repeat(32), build: "9".repeat(32) }))).status).toBe(204);
+    expect(writes.mock.calls.map(([point]) => point?.blobs?.[0])).toEqual(apps);
+  });
+
+  it("refuses anything but the exact schema with 400 and writes nothing", async () => {
+    const { v: _v, ...noV } = validPing();
+    const { app: _app, ...noApp } = validPing();
+    const bodies: unknown[] = [
+      validPing({ v: 2 }),
+      validPing({ v: "1" }),
+      noV,
+      validPing({ install: newInstall().slice(1) }),
+      validPing({ install: `${newInstall()}A` }),
+      validPing({ install: `${newInstall().slice(2)}==` }),
+      validPing({ install: `${newInstall().slice(1)}+` }),
+      validPing({ install: 42 }),
+      validPing({ app: "android" }),
+      validPing({ app: "iOS" }),
+      noApp,
+      validPing({ version: "" }),
+      validPing({ version: "1".repeat(33) }),
+      validPing({ version: "1.0 beta" }),
+      validPing({ version: 1.4 }),
+      validPing({ build: "" }),
+      validPing({ build: "2".repeat(33) }),
+      validPing({ build: "21/2" }),
+      validPing({ locale: "en_GB" }),
+      [validPing()],
+      "null",
+      "",
+      "not json",
+      `${JSON.stringify(validPing())}x`,
+      new Uint8Array([0x7b, 0xff, 0x7d]),
+    ];
+    for (const body of bodies) await expectError(await ping(body), 400, "bad_request");
+    expect(writes).not.toHaveBeenCalled();
+  });
+
+  it("takes a body of 512 bytes and refuses 513 with 400", async () => {
+    const json = JSON.stringify(validPing());
+    expect((await ping(json.padEnd(512, " "))).status).toBe(204);
+    await expectError(await ping(json.padEnd(513, " ")), 400, "bad_request");
+    expect(writes).toHaveBeenCalledTimes(1);
+  });
+
+  it("answers method_not_allowed to any method but POST", async () => {
+    for (const method of ["GET", "PUT", "DELETE"]) {
+      const response = await ping(validPing(), freshIp(), method);
+      expect(response.headers.get("Allow")).toBe("POST");
+      await expectError(response, 405, "method_not_allowed");
+    }
+    expect(writes).not.toHaveBeenCalled();
+  });
+
+  // About 110 requests, which can pass the default 5 s timeout while the whole suite runs.
+  it("limits pings to 60 per minute per IP, apart from the host and guest connect limits", async () => {
+    const ip = freshIp();
+    const statuses = await Promise.all(Array.from({ length: 60 }, async () => (await ping(validPing(), ip)).status));
+    expect(statuses).toEqual(Array(60).fill(204));
+    await expectError(await ping(validPing(), ip), 429, "rate_limited");
+    expect(writes).toHaveBeenCalledTimes(60);
+    expect((await ping(validPing())).status).toBe(204);
+    // The spent ping budget leaves this IP's connects alone: each still passes its limiter.
+    const hostId = newHostId();
+    await expectError(await guestRequest(hostId, ip), 503, "host_offline");
+    await expectError(await hostRequest(hostId, "Bearer short", true, ip), 401, "unauthorized");
+
+    // And spent connect budgets leave this IP's pings alone.
+    const busy = freshIp();
+    await Promise.all(Array.from({ length: 30 }, () => guestRequest(hostId, busy)));
+    await Promise.all(Array.from({ length: 10 }, () => hostRequest(hostId, "Bearer short", true, busy)));
+    await expectError(await guestRequest(hostId, busy), 429, "rate_limited");
+    await expectError(await hostRequest(hostId, "Bearer short", true, busy), 429, "rate_limited");
+    expect((await ping(validPing(), busy)).status).toBe(204);
+  }, 20_000);
+});
+
 describe("landing page script", () => {
   it("takes the payload from the /i/<payload> path, else from the older /i#<payload> fragment", () => {
     expect(invitePayload("/i/eyJ2IjoxfQ", "")).toBe("eyJ2IjoxfQ");
@@ -891,5 +1002,14 @@ describe("logging", () => {
     ]);
     const all = lines.join("\n");
     for (const secretText of [id, key, host.hostId, host.secret, other.hostId, other.secret]) expect(all).not.toContain(secretText);
+  });
+
+  it("never logs a ping, accepted or refused", async () => {
+    const install = newInstall();
+    await ping(validPing({ install }));
+    await ping(validPing({ install, app: "android" }));
+    await ping(JSON.stringify(validPing({ install })).padEnd(600, " "));
+    await ping(validPing({ install }), freshIp(), "GET");
+    expect(lines).toEqual([]);
   });
 });
