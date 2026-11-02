@@ -96,8 +96,9 @@ final class AgentGroupsTests: XCTestCase {
                        "a folder sits above the idle agents, not at the bottom of the section")
     }
 
-    /// Owner report 2026-10-28: a folder of idle agents sank below every idle agent.
-    func testFolderSortsAfterStarredAgentsAndBeforeTheRestOfItsSection() throws {
+    /// Owner report 2026-10-28: a folder of idle agents sank below every idle agent. With no
+    /// turn times (all tied), a folder still goes before the other agents of its section.
+    func testOnATieAFolderSortsAfterStarredAgentsAndBeforeTheRestOfItsSection() throws {
         let list = try list(roster)
         let review = AgentFolder(id: "f-review", name: "Review", order: 0, members: ["enyo-review"])
         let quiet = AgentFolder(id: "f-quiet", name: "Quiet", order: 1, members: ["trend-scout"])
@@ -109,6 +110,28 @@ final class AgentGroupsTests: XCTestCase {
         XCTAssertEqual(names(layout.sections[2]), ["enyo-scout*", "[Quiet]", "  trend-scout", "enyo-efm"],
                        "an open folder's agents follow it, before the unstarred agents")
         XCTAssertEqual(layout.sections.map(\.agentCount), [3, 3, 3])
+    }
+
+    /// Owner report 2026-11-01: folders sat pinned at the top of their state. A folder now
+    /// sorts among its section's other agents by its most recently active agent.
+    func testFolderSortsByItsMostRecentAgentAmongTheOtherAgents() throws {
+        func idle(_ name: String, _ completedMs: Int64) throws -> AgentInfo {
+            let object: [String: Any] = ["pane_id": "p-\(name)", "name": name, "agent_status": "idle",
+                                         "last_completed_turn": ["completed_unix_ms": completedMs]]
+            return try JSONDecoder().decode(AgentInfo.self, from: JSONSerialization.data(withJSONObject: object))
+        }
+        let infos = try [idle("fresh", 900), idle("mid", 500), idle("old", 100),
+                         idle("docs-a", 300), idle("docs-b", 600), idle("ops-a", 50),
+                         idle("pinned", 10)]
+        let list = AgentList(agents: infos, livePaneIDs: Set(infos.map(\.paneID)))
+        let docs = AgentFolder(id: "f-docs", name: "Docs", order: 0, members: ["docs-a", "docs-b"])
+        let ops = AgentFolder(id: "f-ops", name: "Ops", order: 1, members: ["ops-a"])
+        let doc = AgentGroupsDocument(folders: [docs, ops], stars: ["pinned"])
+        let layout = AgentFolderLayout(sections: list.sections, groups: doc, openFolders: ["f-docs"])
+        XCTAssertEqual(names(layout.sections[0]),
+                       ["pinned*", "fresh", "[Docs]", "  docs-b", "  docs-a", "mid", "old", "[Ops]"],
+                       "starred first; then newest first, a folder at its newest agent (docs-b, 600)")
+        XCTAssertEqual(layout.sections[0].agentCount, 7)
     }
 
     func testFolderWithNoAgentHereIsKeptAsEmpty() throws {

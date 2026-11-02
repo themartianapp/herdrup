@@ -3,12 +3,15 @@
 // hibernation; the object keeps nothing in memory between events.
 import { DurableObject } from "cloudflare:workers";
 import { CLOSE, DATA, OPEN, closeReason, encodeFrame, parseFrame } from "./frames";
+import type { InviteOutcome } from "./invite";
 import { BEARER, errorResponse, log, type Env } from "./relay";
 
 /** Largest WebSocket message either side may send; anything bigger closes with 1009. */
 export const MAX_MESSAGE_BYTES = 70_000;
 /** Open guest sessions per host. */
 export const MAX_SESSIONS = 32;
+/** Live short-invite blobs per host. */
+export const MAX_INVITES = 200;
 const MAX_SESSION_ID = 0xffff_ffff;
 
 const CLOSE_NORMAL = 1000;
@@ -42,6 +45,13 @@ export class HostRelay extends DurableObject<Env> {
         next_session INTEGER NOT NULL
       )`,
     );
+    // The host's live short-invite ids, for the per-host cap. The blobs live in InviteBlob.
+    ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS invite (
+        id TEXT PRIMARY KEY,
+        expires_unix INTEGER NOT NULL
+      )`,
+    );
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
   }
 
@@ -57,15 +67,8 @@ export class HostRelay extends DurableObject<Env> {
       log({ endpoint, outcome: "unauthorized" });
       return errorResponse(401, "unauthorized");
     }
-    const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret));
-
-    // Synchronous from here on, so no other connect can interleave between the read and
-    // the trust-on-first-use insert.
-    const sql = this.ctx.storage.sql;
-    const stored = sql.exec<{ secret_sha256: ArrayBuffer }>("SELECT secret_sha256 FROM host WHERE id = 1").toArray()[0];
-    if (stored === undefined) {
-      sql.exec("INSERT INTO host (id, secret_sha256, next_session) VALUES (1, ?, 1)", hash);
-    } else if (!crypto.subtle.timingSafeEqual(stored.secret_sha256, hash)) {
+    const trust = await this.authenticate(secret, "enroll");
+    if (trust === "refused") {
       log({ endpoint, outcome: "unauthorized" });
       return errorResponse(401, "unauthorized");
     }
@@ -78,8 +81,55 @@ export class HostRelay extends DurableObject<Env> {
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server, ["host"]);
     server.serializeAttachment({ role: "host", session: 0 } satisfies Attachment);
-    log({ endpoint, outcome: stored === undefined ? "enrolled" : "connected" });
+    log({ endpoint, outcome: trust });
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /**
+   * Checks a relay secret against the stored SHA-256, for the host socket and the invite
+   * endpoints alike. Only the host socket (`"enroll"`) trusts the secret of a host_id with
+   * no hash yet (trust on first use); the invite endpoints (`"verify"`) refuse it, so they
+   * never enroll a host_id. The daemon always connects its host socket before it stores
+   * an invite.
+   */
+  private async authenticate(secret: string, mode: "enroll" | "verify"): Promise<"enrolled" | "connected" | "refused"> {
+    const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret));
+    // Synchronous from here on, so no other connect can interleave between the read and
+    // the trust-on-first-use insert.
+    const sql = this.ctx.storage.sql;
+    const stored = sql.exec<{ secret_sha256: ArrayBuffer }>("SELECT secret_sha256 FROM host WHERE id = 1").toArray()[0];
+    if (stored === undefined) {
+      if (mode === "verify") return "refused";
+      sql.exec("INSERT INTO host (id, secret_sha256, next_session) VALUES (1, ?, 1)", hash);
+      return "enrolled";
+    }
+    return crypto.subtle.timingSafeEqual(stored.secret_sha256, hash) ? "connected" : "refused";
+  }
+
+  /** Stores a short-invite blob for this host, within its cap of live invites. */
+  async putInvite(hostId: string, secret: string, id: string, expiresUnix: number, blob: ArrayBuffer): Promise<InviteOutcome> {
+    if ((await this.authenticate(secret, "verify")) === "refused") return "unauthorized";
+    const sql = this.ctx.storage.sql;
+    sql.exec("DELETE FROM invite WHERE expires_unix <= ?", Math.floor(Date.now() / 1000));
+    if (sql.exec("SELECT 1 FROM invite WHERE id = ?", id).toArray().length > 0) return "exists";
+    if (sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM invite").one().n >= MAX_INVITES) return "too_many_invites";
+    // Reserve the slot before yielding, so concurrent PUTs can't pass the cap together.
+    sql.exec("INSERT INTO invite (id, expires_unix) VALUES (?, ?)", id, expiresUnix);
+    let stored = false;
+    try {
+      stored = await this.env.INVITES.get(this.env.INVITES.idFromName(id)).store(hostId, expiresUnix, blob);
+    } finally {
+      if (!stored) sql.exec("DELETE FROM invite WHERE id = ?", id);
+    }
+    return stored ? "stored" : "exists";
+  }
+
+  /** Deletes a short-invite blob this host stored. One that is already gone counts as deleted. */
+  async deleteInvite(hostId: string, secret: string, id: string): Promise<InviteOutcome> {
+    if ((await this.authenticate(secret, "verify")) === "refused") return "unauthorized";
+    const outcome = await this.env.INVITES.get(this.env.INVITES.idFromName(id)).remove(hostId);
+    if (outcome === "deleted") this.ctx.storage.sql.exec("DELETE FROM invite WHERE id = ?", id);
+    return outcome;
   }
 
   private connectGuest(): Response {
