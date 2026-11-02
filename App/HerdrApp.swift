@@ -2509,7 +2509,13 @@ struct TerminalHomeView: View {
                     ZStack(alignment: .topLeading) {
                         Group {
                             if hSizeClass == .regular {
+                                // The tab paints its own opaque background over the detail
+                                // ground, so the field brings that ground under the status bar,
+                                // home indicator and side bands itself, or they show black. The
+                                // field stays inside the safe area so "Select an agent" keeps the
+                                // column's centre (the leading inset lies under the sidebar).
                                 SelectAgentPlaceholder(lines: glyphFieldLines, spotlight: glyphFieldSpotlight)
+                                    .background { Palette.groundMachine.ignoresSafeArea() }
                             } else {
                                 agentsTab
                             }
