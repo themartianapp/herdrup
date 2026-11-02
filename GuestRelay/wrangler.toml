@@ -2,8 +2,14 @@ name = "herdrup-guest"
 main = "src/index.ts"
 compatibility_date = "2026-08-01"
 workers_dev = true
-# Attached on deploy; the zone themartian.app must be on the deploying account.
-routes = [{ pattern = "guest.herdrup.themartian.app", custom_domain = true }]
+# Attached on deploy; both zones must be on the deploying account. guest.herdrup.app is the
+# current name. guest.herdrup.themartian.app keeps SERVING (not redirecting): existing
+# invites, guests and hosts carry it as their relay URL, and an invite only opens on the
+# relay it names.
+routes = [
+  { pattern = "guest.herdrup.app", custom_domain = true },
+  { pattern = "guest.herdrup.themartian.app", custom_domain = true },
+]
 # Never push request logs anywhere: see [observability] below.
 logpush = false
 

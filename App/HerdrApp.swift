@@ -751,7 +751,7 @@ enum HerdrSetup {
     /// It points at the FORK, not `herdr.dev/install.sh`: upstream's installer
     /// produces a herdr with no `api-bridge`, which this app cannot drive.
     static let installCommand =
-        "curl -fsSL https://herdrup.themartian.app/install.sh | sh"
+        "curl -fsSL https://herdrup.app/install.sh | sh"
     static let pairCommand = "herdr pair"
     static let openQRCommand = "herdr pair --open"
     static let saveQRCommand = "herdr pair --qr-file ~/Desktop/herdr-pair.svg"
@@ -8164,10 +8164,10 @@ struct SettingsView: View {
             discordRow
             glyphDivider
             linkGlyphRow("Privacy Policy", systemImage: "lock.shield",
-                         url: URL(string: "https://herdrup.themartian.app/legal/privacy")!)
+                         url: URL(string: "https://herdrup.app/legal/privacy")!)
             glyphDivider
             linkGlyphRow("Terms of Service", systemImage: "doc.text",
-                         url: URL(string: "https://herdrup.themartian.app/legal/terms")!)
+                         url: URL(string: "https://herdrup.app/legal/terms")!)
             glyphDivider
             linkGlyphRow("Open source on GitHub", systemImage: "chevron.left.forwardslash.chevron.right",
                          url: URL(string: "https://github.com/themartianapp/herdrup")!)
@@ -10193,7 +10193,7 @@ struct MockTransport: HerdrTransport {
         if state == "legacy" {
             return #"{"id":"","error":{"code":"invalid_request","message":"invalid request: unknown variant `notifications.status`"}}"#
         }
-        return #"{"id":"mock","result":{"type":"notifications_status","state":"\#(state)","mode":"auto","relay_url":"https://push.herdrup.themartian.app","devices":1,"relay_devices":1}}"#
+        return #"{"id":"mock","result":{"type":"notifications_status","state":"\#(state)","mode":"auto","relay_url":"https://push.herdrup.app","devices":1,"relay_devices":1}}"#
     }
 
     /// `MockWireFixtures.agentRead` under its old name, for the agent.read callers not yet
