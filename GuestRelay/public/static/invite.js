@@ -60,18 +60,16 @@ export async function openShortInvite(short, blob, origin) {
 }
 
 /**
- * Whether an invite's relay URL names this page's relay: same scheme, host and port as
- * `origin`, at its root. A trailing slash is the same relay, as the app treats it
- * (GuestInvite.Web.isOnRelay).
+ * Whether an invite's relay names this page's relay: the page origin exactly, with or without
+ * one trailing slash, as the app accepts (GuestInvite.Web.isOnRelay). Compared as strings, not
+ * parsed: the payload is handed to the app unchanged, and a parser-ambiguous spelling (a
+ * backslash, dot segments, credentials) can mean this relay to the browser's URL parser and
+ * another host to the app's (review of #608).
  * @param {unknown} relay
  * @param {string} origin
  */
 export function isRelay(relay, origin) {
-  if (typeof relay !== "string") return false;
-  var url;
-  try { url = new URL(relay); } catch (_) { return false; }
-  if (url.username || url.password || url.search || url.hash) return false;
-  return url.origin === origin && url.pathname.replace(/\/+$/, "") === "";
+  return typeof relay === "string" && (relay === origin || relay === origin + "/");
 }
 
 function b64urlBytes(text) {
