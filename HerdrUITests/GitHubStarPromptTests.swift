@@ -59,8 +59,9 @@ final class GitHubStarPromptTests: XCTestCase {
         XCTAssertTrue(sent.waitForExistence(timeout: 10), "the chat should show \"\(text)\"")
     }
 
-    func testBarAppearsAfterFivePromptsAndNotNowRetiresIt() {
-        let app = launch("1")
+    /// From a fresh launch: sends five prompts in herdr-app's Chat and returns to the home,
+    /// where the bar must now show.
+    private func showBarAfterFivePrompts(_ app: XCUIApplication) {
         XCTAssertTrue(app.staticTexts["herdr-app"].firstMatch.waitForExistence(timeout: 12))
         XCTAssertFalse(bar(app).exists, "a fresh install shows no bar")
         openHerdrApp(app)
@@ -71,6 +72,11 @@ final class GitHubStarPromptTests: XCTestCase {
         sendPrompt("Star prompt check 5", in: app)
         showHome(app)
         XCTAssertTrue(bar(app).waitForExistence(timeout: 5), "the fifth prompt shows the bar on the agents home")
+    }
+
+    func testBarAppearsAfterFivePromptsAndNotNowRetiresIt() {
+        let app = launch("1")
+        showBarAfterFivePrompts(app)
         let star = app.buttons["github-star-card-star"]
         let notNow = app.buttons["github-star-card-not-now"]
         XCTAssertTrue(star.isHittable, "Star should be tappable over the list")
@@ -90,5 +96,32 @@ final class GitHubStarPromptTests: XCTestCase {
         showHome(again)
         XCTAssertFalse(bar(again).exists, "another prompt does not bring it back")
         again.terminate()
+    }
+
+    /// The iPad sidebar is 320 pt, so the capsule is under `GitHubStarPromptCard.compactWidth`:
+    /// the star circle goes, the text starts 16 pt in, and the title keeps its one full line
+    /// clear of the Star pill. The title never ellipsizes (no line limit), so "truncated"
+    /// here means pushed past the pill or the capsule, or wrapped onto a second line.
+    func testBarFitsTheIPadSidebar() throws {
+        try XCTSkipUnless(pad, "the 320 pt sidebar is iPad only")
+        let app = launch("1")
+        showBarAfterFivePrompts(app)
+        let card = bar(app)
+        let title = app.staticTexts["github-star-card-title"]
+        let subtitle = app.staticTexts["github-star-card-subtitle"]
+        let star = app.buttons["github-star-card-star"]
+        XCTAssertTrue(title.waitForExistence(timeout: 3))
+        XCTAssertEqual(title.label, "Enjoying HerdrUp?", "the full title is exposed")
+        XCTAssertEqual(subtitle.label, "Star it on GitHub")
+        attach(app, "github-star-bar-ipad")
+
+        XCTAssertLessThan(card.frame.width, 340, "the sidebar bar is the compact one: \(card.frame)")
+        XCTAssertTrue(card.frame.contains(title.frame), "title \(title.frame) inside the bar \(card.frame)")
+        XCTAssertLessThanOrEqual(title.frame.maxX, star.frame.minX, "title \(title.frame) clear of Star \(star.frame)")
+        XCTAssertLessThan(title.frame.height, subtitle.frame.height * 1.5,
+                          "the title stays on one line: \(title.frame) vs subtitle \(subtitle.frame)")
+        XCTAssertEqual(title.frame.minX - card.frame.minX, 16, accuracy: 2,
+                       "without the star circle the text starts 16 pt in")
+        app.terminate()
     }
 }

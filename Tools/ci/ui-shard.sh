@@ -525,6 +525,10 @@ case "$shard" in
     # iPhone half (no handles) runs in the iPhone app round.
     run_suite iPadGramColumn "$IPAD_UDID" 10m -only-testing:HerdrUITests/GramColumnTests || failed=1
     check_classes_ran TestReceipts/iPadGramColumn-first.xcresult GramColumnTests || failed=1
+    # The GitHub star bar in the 320 pt sidebar (#602): compact layout, title on one line.
+    run_suite iPadStarPrompt "$IPAD_UDID" 10m \
+      -only-testing:HerdrUITests/GitHubStarPromptTests/testBarFitsTheIPadSidebar || failed=1
+    check_classes_ran TestReceipts/iPadStarPrompt-first.xcresult GitHubStarPromptTests || failed=1
     # Herdrup Desktop's 13-inch references, before AgentListChrome leaves a window behind.
     desktop_reference_round iPadDesktopReference "$IPAD_UDID" || failed=1
     # Last of the app rounds: AgentListChromeTests shrinks the app into a window on purpose,
