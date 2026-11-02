@@ -2555,7 +2555,10 @@ struct TerminalHomeView: View {
                         .tabItem { Label(HomeTab.settings.label, systemImage: HomeTab.settings.icon) }
                         .toolbar(hSizeClass == .regular ? .hidden : .visible, for: .tabBar)
                 }
-                .tint(Palette.text)
+                // The bar is only visible in compact, where tab items use the text colour.
+                // Regular hides it, and its content keeps the split view's brand tint
+                // (Settings actions, Gram controls), as before the tab tree was shared.
+                .tint(hSizeClass == .regular ? Palette.brand : Palette.text)
         }
     }
 
@@ -8467,7 +8470,7 @@ struct SettingsView: View {
         if machine.stale { detail += " (stale)" }
         return HStack(spacing: 12) {
             ZStack {
-                RoundedRectangle(cornerRadius: 10).fill(AgentIdentity.gradient(for: machine.displayLabel))
+                Circle().fill(AgentIdentity.gradient(for: machine.displayLabel))
                     .frame(width: 40, height: 40)
                 Text(AgentIdentity.glyph(for: machine.displayLabel))
                     .font(Typography.app(18, .bold)).foregroundStyle(.white)
@@ -8511,12 +8514,12 @@ struct SettingsView: View {
         .padding(.horizontal, 18).padding(.vertical, 14)
     }
 
-    /// One peer: an identity chip keyed on the alias (the same gradient+glyph the
+    /// One peer: an identity disc keyed on the alias (the same circle, gradient and glyph
     /// agent cards use), the alias, an "N agent(s)" line, and a reachability badge.
     private func peerRow(_ peer: PeerSummary) -> some View {
         HStack(spacing: 12) {
             ZStack {
-                RoundedRectangle(cornerRadius: 10).fill(AgentIdentity.gradient(for: peer.alias))
+                Circle().fill(AgentIdentity.gradient(for: peer.alias))
                     .frame(width: 40, height: 40)
                 Text(AgentIdentity.glyph(for: peer.alias))
                     .font(Typography.app(18, .bold)).foregroundStyle(.white)
