@@ -32,6 +32,10 @@ struct HerdrApp: App {
         if ScreenshotMock.mode != nil, ProcessInfo.processInfo.environment["HERDR_MOCK_COLUMN_WIDTH"] != "keep" {
             UserDefaults.standard.removeObject(forKey: ConversationColumnWidth.storageKey)
         }
+        // And from no prompts sent and no star card answered, unless `HERDR_MOCK_STAR_PROMPT=keep`.
+        if ScreenshotMock.mode != nil {
+            GitHubStarPrompt.resetForMockLaunch(ProcessInfo.processInfo.environment, in: .standard)
+        }
         #endif
     }
 
@@ -5616,6 +5620,12 @@ struct TerminalPaneContent: View {
     /// Persisted app-wide via UserDefaults, so once the reader answers it once — Switch
     /// OR dismiss, for ANY Claude Code pane — it never shows again. See `showTuiBanner`.
     @AppStorage("tui.classicPrompted") private var tuiClassicPrompted = false
+    /// The one-time GitHub star card (`GitHubStarPrompt`): owner prompts sent so far and
+    /// whether the card was answered. App-wide; see `showStarPrompt`.
+    @AppStorage(GitHubStarPrompt.sentPromptsKey) private var starPromptSends = 0
+    @AppStorage(GitHubStarPrompt.answeredKey) private var starPromptAnswered = false
+    /// Opens the repo from the star card in the system browser.
+    @Environment(\.openURL) private var openURL
 
     private let router = InputRouter()
 
@@ -5706,6 +5716,19 @@ struct TerminalPaneContent: View {
         return (agent?.agent?.contains("claude") ?? false) && !tuiClassicPrompted
     }
 
+    /// Whether to show the one-time GitHub star card: after `GitHubStarPrompt.threshold`
+    /// owner prompts, until either button answers it. Only this owner pane mounts it, so
+    /// guests never see it. Never beside the classic-scrolling banner: one offer at a time.
+    private var showStarPrompt: Bool {
+        // Screenshot mocks and UI tests keep their pixels unless they opt in.
+        #if DEBUG
+        if ScreenshotMock.mode != nil, !GitHubStarPrompt.mockShowsCard(ProcessInfo.processInfo.environment) {
+            return false
+        }
+        #endif
+        return GitHubStarPrompt.isDue(sentPrompts: starPromptSends, answered: starPromptAnswered) && !showTuiBanner
+    }
+
     /// The UI text-size setting. Read in `body` only to observe it, so the pane
     /// CHROME (header/keycaps, which use Typography) re-renders at the new
     /// Typography.scale even while kept mounted. Terminal CONTENT is insulated —
@@ -5735,6 +5758,15 @@ struct TerminalPaneContent: View {
                 // never covers output or fights the header/edge-back gestures; Claude
                 // Code panes only, shown at most once (see showTuiBanner).
                 if showTuiBanner { tuiBanner }
+                // The one-time GitHub star card, in the same slot (see showStarPrompt).
+                if showStarPrompt {
+                    GitHubStarPromptCard(
+                        onStar: {
+                            starPromptAnswered = true
+                            openURL(GitHubStarPrompt.repositoryURL)
+                        },
+                        onNotNow: { starPromptAnswered = true })
+                }
                 // The live terminal: a real SwiftTerm VT fed by the pane.stream raw
                 // byte firehose (#40), full-bleed as the machine ground. A terminal
                 // tap enables direct PTY input; the reply bar remains the deliberate
@@ -7104,6 +7136,8 @@ struct TerminalPaneContent: View {
         let result = try await client.prompt(
             pane: pane, text: text,
             waitUntil: HerdrClient.anyAgentStatus, timeoutMs: 6000)
+        // This pane is the owner's: a delivered prompt counts toward the GitHub star card.
+        GitHubStarPrompt.recordPrompt(author: .owner, delivery: result, in: .standard)
         switch result {
         case .submitted:
             actionNote = nil
