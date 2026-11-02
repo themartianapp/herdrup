@@ -241,8 +241,10 @@ public struct AgentFolderSummary: Equatable, Sendable {
 /// - A starred agent goes first within its state, so a starred agent that needs you is the
 ///   very first row.
 /// - A folder's agents leave their sections. The folder row sits in the section of its most
-///   urgent agent, after that section's starred agents and before its other agents (folders
-///   by their order), and when open its agents follow it, most urgent first.
+///   urgent agent, after that section's starred agents, and among the other agents by
+///   recency: a folder counts as recent as its most recently active agent, the same
+///   last-completed-turn time the list sorts agents by. On a tie the folder goes first, then
+///   folders by their order. When open, its agents follow it, most urgent first.
 /// - A folder with none of its agents in the list is kept in `emptyFolders`, so it can still
 ///   be renamed or deleted.
 public struct AgentFolderLayout: Equatable, Sendable {
@@ -293,20 +295,35 @@ public struct AgentFolderLayout: Equatable, Sendable {
             }
         }
 
+        // A folder is as recent as its most recently active agent: the same clock
+        // `AgentList` sorts agents by within a state.
+        func recency(_ row: AgentRow) -> Int64 { row.info.lastCompletedTurn?.completedUnixMs ?? Int64.min }
+        func recency(_ summary: AgentFolderSummary) -> Int64 { summary.members.map(recency).max() ?? Int64.min }
+
         var built: [Section] = []
         for section in sections {
             let loose = section.rows.filter { folderID($0) == nil }
             var items: [AgentListItem] = loose.filter(starred)
                 .map { .agent($0, starred: true, folderID: nil) }
             var count = loose.count
-            for summary in summaries[section.group] ?? [] {
+            // Both lists are newest first (`loose` from `AgentList`; folders stably sorted
+            // here), so one merge interleaves them.
+            let folders = (summaries[section.group] ?? []).enumerated()
+                .sorted { (recency($1.element), $0.offset) < (recency($0.element), $1.offset) }
+                .map(\.element)
+            var others = loose.filter { !starred($0) }[...]
+            for summary in folders {
+                while let next = others.first, recency(next) > recency(summary) {
+                    items.append(.agent(next, starred: false, folderID: nil))
+                    others.removeFirst()
+                }
                 items.append(.folder(summary))
                 count += summary.members.count
                 if summary.isOpen {
                     items += summary.members.map { .agent($0, starred: starred($0), folderID: summary.folder.id) }
                 }
             }
-            items += loose.filter { !starred($0) }.map { .agent($0, starred: false, folderID: nil) }
+            items += others.map { .agent($0, starred: false, folderID: nil) }
             if !items.isEmpty { built.append(Section(group: section.group, items: items, agentCount: count)) }
         }
         // A folder whose most urgent agent's state has no section of its own here cannot
