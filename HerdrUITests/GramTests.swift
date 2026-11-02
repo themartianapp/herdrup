@@ -1186,6 +1186,7 @@ final class GramTests: XCTestCase {
         XCTAssertTrue(file.waitForExistence(timeout: 10), "the zip should draw as a file card")
         reveal(file, in: app, older: false)
         file.tap()
+        let tapped = Date()
         let downloading = NSPredicate(format: "value BEGINSWITH %@", "Downloading")
         XCTAssertTrue(waitForPredicate(downloading, object: file, timeout: 5),
                       "the card should show its download; value \(file.value ?? "nil")")
@@ -1205,8 +1206,16 @@ final class GramTests: XCTestCase {
         sections.buttons["Gram"].firstMatch.tap()
 
         XCTAssertTrue(file.waitForExistence(timeout: 10), "back on Gram, the zip's card is drawn")
-        XCTAssertTrue(waitForPredicate(downloading, object: file, timeout: 5),
-                      "back on Gram, the download's ring is on the card again; value \(file.value ?? "nil")")
+        // The ring can only still be there if the 20 s hold has not run out. On a slow runner
+        // the round trip has taken 15-20 s (#601), so require the ring only with a clear
+        // margin left. The bug this test exists for (leaving Gram cancelled the download)
+        // is caught either way below: the zip never opens, or it is asked for twice.
+        if Date().timeIntervalSince(tapped) < 12 {
+            XCTAssertTrue(waitForPredicate(downloading, object: file, timeout: 5),
+                          "back on Gram, the download's ring is on the card again; value \(file.value ?? "nil")")
+        } else {
+            XCTContext.runActivity(named: "ring check skipped: \(Int(Date().timeIntervalSince(tapped))) s since the tap, the hold may have ended") { _ in }
+        }
         let opened = probe(app, "gram-opened-file")
         // Any name: the mock answers every non-image file with the same fixture.
         XCTAssertTrue(waitForLabel(opened, matching: "opened:.+", timeout: 40),
