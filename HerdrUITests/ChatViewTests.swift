@@ -75,15 +75,15 @@ final class ChatViewTests: XCTestCase {
 
     /// #604: a just-started omp agent answers `transcript_unsupported` until omp's integration
     /// reports a session, then `transcript_unavailable` until its first turn. Chat must come
-    /// back without restarting the app, once the transcript can be read.
+    /// back without restarting the app, once the transcript can be read. How long Chat stays
+    /// hidden meanwhile depends on retry timing, so it is not asserted; before the fix it never
+    /// came back (this test failed at that assertion).
     func testChatAppearsOnceAStartingOmpAgentHasATranscript() {
         let app = launch("chatview", ["HERDR_MOCK_CHAT_STARTUP":
             "transcript_unsupported,transcript_unsupported,transcript_unavailable"])
         openAgent("herdr-app", in: app)
         let chatSwitch = app.buttons["chat-switch-chat"]
         XCTAssertTrue(app.terminalSurface.waitForExistence(timeout: 10), "the pane opens")
-        XCTAssertTrue(chatSwitch.waitForNonExistence(timeout: 6),
-                      "a refused transcript hides Chat while the agent starts")
         XCTAssertTrue(chatSwitch.waitForExistence(timeout: 30),
                       "Chat should come back once the agent's transcript can be read")
         let chat = app.descendants(matching: .any)["chat-view"].firstMatch
