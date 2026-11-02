@@ -315,8 +315,20 @@ public struct TranscriptPendingAsk: Decodable, Sendable, Equatable {
     public let id: String
     public let questions: [TranscriptQuestion]
     /// Single question, single-select, at least one option, and this caller may answer
-    /// (false for guests): only then can the chat's buttons answer it.
+    /// (false for guests of a host older than guest answers): only then can the chat's
+    /// buttons answer it.
     public let answerable: Bool
+
+    /// Whether the chat's buttons could answer this question's shape: one single-select
+    /// question with options, exactly the server's rule for `answerable`.
+    public var hasAnswerableShape: Bool {
+        guard questions.count == 1, let only = questions.first else { return false }
+        return !only.multi && !only.options.isEmpty
+    }
+
+    /// The question's shape is answerable but the server says this caller may not answer
+    /// it: a host that keeps answers for the owner.
+    public var isWithheldFromCaller: Bool { hasAnswerableShape && !answerable }
 
     public init(id: String, questions: [TranscriptQuestion], answerable: Bool) {
         self.id = id

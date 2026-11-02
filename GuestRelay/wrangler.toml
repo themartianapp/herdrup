@@ -32,11 +32,21 @@ enabled = false
 name = "HOSTS"
 class_name = "HostRelay"
 
+# One Durable Object per short-invite id: the encrypted blob, its host and expiry.
+[[durable_objects.bindings]]
+name = "INVITES"
+class_name = "InviteBlob"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["HostRelay"]
 
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["InviteBlob"]
+
 # Both keyed by CF-Connecting-IP and checked before the Durable Object is reached.
+# HOST_CONNECT_LIMIT also covers invite PUT and DELETE.
 [[ratelimits]]
 name = "GUEST_CONNECT_LIMIT"
 namespace_id = "3101"

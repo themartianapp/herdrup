@@ -2,8 +2,10 @@ import HerdrKit
 import SwiftUI
 
 /// A guest's view of the one agent shared with them: the live terminal, view only, and a
-/// composer whose messages and files reach the agent under the guest's name. When the owner
-/// shares the agent's Gram, a second tab lists it.
+/// composer whose messages and files reach the agent under the guest's name. While the
+/// agent waits on a menu or question the guest answers it as the owner would: the chat's
+/// answer buttons, or the owner's menu keys under the terminal. When the owner shares the
+/// agent's Gram, a second tab lists it.
 struct GuestPaneView: View {
     let client: HerdrClient
     let access: GuestAccess
@@ -52,6 +54,8 @@ struct GuestPaneView: View {
     @State private var dictating = false
     @State private var sending = false
     @State private var note: String?
+    /// Menu keys go out one after another, in the order they were tapped.
+    @State private var menuKeyTask: Task<Void, Never>?
     /// Why the last status poll failed, when it wasn't a change of availability.
     @State private var connectionNote: String?
     @State private var attachments: [ComposerAttachment] = []
@@ -398,7 +402,7 @@ struct GuestPaneView: View {
                             color: Palette.textDim, dot: Palette.textFaint, fill: Palette.surfaceRaised,
                             pulsing: false)
         case .running:
-            if isBlocked {
+            if waitingForOwner {
                 GuestStatusPill(label: "NEEDS \(access.ownerName.uppercased())", color: Palette.waiting,
                                 dot: Palette.waiting, fill: Palette.waiting.opacity(0.14), pulsing: false)
             } else {
@@ -409,9 +413,17 @@ struct GuestPaneView: View {
         }
     }
 
+    /// The agent waits on a menu or question: the state in which the host lets a guest
+    /// press the menu keys (`agent_status` blocked or `input_pending`).
     private var isBlocked: Bool {
-        availability == .running && AgentStatus(wire: agent?.agentStatus).isBlocked
+        availability == .running && agent?.isAwaitingMenuInput == true
     }
+
+    /// Blocked, and this guest's host keeps answers for the owner (an older host refused one).
+    private var waitingForOwner: Bool { isBlocked && chatModel.answersRefused }
+
+    /// The owner's menu keys, under the terminal, while the guest may answer.
+    private var showsMenuKeys: Bool { isBlocked && !chatModel.answersRefused && showingTerminal }
 
     // MARK: - Terminal
 
@@ -530,7 +542,13 @@ struct GuestPaneView: View {
                         if !showingTerminal && note == nil && connectionNote == nil && !isBlocked {
                             Color.clear.frame(height: 4)
                         } else {
-                            noteRow.padding(.top, 2).padding(.bottom, 10)
+                            VStack(spacing: 0) {
+                                noteRow.padding(.top, 2).padding(.bottom, showsMenuKeys ? 4 : 10)
+                                if showsMenuKeys {
+                                    GuestMenuKeyBar(enabled: canCompose, send: sendMenuKey)
+                                        .padding(.bottom, 6)
+                                }
+                            }
                         }
                     }
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { bottomChromeHeight = $0 }
@@ -546,17 +564,22 @@ struct GuestPaneView: View {
     }
 
     /// The single line above the composer: an error note when there is one, else the
-    /// blocked banner, else the view-only reminder.
+    /// question banner, else the view-only reminder.
     @ViewBuilder
     private var noteRow: some View {
         HStack(spacing: 7) {
             if let text = note ?? connectionNote {
                 Text(text).foregroundStyle(Palette.textDim)
                     .accessibilityIdentifier("guest-note")
-            } else if isBlocked {
+            } else if waitingForOwner {
                 Image(systemName: "clock").font(.system(size: 12, weight: .semibold))
                 Text("\(access.agentName) is asking a question only \(access.ownerName) can answer")
                     .accessibilityIdentifier("guest-blocked-banner")
+            } else if isBlocked {
+                Image(systemName: "questionmark.circle").font(.system(size: 12, weight: .semibold))
+                Text(showingTerminal ? "\(access.agentName) is asking a question · answer with the keys below"
+                                     : "\(access.agentName) is asking a question")
+                    .accessibilityIdentifier("guest-question-banner")
             } else if availability == .running || availability == .connecting {
                 Image(systemName: "eye").font(.system(size: 12, weight: .semibold))
                 Text(resizeRefused ? "View-only · this host doesn't support guest resizing"
@@ -799,6 +822,33 @@ struct GuestPaneView: View {
     private func streamEnded(_ error: Error?) {
         guard let error, apply(error) else { return }
         Task { await refresh() }
+    }
+
+    // MARK: - Menu keys
+
+    /// Presses one of the owner's menu keys in the shared agent's pane (`pane.send_keys`).
+    /// The host takes these from a guest only while the agent waits on a menu, and only
+    /// `GuestMenuKeyBar.keys`. A refusal while the agent still waits means an older host
+    /// that keeps answers for the owner: back to waiting for them. A refusal after the menu
+    /// closed is the race it looks like, and the next poll settles the screen.
+    private func sendMenuKey(_ key: String) {
+        guard GuestMenuKeyBar.keys.contains(key), let pane = agent?.paneID else { return }
+        let previous = menuKeyTask
+        menuKeyTask = Task {
+            await previous?.value
+            guard !Task.isCancelled, !chatModel.answersRefused else { return }
+            do {
+                try await client.sendPaneKeys(pane: pane, keys: [key])
+                note = nil
+            } catch is CancellationError {
+                return
+            } catch let error where GuestError.classify(error) == .forbidden {
+                await refresh()
+                if isBlocked { chatModel.noteAnswersRefused() }
+            } catch {
+                note = failureNote(error)
+            }
+        }
     }
 
     // MARK: - Send
@@ -1057,5 +1107,60 @@ private struct GuestCenterMessage: View {
         .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(Palette.hairline, lineWidth: 1))
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("guest-center-message")
+    }
+}
+
+/// The owner's menu keys (the terminal's quick-key row: esc, space, arrows, tab and the
+/// pinned Return), for a guest answering a plan approval, a permission prompt or a
+/// multi-part question. Only keys a guest's host accepts, and nothing that types text.
+struct GuestMenuKeyBar: View {
+    /// Every key this bar sends; the host's guest gate allows exactly these and digits, y, n.
+    static let keys: Set<String> = ["Escape", "Space", "Left", "Up", "Down", "Right", "Tab", "Enter"]
+
+    let enabled: Bool
+    let send: (String) -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    keyCap(label: "esc", key: "Escape")
+                    keyCap(label: "space", key: "Space", minWidth: 84)
+                    ComposerKeyGroup {
+                        keyCap(image: "ComposerKeyLeft", key: "Left", grouped: true)
+                        ComposerKeyDivider()
+                        keyCap(image: "ComposerKeyUp", key: "Up", grouped: true)
+                        ComposerKeyDivider()
+                        keyCap(image: "ComposerKeyDown", key: "Down", grouped: true)
+                        ComposerKeyDivider()
+                        keyCap(image: "ComposerKeyRight", key: "Right", grouped: true)
+                    }
+                    keyCap(label: "tab", key: "Tab")
+                }
+                .padding(.leading, 16).padding(.trailing, 12).padding(.vertical, 4)
+            }
+            // Keys fade out just before the pinned Return instead of sliding under it.
+            .mask(
+                HStack(spacing: 0) {
+                    Rectangle()
+                    LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+                        .frame(width: 16)
+                }
+            )
+            keyCap(image: "ComposerKeyEnter", key: "Enter", primary: true)
+                .padding(.trailing, 16)
+        }
+        .disabled(!enabled)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("guest-menu-keys")
+    }
+
+    private func keyCap(label: String? = nil, image: String? = nil, key: String, primary: Bool = false,
+                        grouped: Bool = false, minWidth: CGFloat = 44) -> some View {
+        Button { send(key) } label: {
+            ComposerQuickKeyLabel(text: label ?? key, imageName: image, primary: primary,
+                                  grouped: grouped, minWidth: minWidth)
+        }
+        .accessibilityLabel(Text(key))
     }
 }

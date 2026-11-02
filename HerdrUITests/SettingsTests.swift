@@ -23,6 +23,7 @@ final class SettingsTests: XCTestCase {
         // Check process state before queries/activate can relaunch a crashed app.
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 5))
         window.waitForSettledFrame()
+        attach(app, "settings-first-settled-width-\(Int(window.frame.width))")
         // iPadOS can settle a corner drag out of full screen at a system window size just over
         // 600 pt (CI run 39966934030 stopped at 613 pt, #491), so Settings would never be
         // compact. Drag this window's own corner once more, to 480 pt from its left edge.
@@ -34,7 +35,6 @@ final class SettingsTests: XCTestCase {
             window.waitForSettledFrame()
         }
         XCTAssertLessThan(window.frame.width, 600, "The regression must exercise compact Settings")
-        let compactWidth = window.frame.width
         app.buttons["Settings"].firstMatch.tap()
         let machines = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Machines")).firstMatch
         XCTAssertTrue(machines.waitForExistence(timeout: 5))
@@ -49,21 +49,38 @@ final class SettingsTests: XCTestCase {
         let back = app.buttons["Back"].firstMatch
         XCTAssertTrue(back.waitForExistence(timeout: 5))
         XCTAssertTrue(back.isHittable)
+        attach(app, "settings-compact-resumed-width-\(Int(window.frame.width))")
         back.tap()
         XCTAssertTrue(machines.waitForExistence(timeout: 5))
         XCTAssertTrue(machines.isHittable)
-        // Expanding also remounts the adaptive host; shrinking alone misses #416.
+        // iPadOS resizes this floating window around its centre: a 275-point handle
+        // movement widened 375 to 915, moving both edges. Request half the width delta.
         window.coordinate(withNormalizedOffset: CGVector(dx: 0.997, dy: 0.997))
             .press(forDuration: 0.3, thenDragTo: window.coordinate(withNormalizedOffset: .zero)
-                .withOffset(CGVector(dx: max(initialSize.width, 800) - 50,
+                .withOffset(CGVector(dx: (window.frame.width + 650) / 2,
+                                     dy: window.frame.height)))
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 5))
+        window.waitForSettledFrame()
+        XCTAssertGreaterThanOrEqual(window.frame.width, 600)
+        XCTAssertLessThan(window.frame.width, 800)
+        XCTAssertTrue(machines.waitForExistence(timeout: 5))
+        XCTAssertTrue(machines.isHittable, "Narrow regular width must keep Settings navigation reachable")
+        attach(app, "settings-narrow-regular-width-\(Int(window.frame.width))")
+        // Returning to full width must preserve that navigation too.
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.997, dy: 0.997))
+            .press(forDuration: 0.3, thenDragTo: window.coordinate(withNormalizedOffset: .zero)
+                .withOffset(CGVector(dx: max(initialSize.width, 900) - 50,
                                      dy: max(initialSize.height, 700) - 50)))
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 5))
-        XCTAssertGreaterThan(window.frame.width, compactWidth + 100, "The regression must expand the window")
+        window.waitForSettledFrame()
+        XCTAssertGreaterThanOrEqual(window.frame.width, 800,
+                                    "The final resize must leave the narrow regular-width range")
         let settings = app.buttons["Settings"].firstMatch
         XCTAssertTrue(settings.waitForExistence(timeout: 5))
         XCTAssertTrue(settings.isHittable)
         XCTAssertTrue(machines.waitForExistence(timeout: 5))
         XCTAssertTrue(machines.isHittable)
+        attach(app, "settings-expanded-width-\(Int(window.frame.width))")
     }
 
 

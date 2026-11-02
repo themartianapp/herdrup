@@ -3,7 +3,8 @@ import SwiftUI
 import UIKit
 
 /// Who is reading the chat. A guest sees the same conversation without notes or step
-/// details (the server leaves them out) and cannot answer omp's questions.
+/// details (the server leaves them out) and answers omp's questions as the owner does,
+/// unless an older host refuses guests that (`ChatModel.answersRefused`).
 enum ChatViewer: Equatable {
     case owner
     case guest(name: String, ownerName: String)
@@ -59,6 +60,10 @@ final class ChatModel: ObservableObject {
     @Published private(set) var olderFailed = false
     @Published private(set) var answeringAskID: String?
     @Published private(set) var answerProblem: ChatAnswerProblem?
+    /// The guest's host keeps answers for the owner (a host older than guest answers): it
+    /// withheld `answerable` from a question the buttons could answer, or refused a guest's
+    /// answer or menu key (`guest_forbidden`). Questions wait for the owner for the session.
+    @Published private(set) var answersRefused = false
     /// The server cannot give this agent a transcript (not omp, no session file, an older
     /// server or peer): the page goes back to the terminal for good.
     @Published private(set) var unsupported = false
@@ -130,8 +135,8 @@ final class ChatModel: ObservableObject {
         }
     }
 
-    /// Answers omp's open question with one of its options (owner only). The card shows
-    /// the choice at once; a refusal puts the buttons back with the reason.
+    /// Answers omp's open question with one of its options. The card shows the choice at
+    /// once; a refusal puts the buttons back with the reason.
     func answer(client: HerdrClient, askID: String, option: String) async {
         guard answeringAskID == nil, store.subagent == nil else { return }
         answeringAskID = askID
@@ -145,6 +150,9 @@ final class ChatModel: ObservableObject {
             case "ask_not_pending":
                 // Answered elsewhere (the terminal, the lock screen): the refresh shows it.
                 break
+            case "guest_forbidden":
+                // An older host that keeps answers for the owner: wait for them, as before.
+                answersRefused = true
             case "selection_mismatch":
                 answerProblem = ChatAnswerProblem(
                     askID: askID, message: "omp's options changed. Check the question in the Terminal.",
@@ -164,6 +172,11 @@ final class ChatModel: ObservableObject {
                                               offersTerminal: false)
         }
         await store.refresh(client: client)
+    }
+
+    /// A guest's host refused a guest's menu key: stop offering guest answers this session.
+    func noteAnswersRefused() {
+        answersRefused = true
     }
 
     /// Keeps the chat current while it is on screen: the agent's own events where the
@@ -246,6 +259,8 @@ final class ChatModel: ObservableObject {
         assign(\.hasOlder, store.hasOlder)
         assign(\.loadingOlder, store.loadingOlder)
         assign(\.loaded, store.loaded)
+        // Only a guest of a host older than guest answers is ever withheld an answerable question.
+        if store.pendingAsk?.isWithheldFromCaller == true { assign(\.answersRefused, true) }
         if let error = store.lastError as? AgentTranscriptError {
             switch error {
             case .unsupported: assign(\.unsupported, true)
@@ -804,6 +819,7 @@ struct ChatView: View {
             row: row, viewer: viewer, client: client, expanded: keys, recorded: recorded,
             answering: askID != nil && model.answeringAskID == askID,
             problem: askID != nil && model.answerProblem?.askID == askID ? model.answerProblem : nil,
+            answersRefused: model.answersRefused,
             hits: hits, query: hits.isEmpty ? "" : searchKey.query,
             selectedHitID: hits.isEmpty ? nil : selectedSearchHit,
             actions: actions)
@@ -847,6 +863,7 @@ struct ChatView: View {
         ChatAskCard(id: id, ask: ask, pending: pending, viewer: viewer,
                     answering: model.answeringAskID == id,
                     problem: model.answerProblem?.askID == id ? model.answerProblem : nil,
+                    answersRefused: model.answersRefused,
                     onAnswer: { option in
                         Task { await model.answer(client: client, askID: id, option: option) }
                     },
@@ -1309,6 +1326,8 @@ private struct ChatRowView: View, Equatable {
     /// The question's answer is on its way, or was refused.
     let answering: Bool
     let problem: ChatAnswerProblem?
+    /// The guest's host refused guest answers: the question waits for the owner.
+    let answersRefused: Bool
     /// The search's excerpts under the row. Without a hit the query and selection are left
     /// out too, so a search touches only the rows it finds.
     let hits: [TranscriptSearchHit]
@@ -1329,6 +1348,7 @@ private struct ChatRowView: View, Equatable {
             && lhs.recorded == rhs.recorded
             && lhs.answering == rhs.answering
             && lhs.problem == rhs.problem
+            && lhs.answersRefused == rhs.answersRefused
             && lhs.hits == rhs.hits
             && lhs.query == rhs.query
             && lhs.selectedHitID == rhs.selectedHitID
@@ -1350,6 +1370,7 @@ private struct ChatRowView: View, Equatable {
 
     private func askCard(id: String, ask: TranscriptAsk, pending: TranscriptPendingAsk?) -> some View {
         ChatAskCard(id: id, ask: ask, pending: pending, viewer: viewer, answering: answering, problem: problem,
+                    answersRefused: answersRefused,
                     onAnswer: { option in actions.answer(id, option) },
                     onOpenTerminal: actions.openTerminal)
     }
@@ -1714,9 +1735,10 @@ private struct IdentifiedNote: Identifiable {
 
 // MARK: - The question card
 
-/// omp's `ask` question. Owner, open and answerable: the options are buttons (the
-/// recommended one, else the first, primary). Guest: the options read-only with "Waiting
-/// for <owner> to answer". Answered: "You chose …".
+/// omp's `ask` question. Open and answerable: the options are buttons (the recommended
+/// one, else the first, primary), for a guest as for the owner. A guest whose host refuses
+/// guest answers (an older host): the options read-only with "Waiting for <owner> to
+/// answer". Answered: "You chose …".
 struct ChatAskCard: View {
     let id: String
     let ask: TranscriptAsk
@@ -1724,8 +1746,16 @@ struct ChatAskCard: View {
     let viewer: ChatViewer
     let answering: Bool
     let problem: ChatAnswerProblem?
+    /// The guest's host refused guest answers (`ChatModel.answersRefused`).
+    let answersRefused: Bool
     let onAnswer: (String) -> Void
     let onOpenTerminal: () -> Void
+
+    /// A guest who cannot answer: the question waits for the owner.
+    private var waitingForOwner: String? {
+        guard answersRefused, case .guest(_, let owner) = viewer else { return nil }
+        return owner
+    }
 
     private var question: TranscriptQuestion? { ask.questions.first }
 
@@ -1755,7 +1785,7 @@ struct ChatAskCard: View {
                 .fixedSize(horizontal: false, vertical: true)
             HStack(alignment: .firstTextBaseline, spacing: 7) {
                 Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).foregroundStyle(ChatStyle.ok)
-                (Text(chooser + " chose ").foregroundColor(Palette.textDim)
+                (Text(chooser).foregroundColor(Palette.textDim)
                     + Text(answer.joined(separator: ", ")).font(Typography.app(14.5 * textScale, .semibold)).foregroundColor(Palette.text))
                     .font(Typography.app(14.5 * textScale))
                     .fixedSize(horizontal: false, vertical: true)
@@ -1768,15 +1798,17 @@ struct ChatAskCard: View {
         .background(card)
     }
 
+    /// Who the answer is credited to. A guest who may answer cannot tell whether they, the
+    /// owner or another device chose, so the answer stands alone.
     private var chooser: String {
         switch viewer {
-        case .owner: return "You"
-        case .guest(_, let owner): return owner
+        case .owner: return "You chose "
+        case .guest: return waitingForOwner.map { "\($0) chose " } ?? "Chosen: "
         }
     }
 
     private var canAnswer: Bool {
-        viewer == .owner && pending?.answerable == true && question != nil
+        waitingForOwner == nil && pending?.answerable == true && question != nil
     }
 
     private var open: some View {
@@ -1812,7 +1844,7 @@ struct ChatAskCard: View {
 
     @ViewBuilder
     private var footer: some View {
-        if case .guest(_, let owner) = viewer {
+        if let owner = waitingForOwner {
             HStack(spacing: 8) {
                 Circle().fill(Palette.waiting).frame(width: 7, height: 7)
                 Text("WAITING FOR \(owner.uppercased()) TO ANSWER")

@@ -87,7 +87,8 @@ final class PairingCoordinatorTests: XCTestCase {
         }
     }
 
-    private func payload(host: String = "100.64.1.2", fp: String = "SHA256:abc") -> Pairing.Payload {
+    private func payload(host: String = "100.64.1.2",
+                         fp: String = PairingFixture.qrFingerprint) -> Pairing.Payload {
         Pairing.Payload(v: 1, host: host, port: 4021, user: "jerry", token: "tok", fp: fp)
     }
 
@@ -100,6 +101,22 @@ final class PairingCoordinatorTests: XCTestCase {
         let recorder = Recorder()
         try await makeCoordinator(recorder).completePairing(payload: payload(), deviceLabel: "iPhone")
         XCTAssertEqual(recorder.events, ["pin", "redeem", "save"])
+    }
+
+    /// A version-2 (Deimos Forge) payload names SSH on another port: the key must be
+    /// pinned at that port and the machine saved with it, or the first connection either
+    /// dials 22 or looks up a pin that was never stored.
+    func testAVersionTwoPayloadPinsAndSavesItsSSHPort() async throws {
+        let recorder = Recorder()
+        let forge = Pairing.Payload(v: 2, host: "100.106.218.88", port: 4021, user: "jerry",
+                                    token: "tok", fp: PairingFixture.qrFingerprint, sshPort: 43341)
+        try await makeCoordinator(recorder).completePairing(payload: forge, deviceLabel: "iPhone")
+        XCTAssertEqual(recorder.pinnedHost, "100.106.218.88")
+        XCTAssertEqual(recorder.pinnedPort, 43341)
+        XCTAssertEqual(recorder.savedHost, "100.106.218.88:43341")
+        XCTAssertEqual(HostEndpoint.parse(recorder.savedHost ?? ""),
+                       HostEndpoint(host: "100.106.218.88", port: 43341),
+                       "the saved destination must connect where the key was pinned")
     }
 
     func testAFailedPinNeverReachesTheOtherMachine() async {
@@ -142,7 +159,9 @@ final class PairingCoordinatorTests: XCTestCase {
         try await makeCoordinator(recorder).completePairing(payload: payload(), deviceLabel: "iPhone")
         XCTAssertEqual(recorder.pinnedPort, 22, "4021 is the pairing listener, not sshd")
         XCTAssertEqual(recorder.pinnedHost, "100.64.1.2")
-        XCTAssertEqual(recorder.pinnedFingerprint, "SHA256:abc")
+        XCTAssertEqual(recorder.pinnedFingerprint, PairingFixture.verifierFingerprint,
+                       "the pin must be in the form the SSH verifier presents, or the first "
+                       + "connection to this unchanged host is rejected")
     }
 
     /// An explicit ":port" in the host is an SSH port and must be honoured, and must not

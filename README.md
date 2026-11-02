@@ -118,11 +118,16 @@ herdr's JSON API exposes both, so panes and agents become real UI objects instea
   Federated agents use readable machine names. Send stays above the keyboard while you
   search recipients or type a message.
 - **Guest access** — share one agent with someone outside your machines from its ••• menu. They
-  get a one-use invite (QR code or link), watch the live terminal and message the agent through
-  a relay, end to end encrypted, with every message labelled `<name> (via HerdrUp):`. Settings →
+  get a one-use invite (QR code or a short link; the relay keeps the invite encrypted under a
+  key only the link carries), watch the live terminal and message the agent through a relay,
+  end to end encrypted, with every message labelled `<name> (via HerdrUp):`. Settings →
   Shared access lists who has access on each machine, revokes it, and shows the activity log.
-  When the host serves it, a guest of an omp agent also gets a read-only Chat tab (no notes,
-  questions shown waiting for the owner).
+  When the host serves it, a guest of an omp agent also gets a Chat tab (no notes). Guests
+  answer the agent's questions as the owner does: the chat's answer buttons, and for plan
+  approvals, permission prompts and multi-part questions the owner's menu keys (arrows, Tab,
+  Space, esc, Return) under the terminal while the agent waits; nothing else reaches the
+  pane. A host older than guest answers keeps them for the owner, and questions show waiting
+  for the owner.
   Multiple shares from the same authenticated host appear in one agent list, with separate
   permissions and settings per agent. Owner setup stays collapsed under “Connect your own
   machine” when shares exist. Unavailable agents, offline hosts, and removed access are shown
@@ -300,6 +305,22 @@ the visual reading order. The sidebar rail and ⌘K remain available.
 Settings builds its compact index in a separate view body, keeping the large section tuple
 off the adaptive navigation stack. CI checks resize/resume in an optimized simulator build
 with a device-sized 1008 KiB main stack, and rejects attached crashes even if XCTest reports a pass.
+
+Compact and regular home layouts share one split-view detail tree. The persistent
+Agents tab owns the terminal container, isolating its controls from Gram and Settings
+without moving the pane between size-class branches. Changing size class changes
+navigation chrome, not composer identity. Agent actions have one presentation owner.
+Sidebar visibility is derived from compact adaptation and the user's regular-width
+choice; system writebacks cannot replace that choice. Gram keeps its shared search
+query, with compact controls to edit or clear it. Its floating header is layered above
+the stable feed so search controls remain separate from scrolling message content.
+
+The DEBUG `HERDR_LAYOUT_TRANSITIONS=1` interaction fixture changes width and size class
+without relaunching, so draft, stream-lifetime, and active-search regressions exercise
+a live transition. Terminal tab roundtrips also check the exact draft and stream count.
+Search coverage includes emptying a query and continuing to type without refocusing,
+then closing and reopening the editor with normal taps and checking the exact query
+and filtered results before returning to the regular layout.
 
 Gram reads like iMessage in herdr's colours: your messages are violet bubbles on the right,
 agents' sit on the left under their name, machine (“vetrina · mac-studio”) and avatar, with
