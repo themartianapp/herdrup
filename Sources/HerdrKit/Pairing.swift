@@ -28,7 +28,9 @@ extension Pairing {
     /// released daemon, so they are short and fixed.
     public struct Payload: Codable, Sendable, Equatable {
         /// Format version. Present so an old app meets a new daemon with a real error
-        /// rather than a misparse.
+        /// rather than a misparse. 1 is `herdr pair` (SSH on 22). 2 adds `ssh_port`, for a
+        /// machine whose SSH is not on 22 (Deimos Forge workspaces); an app that only knows 1
+        /// must refuse it, not pin and save port 22.
         public let v: Int
         /// The address to connect to — the machine's tailnet IP.
         public let host: String
@@ -44,14 +46,24 @@ extension Pairing {
         /// when it could not read its own host key; `hostKeyFingerprint` is then `nil`, so an
         /// empty string never flows into a pin call.
         public let fp: String
+        /// The SSH port, required in version 2 and absent in version 1 (where SSH is on 22).
+        /// Not the pairing listener's `port`.
+        public let sshPort: Int?
 
-        public init(v: Int, host: String, port: Int, user: String, token: String, fp: String) {
+        enum CodingKeys: String, CodingKey {
+            case v, host, port, user, token, fp
+            case sshPort = "ssh_port"
+        }
+
+        public init(v: Int, host: String, port: Int, user: String, token: String, fp: String,
+                    sshPort: Int? = nil) {
             self.v = v
             self.host = host
             self.port = port
             self.user = user
             self.token = token
             self.fp = fp
+            self.sshPort = sshPort
         }
 
         /// The host-key digest in the form the SSH verifier presents
@@ -78,8 +90,8 @@ extension Pairing {
         }
     }
 
-    /// The payload version this build speaks. Must match `PAIRING_PAYLOAD_VERSION`.
-    public static let supportedPayloadVersion = 1
+    /// The payload versions this build speaks. 1 must match herdr's `PAIRING_PAYLOAD_VERSION`.
+    public static let supportedPayloadVersions = 1...2
 
     /// Parse and VALIDATE a scanned QR.
     ///
@@ -94,8 +106,14 @@ extension Pairing {
 
         // Version first: a version mismatch must not be reported as a bad field, because
         // the remedy is different (update, not rescan).
-        guard payload.v == supportedPayloadVersion else {
+        guard supportedPayloadVersions.contains(payload.v) else {
             throw Error.unsupportedVersion(payload.v)
+        }
+        // Version 2 exists to carry the SSH port; version 1 never carries one.
+        switch (payload.v, payload.sshPort) {
+        case (1, nil): break
+        case (2, .some(let sshPort)) where (1...65535).contains(sshPort): break
+        default: throw Error.notAPairingCode
         }
         guard !payload.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !payload.user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,

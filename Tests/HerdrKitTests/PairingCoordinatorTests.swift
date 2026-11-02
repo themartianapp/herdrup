@@ -103,6 +103,22 @@ final class PairingCoordinatorTests: XCTestCase {
         XCTAssertEqual(recorder.events, ["pin", "redeem", "save"])
     }
 
+    /// A version-2 (Deimos Forge) payload names SSH on another port: the key must be
+    /// pinned at that port and the machine saved with it, or the first connection either
+    /// dials 22 or looks up a pin that was never stored.
+    func testAVersionTwoPayloadPinsAndSavesItsSSHPort() async throws {
+        let recorder = Recorder()
+        let forge = Pairing.Payload(v: 2, host: "100.106.218.88", port: 4021, user: "jerry",
+                                    token: "tok", fp: PairingFixture.qrFingerprint, sshPort: 43341)
+        try await makeCoordinator(recorder).completePairing(payload: forge, deviceLabel: "iPhone")
+        XCTAssertEqual(recorder.pinnedHost, "100.106.218.88")
+        XCTAssertEqual(recorder.pinnedPort, 43341)
+        XCTAssertEqual(recorder.savedHost, "100.106.218.88:43341")
+        XCTAssertEqual(HostEndpoint.parse(recorder.savedHost ?? ""),
+                       HostEndpoint(host: "100.106.218.88", port: 43341),
+                       "the saved destination must connect where the key was pinned")
+    }
+
     func testAFailedPinNeverReachesTheOtherMachine() async {
         let recorder = Recorder()
         recorder.pinSucceeds = false

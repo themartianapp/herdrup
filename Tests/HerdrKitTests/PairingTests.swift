@@ -54,9 +54,22 @@ final class PairingTests: XCTestCase {
     /// A version mismatch is a DIFFERENT failure from a bad code, because the remedy
     /// differs: update the app, versus scan a real code.
     func testAFutureVersionIsReportedAsAVersionProblem() {
-        let future = sampleJSON(v: 2)
+        let future = sampleJSON(v: 3, sshPort: 2222)
         XCTAssertThrowsError(try Pairing.parse(qrText: future)) { error in
-            XCTAssertEqual(error as? Pairing.Error, .unsupportedVersion(2))
+            XCTAssertEqual(error as? Pairing.Error, .unsupportedVersion(3))
+        }
+    }
+
+    /// Version 2 (Deimos Forge) carries the SSH port; version 1 never does. A version-2
+    /// code without a usable port, or a version-1 code with one, is not a real code.
+    func testVersionTwoCarriesTheSSHPortAndVersionOneDoesNot() throws {
+        XCTAssertEqual(try Pairing.parse(qrText: sampleJSON(v: 2, sshPort: 43341)).sshPort, 43341)
+        XCTAssertNil(try Pairing.parse(qrText: sampleJSON()).sshPort)
+        for bad in [sampleJSON(v: 2), sampleJSON(v: 2, sshPort: 0), sampleJSON(v: 2, sshPort: 65536),
+                    sampleJSON(v: 1, sshPort: 2222)] {
+            XCTAssertThrowsError(try Pairing.parse(qrText: bad), "accepted: \(bad)") { error in
+                XCTAssertEqual(error as? Pairing.Error, .notAPairingCode)
+            }
         }
     }
 
@@ -241,9 +254,11 @@ final class PairingTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func sampleJSON(v: Int = 1, fp: String = PairingFixture.qrFingerprint) -> String {
+    private func sampleJSON(v: Int = 1, fp: String = PairingFixture.qrFingerprint,
+                            sshPort: Int? = nil) -> String {
         let payload = Pairing.Payload(
-            v: v, host: "100.64.1.2", port: 4021, user: "root", token: "tok", fp: fp)
+            v: v, host: "100.64.1.2", port: 4021, user: "root", token: "tok", fp: fp,
+            sshPort: sshPort)
         return String(decoding: try! JSONEncoder().encode(payload), as: UTF8.self)
     }
 }
