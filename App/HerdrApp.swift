@@ -192,6 +192,11 @@ struct RootView: View {
             guard phase == .active, let transport else { return }
             Task { await transport.markRequestChannelsSuspect() }
         }
+        // The anonymous daily usage ping: on launch and on every return to the foreground,
+        // connected or not; `UsagePing` sends at most one a UTC day (see `UsagePingLaunch`).
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            if phase == .active { UsagePingLaunch.foregrounded() }
+        }
     }
 
     @ViewBuilder
@@ -7475,6 +7480,9 @@ struct SettingsView: View {
     @AppStorage("notify.dies") private var notifyDies = true
     @AppStorage("notify.finishes") private var notifyFinishes = false
     @AppStorage("notify.gram") private var notifyGram = true
+    /// About's "Share anonymous usage count" switch (absent = on). Written through
+    /// `UsagePing.setEnabled`, which also deletes or makes the install ID.
+    @AppStorage(UsagePing.Key.enabled) private var shareUsageCount = true
     @State private var copied = false
     /// The credential accounts (subscriptions) for the Accounts section. Fetched by
     /// this view itself (`.task` below) via the injected `client`, mirroring how the
@@ -8154,7 +8162,8 @@ struct SettingsView: View {
     }
 
     /// About: the tip jar (only once StoreKit has products, so it is invisible before the
-    /// App Store Connect products exist), the community, the legal pages and the source.
+    /// App Store Connect products exist), the community, the legal pages, the source and the
+    /// anonymous usage-count switch.
     private var aboutGroup: some View {
         rootGroup("ABOUT") {
             if hasTipProducts {
@@ -8171,7 +8180,31 @@ struct SettingsView: View {
             glyphDivider
             linkGlyphRow("Open source on GitHub", systemImage: "chevron.left.forwardslash.chevron.right",
                          url: URL(string: "https://github.com/themartianapp/herdrup")!)
+            glyphDivider
+            usageCountRow
         }
+    }
+
+    /// The anonymous daily usage ping's switch, on by default. Off stops the pings and deletes
+    /// the install ID at once; on again makes a new ID. A toggle drawn like `groupedToggleRow`'s,
+    /// the whole row the tap target.
+    private var usageCountRow: some View {
+        Button {
+            shareUsageCount.toggle()
+            UsagePing.setEnabled(shareUsageCount, in: .standard)
+        } label: {
+            glyphRow("Share anonymous usage count", systemImage: "chart.bar",
+                     subtitle: "Once a day: a random ID, the app version and the platform. Nothing about your agents or machines.") {
+                Toggle("", isOn: .constant(shareUsageCount))
+                    .labelsHidden()
+                    .tint(Palette.brand)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(Text(shareUsageCount ? "on" : "off"))
+        .accessibilityIdentifier("settings-usage-count")
     }
 
     private var hasTipProducts: Bool {
