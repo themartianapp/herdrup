@@ -38,21 +38,24 @@ final class SettingsTests: XCTestCase {
         app.buttons["Settings"].firstMatch.tap()
         let machines = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Machines")).firstMatch
         XCTAssertTrue(machines.waitForExistence(timeout: 5))
-        XCTAssertTrue(machines.isHittable)
+        // Each check follows a navigation or a resume, and an element exists before the
+        // push/pop animation settles; check hittability once it settles (failed after Back
+        // on CI for #587 and #594, and #611 run 41702793698, with the card on screen).
+        XCTAssertTrue(machines.waitForHittable(timeout: 5))
         XCUIDevice.shared.press(.home)
         XCTAssertNotEqual(app.state, .notRunning, "Settings must not crash during the Home transition")
         app.activate()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 5))
         XCTAssertTrue(machines.waitForExistence(timeout: 5))
-        XCTAssertTrue(machines.isHittable)
+        XCTAssertTrue(machines.waitForHittable(timeout: 5))
         machines.tap()
         let back = app.buttons["Back"].firstMatch
         XCTAssertTrue(back.waitForExistence(timeout: 5))
-        XCTAssertTrue(back.isHittable)
+        XCTAssertTrue(back.waitForHittable(timeout: 5))
         attach(app, "settings-compact-resumed-width-\(Int(window.frame.width))")
         back.tap()
         XCTAssertTrue(machines.waitForExistence(timeout: 5))
-        XCTAssertTrue(machines.isHittable)
+        XCTAssertTrue(machines.waitForHittable(timeout: 5), "Settings must be reachable again after Back")
         // iPadOS resizes this floating window around its centre: a 275-point handle
         // movement widened 375 to 915, moving both edges. Request half the width delta.
         window.coordinate(withNormalizedOffset: CGVector(dx: 0.997, dy: 0.997))
