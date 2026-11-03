@@ -253,6 +253,58 @@ final class GuestSessionReuseTests: XCTestCase {
         XCTAssertEqual(host.hellos.count, 2)
     }
 
+    /// Steady polling keeps the session busy enough never to idle out; past its age limit
+    /// the next call handshakes again and hears what the owner changed since.
+    func testAnAgedSessionHandshakesAgainAndHearsNewFeatures() async throws {
+        let host = multiRequestHost()
+        host.reply = ["ok": true, "guest_id": "g_1", "features": ["multi_request": true]]
+        let connector = host.connector(sessionAgeLimit: .milliseconds(300))
+        let heard = HeardFeatures()
+        let transport = RelayTransport(guestID: "g_1", endpoint: host.endpoint, identity: identity, connector: connector,
+                                       onFeatures: { heard.append($0) })
+        _ = try await transport.roundTrip(Self.request("1"))
+        _ = try await transport.roundTrip(Self.request("2"))
+        XCTAssertEqual(host.hellos.count, 1, "a call before the age limit reuses the session")
+        XCTAssertEqual(heard.values, [GuestFeatures.none, GuestFeatures.none])
+
+        // The owner turns Gram sharing and push on.
+        host.reply = ["ok": true, "guest_id": "g_1",
+                      "features": ["multi_request": true, "gram": true, "push": true]]
+        let deadline = Date().addingTimeInterval(3)
+        var polls = 0
+        while host.hellos.count < 2, Date() < deadline {
+            polls += 1
+            _ = try await transport.roundTrip(Self.request("poll\(polls)"))
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        XCTAssertEqual(host.hellos.count, 2, "past the age limit the next call handshakes again")
+        XCTAssertGreaterThan(polls, 1, "the polls before the age limit reused the session")
+        XCTAssertEqual(heard.values.last, GuestFeatures(gram: true, push: true))
+        XCTAssertTrue(connector.sockets[0].closed)
+        XCTAssertEqual(connector.sockets.count, 2)
+    }
+
+    func testTheAgeLimitNeverCutsACallInFlight() async throws {
+        let host = multiRequestHost()
+        host.holdReply = { $0 == Self.request("slow") }
+        let connector = host.connector(sessionAgeLimit: .milliseconds(200))
+        let transport = transport(host, connector)
+        _ = try await transport.roundTrip(Self.request("1"))
+
+        let slow = Task { try await transport.roundTrip(Self.request("slow")) }
+        try await waitUntil { host.requests.count == 2 }
+        try await Task.sleep(nanoseconds: 400_000_000)
+        XCTAssertFalse(connector.sockets[0].closed, "the session outlives its age while a call holds it")
+        try host.release()
+        let line = try await slow.value
+        XCTAssertEqual(line, Self.reply(to: Self.request("slow")))
+
+        _ = try await transport.roundTrip(Self.request("2"))
+        XCTAssertTrue(connector.sockets[0].closed)
+        XCTAssertEqual(host.hellos.count, 2, "the call after it handshakes afresh")
+    }
+
     func testClosingReusedSessionsClosesTheIdleOne() async throws {
         let host = multiRequestHost()
         let connector = host.connector()

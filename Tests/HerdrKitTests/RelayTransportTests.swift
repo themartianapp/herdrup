@@ -76,11 +76,13 @@ final class FakeConnector: RelaySocketConnector, @unchecked Sendable {
     private(set) var sockets: [FakeRelaySocket] = []
     let roundTripLimit: Duration
     let sessionIdleLimit: Duration
+    let sessionAgeLimit: Duration
 
     init(roundTripLimit: Duration = .seconds(60), sessionIdleLimit: Duration = .seconds(50),
-         make: @escaping () -> FakeRelaySocket) {
+         sessionAgeLimit: Duration = .seconds(120), make: @escaping () -> FakeRelaySocket) {
         self.roundTripLimit = roundTripLimit
         self.sessionIdleLimit = sessionIdleLimit
+        self.sessionAgeLimit = sessionAgeLimit
         self.make = make
     }
 
@@ -125,8 +127,8 @@ final class FakeHost: @unchecked Sendable {
         RelayEndpoint(relay: URL(string: "https://relay.test")!, hostID: hostID, hostPublicKey: key.publicKey.rawRepresentation)
     }
 
-    func connector(sessionIdleLimit: Duration = .seconds(50)) -> FakeConnector {
-        FakeConnector(sessionIdleLimit: sessionIdleLimit) { [self] in
+    func connector(sessionIdleLimit: Duration = .seconds(50), sessionAgeLimit: Duration = .seconds(120)) -> FakeConnector {
+        FakeConnector(sessionIdleLimit: sessionIdleLimit, sessionAgeLimit: sessionAgeLimit) { [self] in
             let socket = FakeRelaySocket()
             var responder = TestIKResponder(prologue: Data("herdr-guest/1:\(hostID)".utf8), staticKey: key)
             var transport: TestResponderTransport?

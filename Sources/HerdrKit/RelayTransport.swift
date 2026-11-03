@@ -32,6 +32,9 @@ public protocol RelaySocketConnector: Sendable {
     /// How long a session kept open for the next call may sit unused before this client
     /// closes it.
     var sessionIdleLimit: Duration { get }
+    /// How long after its handshake a session kept open for the next call may still be
+    /// handed to one. A call holding it is never cut; the next one handshakes afresh.
+    var sessionAgeLimit: Duration { get }
 }
 
 extension RelaySocketConnector {
@@ -41,6 +44,11 @@ extension RelaySocketConnector {
     /// herdr ends a guest session after 60 s without a request; closing it first means a
     /// call never writes into a session the host is ending.
     public var sessionIdleLimit: Duration { .seconds(50) }
+    /// The hello reply's `features` (the owner sharing Grams, guest push) are read once per
+    /// handshake. Before session reuse every call handshook, so an owner's change reached the
+    /// guest within one poll; a session that steady polling keeps open would never learn
+    /// it. Two minutes bounds how stale they get.
+    public var sessionAgeLimit: Duration { .seconds(120) }
 }
 
 /// Where a guest connects: the relay, the host's relay id, and the host's static key.
@@ -86,6 +94,8 @@ final class RelaySession: @unchecked Sendable {
     private var claimed = false
     /// The socket delivered something while the session idled: it has ended.
     private var endedWhileIdle = false
+    /// When the handshake completed: the features in `reply` are as of then.
+    let opened = ContinuousClock.now
 
     private init(socket: RelaySocket, noise: NoiseIK.Transport, reply: [String: Any]) {
         self.socket = socket
@@ -300,14 +310,14 @@ public struct RelayTransport: HerdrTransport {
             let generation = reusable.generation
             let reply = try await withDeadline { try await exchange(requestLine, reusing: nil, through: $0) }
             if let session = reply.session {
-                reusable.offer(session, from: generation, idleLimit: connector.sessionIdleLimit)
+                reusable.offer(session, from: generation, limits: connector)
             }
             return reply.line
         }
         let turn = try await reusable.take()
         // A call cancelled while it waited hands the session on unused rather than closing it.
         var kept = turn.session
-        defer { reusable.finish(turn, keeping: kept, idleLimit: connector.sessionIdleLimit) }
+        defer { reusable.finish(turn, keeping: kept, limits: connector) }
         try Task.checkCancellation()
         kept = nil
         let reply = try await withDeadline { try await exchange(requestLine, reusing: turn.session, through: $0) }
@@ -547,8 +557,8 @@ private final class SessionHolder: @unchecked Sendable {
 /// (`features.multi_request`), shared by every `RelayTransport` of the same guest, host
 /// and device key. Calls take turns: herdr reads the next request only after the reply to
 /// the one before, so a call waits until the call ahead of it finishes. Between calls the
-/// session idles until the connector's `sessionIdleLimit` (herdr ends it after 60 s) or
-/// `closeAll`.
+/// session idles until the connector's `sessionIdleLimit` (herdr ends it after 60 s), its
+/// `sessionAgeLimit` after the handshake, or `closeAll`.
 final class ReusableSession: @unchecked Sendable {
     struct Key: Hashable {
         let endpoint: RelayEndpoint
@@ -610,8 +620,8 @@ final class ReusableSession: @unchecked Sendable {
         dropped?.close()
     }
 
-    /// Waits for the call's turn. A session idle past its limit (the app was suspended
-    /// before its timer ran) is closed rather than handed on.
+    /// Waits for the call's turn. A session past its idle or age limit (the app was
+    /// suspended before its timer ran) is closed rather than handed on.
     func take() async throws -> Turn {
         let id = lock.withLock { () -> UInt64 in
             lastWaiter += 1
@@ -648,12 +658,14 @@ final class ReusableSession: @unchecked Sendable {
     }
 
     /// Ends a call's turn. `session`, still open (nil when the call ended it), goes to the
-    /// next waiting call, or idles until `idleLimit`.
-    func finish(_ turn: Turn, keeping session: RelaySession?, idleLimit: Duration) {
+    /// next waiting call while younger than the connector's `sessionAgeLimit`, or idles
+    /// until its idle or age limit.
+    func finish(_ turn: Turn, keeping session: RelaySession?, limits: RelaySocketConnector) {
         var session = session
         var stale: RelaySession?
         let next = lock.withLock { () -> (CheckedContinuation<Turn, Error>, Turn)? in
-            if turn.generation != currentGeneration {
+            let aged = session.map { ContinuousClock.now >= $0.opened.advanced(by: limits.sessionAgeLimit) } ?? false
+            if turn.generation != currentGeneration || aged {
                 stale = session
                 session = nil
             }
@@ -661,7 +673,7 @@ final class ReusableSession: @unchecked Sendable {
                 return (waiters.removeFirst().continuation, Turn(session: session, generation: currentGeneration))
             }
             busy = false
-            if let session { park(session, idleLimit: idleLimit) }
+            if let session { park(session, limits: limits) }
             return nil
         }
         stale?.close()
@@ -670,10 +682,10 @@ final class ReusableSession: @unchecked Sendable {
 
     /// Keeps a session a call opened outside the turns (before a handshake said the host
     /// serves many requests per session) when no other is open or in use; else closes it.
-    func offer(_ session: RelaySession, from generation: Int, idleLimit: Duration) {
+    func offer(_ session: RelaySession, from generation: Int, limits: RelaySocketConnector) {
         let kept = lock.withLock { () -> Bool in
             guard generation == currentGeneration, !busy, parked == nil else { return false }
-            park(session, idleLimit: idleLimit)
+            park(session, limits: limits)
             return true
         }
         if !kept { session.close() }
@@ -688,14 +700,17 @@ final class ReusableSession: @unchecked Sendable {
         dropped?.close()
     }
 
-    /// Call with `lock` held.
-    private func park(_ session: RelaySession, idleLimit: Duration) {
+    /// Call with `lock` held. The session idles until its idle limit, or its age limit
+    /// when that comes first.
+    private func park(_ session: RelaySession, limits: RelaySocketConnector) {
         session.watchWhileIdle()
+        let now = ContinuousClock.now
+        let expires = min(now.advanced(by: limits.sessionIdleLimit), session.opened.advanced(by: limits.sessionAgeLimit))
         let timer = Task { [weak self] in
-            guard (try? await Task.sleep(for: idleLimit)) != nil else { return }
+            guard (try? await Task.sleep(for: now.duration(to: expires))) != nil else { return }
             self?.expire(session)
         }
-        parked = Parked(session: session, expires: ContinuousClock.now.advanced(by: idleLimit), timer: timer)
+        parked = Parked(session: session, expires: expires, timer: timer)
     }
 
     private func expire(_ session: RelaySession) {
@@ -729,6 +744,7 @@ private final class ClosableConnector: RelaySocketConnector, @unchecked Sendable
 
     var roundTripLimit: Duration { base.roundTripLimit }
     var sessionIdleLimit: Duration { base.sessionIdleLimit }
+    var sessionAgeLimit: Duration { base.sessionAgeLimit }
 
     func connect(to url: URL) -> RelaySocket {
         let socket = base.connect(to: url)
