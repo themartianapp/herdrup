@@ -118,6 +118,33 @@ jobs:
             exit 1
           fi
 
+  # The guest relay Worker (GuestRelay): its tests in workerd, its typecheck, and the
+  # browser guest it serves from public/web checked byte for byte against the manifest
+  # herdrup-desktop's build wrote (npm test runs scripts/web-bundle.mjs first).
+  guest-relay:
+    name: Guest relay (Linux)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: GuestRelay
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Typecheck
+        run: npm run typecheck
+
   # THE DEVICE SUITE, AS PARALLEL SIMULATOR JOBS. It used to be one serial job: the
   # iPhone suite (~45 min of tests), then the iPad rounds (~25 min) waiting behind it,
   # ~90 min per green run and 2-3 h whenever a failure triggered a whole-suite rerun.
