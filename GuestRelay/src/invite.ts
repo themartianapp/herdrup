@@ -3,7 +3,7 @@
 // the ciphertext, its owning host_id and its expiry; it never stores the key.
 // Log lines carry only endpoint and outcome: never ids, host ids, blobs or secrets.
 import { DurableObject } from "cloudflare:workers";
-import { BEARER, errorResponse, log, type Env } from "./relay";
+import { BEARER, errorResponse, log, readCapped, type Env } from "./relay";
 
 /** Largest blob a host may store: nonce (12) || ciphertext || tag (16). */
 export const MAX_BLOB_BYTES = 2048;
@@ -95,25 +95,6 @@ export async function handleInvite(request: Request, env: Env, id: string): Prom
     // The error itself is deliberately not logged: it may echo request content.
     log({ endpoint, outcome: "internal_error" });
     return errorResponse(500, "internal_error");
-  }
-}
-
-/** The request body, or null once it passes `max` bytes (declared or streamed). */
-async function readCapped(request: Request, max: number): Promise<ArrayBuffer | null> {
-  if (Number(request.headers.get("Content-Length") ?? 0) > max) return null;
-  if (request.body === null) return new ArrayBuffer(0);
-  const body = new Uint8Array(max);
-  let length = 0;
-  const reader = request.body.getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) return body.slice(0, length).buffer;
-    if (length + value.byteLength > max) {
-      await reader.cancel();
-      return null;
-    }
-    body.set(value, length);
-    length += value.byteLength;
   }
 }
 
