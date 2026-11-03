@@ -119,6 +119,83 @@ final class PairingCoordinatorTests: XCTestCase {
                        "the saved destination must connect where the key was pinned")
     }
 
+    // MARK: - Version 3, end to end over a real socket
+
+    /// The real `Pairing.redeem`, so the proof check is exercised exactly as the app runs it.
+    private func makeLiveCoordinator(_ recorder: Recorder) -> PairingCoordinator {
+        PairingCoordinator(store: FakeStore(recorder: recorder), pinner: FakePinner(recorder: recorder))
+    }
+
+    /// A stub daemon reply over whatever key the coordinator generated and sent: a `pair.ok`
+    /// with version `v` and the ok proof keyed by `token`, or no proof when `token` is nil.
+    private func okReply(v: Int = 3, token: String? = V3Vector.token) -> (String) -> String? {
+        { request in
+            guard let object = try? JSONSerialization.jsonObject(with: Data(request.utf8))
+                    as? [String: Any],
+                  let key = object["public_key"] as? String
+            else { return nil }
+            guard let token else { return #"{"type":"pair.ok","v":\#(v)}"# }
+            let proof = Base64URL.encode(Pairing.okProof(token: token, publicKeyLine: key))
+            return #"{"type":"pair.ok","v":\#(v),"proof":"\#(proof)"}"#
+        }
+    }
+
+    private func v3Payload(_ server: StubDaemon) -> Pairing.Payload {
+        server.payload(v: 3, sshPort: 22220, token: V3Vector.token, fp: PairingFixture.qrFingerprint)
+    }
+
+    /// A Forge v3 code pairs when the machine proves itself, the token never crosses the
+    /// wire, and the host is saved with the SSH port and the key that was actually sent.
+    func testAVersionThreePairingWithTheMachinesProofSaves() async throws {
+        let recorder = Recorder()
+        let server = try StubDaemon(respond: okReply())
+        defer { server.stop() }
+
+        try await makeLiveCoordinator(recorder).completePairing(
+            payload: v3Payload(server), deviceLabel: V3Vector.device)
+
+        XCTAssertEqual(recorder.events, ["pin", "save"])
+        XCTAssertEqual(recorder.pinnedPort, 22220)
+        XCTAssertEqual(recorder.savedHost, "127.0.0.1:22220")
+
+        let received = try XCTUnwrap(server.waitForRequest())
+        XCTAssertFalse(received.contains(V3Vector.token), "the token must never be sent")
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(received.utf8)) as? [String: Any])
+        XCTAssertNil(object["token"], "a v3 request has no token key")
+        XCTAssertEqual(object["v"] as? Int, 3)
+        let sent = try XCTUnwrap(object["public_key"] as? String)
+        XCTAssertEqual(object["proof"] as? String, Base64URL.encode(Pairing.requestProof(
+            token: V3Vector.token, publicKeyLine: sent, deviceLabel: V3Vector.device)))
+        let saved = try XCTUnwrap(recorder.savedKeyPEM)
+        XCTAssertEqual(
+            try PairingKeyRoundTrip.publicLine(fromPrivatePEM: saved, comment: V3Vector.device),
+            sent, "the saved private key must match the key the machine proved it accepted")
+    }
+
+    /// A `pair.ok` that does not prove itself — wrong proof, no proof, or not version 3 —
+    /// is a failure, and NOTHING is saved: it may be an on-path forgery.
+    func testAnUnprovenVersionThreeOkSavesNothing() async throws {
+        let cases: [(String, (String) -> String?)] = [
+            ("wrong proof", okReply(token: "not-the-qr-token")),
+            ("missing proof", okReply(token: nil)),
+            ("v mismatch", okReply(v: 2)),
+        ]
+        for (name, respond) in cases {
+            let recorder = Recorder()
+            let server = try StubDaemon(respond: respond)
+            defer { server.stop() }
+
+            let failure = await assertThrows(.pairing(.unverifiedReply)) {
+                try await makeLiveCoordinator(recorder).completePairing(
+                    payload: v3Payload(server), deviceLabel: V3Vector.device)
+            }
+            XCTAssertEqual(recorder.events, ["pin"], "\(name): no save after an unproven ok")
+            XCTAssertNil(recorder.savedKeyPEM, name)
+            XCTAssertTrue(failure?.userFacingMessage.contains("herdr pair") == true, name)
+        }
+    }
+
     func testAFailedPinNeverReachesTheOtherMachine() async {
         let recorder = Recorder()
         recorder.pinSucceeds = false
@@ -235,7 +312,7 @@ final class PairingCoordinatorTests: XCTestCase {
     func testEveryFailureHasAnActionableMessage() async {
         let failures: [PairingCoordinator.Failure] = [
             .noHostKeyToPin, .couldNotPinHostKey,
-            .pairing(.notAPairingCode), .pairedButCouldNotSave,
+            .pairing(.notAPairingCode), .pairing(.unverifiedReply), .pairedButCouldNotSave,
         ]
         for failure in failures {
             let message = failure.userFacingMessage
