@@ -291,11 +291,15 @@ public struct RelayTransport: HerdrTransport {
         }
     }
 
-    /// Maps a WebSocket close the relay or host sent to a guest error.
+    /// Maps a WebSocket close the relay or host sent to a guest error. The relay refuses
+    /// a guest upgrade by accepting it and closing at once with 4000 plus the HTTP status
+    /// an older relay answered: 4429 `rate_limited`, 4503 `host_offline`, 4504 `host_busy`.
     static func error(forClose code: Int, reason: String?) -> Error {
         if reason == "host_busy" { return GuestError.hostBusy }
         switch code {
-        case 1001: return GuestError.hostOffline
+        case 1001, 4503: return GuestError.hostOffline
+        case 4504: return GuestError.hostBusy
+        case 4429: return GuestError.rateLimited
         case 1009: return GuestError.messageTooLarge
         default: return GuestError.connectionClosed(code: code, reason: reason?.isEmpty == false ? reason : nil)
         }
@@ -444,6 +448,10 @@ final class URLSessionRelaySocket: RelaySocket, @unchecked Sendable {
         do {
             try await task.send(.data(message))
         } catch {
+            // The relay may have closed a refused upgrade before this first send.
+            if case .closed(let code, let reason)? = closeEvent() {
+                throw RelayTransport.error(forClose: code, reason: reason)
+            }
             throw classify(error)
         }
     }

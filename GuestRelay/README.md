@@ -69,12 +69,20 @@ Every error before the WebSocket upgrade, and every invite endpoint error, retur
 `{"error":"<code>"}` and also sends the header `X-Herdr-Guest-Error: <code>`. The header
 is there because URLSessionWebSocketTask can't read the body of a failed upgrade.
 
+A browser can't read the status of a failed upgrade at all, so three guest refusals are
+not HTTP errors when the request is a WebSocket upgrade: the relay accepts the upgrade
+(101) and closes it at once with the close code below and the code as its reason, for
+example close 4429 with reason `rate_limited`. Each close code is 4000 plus the HTTP status
+it replaces. The socket never reaches the host and opens no session. A guest request that
+isn't an upgrade still gets 426, and the host endpoint keeps its HTTP errors.
+
 | Status | Code | When |
 | --- | --- | --- |
 | 401 | `unauthorized` | Host socket and invite `PUT`/`DELETE`. The bearer is missing or malformed (refused in the Worker, before any Durable Object), or its hash doesn't match the stored one. For invite `PUT`/`DELETE`, also a `host_id` with no stored hash yet. |
-| 503 | `host_offline` | Guest only. No host socket is connected. |
-| 503 | `host_busy` | Guest only. The host already has 32 open sessions. |
-| 429 | `rate_limited` | Keyed by `CF-Connecting-IP`: more than 30 guest connects, or more than 10 host connects and invite `PUT`/`DELETE` together, in 60 s. Checked in the Worker before any Durable Object is reached. |
+| close 4503 | `host_offline` | Guest only. No host socket is connected. |
+| close 4504 | `host_busy` | Guest only. The host already has 32 open sessions. |
+| close 4429 | `rate_limited` | Guest. More than 30 guest connects from one `CF-Connecting-IP` in 60 s. Checked in the Worker before any Durable Object is reached. |
+| 429 | `rate_limited` | Host socket and invite `PUT`/`DELETE`. More than 10 host connects and invite `PUT`/`DELETE` together from one `CF-Connecting-IP` in 60 s. Checked in the Worker before any Durable Object is reached. |
 | 426 | `upgrade_required` | Either role. The request isn't a WebSocket upgrade. |
 | 404 | `not_found` | Any other method or path, or a malformed `host_id` or invite `id`. Also `GET /v1/invite/<id>` when the blob is absent or expired. |
 | 400 | `bad_request` | Invite `PUT`/`DELETE`. `X-Herdr-Host` isn't a `host_id`, or the `PUT` body is under 29 bytes (nonce, one byte, tag). |

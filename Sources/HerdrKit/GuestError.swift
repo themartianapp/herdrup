@@ -2,12 +2,14 @@ import Foundation
 
 /// Why a guest connection failed, in the terms the guest UI needs.
 public enum GuestError: Error, Equatable, CustomStringConvertible {
-    /// No host socket is connected to the relay (503 `host_offline` before the
-    /// upgrade), or it dropped mid-session (close 1001).
+    /// No host socket is connected to the relay (close 4503, or from an older relay
+    /// 503 `host_offline` before the upgrade), or it dropped mid-session (close 1001).
     case hostOffline
-    /// The host already has 32 relay sessions open (503 `host_busy`).
+    /// The host already has 32 relay sessions open (close 4504, or from an older relay
+    /// 503 `host_busy`).
     case hostBusy
-    /// Too many connects from this network (429 `rate_limited`).
+    /// Too many connects from this network (close 4429, or from an older relay 429
+    /// `rate_limited`).
     case rateLimited
     /// The relay rejected the request as invalid (404 `not_found`, 426
     /// `upgrade_required`, or any other unexpected status).
