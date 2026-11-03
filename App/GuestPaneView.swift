@@ -56,6 +56,10 @@ struct GuestPaneView: View {
     @State private var note: String?
     /// Menu keys go out one after another, in the order they were tapped.
     @State private var menuKeyTask: Task<Void, Never>?
+    /// The host has taken at least one of this guest's menu keys. An older host that keeps
+    /// answers for the owner takes none, so after this a refusal is only the pause after a
+    /// committing key (the old menu can still show) and proves nothing about the host.
+    @State private var hostTookAMenuKey = false
     /// Why the last status poll failed, when it wasn't a change of availability.
     @State private var connectionNote: String?
     @State private var attachments: [ComposerAttachment] = []
@@ -828,9 +832,10 @@ struct GuestPaneView: View {
 
     /// Presses one of the owner's menu keys in the shared agent's pane (`pane.send_keys`).
     /// The host takes these from a guest only while the agent waits on a menu, and only
-    /// `GuestMenuKeyBar.keys`. A refusal while the agent still waits means an older host
-    /// that keeps answers for the owner: back to waiting for them. A refusal after the menu
-    /// closed is the race it looks like, and the next poll settles the screen.
+    /// `GuestMenuKeyBar.keys`. A refusal while the agent still waits, from a host that has
+    /// never taken one of this guest's keys, means an older host that keeps answers for the
+    /// owner: back to waiting for them. Any other refusal is a race (the menu closed, or the
+    /// pause after a committing key), and the next poll settles the screen.
     private func sendMenuKey(_ key: String) {
         guard GuestMenuKeyBar.keys.contains(key), let pane = agent?.paneID else { return }
         let previous = menuKeyTask
@@ -839,12 +844,13 @@ struct GuestPaneView: View {
             guard !Task.isCancelled, !chatModel.answersRefused else { return }
             do {
                 try await client.sendPaneKeys(pane: pane, keys: [key])
+                hostTookAMenuKey = true
                 note = nil
             } catch is CancellationError {
                 return
             } catch let error where GuestError.classify(error) == .forbidden {
                 await refresh()
-                if isBlocked { chatModel.noteAnswersRefused() }
+                if isBlocked, !hostTookAMenuKey { chatModel.noteAnswersRefused() }
             } catch {
                 note = failureNote(error)
             }
