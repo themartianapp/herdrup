@@ -174,7 +174,7 @@ final class GuestShareMockStore: @unchecked Sendable {
             // An older daemon's '#' web link, which the invite sheet shares in the path form.
             return ["type": "guest_invite", "invite": invite,
                     "url": "herdrup://guest-invite#\(payload)",
-                    "web_url": "https://guest.herdrup.themartian.app/i#\(payload)"]
+                    "web_url": "https://guest.herdrup.app/i/\(payload)"]
         case "guest.update":
             guard let id = params["guest_id"] as? String,
                   let index = machine.guests.firstIndex(where: { $0["guest_id"] as? String == id }),

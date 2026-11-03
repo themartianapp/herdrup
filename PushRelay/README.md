@@ -74,10 +74,12 @@ openssl rand -base64 32 | wrangler secret put RELAY_SEAL_KEY
 wrangler deploy
 ```
 
-After the first deploy, attach the custom domain `push.herdrup.themartian.app` to
-the `herdrup-push` Worker. You can do this in the dashboard (Workers → herdrup-push
-→ Settings → Domains & Routes) or with a `routes = [{ pattern =
-"push.herdrup.themartian.app", custom_domain = true }]` entry.
+The `herdrup-push` Worker serves two custom domains: `push.herdrup.app` (current, the
+app's default since 2026-11-02) and `push.herdrup.themartian.app` (the earlier name;
+keep it attached, because herdr machines configured before then still send to it). Attach
+them in the dashboard (Workers → herdrup-push → Settings → Domains & Routes) or with
+`routes = [{ pattern = "push.herdrup.app", custom_domain = true }, { pattern =
+"push.herdrup.themartian.app", custom_domain = true }]`.
 
 APNs accepts HTTP/2 only. Deployed Workers reach it through Cloudflare's proxy,
 which speaks HTTP/2. Local `wrangler dev` (workerd) speaks only HTTP/1.1, so

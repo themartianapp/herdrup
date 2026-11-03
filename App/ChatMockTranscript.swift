@@ -410,6 +410,23 @@ struct ChatMockTransport: HerdrTransport {
     static let paneID = "w9:p1"
     private let base = MockTransport()
 
+    /// `HERDR_MOCK_CHAT_STARTUP=code,code,…`: herdr-app's first `agent.transcript` calls answer
+    /// these error codes in order, then the conversation. A just-started omp agent answers
+    /// `transcript_unsupported` until omp's integration reports a session (#604).
+    private static let startupErrors = ScriptedCodes(
+        ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_STARTUP"]?
+            .split(separator: ",").map(String.init) ?? [])
+
+    private final class ScriptedCodes: @unchecked Sendable {
+        private let lock = NSLock()
+        private var codes: [String]
+        init(_ codes: [String]) { self.codes = codes }
+        func next() -> String? {
+            lock.lock(); defer { lock.unlock() }
+            return codes.isEmpty ? nil : codes.removeFirst()
+        }
+    }
+
     func roundTrip(_ requestLine: String) async throws -> String {
         if let response = await ChatUXSmoke.reply(requestLine) { return response }
         let request = ChatMockConversation.requestObject(requestLine)
@@ -424,6 +441,9 @@ struct ChatMockTransport: HerdrTransport {
             let target = params["target"] as? String
             guard target == Self.paneID || target == "herdr-app" else {
                 return ChatMockConversation.error(id: id, code: "transcript_unsupported", message: "not an omp agent")
+            }
+            if let code = Self.startupErrors.next() {
+                return ChatMockConversation.error(id: id, code: code, message: "agent still starting")
             }
             return ChatMockConversation.owner.transcript(id: id, params: params)
         case "agent.answer":

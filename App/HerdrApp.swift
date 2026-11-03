@@ -751,7 +751,7 @@ enum HerdrSetup {
     /// It points at the FORK, not `herdr.dev/install.sh`: upstream's installer
     /// produces a herdr with no `api-bridge`, which this app cannot drive.
     static let installCommand =
-        "curl -fsSL https://herdrup.themartian.app/install.sh | sh"
+        "curl -fsSL https://herdrup.app/install.sh | sh"
     static let pairCommand = "herdr pair"
     static let openQRCommand = "herdr pair --open"
     static let saveQRCommand = "herdr pair --qr-file ~/Desktop/herdr-pair.svg"
@@ -5658,10 +5658,18 @@ struct TerminalPaneContent: View {
 
     private var group: AgentGroup? { agent.map { AgentRow(info: $0).group } }
     /// The page offers the Chat view: an omp agent whose machine serves `agent.transcript`,
-    /// until the server says it cannot give this agent a transcript.
+    /// unless the server's latest answer is that it cannot give this agent a transcript.
     private var chatAvailable: Bool {
         transcriptCapable && ChatPreference.isOmp(agent?.agent) && !chatModel.unsupported
     }
+    /// An omp agent on a transcript-capable machine whose transcript was refused. A just-started
+    /// agent is refused for its first seconds, until omp's integration reports a session
+    /// (#604); the page keeps asking so Chat appears without restarting the app.
+    private var chatRecoveryNeeded: Bool {
+        transcriptCapable && ChatPreference.isOmp(agent?.agent) && chatModel.unsupported
+    }
+    /// Gaps between transcript retries while Chat is refused, in seconds. The last one repeats.
+    private static let chatRecoveryDelays: [UInt64] = [1, 2, 4, 8, 15, 30, 60]
     private var showingChat: Bool { chatAvailable && showsChat }
 
     private func setShowsChat(_ value: Bool) {
@@ -5943,6 +5951,22 @@ struct TerminalPaneContent: View {
         }
         .task(id: paneID) {
             transcriptCapable = (try? await client.serverCapabilities())?.agentTranscript ?? false
+        }
+        // While the server refuses this omp agent a transcript, ask again: soon after it
+        // starts, then less often, and at once when its status changes (its first turn writes
+        // the session). Front only; a success clears `unsupported`, which ends the loop.
+        .task(id: [chatRecoveryNeeded ? "retry" : "", isForeground ? "front" : "", agent?.agentStatus ?? ""]) {
+            guard chatRecoveryNeeded, isForeground else { return }
+            await chatModel.refresh(client: client)
+            var attempt = 0
+            while chatModel.unsupported, !Task.isCancelled {
+                let delays = Self.chatRecoveryDelays
+                let seconds = delays[min(attempt, delays.count - 1)]
+                attempt += 1
+                try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                await chatModel.refresh(client: client)
+            }
         }
         // Re-resolve status each time the pane returns to the front; drop either
         // keyboard owner when it backgrounds so a hidden keep-mounted pane cannot
@@ -8041,10 +8065,10 @@ struct SettingsView: View {
             discordRow
             glyphDivider
             linkGlyphRow("Privacy Policy", systemImage: "lock.shield",
-                         url: URL(string: "https://herdrup.themartian.app/legal/privacy")!)
+                         url: URL(string: "https://herdrup.app/legal/privacy")!)
             glyphDivider
             linkGlyphRow("Terms of Service", systemImage: "doc.text",
-                         url: URL(string: "https://herdrup.themartian.app/legal/terms")!)
+                         url: URL(string: "https://herdrup.app/legal/terms")!)
             glyphDivider
             linkGlyphRow("Open source on GitHub", systemImage: "chevron.left.forwardslash.chevron.right",
                          url: URL(string: "https://github.com/themartianapp/herdrup")!)
@@ -10070,7 +10094,7 @@ struct MockTransport: HerdrTransport {
         if state == "legacy" {
             return #"{"id":"","error":{"code":"invalid_request","message":"invalid request: unknown variant `notifications.status`"}}"#
         }
-        return #"{"id":"mock","result":{"type":"notifications_status","state":"\#(state)","mode":"auto","relay_url":"https://push.herdrup.themartian.app","devices":1,"relay_devices":1}}"#
+        return #"{"id":"mock","result":{"type":"notifications_status","state":"\#(state)","mode":"auto","relay_url":"https://push.herdrup.app","devices":1,"relay_devices":1}}"#
     }
 
     /// `MockWireFixtures.agentRead` under its old name, for the agent.read callers not yet
