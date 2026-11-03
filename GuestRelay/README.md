@@ -15,6 +15,9 @@ session on that socket. The guest and the host run a Noise_IK handshake through 
 relay, which authenticates the guest's device key and encrypts everything after that.
 The relay never holds a key that can read the traffic.
 
+The relay also counts active installs: the HerdrUp apps send an anonymous ping at most
+once a day (`POST /v1/ping`, see [Usage ping](#usage-ping)).
+
 ## Privacy
 
 - **Logs:** each log line is a JSON object with only `endpoint`, `outcome` and, for
@@ -23,6 +26,8 @@ The relay never holds a key that can read the traffic.
   landing page, the `/web/` browser guest and their assets are served before the Worker
   runs. `/i/<payload>` and other `/web/` paths reach the Worker, which hands them the same
   page from `ASSETS` without logging anything.
+  `POST /v1/ping` logs nothing about a ping, accepted or refused: only a missing binding
+  or an internal error logs, with just `endpoint` and `outcome`.
 - **Platform logs:** `wrangler.toml` turns off Workers Logs (including invocation logs,
   which record every request URL), traces and Logpush, so Cloudflare keeps no record of
   invite paths. `wrangler tail` still shows request URLs to whoever runs it, so don't tail
@@ -31,6 +36,12 @@ The relay never holds a key that can read the traffic.
   secret, the next session id, and the ids and expiries of its live short invites (for
   the per-host cap). Each short invite's own Durable Object stores its encrypted blob, the
   owning `host_id` and the expiry; an alarm deletes all three at expiry.
+- **Usage ping:** each accepted ping becomes one Analytics Engine data point in the
+  `herdrup_usage` dataset: the app's random install id, the client, its version and its
+  build. The Worker writes nothing else: not the IP, headers, country or user agent, and
+  it stores the ping nowhere else. The per-IP ping limit keys Cloudflare's rate-limit
+  counter on `CF-Connecting-IP`, as the connect limits do. The install id is 16 random
+  bytes made on the device, derived from no device, Apple or account identifier.
 - **Invite links:** the invite lives in the path of `/i/<payload>`, so it reaches the
   Worker once, on the way to the landing page. Nothing stores or logs it, and the page is
   `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. The "Open in HerdrUp"
@@ -62,13 +73,14 @@ The relay never holds a key that can read the traffic.
 | `PUT /v1/invite/<id>` | Stores a short invite's blob. Needs `Authorization: Bearer <relay_secret>` and `X-Herdr-Host: <host_id>`, checked against that host's stored hash like `/v1/host`. The host must have connected at least once: the invite endpoints never enroll a `host_id` (see [Host authentication](#host-authentication)). Counts toward the per-IP host connect limit. `X-Herdr-Expires: <unix seconds>` must be in the future and at most 30 days away. The body is the raw blob (`application/octet-stream`), 29 to 2048 bytes. 201 with no body when stored. |
 | `GET /v1/invite/<id>` | The blob, `application/octet-stream` and `Cache-Control: no-store`. No auth. 404 `not_found` when absent or expired. |
 | `DELETE /v1/invite/<id>` | Same auth as `PUT`. 204 with no body, also when the blob is already gone. Only the host that stored it may delete it. |
+| `POST /v1/ping` | The anonymous usage ping. No auth. The body is exactly the JSON in [Usage ping](#usage-ping), at most 512 bytes. 204 with no body once counted. |
 
 A `host_id` is b64url (no padding) of 16 bytes, so 22 characters. A `relay_secret` is
 b64url of 32 bytes, so 43 characters. The Durable Object is `idFromName(host_id)`. A short
 invite `id` is b64url of 9 random bytes, so 12 characters, and its own Durable Object is
 `idFromName(id)`.
 
-Every error before the WebSocket upgrade, and every invite endpoint error, returns JSON
+Every error before the WebSocket upgrade, and every invite and ping error, returns JSON
 `{"error":"<code>"}` and also sends the header `X-Herdr-Guest-Error: <code>`. The header
 is there because URLSessionWebSocketTask can't read the body of a failed upgrade.
 
@@ -77,9 +89,11 @@ is there because URLSessionWebSocketTask can't read the body of a failed upgrade
 | 401 | `unauthorized` | Host socket and invite `PUT`/`DELETE`. The bearer is missing or malformed (refused in the Worker, before any Durable Object), or its hash doesn't match the stored one. For invite `PUT`/`DELETE`, also a `host_id` with no stored hash yet. |
 | 503 | `host_offline` | Guest only. No host socket is connected. |
 | 503 | `host_busy` | Guest only. The host already has 32 open sessions. |
-| 429 | `rate_limited` | Keyed by `CF-Connecting-IP`: more than 30 guest connects, or more than 10 host connects and invite `PUT`/`DELETE` together, in 60 s. Checked in the Worker before any Durable Object is reached. |
+| 429 | `rate_limited` | Keyed by `CF-Connecting-IP`: more than 30 guest connects, or more than 10 host connects and invite `PUT`/`DELETE` together, in 60 s. Checked in the Worker before any Durable Object is reached. Also more than 60 pings in 60 s, on a separate budget that never spends the connect limits. |
 | 426 | `upgrade_required` | Either role. The request isn't a WebSocket upgrade. |
 | 404 | `not_found` | Any other method or path, or a malformed `host_id` or invite `id`. Also `GET /v1/invite/<id>` when the blob is absent or expired. |
+| 405 | `method_not_allowed` | `/v1/ping` with any method but `POST`. Sends `Allow: POST`. |
+| 400 | `bad_request` | Ping. The body is over 512 bytes, isn't UTF-8 JSON, or isn't exactly the ping object: other or missing keys, `v` other than `1`, or a field out of range. |
 | 400 | `bad_request` | Invite `PUT`/`DELETE`. `X-Herdr-Host` isn't a `host_id`, or the `PUT` body is under 29 bytes (nonce, one byte, tag). |
 | 400 | `bad_expiry` | Invite `PUT`. `X-Herdr-Expires` isn't whole unix seconds in the future and at most 30 days away. |
 | 413 | `too_large` | Invite `PUT`. The body is over 2048 bytes. |
@@ -160,6 +174,49 @@ key (16 random bytes). Any other `/i/<payload>` is a long v1 link, which stays v
   sending the key), decrypts the blob in the browser with WebCrypto, requires the
   invite's `relay` to equal the page's origin, and renders the payload like a long link.
 
+### Usage ping
+
+HerdrUp counts its daily, weekly and monthly active installs, by platform and version,
+from an anonymous ping. App Store Connect counts only users who opted in to share with
+developers. The apps send it on by default, with a switch in Settings › About:
+
+```
+POST /v1/ping
+Content-Type: application/json
+
+{"v":1,"install":"<id>","app":"ios","version":"1.4.0","build":"212"}
+```
+
+- `v` is `1`.
+- `install` is 16 random bytes as b64url without padding (22 characters), made on the
+  device on first launch.
+- `app` is one of `ios`, `ipados`, `macos-catalyst`, `desktop-macos`, `desktop-linux`
+  or `desktop-windows`.
+- `version` and `build` are 1 to 32 characters of `0-9 A-Z a-z . _ -`.
+
+No other key is allowed. A client sends at most one ping per UTC day, when it comes to
+the foreground or starts.
+
+The Worker writes one data point to the `USAGE` binding (dataset `herdrup_usage`):
+`index1` is the install id, `blob1` the app, `blob2` the version, `blob3` the build and
+`double1` is `1`. Analytics Engine keeps data points for three months.
+
+To read the numbers, query the
+[Analytics Engine SQL API](https://developers.cloudflare.com/analytics/analytics-engine/sql-api/)
+with an account API token that has Account Analytics Read (keyring `cloudflare-vcf`).
+For example, daily installs by app over the last 30 days:
+
+```sh
+curl "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/analytics_engine/sql" \
+  --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+  --data "SELECT toStartOfDay(timestamp) AS day, blob1 AS app, count(DISTINCT index1) AS installs
+          FROM herdrup_usage WHERE timestamp > NOW() - INTERVAL '30' DAY
+          GROUP BY day, app ORDER BY day"
+```
+
+Weekly and monthly actives are the same `count(DISTINCT index1)` over 7 and 30 days.
+Group by `blob2` for versions.
+
 ## Bindings
 
 | Binding | Kind | Purpose |
@@ -168,6 +225,8 @@ key (16 random bytes). Any other `/i/<payload>` is a long v1 link, which stays v
 | `INVITES` | Durable Object `InviteBlob` (SQLite, migration `v2`) | One object per short invite `id` |
 | `GUEST_CONNECT_LIMIT` | Rate limit, 30 per 60 s | Guest connects, keyed by `CF-Connecting-IP` |
 | `HOST_CONNECT_LIMIT` | Rate limit, 10 per 60 s | Host connects plus invite `PUT`/`DELETE`, keyed by `CF-Connecting-IP` |
+| `PING_LIMIT` | Rate limit, 60 per 60 s | `POST /v1/ping`, keyed by `CF-Connecting-IP`; its own budget, apart from the connect limits |
+| `USAGE` | Analytics Engine dataset `herdrup_usage` | One data point per accepted ping. Analytics Engine creates the dataset on the first write. |
 | `ASSETS` | Static assets from `public/` | The `/i` page and the `/web/` browser guest. The Worker serves `/i` for `/i/<payload>`, and `/web/` for any `/web/` path that matches no file. |
 
 The Worker needs no secrets.

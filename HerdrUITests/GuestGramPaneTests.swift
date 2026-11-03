@@ -252,6 +252,39 @@ final class GuestGramPaneTests: XCTestCase {
 
     // MARK: Attachments
 
+    /// An accepted asynchronous provider belongs to this draft. Neither the Send
+    /// button nor the shared command-return action may snapshot the draft first.
+    func testSendWaitsForAnAcceptedDropToFinishStaging() {
+        let app = launch(features: nil, environment: ["HERDR_MOCK_DELAYED_DROP": "1"])
+        let input = app.textViews["guest-composer-input"]
+        XCTAssertTrue(input.waitForExistence(timeout: 10))
+        input.tap()
+        input.typeText("summarise this")
+        app.buttons["guest-fixture-drop-file"].tap()
+        let finish = app.buttons["guest-fixture-finish-staging"]
+        XCTAssertTrue(poll(10, every: 0.25) { finish.isEnabled },
+                      "the real item provider should be waiting for its bytes")
+        let send = app.buttons["guest-send-button"]
+        XCTAssertFalse(send.isEnabled, "Send must wait for the accepted file")
+        // Exercise the same send() entry point as command-return even though its
+        // visible button is disabled. This is not a physical keyboard event.
+        app.buttons["guest-fixture-send-shortcut"].tap()
+        finish.tap()
+        let chip = app.buttons["Remove delayed-report.pdf"]
+        XCTAssertTrue(chip.waitForExistence(timeout: 10))
+        XCTAssertTrue(poll(10, every: 0.25) { send.isEnabled })
+        send.tap()
+        let calls = pollLabel(app, "guest-host-calls", "the complete draft should be delivered",
+                              timeout: 15) { $0.contains("agent.prompt:") }
+            .components(separatedBy: ";")
+        let prompts = calls.filter { $0.hasPrefix("agent.prompt:") }
+        XCTAssertEqual(prompts.count, 1, "no text-only message may overtake the file: \(calls)")
+        XCTAssertTrue(prompts.first?.contains("summarise this") == true)
+        XCTAssertTrue(prompts.first?.contains("delayed-report.pdf") == true)
+        XCTAssertTrue(poll(10, every: 0.25) { !chip.exists })
+        attach(app, "guest-delayed-drop-delivered")
+    }
+
     /// herdrup#345: the host answers a guest's `gram.post` with its guest projection (no
     /// direction or read fields). The app took that for a failure after the post had landed, so
     /// the agent was never prompted and the next Send re-posted an upload the host had used up.
