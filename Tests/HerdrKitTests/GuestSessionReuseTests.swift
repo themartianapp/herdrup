@@ -98,12 +98,19 @@ final class GuestSessionReuseTests: XCTestCase {
         XCTAssertTrue(connector.sockets.allSatisfy(\.closed), "every call closes its socket")
     }
 
-    func testAReadReconnectsOnceWhenTheReusedSessionEnded() async throws {
+    /// herdr ended the session after reading the request (idle timeout racing the call,
+    /// restart): a read goes once more on a fresh session.
+    func testAReadReconnectsOnceWhenTheReusedSessionEnds() async throws {
         let host = multiRequestHost()
+        var drops = 0
+        host.dropAfter = { line in
+            guard line == Self.request("2", "agent.transcript"), drops == 0 else { return false }
+            drops += 1
+            return true
+        }
         let connector = host.connector()
         let transport = transport(host, connector)
         _ = try await transport.roundTrip(Self.request("1"))
-        connector.sockets[0].hangUp()   // herdr went idle or restarted
 
         let line = try await transport.roundTrip(Self.request("2", "agent.transcript"))
 
@@ -111,41 +118,83 @@ final class GuestSessionReuseTests: XCTestCase {
         XCTAssertEqual(connector.sockets.count, 2, "one reconnect")
         XCTAssertEqual(host.hellos.count, 2)
         XCTAssertTrue(connector.sockets[0].closed)
-        XCTAssertEqual(host.requests, [Self.request("1"), Self.request("2", "agent.transcript")])
+        XCTAssertEqual(host.requests, ["1", "2", "2"].map { Self.request($0, $0 == "1" ? "agent.list" : "agent.transcript") })
     }
 
-    func testAWrittenPromptIsNotRetriedWhenTheReusedSessionEnded() async throws {
+    func testAWrittenPromptIsNotRetriedWhenTheReusedSessionEnds() async throws {
         let host = multiRequestHost()
+        host.dropAfter = { $0 == Self.request("2", "agent.prompt") }
         let connector = host.connector()
         let transport = transport(host, connector)
         _ = try await transport.roundTrip(Self.request("1"))
-        connector.sockets[0].hangUp()
 
         do {
             _ = try await transport.roundTrip(Self.request("2", "agent.prompt"))
             XCTFail("expected the ended session to fail the prompt")
         } catch TransportError.closedBeforeResponse {
         }
-        XCTAssertEqual(connector.sockets.count, 1, "no reconnect: the prompt may have reached the host")
-        XCTAssertEqual(connector.sockets[0].sent.count, 3, "handshake, request 1, the prompt — sent once")
+        XCTAssertEqual(connector.sockets.count, 1, "no reconnect: the prompt reached the host")
+        XCTAssertEqual(host.requests, [Self.request("1"), Self.request("2", "agent.prompt")], "the host ran it once")
 
         // The next call connects afresh.
         _ = try await transport.roundTrip(Self.request("3"))
         XCTAssertEqual(connector.sockets.count, 2)
     }
 
-    func testAPromptThatNeverLeftIsSentOnAFreshSession() async throws {
+    /// A send that fails after its bytes left proves nothing about delivery: the prompt
+    /// reached the host, so it must not run again on a fresh session.
+    func testAPromptWhoseSendFailedAfterDeliveryIsNotRetried() async throws {
         let host = multiRequestHost()
         let connector = host.connector()
         let transport = transport(host, connector)
         _ = try await transport.roundTrip(Self.request("1"))
-        connector.sockets[0].hangUp(failingSends: URLError(.networkConnectionLost))
+        connector.sockets[0].failSends(afterDelivering: URLError(.networkConnectionLost))
+
+        do {
+            _ = try await transport.roundTrip(Self.request("2", "agent.prompt"))
+            XCTFail("expected the failed send to fail the prompt")
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .networkConnectionLost)
+        }
+        XCTAssertEqual(host.requests.filter { $0 == Self.request("2", "agent.prompt") }.count, 1, "the host ran it once")
+        XCTAssertEqual(connector.sockets.count, 1, "no reconnect")
+        XCTAssertEqual(host.hellos.count, 1)
+    }
+
+    /// herdr closed the idle session before the call: nothing of the prompt was sent on it,
+    /// so it goes out once on a fresh session.
+    func testAPromptOnASessionKnownClosedGoesOutOnAFreshSession() async throws {
+        let host = multiRequestHost()
+        let connector = host.connector()
+        let transport = transport(host, connector)
+        _ = try await transport.roundTrip(Self.request("1"))
+        connector.sockets[0].hangUp()   // herdr's idle timeout or a restart
+        try await waitUntil { connector.sockets[0].closed }
 
         let line = try await transport.roundTrip(Self.request("2", "agent.prompt"))
 
         XCTAssertEqual(line, Self.reply(to: Self.request("2")))
         XCTAssertEqual(connector.sockets.count, 2)
+        XCTAssertEqual(connector.sockets[0].sent.count, 2, "handshake and request 1 only")
         XCTAssertEqual(host.requests, [Self.request("1"), Self.request("2", "agent.prompt")])
+    }
+
+    /// A transport that inherits the session another transport of the guest opened (a new
+    /// `GuestConnection`) still hears the features that session's handshake authenticated.
+    func testATransportInheritingTheSessionHearsItsFeatures() async throws {
+        let host = multiRequestHost()
+        host.reply = ["ok": true, "guest_id": "g_1",
+                      "features": ["multi_request": true, "gram": true, "push": true]]
+        let connector = host.connector()
+        _ = try await transport(host, connector).roundTrip(Self.request("1"))
+
+        let heard = HeardFeatures()
+        let second = RelayTransport(guestID: "g_1", endpoint: host.endpoint, identity: identity, connector: connector,
+                                    onFeatures: { heard.append($0) })
+        _ = try await second.roundTrip(Self.request("2"))
+
+        XCTAssertEqual(host.hellos.count, 1, "no new handshake")
+        XCTAssertEqual(heard.values, [GuestFeatures(gram: true, push: true)])
     }
 
     func testGuestPausedEndsTheSessionAndForbiddenDoesNot() async throws {
@@ -246,6 +295,7 @@ final class GuestSessionReuseTests: XCTestCase {
     /// The reconnect still maps a refused upgrade (here 429 `rate_limited`).
     func testAReconnectRefusedByTheRelayReportsWhy() async throws {
         let host = multiRequestHost()
+        host.dropAfter = { $0 == Self.request("2", "gram.list") }
         let hostSockets = host.connector()
         let lock = NSLock()
         var opened = 0
@@ -258,7 +308,7 @@ final class GuestSessionReuseTests: XCTestCase {
         }
         let transport = transport(host, connector)
         _ = try await transport.roundTrip(Self.request("1"))
-        connector.sockets[0].hangUp()
+        // herdr reads the read request and ends the session; the one reconnect is refused.
 
         do {
             _ = try await transport.roundTrip(Self.request("2", "gram.list"))
@@ -296,5 +346,17 @@ final class GuestSessionReuseTests: XCTestCase {
         XCTAssertFalse(RelayTransport.endsSession(#"{"id":"1","result":{"text":"say \"guest_paused\""}}"#),
                        "a code quoted inside text is not a reply code")
         XCTAssertFalse(RelayTransport.endsSession(#"{"id":"1","result":{"guest_paused":true}}"#))
+    }
+}
+
+/// What an `onFeatures` callback heard.
+private final class HeardFeatures: @unchecked Sendable {
+    private let lock = NSLock()
+    private var heard: [GuestFeatures] = []
+
+    var values: [GuestFeatures] { lock.withLock { heard } }
+
+    func append(_ features: GuestFeatures) {
+        lock.withLock { heard.append(features) }
     }
 }

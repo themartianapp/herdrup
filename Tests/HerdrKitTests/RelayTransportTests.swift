@@ -12,17 +12,20 @@ final class FakeRelaySocket: RelaySocket, @unchecked Sendable {
     private(set) var sent: [Data] = []
     private(set) var closed = false
     private var hungUp = false
-    private var sendFailure: Error?
+    private var failureAfterDelivery: Error?
     var onSend: ((Data, FakeRelaySocket) throws -> Void)?
 
     /// The far end ends the session: the guest reads a normal close, and what it sends
-    /// later never reaches the host (or fails with `failingSends`).
-    func hangUp(failingSends: Error? = nil) {
-        lock.withLock {
-            hungUp = true
-            sendFailure = failingSends
-        }
+    /// later never reaches the host.
+    func hangUp() {
+        lock.withLock { hungUp = true }
         push(.closed(code: 1000, reason: nil))
+    }
+
+    /// Every later send reaches the host and then fails, as a send whose completion
+    /// reports a dropped connection although the bytes left.
+    func failSends(afterDelivering error: Error) {
+        lock.withLock { failureAfterDelivery = error }
     }
 
     func push(_ event: RelaySocketEvent) { deliver(.success(event)) }
@@ -38,12 +41,12 @@ final class FakeRelaySocket: RelaySocket, @unchecked Sendable {
 
     func send(_ message: Data) async throws {
         let (gone, failure) = lock.withLock { () -> (Bool, Error?) in
-            if sendFailure == nil { sent.append(message) }
-            return (hungUp, sendFailure)
+            sent.append(message)
+            return (hungUp, failureAfterDelivery)
         }
-        if let failure { throw failure }
         if gone { return }
         try onSend?(message, self)
+        if let failure { throw failure }
     }
 
     func receive() async throws -> RelaySocketEvent {
@@ -106,6 +109,8 @@ final class FakeHost: @unchecked Sendable {
     private(set) var requests: [String] = []
     /// Request lines whose reply the host holds until `release()`.
     var holdReply: (String) -> Bool = { _ in false }
+    /// Request lines the host reads and then ends the session on, without a reply.
+    var dropAfter: (String) -> Bool = { _ in false }
     private let heldLock = NSLock()
     private var held: [() throws -> Void] = []
 
@@ -151,6 +156,10 @@ final class FakeHost: @unchecked Sendable {
                     let line = String(decoding: pending[..<newline], as: UTF8.self)
                     pending = Data(pending[pending.index(after: newline)...])
                     requests.append(line)
+                    if dropAfter(line) {
+                        socket.push(.closed(code: 1000, reason: nil))
+                        continue
+                    }
                     let answer = { [self] in
                         for chunk in serve(line) { socket.push(.data(try transport!.encrypt(chunk))) }
                         if let close = closeAfterServe { socket.push(close) }

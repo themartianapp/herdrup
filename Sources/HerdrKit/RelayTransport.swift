@@ -80,6 +80,12 @@ final class RelaySession: @unchecked Sendable {
     var multiRequest: Bool { GuestFeatures.multiRequest(helloReply: reply) }
     private let lock = NSLock()
     private var noise: NoiseIK.Transport
+    /// The socket read started while the session idled between calls (`watchWhileIdle`).
+    private var idleRead: Task<RelaySocketEvent, Error>?
+    /// A call took the idling session for its request (`claim`).
+    private var claimed = false
+    /// The socket delivered something while the session idled: it has ended.
+    private var endedWhileIdle = false
 
     private init(socket: RelaySocket, noise: NoiseIK.Transport, reply: [String: Any]) {
         self.socket = socket
@@ -144,7 +150,13 @@ final class RelaySession: @unchecked Sendable {
 
     /// The next decrypted chunk of the host's byte stream, or nil after a normal close.
     func receiveChunk() async throws -> Data? {
-        switch try await socket.receive() {
+        let pending = lock.withLock { () -> Task<RelaySocketEvent, Error>? in
+            defer { idleRead = nil }
+            return idleRead
+        }
+        let event: RelaySocketEvent
+        if let pending { event = try await pending.value } else { event = try await socket.receive() }
+        switch event {
         case .data(let message):
             do {
                 return try lock.withLock { try noise.decrypt(message) }
@@ -156,6 +168,48 @@ final class RelaySession: @unchecked Sendable {
             // overloaded, internal) closes 1000 WITH one, which must not read as EOF.
             if code == 1000, reason?.isEmpty ?? true { return nil }
             throw RelayTransport.error(forClose: code, reason: reason)
+        }
+    }
+
+    /// Reads ahead while the session idles between calls. herdr sends nothing between a
+    /// reply and the next request, so anything the socket delivers before a call claims the
+    /// session — mostly the close when herdr ends it (idle, restart, revocation) — means it
+    /// has ended: the session is closed, and a call that then claims it opens a fresh one
+    /// without having sent anything on this one. The read a claiming call inherits is its
+    /// reply's first event.
+    func watchWhileIdle() {
+        lock.withLock {
+            claimed = false
+            guard idleRead == nil, !endedWhileIdle else { return }
+            idleRead = Task { [weak self, socket] in
+                do {
+                    let event = try await socket.receive()
+                    self?.deliveredWhileIdle()
+                    return event
+                } catch {
+                    self?.deliveredWhileIdle()
+                    throw error
+                }
+            }
+        }
+    }
+
+    private func deliveredWhileIdle() {
+        let ended = lock.withLock { () -> Bool in
+            guard !claimed else { return false }
+            endedWhileIdle = true
+            return true
+        }
+        if ended { socket.close() }
+    }
+
+    /// Takes the session for a call's request, or false when it already ended while idle:
+    /// nothing of the call has been sent on it.
+    func claim() -> Bool {
+        lock.withLock {
+            guard !endedWhileIdle else { return false }
+            claimed = true
+            return true
         }
     }
 
@@ -305,25 +359,30 @@ public struct RelayTransport: HerdrTransport {
         }
     }
 
-    /// Sends `requestLine` on `reused`, or on a session of its own. A reused session that
-    /// ended since the last reply (herdr went idle or restarted, the relay leg dropped)
-    /// costs one more connect, and only when sending the request again cannot do anything
-    /// twice: it never left, or it only reads. A prompt, an answer, keys, a Gram post or an
-    /// upload chunk that left reports the failure instead.
+    /// Sends `requestLine` on `reused`, or on a session of its own. A reused session known
+    /// to have ended before the request (herdr closed it while it idled) is closed and the
+    /// request goes out on a fresh session: nothing of it was sent. One that fails once the
+    /// request was handed to it costs one more connect only for a read: a failed send does
+    /// not prove the host received nothing, so a prompt, an answer, keys, a Gram post or an
+    /// upload chunk reports the failure instead of running twice.
     private func exchange(
         _ requestLine: String, reusing reused: RelaySession?, through sockets: ClosableConnector
     ) async throws -> Reply {
         if let reused {
             sockets.adopt(reused.socket)
-            var written = false
-            do {
-                try await reused.sendLine(requestLine)
-                written = true
-                return try await reply(on: reused)
-            } catch {
+            if reused.claim() {
+                // This transport did not run the session's handshake; its consumer hears the
+                // features that handshake authenticated, as on a session of its own.
+                onFeatures?(GuestFeatures(helloReply: reused.reply))
+                do {
+                    try await reused.sendLine(requestLine)
+                    return try await reply(on: reused)
+                } catch {
+                    reused.close()
+                    guard !Task.isCancelled, Self.endedSession(error), Self.onlyReads(requestLine) else { throw error }
+                }
+            } else {
                 reused.close()
-                guard !Task.isCancelled, Self.endedSession(error),
-                      !written || Self.onlyReads(requestLine) else { throw error }
             }
         }
         let session = try await open(through: sockets)
@@ -631,6 +690,7 @@ final class ReusableSession: @unchecked Sendable {
 
     /// Call with `lock` held.
     private func park(_ session: RelaySession, idleLimit: Duration) {
+        session.watchWhileIdle()
         let timer = Task { [weak self] in
             guard (try? await Task.sleep(for: idleLimit)) != nil else { return }
             self?.expire(session)
