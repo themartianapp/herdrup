@@ -475,6 +475,16 @@ final class TerminalInteractionHarness: ObservableObject {
     static let navigateNotification = Notification.Name("TerminalInteractionNavigate")
     /// Sets the control pane's reply text from outside the field, the way dictation does.
     static let replyTextNotification = Notification.Name("TerminalInteractionReplyText")
+    /// Shows (true) or hides the control pane's terminal drop highlight, so a screenshot
+    /// can capture it: XCUITest cannot take one while its own drag gesture is in flight.
+    static let dropHighlightNotification = Notification.Name("TerminalInteractionDropHighlight")
+    /// How many times a drag has lit the terminal's drop target: the receipt that a real
+    /// drag, not the screenshot command, reached `TerminalDropTarget`.
+    private var dropTargets = 0
+    static func noteTerminalDropTargeted() {
+        guard enabled else { return }
+        shared.dropTargets += 1
+    }
     static let agents = [MockTransport.pagingAgent(kind: "RESIZE-ALFA", pane: "ix:a"),
                          MockTransport.pagingAgent(kind: "RESIZE-BRAVO", pane: "ix:b")]
     static let driver = TerminalInteractionDriver(control: ScreenshotMock.mode == .control)
@@ -823,6 +833,7 @@ final class TerminalInteractionHarness: ObservableObject {
         value["naturalFit"] = naturalPanes.contains(id)
         value["fixtureFit"] = fits[id].map { "\($0.0)x\($0.1)" } ?? ""
         value.merge(journalProbe()) { _, rhs in rhs }
+        value["dropTargets"] = dropTargets
         value.merge(Self.driver.hostReceipt()) { _, rhs in rhs }
         return TerminalInteractionDriver.json(value)
     }
@@ -975,6 +986,9 @@ final class TerminalInteractionHarness: ObservableObject {
             surfaces[activeID]?.view?.setMarkedText("に", selectedRange: NSRange(location: 1, length: 0))
             surfaces[activeID]?.view?.insertText("日本")
             surfaces[activeID]?.view?.unmarkText()
+        case "drop-highlight-on", "drop-highlight-off":
+            NotificationCenter.default.post(name: Self.dropHighlightNotification,
+                                            object: command == "drop-highlight-on")
         default: break
         }
     }
@@ -1062,13 +1076,95 @@ private struct TerminalInteractionControls: View {
                         .accessibilityIdentifier("fixture-" + command)
                 }
             }
-            Text("Terminal receipt").font(.system(size: 8))
-                .accessibilityIdentifier("terminal-interaction-probe")
-                .accessibilityLabel(harness.probe())
+            // The receipt row also holds the terminal drop fixtures (#575), so they cost the
+            // pane no height. The sources are real UIKit drags: a long press lifts their items
+            // and `press(forDuration:thenDragTo:)` carries them.
+            HStack(spacing: 6) {
+                Text("Terminal receipt").font(.system(size: 8))
+                    .accessibilityIdentifier("terminal-interaction-probe")
+                    .accessibilityLabel(harness.probe())
+                // Their label's own size: a UIKit view would otherwise take the height offered.
+                FixtureDragSource(identifier: "fixture-drag-files", items: FixtureDragSource.filesAndText)
+                    .fixedSize()
+                FixtureDragSource(identifier: "fixture-drag-text", items: FixtureDragSource.textOnly)
+                    .fixedSize()
+                Button("drop-highlight-on") { harness.perform("drop-highlight-on") }
+                    .font(.system(size: 8)).accessibilityIdentifier("fixture-drop-highlight-on")
+                Button("drop-highlight-off") { harness.perform("drop-highlight-off") }
+                    .font(.system(size: 8)).accessibilityIdentifier("fixture-drop-highlight-off")
+            }
         }
         .padding(.horizontal, 4).padding(.vertical, 2)
         .frame(maxWidth: .infinity).background(Color.black)
         .onReceive(ticks) { _ in harness.tick() }
+    }
+}
+
+/// A UIKit drag source, so the drag is the system's own session on every idiom (a
+/// `UIDragInteraction` is off by default on iPhone; this one is switched on).
+private struct FixtureDragSource: UIViewRepresentable {
+    let identifier: String
+    let items: () -> [NSItemProvider]
+
+    /// What a Finder drag of a document and a Files drag of a PDF carry, plus a text
+    /// snippet that must NOT be attached: a file url (the name survives), PDF bytes with
+    /// a suggested name, and plain text.
+    static func filesAndText() -> [NSItemProvider] {
+        let note = FileManager.default.temporaryDirectory.appendingPathComponent("dragged-note.txt")
+        try? Data("dragged from finder".utf8).write(to: note, options: .atomic)
+        let byURL = NSItemProvider(object: note as NSURL)
+        if !byURL.registeredTypeIdentifiers.contains(UTType.fileURL.identifier) {
+            byURL.registerDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier,
+                                             visibility: .all) { completion in
+                completion(note.dataRepresentation, nil)
+                return nil
+            }
+        }
+        let page = CGRect(x: 0, y: 0, width: 120, height: 60)
+        let pdf = UIGraphicsPDFRenderer(bounds: page).pdfData { context in
+            context.beginPage()
+            UIColor.black.setStroke()
+            context.cgContext.stroke(page.insetBy(dx: 8, dy: 8))
+        }
+        let byData = NSItemProvider()
+        byData.registerDataRepresentation(forTypeIdentifier: UTType.pdf.identifier, visibility: .all) { completion in
+            completion(pdf, nil)
+            return nil
+        }
+        byData.suggestedName = "dragged-report.pdf"
+        return [byURL, byData] + textOnly()
+    }
+
+    static func textOnly() -> [NSItemProvider] {
+        [NSItemProvider(object: "dragged-text-snippet" as NSString)]
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(items: items) }
+
+    func makeUIView(context: Context) -> UILabel {
+        let label = UILabel()
+        label.text = identifier.replacingOccurrences(of: "fixture-", with: "")
+        label.font = .systemFont(ofSize: 8)
+        label.textColor = .white
+        label.textAlignment = .center
+        label.backgroundColor = UIColor.white.withAlphaComponent(0.2)
+        label.isUserInteractionEnabled = true
+        label.isAccessibilityElement = true
+        label.accessibilityIdentifier = identifier
+        let drag = UIDragInteraction(delegate: context.coordinator)
+        drag.isEnabled = true
+        label.addInteraction(drag)
+        return label
+    }
+
+    func updateUIView(_ uiView: UILabel, context: Context) {}
+
+    final class Coordinator: NSObject, UIDragInteractionDelegate {
+        let items: () -> [NSItemProvider]
+        init(items: @escaping () -> [NSItemProvider]) { self.items = items }
+        func dragInteraction(_ interaction: UIDragInteraction, itemsForBeginning session: UIDragSession) -> [UIDragItem] {
+            items().map(UIDragItem.init(itemProvider:))
+        }
     }
 }
 #endif
