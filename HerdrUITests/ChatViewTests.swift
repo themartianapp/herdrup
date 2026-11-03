@@ -207,9 +207,15 @@ final class ChatViewTests: XCTestCase {
         let send = try XCTUnwrap(visibleButton("terminal-send-button", in: app), "the reply should be sendable")
         send.tap()
 
+        // The composer clears on the tap itself (Send gives way to Saved Prompts), whatever
+        // the send motion is still drawing.
+        XCTAssertTrue(send.waitForNonExistence(timeout: 5), "the composer should clear when Send is tapped")
+
         // The placeholder (with its receipt) shows first; the transcript's copy replaces it.
         let sent = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Ship the fix"))
         XCTAssertTrue(sent.firstMatch.waitForExistence(timeout: 10), "the chat should show the sent message")
+        XCTAssertTrue(sent.firstMatch.waitForHittable(timeout: 5),
+                      "the chat should follow the sent message to the bottom, on screen")
         // The bubble's identifier also reaches its receipt text, so wait on the bubble itself.
         let placeholder = app.descendants(matching: .any).matching(identifier: "chat-outgoing-message").firstMatch
         XCTAssertTrue(placeholder.waitForNonExistence(timeout: 15),

@@ -53,6 +53,9 @@ struct GuestPaneView: View {
     @State private var replyFocused = false
     @State private var dictating = false
     @State private var sending = false
+    /// Counts Chat sends accepted here: each plays the Send press (`ChatSendPress`).
+    @State private var sendPresses = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var note: String?
     /// Menu keys go out one after another, in the order they were tapped.
     @State private var menuKeyTask: Task<Void, Never>?
@@ -657,25 +660,30 @@ struct GuestPaneView: View {
                     .fixedSize()
                     .disabled(!canCompose || sending)
                     .accessibilityIdentifier("guest-mic-button")
-                if hasContent {
-                    Button { send() } label: {
-                        ComposerActionIcon(image: Image("ComposerSend"), primary: true, busy: sending,
-                                           progress: uploader.sendProgress(attachments, sending: sending))
+                // One slot for Send and Saved Prompts, so the Send press survives the swap
+                // the clearing composer makes in the same frame.
+                ZStack {
+                    if hasContent {
+                        Button { send() } label: {
+                            ComposerActionIcon(image: Image("ComposerSend"), primary: true, busy: sending,
+                                               progress: uploader.sendProgress(attachments, sending: sending))
+                        }
+                        .disabled(!canCompose || sending || dictating)
+                        .fixedSize()
+                        .accessibilityLabel("Send message")
+                        .accessibilityIdentifier("guest-send-button")
+                    } else {
+                        // The owner's saved prompts: a pick fills the composer and sends it as a
+                        // message (`agent.prompt`), like a typed one.
+                        SavedPromptsMenu { prompt in
+                            reply = prompt.text
+                            send()
+                        }
+                        .disabled(!canCompose || sending || dictating)
+                        .accessibilityIdentifier("guest-saved-prompts")
                     }
-                    .disabled(!canCompose || sending || dictating)
-                    .fixedSize()
-                    .accessibilityLabel("Send message")
-                    .accessibilityIdentifier("guest-send-button")
-                } else {
-                    // The owner's saved prompts: a pick fills the composer and sends it as a
-                    // message (`agent.prompt`), like a typed one.
-                    SavedPromptsMenu { prompt in
-                        reply = prompt.text
-                        send()
-                    }
-                    .disabled(!canCompose || sending || dictating)
-                    .accessibilityIdentifier("guest-saved-prompts")
                 }
+                .modifier(ChatSendPress(trigger: sendPresses))
             }
             .buttonStyle(.plain)
         }
@@ -824,10 +832,14 @@ struct GuestPaneView: View {
         sending = true
         note = nil
         let batch = attachments
-        let outgoingID = showingChat ? chatModel.stageOutgoing(
-            text: text, author: .guest(name: access.guestName), files: batch) : nil
+        // In Chat the bubble enters (and the chat follows it) on the send motion, and a
+        // multi-line composer shrinks with it; both are staged now.
+        let outgoingID = showingChat ? withAnimation(ChatSendMotion.bubble(reduceMotion: reduceMotion)) {
+            chatModel.stageOutgoing(text: text, author: .guest(name: access.guestName), files: batch)
+        } : nil
+        if outgoingID != nil, ChatSendMotion.acceptSend(reduceMotion: reduceMotion) { sendPresses += 1 }
         let clearedReply = reply
-        reply = ""
+        ChatSendMotion.clearComposer(inChat: outgoingID != nil) { reply = "" }
         // Leaving the app or locking the phone mid-upload suspends it, which drops the
         // relay connection and fails the send; this keeps it running for iOS's grace period.
         let background = BackgroundAssertion(name: "herdr.guest.send")
