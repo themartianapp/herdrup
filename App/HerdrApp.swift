@@ -7195,7 +7195,9 @@ struct TerminalPaneContent: View {
         switch router.prefillDelivery(pendingPrefill: pendingPrefill, isPromptable: ready) {
         case .prompt:
             do {
-                try await client.prompt(pane: paneID, text: reply)
+                let delivery = try await client.prompt(pane: paneID, text: reply)
+                // The owner's task from New Agent is a prompt like any other (#602).
+                GitHubStarPrompt.recordPrompt(author: .owner, delivery: delivery, in: .standard)
                 reply = ""
                 pendingPrefill = false
                 actionNote = nil
