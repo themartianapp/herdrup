@@ -13,6 +13,7 @@ struct AgentFolderRow: View {
     let sidebar: Bool
     let separator: Bool
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(alignment: .center, spacing: 0) {
@@ -44,6 +45,7 @@ struct AgentFolderRow: View {
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Palette.textFaint)
                         .rotationEffect(.degrees(summary.isOpen ? 90 : 0))
+                        .animation(AgentFolderMotion.chevron(reduceMotion: reduceMotion), value: summary.isOpen)
                         .accessibilityHidden(true)
                 }
                 Text(summary.summaryLine)

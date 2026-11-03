@@ -62,3 +62,16 @@ simple = { limit = 30, period = 60 }
 name = "HOST_CONNECT_LIMIT"
 namespace_id = "3102"
 simple = { limit = 10, period = 60 }
+
+# The anonymous usage ping (POST /v1/ping) has its own per-IP budget, so pings never spend
+# the host or guest connect limits above.
+[[ratelimits]]
+name = "PING_LIMIT"
+namespace_id = "3103"
+simple = { limit = 60, period = 60 }
+
+# One data point per accepted ping: indexes [install], blobs [app, version, build],
+# doubles [1]. Never the IP, headers, country or user agent.
+[[analytics_engine_datasets]]
+binding = "USAGE"
+dataset = "herdrup_usage"

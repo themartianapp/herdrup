@@ -184,6 +184,9 @@ struct LiveTerminalView: UIViewRepresentable {
     /// Reports `(index, total)` for the current term so the header can render "3 of 17",
     /// and `(0, 0)` when nothing matches. Invoked only when the pair changes.
     var onFindResult: (Int, Int) -> Void = { _, _ in }
+    /// Files dropped anywhere on the terminal go to the pane's composer (#575); nil while
+    /// the surface takes no drops. See `TerminalFileDrop`.
+    var fileDrop: TerminalFileDrop? = nil
     /// The host's own copy of the stuck-stream threshold, so it judges staleness by the
     /// same rule the watchdog reconnects on rather than a second, drifting number.
     static var streamStuckTimeout: TimeInterval { Coordinator.streamStuckTimeout }
@@ -283,6 +286,7 @@ struct LiveTerminalView: UIViewRepresentable {
         // resize frame must already be gone before the search scrolls the view underneath.
         context.coordinator.onFindResult = onFindResult
         context.coordinator.performFind(findRequest)
+        uiView.dropTarget.handler = fileDrop
         // A deliberate terminal tap takes focus on every idiom; a composer/find tap
         // relinquishes it, and a background pane never keeps it. SwiftTerm selection
         // needs the responder for Copy, so incidental updates do not resign
@@ -384,6 +388,8 @@ struct LiveTerminalView: UIViewRepresentable {
         /// After a layout pass that changed the container's width (rotation, split view).
         var onWidthChange: (() -> Void)?
         private var reportedWidth: CGFloat = 0
+        /// The terminal's file drop target; the pane's handler is refreshed every update.
+        let dropTarget: TerminalDropTarget
 
         /// A software-keyboard transition on iPhone: the terminal keeps its current grid
         /// and pixel size and stays LIVE, positioned inside the moving container, until
@@ -405,10 +411,12 @@ struct LiveTerminalView: UIViewRepresentable {
 
         init(terminal: ReadOnlyTerminalView) {
             self.terminal = terminal
+            dropTarget = TerminalDropTarget()
             super.init(frame: .zero)
             clipsToBounds = true
             backgroundColor = terminal.nativeBackgroundColor
             addSubview(terminal)
+            addInteraction(UIDropInteraction(delegate: dropTarget))
         }
 
         required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

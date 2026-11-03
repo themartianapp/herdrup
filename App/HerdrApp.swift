@@ -188,9 +188,17 @@ struct RootView: View {
         // Back in the foreground the held request channels may have died with the
         // network while the app was suspended (#391): have each ping before its next
         // request instead of letting that request find out by timing out.
+        // Going to the background, close the guest relay sessions kept open between
+        // calls (a suspended socket dies with the network); the next call connects afresh.
         .onChange(of: scenePhase) { _, phase in
+            if phase == .background { RelayTransport.closeReusedSessions() }
             guard phase == .active, let transport else { return }
             Task { await transport.markRequestChannelsSuspect() }
+        }
+        // The anonymous daily usage ping: on launch and on every return to the foreground,
+        // connected or not; `UsagePing` sends at most one a UTC day (see `UsagePingLaunch`).
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            if phase == .active { UsagePingLaunch.foregrounded() }
         }
     }
 
@@ -1901,6 +1909,9 @@ struct TerminalHomeView: View {
     /// Agent folders and stars (herdrup#552). Empty on a server without `agent_groups`, and
     /// then the list shows no folder rows, no stars and no folder actions.
     @State private var groups = AgentGroupsStore()
+    /// The folder a tap is opening right now, whose rows reveal one after another
+    /// (`AgentFolderMotion`); cleared once that animation is done.
+    @State private var folderReveal: String?
     /// The herdr update for this machine (herdrup#565); see `attachServerUpdate`.
     @State private var serverUpdate: ServerUpdateModel?
     /// The folder-name prompt (a new folder, or a rename) and its text.
@@ -4167,11 +4178,15 @@ struct TerminalHomeView: View {
             }
 
             if !isCollapsed {
+                let reveal = AgentFolderMotion.revealPositions(section.items, folderID: folderReveal)
                 ForEach(section.items) { item in
                     switch item {
                     case let .agent(row, starred, folderID):
                         agentRowButton(row, starred: starred, indented: folderID != nil,
                                        aboveOpen: aboveOpen, siblings: siblings)
+                            .transition(folderID == nil ? .opacity
+                                        : AgentFolderMotion.memberTransition(revealPosition: reveal[item.id],
+                                                                             reduceMotion: reduceMotion))
                     case let .folder(summary):
                         folderRow(summary, aboveOpen: aboveOpen)
                     }
@@ -4332,7 +4347,15 @@ struct TerminalHomeView: View {
     private func folderRow(_ summary: AgentFolderSummary, aboveOpen: String?) -> some View {
         let folder = summary.folder
         return Button {
-            groups.toggleOpen(folder.id)
+            // Saved in this frame; the animation only draws the change.
+            let opening = !summary.isOpen
+            withAnimation(AgentFolderMotion.toggle(opening: opening, reduceMotion: reduceMotion),
+                          completionCriteria: .logicallyComplete) {
+                folderReveal = opening && AgentFolderMotion.reveals ? folder.id : nil
+                groups.toggleOpen(folder.id)
+            } completion: {
+                if folderReveal == folder.id { folderReveal = nil }
+            }
         } label: {
             AgentFolderRow(summary: summary, sidebar: hSizeClass == .regular,
                            separator: aboveOpen != Self.folderKey(folder.id))
@@ -5072,49 +5095,6 @@ struct EdgeSwipeBack: UIViewRepresentable {
     }
 }
 
-/// WHICH PASTEBOARD ITEMS THE REPLY COMPOSER TREATS AS A FILE rather than as text.
-///
-/// Shared by the UIKit text view (which decides whether to offer and intercept Paste) and
-/// the pane (which stages the item), so the two can never disagree about what "a pasted
-/// file" is.
-private enum PastedFile {
-    /// Concrete bytes, or a package like an .rtfd bundle — but never text, a web link or
-    /// a contact card, which are ordinary pastes the reader expects to land as
-    /// characters.
-    ///
-    /// A FILE URL is the exception, and it is the whole reason Copy in Finder or Files
-    /// used to paste a path instead of attaching the file: `public.file-url` conforms to
-    /// `public.url`, so the link exclusion swallowed it. A file url names bytes; a web
-    /// url names a page.
-    static func isAttachment(_ type: UTType) -> Bool {
-        if type.conforms(to: .fileURL) { return true }
-        guard type.conforms(to: .data) || type.conforms(to: .package) else { return false }
-        return !type.conforms(to: .text) && !type.conforms(to: .url)
-            && !type.conforms(to: .vCard) && type != .rtf && type != .flatRTFD
-    }
-
-    /// The first attachable type on the general pasteboard, read from TYPE METADATA ONLY.
-    ///
-    /// `UIPasteboard.types` never touches the items, so this is safe to call while UIKit
-    /// builds an edit menu. Reading `itemProviders` there instead is a content read, which
-    /// raises the system "Allow Paste?" prompt for anything copied in another app.
-    ///
-    /// A file url wins the LOOKUP when both are advertised — it is the representation
-    /// that survives a cross-process copy with its name intact — but staging still
-    /// prefers the file's concrete type, because a url is a reference and bytes are not.
-    static func pasteboardType() -> UTType? {
-        let types = UIPasteboard.general.types.lazy.compactMap { UTType($0) }
-        return types.first { $0.conforms(to: .fileURL) } ?? types.first(where: isAttachment)
-    }
-
-    /// Whether the pasteboard names a FILE. Metadata only, and the one case where an
-    /// accompanying text representation must not win: Finder and Files put the path on
-    /// the pasteboard beside the file, and pasting that path is never what was meant.
-    static func pasteboardHasFileURL() -> Bool {
-        UIPasteboard.general.contains(pasteboardTypes: [UTType.fileURL.identifier])
-    }
-}
-
 struct ComposerTextField: UIViewRepresentable {
     @Binding var text: String
     let isEnabled: Bool
@@ -5562,7 +5542,12 @@ struct TerminalPaneContent: View {
     @ObservedObject private var mute = MuteStore.shared
     /// A drag is hovering the reply bar, so the target says so before the drop lands.
     @State private var replyDropTargeted = false
+    /// A FILE drag is hovering the terminal (#575), which drops into the same reply.
+    @State private var terminalDropTargeted = false
     @State private var sending = false
+    /// Counts Chat sends accepted here: each plays the Send press (`ChatSendPress`).
+    @State private var sendPresses = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Keycap writes share one ordered drain; prompt/attachment sends retain their
     /// own in-flight guard without throttling a rapid run of terminal keys.
     @State private var keySendTask: Task<Void, Never>?
@@ -5846,7 +5831,13 @@ struct TerminalPaneContent: View {
                                  findRequest: showingChat ? nil : findRequest,
                                  onFindResult: { index, total in
                                      if !showingChat { findMatches = (index, total, false) }
-                                 })
+                                 },
+                                 // A file dropped anywhere on the terminal joins the reply,
+                                 // exactly as one dropped on the composer bar does (#575).
+                                 // Off in Chat, where the terminal is hidden under it.
+                                 fileDrop: showingChat ? nil : TerminalFileDrop(
+                                     onTargetChange: { terminalDropTargeted = $0 },
+                                     onDrop: { acceptDroppedFiles($0) }))
                     // Reconnect on refresh: a new id re-creates the view → fresh stream/connection.
                     .id(streamGen)
                     .accessibilityIdentifier("terminal-surface")
@@ -5855,6 +5846,17 @@ struct TerminalPaneContent: View {
                     // A small horizontal inset so the grid gets a clean, symmetric
                     // margin instead of the last column hugging the right edge.
                     .padding(.horizontal, 8)
+                    // The composer's drop highlight, around the whole terminal while a
+                    // file drag hovers it. An overlay that never hit-tests, so the drop
+                    // still lands on the terminal surface underneath.
+                    .overlay {
+                        if terminalDropTargeted && !showingChat {
+                            RoundedRectangle(cornerRadius: 12)
+                                .strokeBorder(Palette.brand, lineWidth: 2)
+                                .allowsHitTesting(false)
+                                .accessibilityIdentifier("terminal-drop-highlight")
+                        }
+                    }
                     // NOTE: do NOT attach a SwiftUI .onTapGesture here. A tap gesture on
                     // this UIViewRepresentable competes with the wrapped UIScrollView's
                     // native pan and starves terminal scroll drags. LiveTerminalView's
@@ -5962,6 +5964,11 @@ struct TerminalPaneContent: View {
         .onReceive(NotificationCenter.default.publisher(for: TerminalInteractionHarness.replyTextNotification)) { note in
             guard ScreenshotMock.mode == .control, let text = note.object as? String else { return }
             reply = text
+        }
+        // The harness's drop highlight switch, for a screenshot of the terminal drop target.
+        .onReceive(NotificationCenter.default.publisher(for: TerminalInteractionHarness.dropHighlightNotification)) { note in
+            guard ScreenshotMock.mode == .control, let on = note.object as? Bool else { return }
+            terminalDropTargeted = on
         }
         #endif
         // Hardware-keyboard shortcuts for this pane. Foreground only: N keep-mounted panes
@@ -6620,30 +6627,35 @@ struct TerminalPaneContent: View {
                           onStart: { ctrlArmed = false })
                     .fixedSize()
                     .disabled(sending || autoDelivering)
-                if !hasReplyContent {
-                    SavedPromptsMenu(onSelect: usePrompt)
-                        .disabled(sending || autoDelivering || replyDictating)
-                } else {
-                    Button {
-                        sendTapped()
-                        terminalInputFocused = false
-                        // A device behaviour, not layout: only the iPhone keyboard is always
-                        // docked full-width over the pane, hiding the reply just sent and the
-                        // agent's answer, so Send puts it away there. iPad's can float or be
-                        // hardware and stays up. Holds on both iPhone Duo displays (idiom .phone).
-                        if UIDevice.current.userInterfaceIdiom == .phone {
-                            terminalCollapseToken += 1
-                            replyFocused = false
+                // One slot for Send and Saved Prompts, so the Send press survives the swap
+                // the clearing composer makes in the same frame.
+                ZStack {
+                    if !hasReplyContent {
+                        SavedPromptsMenu(onSelect: usePrompt)
+                            .disabled(sending || autoDelivering || replyDictating)
+                    } else {
+                        Button {
+                            sendTapped()
+                            terminalInputFocused = false
+                            // A device behaviour, not layout: only the iPhone keyboard is always
+                            // docked full-width over the pane, hiding the reply just sent and the
+                            // agent's answer, so Send puts it away there. iPad's can float or be
+                            // hardware and stays up. Holds on both iPhone Duo displays (idiom .phone).
+                            if UIDevice.current.userInterfaceIdiom == .phone {
+                                terminalCollapseToken += 1
+                                replyFocused = false
+                            }
+                        } label: {
+                            ComposerActionIcon(image: Image("ComposerSend"), primary: true, busy: sending,
+                                               progress: replyUploader.sendProgress(replyAttachments, sending: sending))
                         }
-                    } label: {
-                        ComposerActionIcon(image: Image("ComposerSend"), primary: true, busy: sending,
-                                           progress: replyUploader.sendProgress(replyAttachments, sending: sending))
+                        .disabled(!canSend)
+                        .fixedSize()
+                        .accessibilityLabel("Send reply")
+                        .accessibilityIdentifier("terminal-send-button")
                     }
-                    .disabled(!canSend)
-                    .fixedSize()
-                    .accessibilityLabel("Send reply")
-                    .accessibilityIdentifier("terminal-send-button")
                 }
+                .modifier(ChatSendPress(trigger: sendPresses))
             }
             .buttonStyle(.plain)
         }
@@ -6690,12 +6702,18 @@ struct TerminalPaneContent: View {
     /// one bail-out with no note — while SwiftUI played the accept animation for the
     /// whole drag. So each provider waits for the previous one to land.
     ///
+    /// Only the FILES in a drop are staged: a text item beside them (a Finder drag also
+    /// vends the path as text) is not an attachment, and handing it to the paste handler
+    /// declined it and stopped the loop before the files after it. The composer bar and
+    /// the terminal (#575) both drop through here.
+    ///
     /// Returns true when at least one provider is worth staging, which is what tells
     /// SwiftUI the drop was accepted.
     private func acceptDroppedFiles(_ providers: [NSItemProvider]) -> Bool {
-        guard !providers.isEmpty else { return false }
+        let files = TerminalFileDrop.files(in: providers)
+        guard !files.isEmpty else { return false }
         Task { @MainActor in
-            for provider in providers {
+            for provider in files {
                 // Up to five seconds per file: a staged copy of a large document off a
                 // network volume is slow, and abandoning the rest of the drag is worse
                 // than waiting.
@@ -6723,125 +6741,15 @@ struct TerminalPaneContent: View {
     @discardableResult
     private func pasteReplyAttachment(_ provider: NSItemProvider) -> Bool {
         guard !sending, !loadingReplyAttachment, replyTakesAttachment() else { return false }
-        let types = provider.registeredTypeIdentifiers.lazy.compactMap { UTType($0) }
-        // A FILE URL WINS when the item carries one. A Finder copy of a document vends
-        // the file url AND the document's ICON (com.apple.icns, which conforms to
-        // public.image), so preferring the image staged a 288 KB icon called
-        // "photo-31ec1fb2.icns" instead of the PDF the reader copied. Any image beside a
-        // file url is derived from that file — an icon, a thumbnail, or, when the file IS
-        // an image, the same bytes under a worse name.
-        //
-        // Without a file url the item is in-memory: a screenshot, an image copied out of
-        // Safari, a PDF put on the pasteboard as data. Then an image wins over any other
-        // concrete type, as before.
-        guard let type = types.first(where: { $0.conforms(to: .fileURL) })
-                ?? types.first(where: { $0.conforms(to: .image) })
-                ?? types.first(where: { PastedFile.isAttachment($0) })
-        else {
-            return false
-        }
-
-        // A file url is a REFERENCE, not bytes: loading it as a file representation
-        // yields a temp file containing the path text. Resolve it to the real file and
-        // copy from there, inside a security scope, because a document picked outside the
-        // app's container is only readable while that scope is open.
-        if type.conforms(to: .fileURL) {
-            loadingReplyAttachment = true
-            ctrlArmed = false
-            let stage: @Sendable (URL?) -> Void = { url in
-                var refusal: String?
-                let attachment: ComposerAttachment? = url.flatMap { source in
-                    let scoped = source.startAccessingSecurityScopedResource()
-                    defer { if scoped { source.stopAccessingSecurityScopedResource() } }
-                    let keys: Set<URLResourceKey> = [
-                        .isDirectoryKey, .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey,
-                    ]
-                    let values = try? source.resourceValues(forKeys: keys)
-                    // A DIRECTORY, refused before the copy. `stageCopy` would happily
-                    // recurse a whole folder into tmp and only then fail its size check,
-                    // which is an unbounded copy for a message that cannot carry it.
-                    if values?.isDirectory == true {
-                        refusal = "Folders can't be attached — pick the files inside."
-                        return nil
-                    }
-                    // An iCloud placeholder has no bytes yet. Ask for the download and say
-                    // so, instead of reporting the generic "couldn't add" for a file the
-                    // reader can plainly see in Files.
-                    if values?.isUbiquitousItem == true,
-                       values?.ubiquitousItemDownloadingStatus != .current {
-                        try? FileManager.default.startDownloadingUbiquitousItem(at: source)
-                        refusal = "\(source.lastPathComponent) isn't downloaded yet — "
-                            + "opening it in Files once will fetch it."
-                        return nil
-                    }
-                    let name = GramStaging.safeFileName(source.lastPathComponent)
-                    guard !name.isEmpty,
-                          let staged = ComposerStaging.copy(of: source, named: name)
-                    else { return nil }
-                    let fileType = UTType(filenameExtension: source.pathExtension)
-                    return ComposerAttachment(
-                        name: name,
-                        mime: fileType?.preferredMIMEType ?? "application/octet-stream",
-                        isImage: fileType?.conforms(to: .image) ?? false,
-                        staged: staged)
-                }
-                Task { @MainActor in
-                    finishReplyAttachmentPaste(attachment)
-                    if let refusal { actionNote = refusal }
-                }
-            }
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                if let url {
-                    stage(url)
-                    return
-                }
-                // Finder can supply file-url bytes without vending an NSURL object.
-                // Resolve that reference instead of attaching its icon or URL text.
-                provider.loadDataRepresentation(forTypeIdentifier: type.identifier) { data, _ in
-                    let source = data.flatMap { URL(dataRepresentation: $0, relativeTo: nil) }
-                    stage(source?.isFileURL == true ? source : nil)
-                }
-            }
-            return true
-        }
-
+        // Which representation to stage, and how, is `PastedFile`'s rule, shared with the
+        // guest pane's terminal drop.
+        guard let type = PastedFile.stagingType(of: provider) else { return false }
         loadingReplyAttachment = true
         ctrlArmed = false
-        let typeIdentifier = type.identifier
-        let isImage = type.conforms(to: .image)
-        let ext = type.preferredFilenameExtension ?? (isImage ? "jpg" : "dat")
-        let name: String = {
-            var candidate = provider.suggestedName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if candidate.isEmpty {
-                let stem = isImage ? "photo" : "file"
-                candidate = "\(stem)-\(UUID().uuidString.prefix(8).lowercased()).\(ext)"
-            }
-            if URL(fileURLWithPath: candidate).pathExtension.isEmpty { candidate += ".\(ext)" }
-            return GramStaging.safeFileName(candidate)
-        }()
-        let mime = type.preferredMIMEType ?? (isImage ? "image/jpeg" : "application/octet-stream")
-
-        provider.loadFileRepresentation(forTypeIdentifier: typeIdentifier) { source, _ in
-            let fileAttachment: ComposerAttachment? = source.flatMap { url in
-                guard let staged = ComposerStaging.copy(of: url, named: name) else { return nil }
-                return ComposerAttachment(name: name, mime: mime, isImage: isImage, staged: staged)
-            }
-            if let fileAttachment {
-                Task { @MainActor in finishReplyAttachmentPaste(fileAttachment) }
-                return
-            }
-
-            // In-memory pasteboards can vend encoded bytes but no file URL.
-            provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { data, _ in
-                let dataAttachment: ComposerAttachment? = data.flatMap {
-                    guard let staged = GramStaging.stageData(
-                        $0, named: name, in: ComposerStaging.session,
-                        maxBytes: ComposerStaging.maxFileBytes)
-                    else { return nil }
-                    return ComposerAttachment(name: name, mime: mime, isImage: isImage, staged: staged)
-                }
-                Task { @MainActor in finishReplyAttachmentPaste(dataAttachment) }
-            }
+        Task { @MainActor in
+            let staged = await PastedFile.stage(provider, as: type)
+            finishReplyAttachmentPaste(staged.attachment)
+            if let refusal = staged.refusal { actionNote = refusal }
         }
         return true
     }
@@ -6931,10 +6839,14 @@ struct TerminalPaneContent: View {
         let outgoingModel = showingChat && !autoDelivering ? chatModel : nil
         let outgoingID: String?
         if case .submitText(let text) = action, !text.isEmpty {
-            outgoingID = outgoingModel?.stageOutgoing(text: text, author: .owner)
+            // The bubble enters (and the chat follows it) on the send motion; staged now.
+            outgoingID = withAnimation(ChatSendMotion.bubble(reduceMotion: reduceMotion)) {
+                outgoingModel?.stageOutgoing(text: text, author: .owner)
+            }
         } else {
             outgoingID = nil
         }
+        if outgoingID != nil { acceptChatSend() }
         // CLEARED NOW, NOT WHEN THE ROUND TRIP RETURNS.
         //
         // The composer is content-sized and the terminal takes whatever height is left,
@@ -6951,7 +6863,8 @@ struct TerminalPaneContent: View {
         let clearedReply: String?
         if case .submitText(let text) = action, reply == text, !text.isEmpty {
             clearedReply = text
-            reply = ""
+            // In Chat a multi-line composer shrinks with the bubble; the text clears at once.
+            ChatSendMotion.clearComposer(inChat: outgoingModel != nil) { reply = "" }
         } else {
             clearedReply = nil
         }
@@ -7083,7 +6996,10 @@ struct TerminalPaneContent: View {
         }
 
         let outgoingModel = showingChat ? chatModel : nil
-        let outgoingID = outgoingModel?.stageOutgoing(text: text, author: .owner, files: attachments)
+        let outgoingID = withAnimation(ChatSendMotion.bubble(reduceMotion: reduceMotion)) {
+            outgoingModel?.stageOutgoing(text: text, author: .owner, files: attachments)
+        }
+        if outgoingID != nil { acceptChatSend() }
         sending = true
         let precedingKeySend = keySendTask
         // Each file has been uploading since it was added: the sender posts the ones that
@@ -7292,7 +7208,9 @@ struct TerminalPaneContent: View {
         switch router.prefillDelivery(pendingPrefill: pendingPrefill, isPromptable: ready) {
         case .prompt:
             do {
-                try await client.prompt(pane: paneID, text: reply)
+                let delivery = try await client.prompt(pane: paneID, text: reply)
+                // The owner's task from New Agent is a prompt like any other (#602).
+                GitHubStarPrompt.recordPrompt(author: .owner, delivery: delivery, in: .standard)
                 reply = ""
                 pendingPrefill = false
                 actionNote = nil
@@ -7347,6 +7265,12 @@ struct TerminalPaneContent: View {
         // trap the reader on a stuck pre-fill with the reply bar locked.
         pendingPrefill = false
         send(.submitText(text ?? reply))
+    }
+
+    /// A Chat send staged its bubble: the light impact and the Send press (none under
+    /// Reduce Motion).
+    private func acceptChatSend() {
+        if ChatSendMotion.acceptSend(reduceMotion: reduceMotion) { sendPresses += 1 }
     }
 }
 
@@ -7512,6 +7436,9 @@ struct SettingsView: View {
     @AppStorage("notify.dies") private var notifyDies = true
     @AppStorage("notify.finishes") private var notifyFinishes = false
     @AppStorage("notify.gram") private var notifyGram = true
+    /// About's "Share anonymous usage count" switch (absent = on). Written through
+    /// `UsagePing.setEnabled`, which also deletes or makes the install ID.
+    @AppStorage(UsagePing.Key.enabled) private var shareUsageCount = true
     @State private var copied = false
     /// The credential accounts (subscriptions) for the Accounts section. Fetched by
     /// this view itself (`.task` below) via the injected `client`, mirroring how the
@@ -8191,7 +8118,8 @@ struct SettingsView: View {
     }
 
     /// About: the tip jar (only once StoreKit has products, so it is invisible before the
-    /// App Store Connect products exist), the community, the legal pages and the source.
+    /// App Store Connect products exist), the community, the legal pages, the source and the
+    /// anonymous usage-count switch.
     private var aboutGroup: some View {
         rootGroup("ABOUT") {
             if hasTipProducts {
@@ -8208,7 +8136,31 @@ struct SettingsView: View {
             glyphDivider
             linkGlyphRow("Open source on GitHub", systemImage: "chevron.left.forwardslash.chevron.right",
                          url: URL(string: "https://github.com/themartianapp/herdrup")!)
+            glyphDivider
+            usageCountRow
         }
+    }
+
+    /// The anonymous daily usage ping's switch, on by default. Off stops the pings and deletes
+    /// the install ID at once; on again makes a new ID. A toggle drawn like `groupedToggleRow`'s,
+    /// the whole row the tap target.
+    private var usageCountRow: some View {
+        Button {
+            shareUsageCount.toggle()
+            UsagePing.setEnabled(shareUsageCount, in: .standard)
+        } label: {
+            glyphRow("Share anonymous usage count", systemImage: "chart.bar",
+                     subtitle: "Once a day: a random ID, the app version and the platform. Nothing about your agents or machines.") {
+                Toggle("", isOn: .constant(shareUsageCount))
+                    .labelsHidden()
+                    .tint(Palette.brand)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(Text(shareUsageCount ? "on" : "off"))
+        .accessibilityIdentifier("settings-usage-count")
     }
 
     private var hasTipProducts: Bool {

@@ -53,6 +53,9 @@ struct GuestPaneView: View {
     @State private var replyFocused = false
     @State private var dictating = false
     @State private var sending = false
+    /// Counts Chat sends accepted here: each plays the Send press (`ChatSendPress`).
+    @State private var sendPresses = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var note: String?
     /// Menu keys go out one after another, in the order they were tapped.
     @State private var menuKeyTask: Task<Void, Never>?
@@ -66,6 +69,8 @@ struct GuestPaneView: View {
     @State private var uploader = ComposerUploader()
     @State private var loadingAttachment = false
     @State private var showAttachSheet = false
+    /// A FILE drag is hovering the terminal (#575), which drops into this composer.
+    @State private var terminalDropTargeted = false
     @State private var findOpen = false
     @State private var findTerm = ""
     @State private var findGeneration = 0
@@ -97,6 +102,7 @@ struct GuestPaneView: View {
     @State private var forbiddenProbe = ""
     @State private var hostCallsProbe = ""
     @State private var streamOpensProbe = ""
+    @State private var delayedDropCompletion: ((Data?, Error?) -> Void)?
     #endif
 
     /// The owner shares this agent's Gram with the guest (the host's hello says so).
@@ -201,16 +207,7 @@ struct GuestPaneView: View {
         .composerAttachPicker(
             isPresented: $showAttachSheet, loading: $loadingAttachment,
             room: { ComposerStaging.maxAttachments - attachments.count }
-        ) { outcome in
-            let picked = outcome.files.map {
-                ComposerAttachment(name: $0.name, mime: $0.mime,
-                                   isImage: $0.mime.hasPrefix("image/"), staged: $0.staged)
-            }
-            attachments += picked
-            // Upload at once, so Send only has to post them and prompt.
-            uploader.start(picked, client: client, into: $attachments)
-            note = outcome.note
-        }
+        ) { outcome in addPicked(outcome) }
         // Leaving the pane stops its uploads (a send waiting on one keeps it); closing it
         // for good releases the uploader, which cancels and discards them.
         .onDisappear { uploader.pause() }
@@ -458,11 +455,26 @@ struct GuestPaneView: View {
                     findRequest: showingChat ? nil : findRequest,
                     onFindResult: { index, total in
                         if !showingChat { findMatches = (index, total, false) }
-                    })
+                    },
+                    // A file dropped anywhere on the terminal joins the composer, under the
+                    // paperclip's own rule: only while the guest may attach (#575).
+                    fileDrop: showingTerminal && canAttach ? TerminalFileDrop(
+                        onTargetChange: { terminalDropTargeted = $0 },
+                        onDrop: { acceptDroppedFiles($0) }) : nil)
                     .id(streamGen)
                     .accessibilityIdentifier("guest-terminal")
                     // The owner's terminal inset.
                     .padding(.horizontal, 8)
+                    // The composer's drop highlight, around the whole terminal while a file
+                    // drag hovers it; never hit-tests.
+                    .overlay {
+                        if terminalDropTargeted && showingTerminal {
+                            RoundedRectangle(cornerRadius: 12)
+                                .strokeBorder(Palette.brand, lineWidth: 2)
+                                .allowsHitTesting(false)
+                                .accessibilityIdentifier("guest-terminal-drop-highlight")
+                        }
+                    }
                     // The owner's jump button while the guest reads history; a local scroll
                     // (view-only sends nothing).
                     .overlay(alignment: .bottom) {
@@ -513,6 +525,9 @@ struct GuestPaneView: View {
     // MARK: - Composer
 
     private var canCompose: Bool { availability == .running }
+    /// When the composer takes an attachment: the paperclip's own enabled state, which a
+    /// terminal drop shares.
+    private var canAttach: Bool { canCompose && !sending && !loadingAttachment }
 
     private var hasContent: Bool {
         !attachments.isEmpty || !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -651,37 +666,69 @@ struct GuestPaneView: View {
         } actions: {
             HStack(spacing: 4) {
                 ComposerAttachButton(busy: loadingAttachment) { showAttachSheet = true }
-                    .disabled(!canCompose || sending || loadingAttachment)
+                    .disabled(!canAttach)
                     .accessibilityIdentifier("guest-attach-button")
                 MicButton(text: $reply, recording: $dictating)
                     .fixedSize()
                     .disabled(!canCompose || sending)
                     .accessibilityIdentifier("guest-mic-button")
-                if hasContent {
-                    Button { send() } label: {
-                        ComposerActionIcon(image: Image("ComposerSend"), primary: true, busy: sending,
-                                           progress: uploader.sendProgress(attachments, sending: sending))
+                // One slot for Send and Saved Prompts, so the Send press survives the swap
+                // the clearing composer makes in the same frame.
+                ZStack {
+                    if hasContent {
+                        Button { send() } label: {
+                            ComposerActionIcon(image: Image("ComposerSend"), primary: true, busy: sending,
+                                               progress: uploader.sendProgress(attachments, sending: sending))
+                        }
+                        .disabled(!canCompose || sending || dictating || loadingAttachment)
+                        .fixedSize()
+                        .accessibilityLabel("Send message")
+                        .accessibilityIdentifier("guest-send-button")
+                    } else {
+                        // The owner's saved prompts: a pick fills the composer and sends it as a
+                        // message (`agent.prompt`), like a typed one.
+                        SavedPromptsMenu { prompt in
+                            reply = prompt.text
+                            send()
+                        }
+                        .disabled(!canCompose || sending || dictating || loadingAttachment)
+                        .accessibilityIdentifier("guest-saved-prompts")
                     }
-                    .disabled(!canCompose || sending || dictating)
-                    .fixedSize()
-                    .accessibilityLabel("Send message")
-                    .accessibilityIdentifier("guest-send-button")
-                } else {
-                    // The owner's saved prompts: a pick fills the composer and sends it as a
-                    // message (`agent.prompt`), like a typed one.
-                    SavedPromptsMenu { prompt in
-                        reply = prompt.text
-                        send()
-                    }
-                    .disabled(!canCompose || sending || dictating)
-                    .accessibilityIdentifier("guest-saved-prompts")
                 }
+                .modifier(ChatSendPress(trigger: sendPresses))
             }
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 12)
         .opacity(canCompose ? 1 : 0.45)
         .disabled(!canCompose)
+    }
+
+    /// Staged picks or drops join the draft and start uploading at once, so Send only has
+    /// to post them and prompt.
+    private func addPicked(_ outcome: ComposerPickOutcome) {
+        let picked = outcome.files.map {
+            ComposerAttachment(name: $0.name, mime: $0.mime,
+                               isImage: $0.mime.hasPrefix("image/"), staged: $0.staged)
+        }
+        attachments += picked
+        uploader.start(picked, client: client, into: $attachments)
+        note = outcome.note
+    }
+
+    /// Files dropped on the terminal (#575), staged by the composer's paste and drop rule
+    /// (`PastedFile`) within the attachment cap, then added exactly as a paperclip pick.
+    private func acceptDroppedFiles(_ providers: [NSItemProvider]) -> Bool {
+        let files = TerminalFileDrop.files(in: providers)
+        guard canAttach, !files.isEmpty else { return false }
+        let room = ComposerStaging.maxAttachments - attachments.count
+        loadingAttachment = true
+        Task { @MainActor in
+            let outcome = await PastedFile.stageAll(files, room: room)
+            loadingAttachment = false
+            addPicked(outcome)
+        }
+        return true
     }
 
     private func attachmentChip(_ file: ComposerAttachment) -> some View {
@@ -815,7 +862,7 @@ struct GuestPaneView: View {
     // MARK: - Send
 
     private func send() {
-        guard canCompose, !sending, !dictating, hasContent else { return }
+        guard canCompose, !sending, !dictating, !loadingAttachment, hasContent else { return }
         let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
         guard text.utf8.count <= Self.maxPromptBytes else {
             note = "Messages are limited to 32 KB. Send it in parts, or attach it as a file."
@@ -824,10 +871,14 @@ struct GuestPaneView: View {
         sending = true
         note = nil
         let batch = attachments
-        let outgoingID = showingChat ? chatModel.stageOutgoing(
-            text: text, author: .guest(name: access.guestName), files: batch) : nil
+        // In Chat the bubble enters (and the chat follows it) on the send motion, and a
+        // multi-line composer shrinks with it; both are staged now.
+        let outgoingID = showingChat ? withAnimation(ChatSendMotion.bubble(reduceMotion: reduceMotion)) {
+            chatModel.stageOutgoing(text: text, author: .guest(name: access.guestName), files: batch)
+        } : nil
+        if outgoingID != nil, ChatSendMotion.acceptSend(reduceMotion: reduceMotion) { sendPresses += 1 }
         let clearedReply = reply
-        reply = ""
+        ChatSendMotion.clearComposer(inChat: outgoingID != nil) { reply = "" }
         // Leaving the app or locking the phone mid-upload suspends it, which drops the
         // relay connection and fails the send; this keeps it running for iOS's grace period.
         let background = BackgroundAssertion(name: "herdr.guest.send")
@@ -951,6 +1002,36 @@ struct GuestPaneView: View {
                 .accessibilityLabel(streamOpensProbe)
         }
         .frame(width: 1, height: 1)
+        .overlay(alignment: .topLeading) {
+            if ProcessInfo.processInfo.environment["HERDR_MOCK_DELAYED_DROP"] == "1" {
+                HStack {
+                    Button("Drop file") {
+                        let provider = NSItemProvider()
+                        provider.suggestedName = "delayed-report.pdf"
+                        provider.registerDataRepresentation(
+                            forTypeIdentifier: "com.adobe.pdf", visibility: .all
+                        ) { completion in
+                            Task { @MainActor in delayedDropCompletion = completion }
+                            return nil
+                        }
+                        acceptDroppedFiles([provider])
+                    }
+                    .accessibilityIdentifier("guest-fixture-drop-file")
+                    Button("Finish staging") {
+                        let completion = delayedDropCompletion
+                        delayedDropCompletion = nil
+                        completion?(Data("%PDF-1.4 delayed drop\n".utf8), nil)
+                    }
+                    .disabled(delayedDropCompletion == nil)
+                    .accessibilityIdentifier("guest-fixture-finish-staging")
+                    Button("Send shortcut") { send() }
+                        .accessibilityIdentifier("guest-fixture-send-shortcut")
+                }
+                .buttonStyle(.bordered)
+                .fixedSize()
+                .offset(x: 12, y: 80)
+            }
+        }
         .task {
             while !Task.isCancelled {
                 forbiddenProbe = GuestMockTransport.forbiddenCalls.joined(separator: ",")
