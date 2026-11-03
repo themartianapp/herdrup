@@ -32,6 +32,10 @@ struct HerdrApp: App {
         if ScreenshotMock.mode != nil, ProcessInfo.processInfo.environment["HERDR_MOCK_COLUMN_WIDTH"] != "keep" {
             UserDefaults.standard.removeObject(forKey: ConversationColumnWidth.storageKey)
         }
+        // And from no prompts sent and no star card answered, unless `HERDR_MOCK_STAR_PROMPT=keep`.
+        if ScreenshotMock.mode != nil {
+            GitHubStarPrompt.resetForMockLaunch(ProcessInfo.processInfo.environment, in: .standard)
+        }
         #endif
     }
 
@@ -747,7 +751,7 @@ enum HerdrSetup {
     /// It points at the FORK, not `herdr.dev/install.sh`: upstream's installer
     /// produces a herdr with no `api-bridge`, which this app cannot drive.
     static let installCommand =
-        "curl -fsSL https://herdrup.themartian.app/install.sh | sh"
+        "curl -fsSL https://herdrup.app/install.sh | sh"
     static let pairCommand = "herdr pair"
     static let openQRCommand = "herdr pair --open"
     static let saveQRCommand = "herdr pair --qr-file ~/Desktop/herdr-pair.svg"
@@ -1975,6 +1979,14 @@ struct TerminalHomeView: View {
     /// re-renders at the new `Typography.scale` when it changes — WITHOUT the
     /// identity churn `.id()` would cause (which reset the tab / terminal panes).
     @AppStorage("ui.fontScale") private var uiFontScale: Double = 1.0
+    /// The one-time GitHub star bar (`GitHubStarPrompt`): owner prompts sent so far (counted
+    /// by the pane's `submitPrompt`) and whether the bar was answered. See `showStarPrompt`.
+    @AppStorage(GitHubStarPrompt.sentPromptsKey) private var starPromptSends = 0
+    @AppStorage(GitHubStarPrompt.answeredKey) private var starPromptAnswered = false
+    /// The bar's measured height (it grows with the text size), for the roster's bottom margin.
+    @State private var starPromptHeight: CGFloat = 56
+    @Environment(\.openURL) private var openURL
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Unread agent→owner grams, badged on the Gram tab. Session-scoped; written
     /// by GramView while visible and by an ambient poll (below) while it isn't.
     /// Only the badge/sidebar readers observe this object: publishing a count must not
@@ -3693,6 +3705,41 @@ struct TerminalHomeView: View {
                 }
             )
         }
+        // The one-time GitHub star bar, floating over the bottom of the roster: just above
+        // the tab bar on iPhone, above the sidebar's section bar on iPad. It covers the list
+        // rather than moving it; the margin lets the last row scroll clear of it.
+        .contentMargins(.bottom, showStarPrompt ? starPromptHeight + Self.starPromptBottomGap + 12 : 0,
+                        for: .scrollContent)
+        .overlay(alignment: .bottom) {
+            if showStarPrompt {
+                GitHubStarPromptCard(
+                    onStar: {
+                        starPromptAnswered = true
+                        openURL(GitHubStarPrompt.repositoryURL)
+                    },
+                    onNotNow: { starPromptAnswered = true })
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { starPromptHeight = $0 }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, Self.starPromptBottomGap)
+                    .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeOut(duration: 0.25), value: showStarPrompt)
+    }
+
+    private static let starPromptBottomGap: CGFloat = 12
+
+    /// Whether to show the one-time GitHub star bar: after `GitHubStarPrompt.threshold` owner
+    /// prompts, until Star or × answers it. Only the owner's home draws it, so guests never
+    /// see it (their home is `GuestHomeView`, and their sends never reach `submitPrompt`).
+    private var showStarPrompt: Bool {
+        // Screenshot mocks and UI tests keep their pixels unless they opt in.
+        #if DEBUG
+        if ScreenshotMock.mode != nil, !GitHubStarPrompt.mockShowsCard(ProcessInfo.processInfo.environment) {
+            return false
+        }
+        #endif
+        return GitHubStarPrompt.isDue(sentPrompts: starPromptSends, answered: starPromptAnswered)
     }
 
     /// Compact layouts cover the roster when a terminal is fronted. Regular layouts
@@ -5658,10 +5705,18 @@ struct TerminalPaneContent: View {
 
     private var group: AgentGroup? { agent.map { AgentRow(info: $0).group } }
     /// The page offers the Chat view: an omp agent whose machine serves `agent.transcript`,
-    /// until the server says it cannot give this agent a transcript.
+    /// unless the server's latest answer is that it cannot give this agent a transcript.
     private var chatAvailable: Bool {
         transcriptCapable && ChatPreference.isOmp(agent?.agent) && !chatModel.unsupported
     }
+    /// An omp agent on a transcript-capable machine whose transcript was refused. A just-started
+    /// agent is refused for its first seconds, until omp's integration reports a session
+    /// (#604); the page keeps asking so Chat appears without restarting the app.
+    private var chatRecoveryNeeded: Bool {
+        transcriptCapable && ChatPreference.isOmp(agent?.agent) && chatModel.unsupported
+    }
+    /// Gaps between transcript retries while Chat is refused, in seconds. The last one repeats.
+    private static let chatRecoveryDelays: [UInt64] = [1, 2, 4, 8, 15, 30, 60]
     private var showingChat: Bool { chatAvailable && showsChat }
 
     private func setShowsChat(_ value: Bool) {
@@ -5921,6 +5976,22 @@ struct TerminalPaneContent: View {
         }
         .task(id: paneID) {
             transcriptCapable = (try? await client.serverCapabilities())?.agentTranscript ?? false
+        }
+        // While the server refuses this omp agent a transcript, ask again: soon after it
+        // starts, then less often, and at once when its status changes (its first turn writes
+        // the session). Front only; a success clears `unsupported`, which ends the loop.
+        .task(id: [chatRecoveryNeeded ? "retry" : "", isForeground ? "front" : "", agent?.agentStatus ?? ""]) {
+            guard chatRecoveryNeeded, isForeground else { return }
+            await chatModel.refresh(client: client)
+            var attempt = 0
+            while chatModel.unsupported, !Task.isCancelled {
+                let delays = Self.chatRecoveryDelays
+                let seconds = delays[min(attempt, delays.count - 1)]
+                attempt += 1
+                try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                await chatModel.refresh(client: client)
+            }
         }
         // Re-resolve status each time the pane returns to the front; drop either
         // keyboard owner when it backgrounds so a hidden keep-mounted pane cannot
@@ -7126,6 +7197,8 @@ struct TerminalPaneContent: View {
         let result = try await client.prompt(
             pane: pane, text: text,
             waitUntil: HerdrClient.anyAgentStatus, timeoutMs: 6000)
+        // This pane is the owner's: a delivered prompt counts toward the GitHub star card.
+        GitHubStarPrompt.recordPrompt(author: .owner, delivery: result, in: .standard)
         switch result {
         case .submitted:
             actionNote = nil
@@ -8128,10 +8201,10 @@ struct SettingsView: View {
             discordRow
             glyphDivider
             linkGlyphRow("Privacy Policy", systemImage: "lock.shield",
-                         url: URL(string: "https://herdrup.themartian.app/legal/privacy")!)
+                         url: URL(string: "https://herdrup.app/legal/privacy")!)
             glyphDivider
             linkGlyphRow("Terms of Service", systemImage: "doc.text",
-                         url: URL(string: "https://herdrup.themartian.app/legal/terms")!)
+                         url: URL(string: "https://herdrup.app/legal/terms")!)
             glyphDivider
             linkGlyphRow("Open source on GitHub", systemImage: "chevron.left.forwardslash.chevron.right",
                          url: URL(string: "https://github.com/themartianapp/herdrup")!)
@@ -10157,7 +10230,7 @@ struct MockTransport: HerdrTransport {
         if state == "legacy" {
             return #"{"id":"","error":{"code":"invalid_request","message":"invalid request: unknown variant `notifications.status`"}}"#
         }
-        return #"{"id":"mock","result":{"type":"notifications_status","state":"\#(state)","mode":"auto","relay_url":"https://push.herdrup.themartian.app","devices":1,"relay_devices":1}}"#
+        return #"{"id":"mock","result":{"type":"notifications_status","state":"\#(state)","mode":"auto","relay_url":"https://push.herdrup.app","devices":1,"relay_devices":1}}"#
     }
 
     /// `MockWireFixtures.agentRead` under its old name, for the agent.read callers not yet
