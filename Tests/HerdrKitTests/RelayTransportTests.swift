@@ -11,7 +11,19 @@ final class FakeRelaySocket: RelaySocket, @unchecked Sendable {
     private var waiters: [CheckedContinuation<RelaySocketEvent, Error>] = []
     private(set) var sent: [Data] = []
     private(set) var closed = false
+    private var hungUp = false
+    private var sendFailure: Error?
     var onSend: ((Data, FakeRelaySocket) throws -> Void)?
+
+    /// The far end ends the session: the guest reads a normal close, and what it sends
+    /// later never reaches the host (or fails with `failingSends`).
+    func hangUp(failingSends: Error? = nil) {
+        lock.withLock {
+            hungUp = true
+            sendFailure = failingSends
+        }
+        push(.closed(code: 1000, reason: nil))
+    }
 
     func push(_ event: RelaySocketEvent) { deliver(.success(event)) }
     func fail(_ error: Error) { deliver(.failure(error)) }
@@ -25,7 +37,12 @@ final class FakeRelaySocket: RelaySocket, @unchecked Sendable {
     }
 
     func send(_ message: Data) async throws {
-        lock.withLock { sent.append(message) }
+        let (gone, failure) = lock.withLock { () -> (Bool, Error?) in
+            if sendFailure == nil { sent.append(message) }
+            return (hungUp, sendFailure)
+        }
+        if let failure { throw failure }
+        if gone { return }
         try onSend?(message, self)
     }
 
@@ -55,9 +72,12 @@ final class FakeConnector: RelaySocketConnector, @unchecked Sendable {
     private(set) var urls: [URL] = []
     private(set) var sockets: [FakeRelaySocket] = []
     let roundTripLimit: Duration
+    let sessionIdleLimit: Duration
 
-    init(roundTripLimit: Duration = .seconds(60), make: @escaping () -> FakeRelaySocket) {
+    init(roundTripLimit: Duration = .seconds(60), sessionIdleLimit: Duration = .seconds(50),
+         make: @escaping () -> FakeRelaySocket) {
         self.roundTripLimit = roundTripLimit
+        self.sessionIdleLimit = sessionIdleLimit
         self.make = make
     }
 
@@ -84,13 +104,24 @@ final class FakeHost: @unchecked Sendable {
     private(set) var hellos: [[String: Any]] = []
     private(set) var guestStatics: [Data] = []
     private(set) var requests: [String] = []
+    /// Request lines whose reply the host holds until `release()`.
+    var holdReply: (String) -> Bool = { _ in false }
+    private let heldLock = NSLock()
+    private var held: [() throws -> Void] = []
+
+    /// Sends the replies `holdReply` held back.
+    func release() throws {
+        for reply in heldLock.withLock({ () -> [() throws -> Void] in defer { held.removeAll() }; return held }) {
+            try reply()
+        }
+    }
 
     var endpoint: RelayEndpoint {
         RelayEndpoint(relay: URL(string: "https://relay.test")!, hostID: hostID, hostPublicKey: key.publicKey.rawRepresentation)
     }
 
-    func connector() -> FakeConnector {
-        FakeConnector { [self] in
+    func connector(sessionIdleLimit: Duration = .seconds(50)) -> FakeConnector {
+        FakeConnector(sessionIdleLimit: sessionIdleLimit) { [self] in
             let socket = FakeRelaySocket()
             var responder = TestIKResponder(prologue: Data("herdr-guest/1:\(hostID)".utf8), staticKey: key)
             var transport: TestResponderTransport?
@@ -114,13 +145,22 @@ final class FakeHost: @unchecked Sendable {
                     return
                 }
                 pending += try session.decrypt(message)
-                if let newline = pending.firstIndex(of: UInt8(ascii: "\n")) {
-                    let line = String(decoding: pending[..<newline], as: UTF8.self)
-                    requests.append(line)
-                    for chunk in serve(line) { socket.push(.data(try session.encrypt(chunk))) }
-                    if let close = closeAfterServe { socket.push(close) }
-                }
                 transport = session
+                // A host serving many requests per session reads them one line at a time.
+                while let newline = pending.firstIndex(of: UInt8(ascii: "\n")) {
+                    let line = String(decoding: pending[..<newline], as: UTF8.self)
+                    pending = Data(pending[pending.index(after: newline)...])
+                    requests.append(line)
+                    let answer = { [self] in
+                        for chunk in serve(line) { socket.push(.data(try transport!.encrypt(chunk))) }
+                        if let close = closeAfterServe { socket.push(close) }
+                    }
+                    if holdReply(line) {
+                        heldLock.withLock { held.append(answer) }
+                    } else {
+                        try answer()
+                    }
+                }
             }
             return socket
         }

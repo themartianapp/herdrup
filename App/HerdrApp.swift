@@ -188,7 +188,10 @@ struct RootView: View {
         // Back in the foreground the held request channels may have died with the
         // network while the app was suspended (#391): have each ping before its next
         // request instead of letting that request find out by timing out.
+        // Going to the background, close the guest relay sessions kept open between
+        // calls (a suspended socket dies with the network); the next call connects afresh.
         .onChange(of: scenePhase) { _, phase in
+            if phase == .background { RelayTransport.closeReusedSessions() }
             guard phase == .active, let transport else { return }
             Task { await transport.markRequestChannelsSuspect() }
         }

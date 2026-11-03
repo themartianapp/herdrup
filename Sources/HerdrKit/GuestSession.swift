@@ -89,6 +89,12 @@ public struct GuestFeatures: Equatable, Hashable, Sendable {
         let features = helloReply["features"] as? [String: Any]
         self.init(gram: features?["gram"] as? Bool ?? false, push: features?["push"] as? Bool ?? false)
     }
+
+    /// Whether the host serves many requests on one session (`multi_request`, herdr #356).
+    /// Read by the transport only: it is not a feature the app shows, compares or saves.
+    static func multiRequest(helloReply: [String: Any]) -> Bool {
+        (helloReply["features"] as? [String: Any])?["multi_request"] as? Bool ?? false
+    }
 }
 
 public enum GuestSession {

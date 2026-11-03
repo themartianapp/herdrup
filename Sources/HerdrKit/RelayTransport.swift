@@ -23,17 +23,24 @@ public protocol RelaySocket: Sendable {
 
 public protocol RelaySocketConnector: Sendable {
     func connect(to url: URL) -> RelaySocket
-    /// The longest one `RelayTransport.roundTrip` may take, from opening its socket to
-    /// the reply line. Past it the socket is closed — even while it still waits for the
-    /// upgrade or the host's handshake reply — and the call fails with
-    /// `TransportError.requestTimedOut`. A `stream` has no limit.
+    /// The longest one `RelayTransport.roundTrip` may take, from its turn (opening its
+    /// socket, or taking the session the call before it left open) to the reply line.
+    /// Past it the socket is closed — even while it still waits for the upgrade or the
+    /// host's handshake reply — and the call fails with `TransportError.requestTimedOut`.
+    /// A `stream` has no limit.
     var roundTripLimit: Duration { get }
+    /// How long a session kept open for the next call may sit unused before this client
+    /// closes it.
+    var sessionIdleLimit: Duration { get }
 }
 
 extension RelaySocketConnector {
     /// Every guest call is one short request, and the largest is one upload chunk
     /// (`RelayTransport.gramUploadChunkBytes`), so a minute only ends a call that is stuck.
     public var roundTripLimit: Duration { .seconds(60) }
+    /// herdr ends a guest session after 60 s without a request; closing it first means a
+    /// call never writes into a session the host is ending.
+    public var sessionIdleLimit: Duration { .seconds(50) }
 }
 
 /// Where a guest connects: the relay, the host's relay id, and the host's static key.
@@ -69,6 +76,8 @@ final class RelaySession: @unchecked Sendable {
     let socket: RelaySocket
     /// The decoded message-2 payload.
     let reply: [String: Any]
+    /// The host serves the next request on this session after a reply (herdr #356).
+    var multiRequest: Bool { GuestFeatures.multiRequest(helloReply: reply) }
     private let lock = NSLock()
     private var noise: NoiseIK.Transport
 
@@ -155,9 +164,10 @@ final class RelaySession: @unchecked Sendable {
     }
 }
 
-/// Reaches a host daemon through the guest relay. Like `CitadelTransport`, every
-/// call gets its own connection: one WebSocket is one Noise session and carries
-/// exactly one API request.
+/// Reaches a host daemon through the guest relay. One WebSocket is one Noise session. Like
+/// `CitadelTransport`, every call gets its own session, unless the host serves many
+/// requests per session (`features.multi_request`, herdr #356): then the guest's calls take
+/// turns on one open session (`ReusableSession`). A `stream` always opens its own.
 public struct RelayTransport: HerdrTransport {
     public let endpoint: RelayEndpoint
     let identity: GuestIdentity
@@ -168,14 +178,17 @@ public struct RelayTransport: HerdrTransport {
 
     /// Encoded once per transport; every request authenticates the same grant.
     private let returningHello: Data
+    /// The session this guest keeps open to this host between calls, shared by every
+    /// transport of the same guest, host and device key.
+    private let reusable: ReusableSession
 
     private struct ReturningHello: Encodable {
         let v = 1
         let guest_id: String
     }
 
-    /// Raw bytes per `gram.upload_chunk` over the relay: 256 KiB. Every relay call is its
-    /// own WebSocket and Noise handshake, so the SSH-sized 48 KiB chunk made a 6 MB
+    /// Raw bytes per `gram.upload_chunk` over the relay: 256 KiB. On a host without session
+    /// reuse every relay call is its own WebSocket and Noise handshake, so the SSH-sized 48 KiB chunk made a 6 MB
     /// photo 123 connections. The SSH argv cap behind 48 KiB does not apply here; the
     /// host's limits do, and this size keeps clear of each:
     /// - base64 makes the request line about 349.7 KB, which `encryptChunked` splits
@@ -187,7 +200,7 @@ public struct RelayTransport: HerdrTransport {
     /// - the API must receive the whole line within 5 s of its first message, so the
     ///   phone's uplink needs about 70 KB/s (0.56 Mbit/s). 384 KiB would need
     ///   0.84 Mbit/s, which a weak cellular uplink does not always sustain.
-    /// A 6 MB photo is 23 connections.
+    /// A 6 MB photo is 23 requests (23 connections without session reuse).
     static let gramUploadChunkBytes = 256 * 1024
 
     public var gramUploadChunkBytes: Int { Self.gramUploadChunkBytes }
@@ -201,6 +214,8 @@ public struct RelayTransport: HerdrTransport {
         self.returningHello = try! JSONEncoder().encode(ReturningHello(guest_id: guestID))
         self.connector = connector
         self.onFeatures = onFeatures
+        self.reusable = ReusableSession.shared(
+            ReusableSession.Key(endpoint: endpoint, guestID: guestID, device: identity.publicKey))
     }
 
     private func open(through connector: RelaySocketConnector) async throws -> RelaySession {
@@ -210,6 +225,7 @@ public struct RelayTransport: HerdrTransport {
             session.close()
             throw GuestError.revoked
         }
+        reusable.learn(multiRequest: session.multiRequest)
         onFeatures?(GuestFeatures(helloReply: session.reply))
         return session
     }
@@ -219,12 +235,53 @@ public struct RelayTransport: HerdrTransport {
     /// handshake reply never came left the call (and an upload behind it) waiting forever.
     /// The wait does not depend on the socket honouring the close: after invoking
     /// close, the call answers without waiting for the handshake or exchange to end.
+    ///
+    /// Once a handshake advertised `features.multi_request`, calls take turns on the
+    /// guest's one open session: herdr reads the next request only after its reply, so a
+    /// call waits for the one before it, and its limit starts when its turn does.
     public func roundTrip(_ requestLine: String) async throws -> String {
+        guard reusable.reuses else {
+            // Its own socket and handshake, as on a host without session reuse. A host that
+            // turns out to serve many requests per session keeps the session for the next call.
+            let generation = reusable.generation
+            let reply = try await withDeadline { try await exchange(requestLine, reusing: nil, through: $0) }
+            if let session = reply.session {
+                reusable.offer(session, from: generation, idleLimit: connector.sessionIdleLimit)
+            }
+            return reply.line
+        }
+        let turn = try await reusable.take()
+        // A call cancelled while it waited hands the session on unused rather than closing it.
+        var kept = turn.session
+        defer { reusable.finish(turn, keeping: kept, idleLimit: connector.sessionIdleLimit) }
+        try Task.checkCancellation()
+        kept = nil
+        let reply = try await withDeadline { try await exchange(requestLine, reusing: turn.session, through: $0) }
+        kept = reply.session
+        return reply.line
+    }
+
+    /// Closes every guest session kept open between calls, and each in-flight one when its
+    /// call ends. The app calls it on going to the background, where a suspended socket
+    /// dies with the network; the next call connects afresh.
+    public static func closeReusedSessions() {
+        ReusableSession.closeAll()
+    }
+
+    /// One call's reply line, and its session when that can carry the next request.
+    private struct Reply: Sendable {
+        let line: String
+        let session: RelaySession?
+    }
+
+    private func withDeadline(
+        _ work: @escaping @Sendable (ClosableConnector) async throws -> Reply
+    ) async throws -> Reply {
         let sockets = ClosableConnector(connector)
-        let outcome = FirstOutcome<String>()
-        let work = Task {
+        let outcome = FirstOutcome<Reply>()
+        let task = Task {
             do {
-                outcome.offer(.success(try await exchange(requestLine, through: sockets)))
+                outcome.offer(.success(try await work(sockets)))
             } catch {
                 outcome.offer(.failure(error))
             }
@@ -232,7 +289,7 @@ public struct RelayTransport: HerdrTransport {
         let end = { @Sendable (error: Error) in
             outcome.offer(.failure(error)) {
                 sockets.close()
-                work.cancel()
+                task.cancel()
             }
         }
         let expired = TransportError.requestTimedOut(host: endpoint.relay.host ?? endpoint.relay.absoluteString)
@@ -248,16 +305,101 @@ public struct RelayTransport: HerdrTransport {
         }
     }
 
-    private func exchange(_ requestLine: String, through connector: RelaySocketConnector) async throws -> String {
-        let session = try await open(through: connector)
-        defer { session.close() }
-        try await session.sendLine(requestLine)
+    /// Sends `requestLine` on `reused`, or on a session of its own. A reused session that
+    /// ended since the last reply (herdr went idle or restarted, the relay leg dropped)
+    /// costs one more connect, and only when sending the request again cannot do anything
+    /// twice: it never left, or it only reads. A prompt, an answer, keys, a Gram post or an
+    /// upload chunk that left reports the failure instead.
+    private func exchange(
+        _ requestLine: String, reusing reused: RelaySession?, through sockets: ClosableConnector
+    ) async throws -> Reply {
+        if let reused {
+            sockets.adopt(reused.socket)
+            var written = false
+            do {
+                try await reused.sendLine(requestLine)
+                written = true
+                return try await reply(on: reused)
+            } catch {
+                reused.close()
+                guard !Task.isCancelled, Self.endedSession(error),
+                      !written || Self.onlyReads(requestLine) else { throw error }
+            }
+        }
+        let session = try await open(through: sockets)
+        do {
+            try await session.sendLine(requestLine)
+            return try await reply(on: session)
+        } catch {
+            session.close()
+            throw error
+        }
+    }
+
+    /// Reads the reply line. The session stays open for the next call only on a host that
+    /// serves many requests per session, when the reply is all it sent and does not end
+    /// the session; otherwise it is closed here.
+    private func reply(on session: RelaySession) async throws -> Reply {
         var lines = LineAccumulator()
         while let chunk = try await session.receiveChunk() {
-            if let first = lines.append(chunk).first { return first }
+            let complete = lines.append(chunk)
+            guard let first = complete.first else { continue }
+            let reusable = session.multiRequest && complete.count == 1 && !lines.hasRemainder
+                && !Self.endsSession(first)
+            if !reusable { session.close() }
+            return Reply(line: first, session: reusable ? session : nil)
         }
-        if lines.hasRemainder { return lines.flush() }
-        throw TransportError.closedBeforeResponse
+        guard lines.hasRemainder else { throw TransportError.closedBeforeResponse }
+        session.close()
+        return Reply(line: lines.flush(), session: nil)
+    }
+
+    /// The error codes after which herdr ends a guest session: `guest_paused`,
+    /// `guest_revoked`, and `invalid_request` for a line that is not a request.
+    /// `guest_forbidden` leaves it open.
+    static let sessionEndingCodes: Set<String> = ["guest_paused", "guest_revoked", "invalid_request"]
+
+    /// Whether `line` is an error reply that ends the session. Only a reply that quotes one
+    /// of the codes is parsed; a quote inside a JSON string is escaped, so text that merely
+    /// mentions a code never matches.
+    static func endsSession(_ line: String) -> Bool {
+        guard sessionEndingCodes.contains(where: { line.contains("\"\($0)\"") }) else { return false }
+        let reply = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any]
+        guard let reply else { return true }
+        guard let code = (reply["error"] as? [String: Any])?["code"] as? String else { return false }
+        return sessionEndingCodes.contains(code)
+    }
+
+    /// Guest methods that only read, so a request that may have reached herdr on a session
+    /// that then ended can go once more on a fresh one.
+    static let readMethods: Set<String> = [
+        "ping", "agent.list", "agent.get", "agent.read", "agent.avatar.get", "agent.transcript",
+        "pane.read", "pane.history", "gram.list", "gram.get_file", "gram.get_file_chunk",
+    ]
+
+    static func onlyReads(_ requestLine: String) -> Bool {
+        let request = (try? JSONSerialization.jsonObject(with: Data(requestLine.utf8))) as? [String: Any]
+        guard let method = request?["method"] as? String else { return false }
+        return readMethods.contains(method)
+    }
+
+    /// Whether `error` means the session was gone rather than the call failing: an end of
+    /// stream before the reply, a close code this client does not map, or a dropped socket.
+    /// A mapped close (offline, busy, rate limited, too large), a Noise failure, a timeout
+    /// or a cancellation is the call's own answer.
+    static func endedSession(_ error: Error) -> Bool {
+        switch error {
+        case let guest as GuestError:
+            if case .connectionClosed = guest { return true }
+            return false
+        case let transport as TransportError:
+            if case .closedBeforeResponse = transport { return true }
+            return false
+        case is CancellationError:
+            return false
+        default:
+            return true
+        }
     }
 
     public func stream(_ requestLine: String) -> AsyncThrowingStream<String, Error> {
@@ -342,6 +484,176 @@ private final class SessionHolder: @unchecked Sendable {
     }
 }
 
+/// A guest's one open session to a host that serves many requests per session
+/// (`features.multi_request`), shared by every `RelayTransport` of the same guest, host
+/// and device key. Calls take turns: herdr reads the next request only after the reply to
+/// the one before, so a call waits until the call ahead of it finishes. Between calls the
+/// session idles until the connector's `sessionIdleLimit` (herdr ends it after 60 s) or
+/// `closeAll`.
+final class ReusableSession: @unchecked Sendable {
+    struct Key: Hashable {
+        let endpoint: RelayEndpoint
+        let guestID: String
+        let device: Data
+    }
+
+    /// A call's turn, with the session the call before it left open (nil: open one).
+    struct Turn: Sendable {
+        let session: RelaySession?
+        fileprivate let generation: Int
+    }
+
+    private struct Parked {
+        let session: RelaySession
+        let expires: ContinuousClock.Instant
+        let timer: Task<Void, Never>
+    }
+
+    private static let registryLock = NSLock()
+    nonisolated(unsafe) private static var registry: [Key: ReusableSession] = [:]
+
+    static func shared(_ key: Key) -> ReusableSession {
+        registryLock.withLock {
+            if let existing = registry[key] { return existing }
+            let created = ReusableSession()
+            registry[key] = created
+            return created
+        }
+    }
+
+    static func closeAll() {
+        for reusable in registryLock.withLock({ Array(registry.values) }) { reusable.close() }
+    }
+
+    private let lock = NSLock()
+    /// What the last handshake advertised; nil before the first.
+    private var multiRequest: Bool?
+    /// A call holds the turn.
+    private var busy = false
+    private var waiters: [(id: UInt64, continuation: CheckedContinuation<Turn, Error>)] = []
+    private var lastWaiter: UInt64 = 0
+    private var parked: Parked?
+    /// Bumped by `close`: a session from a call that began before it is not kept.
+    private var currentGeneration = 0
+
+    /// Calls take turns on the shared session: the last handshake advertised it.
+    var reuses: Bool { lock.withLock { multiRequest == true } }
+
+    var generation: Int { lock.withLock { currentGeneration } }
+
+    /// Remembers what a handshake advertised. A host that stopped advertising it (an older
+    /// herdr after a restart) loses the idle session.
+    func learn(multiRequest: Bool) {
+        let dropped = lock.withLock { () -> RelaySession? in
+            self.multiRequest = multiRequest
+            return multiRequest ? nil : unpark()?.session
+        }
+        dropped?.close()
+    }
+
+    /// Waits for the call's turn. A session idle past its limit (the app was suspended
+    /// before its timer ran) is closed rather than handed on.
+    func take() async throws -> Turn {
+        let id = lock.withLock { () -> UInt64 in
+            lastWaiter += 1
+            return lastWaiter
+        }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                var expired: RelaySession?
+                let ready = lock.withLock { () -> Result<Turn, Error>? in
+                    // Checked under the lock the cancellation handler takes: a call
+                    // cancelled from here on finds its continuation queued.
+                    if Task.isCancelled { return .failure(CancellationError()) }
+                    if busy {
+                        waiters.append((id, continuation))
+                        return nil
+                    }
+                    busy = true
+                    var session: RelaySession?
+                    if let idle = unpark() {
+                        if ContinuousClock.now < idle.expires { session = idle.session } else { expired = idle.session }
+                    }
+                    return .success(Turn(session: session, generation: currentGeneration))
+                }
+                expired?.close()
+                if let ready { continuation.resume(with: ready) }
+            }
+        } onCancel: {
+            let waiter = lock.withLock { () -> CheckedContinuation<Turn, Error>? in
+                guard let index = waiters.firstIndex(where: { $0.id == id }) else { return nil }
+                return waiters.remove(at: index).continuation
+            }
+            waiter?.resume(throwing: CancellationError())
+        }
+    }
+
+    /// Ends a call's turn. `session`, still open (nil when the call ended it), goes to the
+    /// next waiting call, or idles until `idleLimit`.
+    func finish(_ turn: Turn, keeping session: RelaySession?, idleLimit: Duration) {
+        var session = session
+        var stale: RelaySession?
+        let next = lock.withLock { () -> (CheckedContinuation<Turn, Error>, Turn)? in
+            if turn.generation != currentGeneration {
+                stale = session
+                session = nil
+            }
+            if !waiters.isEmpty {
+                return (waiters.removeFirst().continuation, Turn(session: session, generation: currentGeneration))
+            }
+            busy = false
+            if let session { park(session, idleLimit: idleLimit) }
+            return nil
+        }
+        stale?.close()
+        if let (waiter, turn) = next { waiter.resume(returning: turn) }
+    }
+
+    /// Keeps a session a call opened outside the turns (before a handshake said the host
+    /// serves many requests per session) when no other is open or in use; else closes it.
+    func offer(_ session: RelaySession, from generation: Int, idleLimit: Duration) {
+        let kept = lock.withLock { () -> Bool in
+            guard generation == currentGeneration, !busy, parked == nil else { return false }
+            park(session, idleLimit: idleLimit)
+            return true
+        }
+        if !kept { session.close() }
+    }
+
+    /// Closes the idle session; the one in use is closed when its call ends.
+    func close() {
+        let dropped = lock.withLock { () -> RelaySession? in
+            currentGeneration += 1
+            return unpark()?.session
+        }
+        dropped?.close()
+    }
+
+    /// Call with `lock` held.
+    private func park(_ session: RelaySession, idleLimit: Duration) {
+        let timer = Task { [weak self] in
+            guard (try? await Task.sleep(for: idleLimit)) != nil else { return }
+            self?.expire(session)
+        }
+        parked = Parked(session: session, expires: ContinuousClock.now.advanced(by: idleLimit), timer: timer)
+    }
+
+    private func expire(_ session: RelaySession) {
+        let idle = lock.withLock { () -> RelaySession? in
+            guard parked?.session === session else { return nil }
+            return unpark()?.session
+        }
+        idle?.close()
+    }
+
+    /// Call with `lock` held.
+    private func unpark() -> Parked? {
+        defer { parked = nil }
+        parked?.timer.cancel()
+        return parked
+    }
+}
+
 /// Opens one call's socket through `base` and lets the call's deadline close it, even
 /// before `RelaySession.open` has a session to close. A socket opened after the close
 /// is closed at once.
@@ -356,16 +668,22 @@ private final class ClosableConnector: RelaySocketConnector, @unchecked Sendable
     }
 
     var roundTripLimit: Duration { base.roundTripLimit }
+    var sessionIdleLimit: Duration { base.sessionIdleLimit }
 
     func connect(to url: URL) -> RelaySocket {
         let socket = base.connect(to: url)
+        adopt(socket)
+        return socket
+    }
+
+    /// Lets the deadline close `socket` too: one the call opened, or the reused session's.
+    func adopt(_ socket: RelaySocket) {
         let late = lock.withLock { () -> Bool in
             if closed { return true }
             self.socket = socket
             return false
         }
         if late { socket.close() }
-        return socket
     }
 
     func close() {
