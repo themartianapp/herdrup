@@ -153,7 +153,7 @@ costs nothing while its object hibernates.
 
 ### Short invites
 
-A short invite link is `https://guest.herdrup.themartian.app/i/<id><key>`: one path
+A short invite link is `https://guest.herdrup.app/i/<id><key>`: one path
 segment of exactly 34 b64url characters, the 12-character `id` and then the 22-character
 key (16 random bytes). Any other `/i/<payload>` is a long v1 link, which stays valid.
 
@@ -242,11 +242,12 @@ npx wrangler deploy --dry-run --outdir /tmp/guestrelay-dry   # bundle check only
 wrangler deploy
 ```
 
-`wrangler.toml` routes the custom domain `guest.herdrup.themartian.app` with
-`custom_domain = true`, so the first `wrangler deploy` attaches it. The
-`themartian.app` zone must be on the deploying account. To attach the domain by hand,
-remove the `routes` line and use the dashboard: Workers → herdrup-guest → Settings →
-Domains & Routes.
+`wrangler.toml` routes two custom domains with `custom_domain = true`, so a deploy
+attaches both: `guest.herdrup.app` (current) and `guest.herdrup.themartian.app` (the
+name before 2026-11-02). Keep the old one attached: invites, guests and herdr hosts that
+were set up earlier name it as their relay, and an invite only opens on the relay it names.
+Both zones must be on the deploying account. To attach a domain by hand, remove the
+`routes` entry and use the dashboard: Workers → herdrup-guest → Settings → Domains & Routes.
 
 ## Rollback
 
@@ -254,7 +255,7 @@ Domains & Routes.
   `wrangler rollback <version-id>`. You can also pick a version in the dashboard under
   Deployments. Rollback can't cross a Durable Object migration. For a version from
   before a migration, deploy a fixed version instead.
-- **Take guest access offline:** detach `guest.herdrup.themartian.app` in Domains &
+- **Take guest access offline:** detach both `guest.herdrup.app` and `guest.herdrup.themartian.app` in Domains &
   Routes. The Worker and its stored host hashes stay intact.
   - Host daemons keep retrying with backoff: 2 s, doubling to 60 s.
   - Guests see the relay as unreachable.

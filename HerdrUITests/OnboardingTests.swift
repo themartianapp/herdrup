@@ -20,7 +20,7 @@ final class OnboardingTests: XCTestCase {
             "the first screen should name SSH and macOS Remote Login")
 
         let install = app.buttons[
-            "Copy command: curl -fsSL https://herdrup.themartian.app/install.sh | sh"
+            "Copy command: curl -fsSL https://herdrup.app/install.sh | sh"
         ]
         XCTAssertTrue(install.waitForExistence(timeout: 8),
                       "the one-line fork installer should be visible and tappable")
