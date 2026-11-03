@@ -6,6 +6,7 @@
 // path of /i/<payload>).
 import type { HostRelay } from "./host";
 import { handleInvite, type InviteBlob } from "./invite";
+import { handlePing } from "./ping";
 
 export const VERSION = "1.0.0";
 
@@ -14,10 +15,12 @@ export interface Env {
   INVITES: DurableObjectNamespace<InviteBlob>;
   GUEST_CONNECT_LIMIT?: RateLimit;
   HOST_CONNECT_LIMIT?: RateLimit;
+  PING_LIMIT?: RateLimit;
+  USAGE?: AnalyticsEngineDataset;
   ASSETS: Fetcher;
 }
 
-export type Endpoint = "/v1/host" | "/v1/guest" | "/v1/invite";
+export type Endpoint = "/v1/host" | "/v1/guest" | "/v1/invite" | "/v1/ping";
 
 export interface LogLine {
   endpoint: Endpoint;
@@ -54,6 +57,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
   if (invite !== null && (request.method === "PUT" || request.method === "GET" || request.method === "DELETE")) {
     return handleInvite(request, env, invite[1]);
   }
+  if (pathname === "/v1/ping") return handlePing(request, env);
   const match = request.method === "GET" ? SOCKET_PATH.exec(pathname) : null;
   if (match === null) return errorResponse(404, "not_found");
 
@@ -100,4 +104,23 @@ export function json(status: number, body: unknown, headers: Record<string, stri
  */
 export function errorResponse(status: number, code: string, headers: Record<string, string> = {}): Response {
   return json(status, { error: code }, { ...headers, "X-Herdr-Guest-Error": code });
+}
+
+/** The request body, or null once it passes `max` bytes (declared or streamed). */
+export async function readCapped(request: Request, max: number): Promise<ArrayBuffer | null> {
+  if (Number(request.headers.get("Content-Length") ?? 0) > max) return null;
+  if (request.body === null) return new ArrayBuffer(0);
+  const body = new Uint8Array(max);
+  let length = 0;
+  const reader = request.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return body.slice(0, length).buffer;
+    if (length + value.byteLength > max) {
+      await reader.cancel();
+      return null;
+    }
+    body.set(value, length);
+    length += value.byteLength;
+  }
 }
