@@ -27,7 +27,7 @@ public actor PushRelayEnroller {
         case sandbox
     }
 
-    public static let defaultBaseURL = URL(string: "https://push.herdrup.themartian.app")!
+    public static let defaultBaseURL = URL(string: "https://push.herdrup.app")!
     public static let timeout: TimeInterval = 10
 
     private let baseURL: URL
