@@ -1906,6 +1906,9 @@ struct TerminalHomeView: View {
     /// Agent folders and stars (herdrup#552). Empty on a server without `agent_groups`, and
     /// then the list shows no folder rows, no stars and no folder actions.
     @State private var groups = AgentGroupsStore()
+    /// The folder a tap is opening right now, whose rows reveal one after another
+    /// (`AgentFolderMotion`); cleared once that animation is done.
+    @State private var folderReveal: String?
     /// The herdr update for this machine (herdrup#565); see `attachServerUpdate`.
     @State private var serverUpdate: ServerUpdateModel?
     /// The folder-name prompt (a new folder, or a rename) and its text.
@@ -4166,11 +4169,15 @@ struct TerminalHomeView: View {
             }
 
             if !isCollapsed {
+                let reveal = AgentFolderMotion.revealPositions(section.items, folderID: folderReveal)
                 ForEach(section.items) { item in
                     switch item {
                     case let .agent(row, starred, folderID):
                         agentRowButton(row, starred: starred, indented: folderID != nil,
                                        aboveOpen: aboveOpen, siblings: siblings)
+                            .transition(folderID == nil ? .opacity
+                                        : AgentFolderMotion.memberTransition(revealPosition: reveal[item.id],
+                                                                             reduceMotion: reduceMotion))
                     case let .folder(summary):
                         folderRow(summary, aboveOpen: aboveOpen)
                     }
@@ -4331,7 +4338,15 @@ struct TerminalHomeView: View {
     private func folderRow(_ summary: AgentFolderSummary, aboveOpen: String?) -> some View {
         let folder = summary.folder
         return Button {
-            groups.toggleOpen(folder.id)
+            // Saved in this frame; the animation only draws the change.
+            let opening = !summary.isOpen
+            withAnimation(AgentFolderMotion.toggle(opening: opening, reduceMotion: reduceMotion),
+                          completionCriteria: .logicallyComplete) {
+                folderReveal = opening && AgentFolderMotion.reveals ? folder.id : nil
+                groups.toggleOpen(folder.id)
+            } completion: {
+                if folderReveal == folder.id { folderReveal = nil }
+            }
         } label: {
             AgentFolderRow(summary: summary, sidebar: hSizeClass == .regular,
                            separator: aboveOpen != Self.folderKey(folder.id))
@@ -5521,6 +5536,9 @@ struct TerminalPaneContent: View {
     /// A FILE drag is hovering the terminal (#575), which drops into the same reply.
     @State private var terminalDropTargeted = false
     @State private var sending = false
+    /// Counts Chat sends accepted here: each plays the Send press (`ChatSendPress`).
+    @State private var sendPresses = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Keycap writes share one ordered drain; prompt/attachment sends retain their
     /// own in-flight guard without throttling a rapid run of terminal keys.
     @State private var keySendTask: Task<Void, Never>?
@@ -6597,26 +6615,31 @@ struct TerminalPaneContent: View {
                           onStart: { ctrlArmed = false })
                     .fixedSize()
                     .disabled(sending || autoDelivering)
-                if !hasReplyContent {
-                    SavedPromptsMenu(onSelect: usePrompt)
-                        .disabled(sending || autoDelivering || replyDictating)
-                } else {
-                    Button {
-                        sendTapped()
-                        terminalInputFocused = false
-                        if UIDevice.current.userInterfaceIdiom == .phone {
-                            terminalCollapseToken += 1
-                            replyFocused = false
+                // One slot for Send and Saved Prompts, so the Send press survives the swap
+                // the clearing composer makes in the same frame.
+                ZStack {
+                    if !hasReplyContent {
+                        SavedPromptsMenu(onSelect: usePrompt)
+                            .disabled(sending || autoDelivering || replyDictating)
+                    } else {
+                        Button {
+                            sendTapped()
+                            terminalInputFocused = false
+                            if UIDevice.current.userInterfaceIdiom == .phone {
+                                terminalCollapseToken += 1
+                                replyFocused = false
+                            }
+                        } label: {
+                            ComposerActionIcon(image: Image("ComposerSend"), primary: true, busy: sending,
+                                               progress: replyUploader.sendProgress(replyAttachments, sending: sending))
                         }
-                    } label: {
-                        ComposerActionIcon(image: Image("ComposerSend"), primary: true, busy: sending,
-                                           progress: replyUploader.sendProgress(replyAttachments, sending: sending))
+                        .disabled(!canSend)
+                        .fixedSize()
+                        .accessibilityLabel("Send reply")
+                        .accessibilityIdentifier("terminal-send-button")
                     }
-                    .disabled(!canSend)
-                    .fixedSize()
-                    .accessibilityLabel("Send reply")
-                    .accessibilityIdentifier("terminal-send-button")
                 }
+                .modifier(ChatSendPress(trigger: sendPresses))
             }
             .buttonStyle(.plain)
         }
@@ -6800,10 +6823,14 @@ struct TerminalPaneContent: View {
         let outgoingModel = showingChat && !autoDelivering ? chatModel : nil
         let outgoingID: String?
         if case .submitText(let text) = action, !text.isEmpty {
-            outgoingID = outgoingModel?.stageOutgoing(text: text, author: .owner)
+            // The bubble enters (and the chat follows it) on the send motion; staged now.
+            outgoingID = withAnimation(ChatSendMotion.bubble(reduceMotion: reduceMotion)) {
+                outgoingModel?.stageOutgoing(text: text, author: .owner)
+            }
         } else {
             outgoingID = nil
         }
+        if outgoingID != nil { acceptChatSend() }
         // CLEARED NOW, NOT WHEN THE ROUND TRIP RETURNS.
         //
         // The composer is content-sized and the terminal takes whatever height is left,
@@ -6820,7 +6847,8 @@ struct TerminalPaneContent: View {
         let clearedReply: String?
         if case .submitText(let text) = action, reply == text, !text.isEmpty {
             clearedReply = text
-            reply = ""
+            // In Chat a multi-line composer shrinks with the bubble; the text clears at once.
+            ChatSendMotion.clearComposer(inChat: outgoingModel != nil) { reply = "" }
         } else {
             clearedReply = nil
         }
@@ -6952,7 +6980,10 @@ struct TerminalPaneContent: View {
         }
 
         let outgoingModel = showingChat ? chatModel : nil
-        let outgoingID = outgoingModel?.stageOutgoing(text: text, author: .owner, files: attachments)
+        let outgoingID = withAnimation(ChatSendMotion.bubble(reduceMotion: reduceMotion)) {
+            outgoingModel?.stageOutgoing(text: text, author: .owner, files: attachments)
+        }
+        if outgoingID != nil { acceptChatSend() }
         sending = true
         let precedingKeySend = keySendTask
         // Each file has been uploading since it was added: the sender posts the ones that
@@ -7216,6 +7247,12 @@ struct TerminalPaneContent: View {
         // trap the reader on a stuck pre-fill with the reply bar locked.
         pendingPrefill = false
         send(.submitText(text ?? reply))
+    }
+
+    /// A Chat send staged its bubble: the light impact and the Send press (none under
+    /// Reduce Motion).
+    private func acceptChatSend() {
+        if ChatSendMotion.acceptSend(reduceMotion: reduceMotion) { sendPresses += 1 }
     }
 }
 

@@ -85,12 +85,20 @@ final class ChatModel: ObservableObject {
     var target: String { store.target }
 
     func stageOutgoing(text: String, author: TranscriptAuthor, files: [ComposerAttachment] = []) -> String {
+        stagedAt = CACurrentMediaTime()
         let id = store.stageOutgoing(text: text, author: author, files: files.map {
             TranscriptAttachment(id: $0.id.uuidString, name: $0.name, isImage: $0.isImage, messageID: $0.messageID)
         })
         followSend()
         return id
     }
+
+    /// When the newest send was staged (`CACurrentMediaTime`). Not published: only the
+    /// tail follow reads it, per frame.
+    private var stagedAt = -CFTimeInterval.infinity
+    /// A send was staged moments ago: the tail follow glides with its bubble
+    /// (`ChatSendMotion.scrollGlideWindow`).
+    var sendIsLanding: Bool { CACurrentMediaTime() - stagedAt < ChatSendMotion.scrollGlideWindow }
 
     func prepareOutgoing(_ id: String, client: HerdrClient) async -> Bool {
         await store.prepareOutgoing(id, client: client)
@@ -690,6 +698,13 @@ struct ChatView: View {
         }
     }
 
+    /// A send's new bubble enters on `ChatSendMotion`; every other row keeps SwiftUI's
+    /// default fade (and is not animated at all unless its change is).
+    private func rowTransition(_ row: ChatRow) -> AnyTransition {
+        guard case .outgoing = row else { return .opacity }
+        return ChatSendMotion.bubbleTransition(reduceMotion: reduceMotion)
+    }
+
     private func transcriptColumn(_ proxy: ScrollViewProxy, hits: [TranscriptSearchHit]) -> some View {
         let hitsByRow = Dictionary(grouping: hits, by: \.rowID)
         let actions = rowActions
@@ -699,6 +714,7 @@ struct ChatView: View {
                 chatRow(row, hits: hitsByRow[row.id] ?? [], actions: actions)
                     .equatable()
                     .id(row.id)
+                    .transition(rowTransition(row))
             }
             sessionFooter
         }
@@ -725,7 +741,12 @@ struct ChatView: View {
                 }
                 if followingLatest, model.loaded, findRequest == nil,
                    !view.isTracking, !view.isDragging, !view.isDecelerating {
-                    scrollPosition.jumpToLatest()
+                    // Just after a send the tail springs with the new bubble; otherwise it jumps.
+                    if model.sendIsLanding, ChatSendMotion.scrollGlides(reduceMotion: reduceMotion) {
+                        scrollPosition.glideToLatest()
+                    } else {
+                        scrollPosition.jumpToLatest()
+                    }
                 }
                 let bottom = scrollPosition.isAtBottom
                 if atBottom != bottom { atBottom = bottom }
@@ -1536,6 +1557,9 @@ private struct ChatRowView: View, Equatable {
             }
             Text(receipt).font(Typography.app(11 * textScale)).foregroundStyle(Palette.textFaint)
                 .padding(.trailing, 6)
+                // The server's answer cross-fades in place.
+                .contentTransition(.opacity)
+                .animation(ChatSendMotion.receipt, value: receipt)
                 .accessibilityIdentifier("chat-send-receipt")
                 .onChange(of: receipt) { _, receipt in
                     UIAccessibility.post(notification: .announcement, argument: receipt)

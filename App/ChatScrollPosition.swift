@@ -22,6 +22,19 @@ final class ChatScrollPosition {
         view.setContentOffset(CGPoint(x: view.contentOffset.x, y: bottomOffset), animated: false)
     }
 
+    /// The tail follow right after a Chat send: the offset springs to the tail on the new
+    /// bubble's spring (`ChatSendMotion`), so the list and the bubble move together. The model
+    /// offset is final at once, so the next sample finds nothing to do unless the tail moved
+    /// again (the composer shrinking under it), and then the glide carries on from where it is.
+    func glideToLatest() {
+        guard let view, let bottomOffset, abs(view.contentOffset.y - bottomOffset) > 0.5 else { return }
+        UIView.animate(springDuration: ChatSendMotion.scrollSpringDuration,
+                       bounce: ChatSendMotion.scrollSpringBounce,
+                       options: [.allowUserInteraction, .beginFromCurrentState]) {
+            view.contentOffset = CGPoint(x: view.contentOffset.x, y: bottomOffset)
+        }
+    }
+
     /// Centres `rect` (window coordinates, as SwiftUI's `.global` frames are) in the visible
     /// part of the scroll view, clamped to its scrollable range. The search reveal: on iOS 27
     /// `ScrollViewProxy.scrollTo` no longer moves the chat to a result's id inside a row.

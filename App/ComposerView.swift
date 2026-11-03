@@ -313,6 +313,13 @@ struct AdaptiveComposer<Field: View, Accessory: View, Leading: View, Actions: Vi
 
     private var growth: Animation? { reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.86) }
     private var rearrange: Animation? { reduceMotion ? .easeInOut(duration: 0.15) : .spring(response: 0.38, dampingFraction: 0.8) }
+    /// What `.animation(_:value:)` did for the card's resizes, except that a Chat send's clear
+    /// shrinks it on the new bubble's spring (`ChatSendMotion.composerResize`).
+    private func resize(_ transaction: inout Transaction, otherwise: Animation?) {
+        guard !transaction.disablesAnimations else { return }
+        transaction.animation = ChatSendMotion.composerResize(transaction, reduceMotion: reduceMotion,
+                                                              otherwise: otherwise)
+    }
 
     var body: some View {
         let expanded = expanded
@@ -344,11 +351,11 @@ struct AdaptiveComposer<Field: View, Accessory: View, Leading: View, Actions: Vi
         .padding(.bottom, ComposerStyle.surfacePadding)
         .padding(.leading, ComposerStyle.surfacePadding)
         .padding(.trailing, ComposerStyle.surfacePadding)
-        .animation(growth, value: fullLines)
-        .animation(rearrange, value: expanded)
+        .transaction(value: fullLines) { resize(&$0, otherwise: growth) }
+        .transaction(value: expanded) { resize(&$0, otherwise: rearrange) }
         .animation(rearrange, value: isRecording)
         .animation(rearrange, value: showsLeading)
-        .animation(rearrange, value: showsHandle)
+        .transaction(value: showsHandle) { resize(&$0, otherwise: rearrange) }
         .onChange(of: wrapsNow) { _, now in wrapped = now }
         .background(Palette.surface, in: RoundedRectangle(cornerRadius: ComposerStyle.cornerRadius, style: .continuous))
         .accessibilityElement(children: .contain)
@@ -371,7 +378,7 @@ struct AdaptiveComposer<Field: View, Accessory: View, Leading: View, Actions: Vi
         }
         // The overlays sit outside the animated content above, so their transitions need
         // their own animation.
-        .animation(rearrange, value: showsHandle)
+        .transaction(value: showsHandle) { resize(&$0, otherwise: rearrange) }
         .animation(rearrange, value: isRecording)
         .environment(meter)
         .fixedSize(horizontal: false, vertical: true)
