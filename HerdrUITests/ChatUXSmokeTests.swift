@@ -364,9 +364,17 @@ final class ChatUXSmokeTests: XCTestCase {
         }
         record(app, "Expanded thought box")
 
-        let shot = XCUIScreen.main.screenshot().image
+        // Measure each line from a fresh screenshot and a fresh frame until the reading lands in
+        // the secondary-ink band, for up to 5 s. One early screenshot could catch the box still
+        // opening or the drag still settling and read the bare background (0.068 on CI for
+        // #593, #594, #602, #613 and #614). A line that stays white, or stays too dim to read,
+        // still fails with its last reading.
         for (name, element) in [("bold lead", lead), ("text", paragraph), ("list item", item), ("inline code", code)] {
-            let value = Self.brightest(element.frame, in: shot, app: app)
+            var value = 0.0
+            _ = poll(5, every: 0.25) {
+                value = Self.brightest(element.frame, in: XCUIScreen.main.screenshot().image, app: app)
+                return value > 0.5 && value < 0.75
+            }
             XCTAssertLessThan(value, 0.75, "A thought's \(name) must be in the secondary ink, not white (\(value))")
             XCTAssertGreaterThan(value, 0.5, "A thought's \(name) must stay readable (\(value))")
         }
