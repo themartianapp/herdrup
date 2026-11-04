@@ -342,6 +342,33 @@ final class RelayTransportTests: XCTestCase {
         XCTAssertEqual(RelayTransport.error(forClose: 1009, reason: nil) as? GuestError, .messageTooLarge)
         XCTAssertEqual(RelayTransport.error(forClose: 1003, reason: "") as? GuestError,
                        .connectionClosed(code: 1003, reason: nil))
+        // A refused guest upgrade: the relay accepts it, then closes with 4000 + the HTTP status.
+        XCTAssertEqual(RelayTransport.error(forClose: 4429, reason: "rate_limited") as? GuestError, .rateLimited)
+        XCTAssertEqual(RelayTransport.error(forClose: 4503, reason: "host_offline") as? GuestError, .hostOffline)
+        XCTAssertEqual(RelayTransport.error(forClose: 4504, reason: "host_busy") as? GuestError, .hostBusy)
+    }
+
+    /// The relay closes a refused upgrade before the host ever sees message 1.
+    func testRelayRefusalCloseFailsTheCallWithItsError() async throws {
+        let cases: [(Int, String, GuestError)] = [
+            (4429, "rate_limited", .rateLimited),
+            (4503, "host_offline", .hostOffline),
+            (4504, "host_busy", .hostBusy),
+        ]
+        for (code, reason, expected) in cases {
+            let connector = FakeConnector {
+                let socket = FakeRelaySocket()
+                socket.push(.closed(code: code, reason: reason))
+                return socket
+            }
+            let transport = RelayTransport(guestID: "g_1", endpoint: FakeHost().endpoint, identity: identity, connector: connector)
+            do {
+                _ = try await transport.roundTrip("x")
+                XCTFail("expected \(expected)")
+            } catch let error as GuestError {
+                XCTAssertEqual(error, expected)
+            }
+        }
     }
 
     func testAPIErrorsClassifyAsGuestErrors() {
