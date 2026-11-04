@@ -910,10 +910,12 @@ describe("usage ping", () => {
     await expectError(await guestRequest(hostId, ip), 503, "host_offline");
     await expectError(await hostRequest(hostId, "Bearer short", true, ip), 401, "unauthorized");
 
-    // And spent connect budgets leave this IP's pings alone.
+    // And spent connect budgets leave this IP's pings alone. Spend them one at a time, as
+    // the connect-limit tests do: fired concurrently, the limiter could still let the 31st
+    // guest connect through ("expected 503 to be 429" on CI runs 41775711449, 41777510910).
     const busy = freshIp();
-    await Promise.all(Array.from({ length: 30 }, () => guestRequest(hostId, busy)));
-    await Promise.all(Array.from({ length: 10 }, () => hostRequest(hostId, "Bearer short", true, busy)));
+    for (let i = 0; i < 30; i++) await guestRequest(hostId, busy);
+    for (let i = 0; i < 10; i++) await hostRequest(hostId, "Bearer short", true, busy);
     await expectError(await guestRequest(hostId, busy), 429, "rate_limited");
     await expectError(await hostRequest(hostId, "Bearer short", true, busy), 429, "rate_limited");
     expect((await ping(validPing(), busy)).status).toBe(204);
