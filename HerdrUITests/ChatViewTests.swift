@@ -113,12 +113,15 @@ final class ChatViewTests: XCTestCase {
         // The menu's items exist before its open animation settles; a tap in that window
         // lands on the dismissing backdrop and closes the menu without choosing (seen on
         // CI for #587, #597, #612). Tap the item once it is hittable, and open the menu
-        // again if the first choice did not take.
+        // again if the first choice did not take. Ask for hittability only once the item has
+        // a frame: on a zero-size item still animating in, `isHittable` records a failure
+        // ("Activation point invalid") instead of answering false (#627 run 41841861442).
         for _ in 0..<2 where picker.value as? String != "Terminal" {
             picker.tap()
             let terminalChoice = app.buttons["Terminal"].firstMatch
-            XCTAssertTrue(poll(5, every: 0.2) { terminalChoice.exists && terminalChoice.isHittable },
-                          "the menu should offer Terminal")
+            XCTAssertTrue(poll(5, every: 0.2) {
+                terminalChoice.exists && !terminalChoice.frame.isEmpty && terminalChoice.isHittable
+            }, "the menu should offer Terminal")
             terminalChoice.tap()
             _ = poll(3, every: 0.3) { picker.value as? String == "Terminal" }
         }
