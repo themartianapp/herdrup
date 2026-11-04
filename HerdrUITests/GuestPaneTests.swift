@@ -303,6 +303,29 @@ final class GuestPaneTests: XCTestCase {
         attach(app, "guest-blocked-owner-answers")
     }
 
+    /// A host that took one of the guest's keys refuses the next during the pause after a
+    /// committing key, while the agent still shows its menu. That host does let guests
+    /// answer, so the keys stay and nothing says only the owner can answer.
+    func testARefusalAfterATakenKeyKeepsTheMenuKeys() {
+        let app = XCUIApplication.launched(mock: "guestblocked",
+                                           environment: ["HERDR_MOCK_GUEST_KEYS_PAUSE_AFTER_FIRST": "1"])
+
+        let keys = app.descendants(matching: .any)["guest-menu-keys"]
+        XCTAssertTrue(keys.waitForExistence(timeout: 10), "the menu keys should show")
+        app.buttons["Down"].tap()
+        let hostCalls = app.descendants(matching: .any)["guest-host-calls"]
+        XCTAssertTrue(poll(6, every: 0.3) { hostCalls.label.contains("pane.send_keys:Down") },
+                      "the host takes the first key: \(hostCalls.label)")
+        app.buttons["Enter"].tap()
+        XCTAssertTrue(poll(6, every: 0.3) { self.forbiddenCalls(app).contains("pane.send_keys:Enter") },
+                      "the host refuses the second key: \(forbiddenCalls(app))")
+        Thread.sleep(forTimeInterval: 2)
+        XCTAssertTrue(keys.exists, "the keys stay: this host lets the guest answer")
+        XCTAssertFalse(app.staticTexts["llm-opt is asking a question only Jerry can answer"].exists,
+                       "a refusal after a taken key must not hand the question to the owner")
+        XCTAssertFalse(app.staticTexts["NEEDS JERRY"].exists)
+    }
+
     // MARK: Header
 
     /// The owner's agent header for a guest: back, Find, Reconnect and ⋯ (Copy screen, Copy
