@@ -168,6 +168,8 @@ jobs:
     # SwiftTerm build 10 + test 15, six 10-min diagnostic rounds + SwiftTerm's 15 = 185m.
     # At most nine boot checks: first 10m, next eight 5m, each with 15s kill grace.
     # That adds <53m, leaving >17m for setup/build/upload inside the 255m ceiling.
+    # A round that ran no test case is retried once inside its own budget (ui-shard.sh
+    # run_suite); each such retry adds a 2m-bounded shutdown and one more 5m boot check.
     # The deadline is a failure ceiling, not the expected green-run duration.
     timeout-minutes: 255
     env:
