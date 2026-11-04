@@ -110,12 +110,19 @@ final class ChatViewTests: XCTestCase {
             scrolls += 1
         }
         XCTAssertEqual(picker.value as? String, "Chat", "Chat should be the default")
-        picker.tap()
-        let terminalChoice = app.buttons["Terminal"].firstMatch
-        XCTAssertTrue(terminalChoice.waitForExistence(timeout: 5), "the menu should offer Terminal")
-        terminalChoice.tap()
-        XCTAssertTrue(poll(5, every: 0.3) { picker.value as? String == "Terminal" },
-                      "the picker should now read Terminal (got \(String(describing: picker.value)))")
+        // The menu's items exist before its open animation settles; a tap in that window
+        // lands on the dismissing backdrop and closes the menu without choosing (seen on
+        // CI for #587, #597, #612). Tap the item once it is hittable, and open the menu
+        // again if the first choice did not take.
+        for _ in 0..<2 where picker.value as? String != "Terminal" {
+            picker.tap()
+            let terminalChoice = app.buttons["Terminal"].firstMatch
+            XCTAssertTrue(poll(5, every: 0.2) { terminalChoice.exists && terminalChoice.isHittable },
+                          "the menu should offer Terminal")
+            terminalChoice.tap()
+            _ = poll(3, every: 0.3) { picker.value as? String == "Terminal" }
+        }
+        XCTAssertEqual(picker.value as? String, "Terminal", "the picker should now read Terminal")
         attach(app, "chat-settings")
 
         let terminalFirst = launch("chatview", ["HERDR_MOCK_CHAT_OPENS_IN": "terminal"])

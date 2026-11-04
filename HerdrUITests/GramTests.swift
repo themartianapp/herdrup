@@ -1181,7 +1181,10 @@ final class GramTests: XCTestCase {
     /// it ONCE: the page going off screen used to cancel the download, so it never landed and
     /// the reader had to tap again, which asked again.
     func testADownloadKeepsGoingWhileTheReaderIsOnAgents() {
-        let app = launchGram(environment: ["HERDR_MOCK_GRAM_FILE_DELAY": "g2=20"])
+        // The hold must outlast every step before the return to Gram below (up to ~32 s of
+        // waits on a slow runner), or the download finishes first and the card rightly shows
+        // the file, not the ring (failed that way on two CI runs at 20 s).
+        let app = launchGram(environment: ["HERDR_MOCK_GRAM_FILE_DELAY": "g2=60"])
         let file = attachmentCard(app, message: "g2")
         XCTAssertTrue(file.waitForExistence(timeout: 10), "the zip should draw as a file card")
         reveal(file, in: app, older: false)
@@ -1200,7 +1203,7 @@ final class GramTests: XCTestCase {
         agents.tap()
         let covered = NSPredicate(format: "exists == false OR hittable == false")
         XCTAssertTrue(waitForPredicate(covered, object: file, timeout: 5), "Agents should cover Gram")
-        // Long enough for the page's teardown to have run, well inside the 20 s hold.
+        // Long enough for the page's teardown to have run, well inside the 60 s hold.
         Thread.sleep(forTimeInterval: 2)
         sections.buttons["Gram"].firstMatch.tap()
 
@@ -1209,7 +1212,7 @@ final class GramTests: XCTestCase {
                       "back on Gram, the download's ring is on the card again; value \(file.value ?? "nil")")
         let opened = probe(app, "gram-opened-file")
         // Any name: the mock answers every non-image file with the same fixture.
-        XCTAssertTrue(waitForLabel(opened, matching: "opened:.+", timeout: 40),
+        XCTAssertTrue(waitForLabel(opened, matching: "opened:.+", timeout: 80),
                       "the download should finish and open the zip; probe says \(opened.label)")
         // Past the probe's poll, so a second request would show.
         Thread.sleep(forTimeInterval: 1)
