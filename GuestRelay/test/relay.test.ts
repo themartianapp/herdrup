@@ -7,7 +7,7 @@ import {
   runInDurableObject,
 } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
-import { invitePayload, isRelay, openShortInvite, shortInvite } from "../public/static/invite.js";
+import { browserLink, invitePayload, isRelay, openShortInvite, shortInvite } from "../public/static/invite.js";
 
 // Everything here runs against the real Worker and Durable Object in workerd. Each test
 // uses its own host_id and client IPs, so storage and rate-limit state never collide.
@@ -249,6 +249,7 @@ describe("routing", () => {
     expect(response.headers.get("referrer-policy")).toBe("no-referrer");
     const html = await response.text();
     expect(html).toContain('href="https://apps.apple.com/app/id6798087089"');
+    expect(html).toContain('<a class="btn quiet" id="browser" hidden>Open in browser</a>');
 
     const css = await (await env.ASSETS.fetch(`${ORIGIN}/static/i.css`)).text();
     const refs = [...html.matchAll(/(?:src|href)="(\/[^"]+)"/g), ...css.matchAll(/url\((\/[^)]+)\)/g)].map((m) => m[1]);
@@ -272,6 +273,64 @@ describe("routing", () => {
       expect(response.headers.get("referrer-policy")).toBe("no-referrer");
       expect(response.headers.get("content-security-policy")).toContain("default-src 'none'");
       expect(await response.text()).toBe(page);
+    }
+  });
+
+  // Owner-approved policy for the browser guest (web guest contract, "Hosting").
+  const WEB_CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; " +
+    "font-src 'self'; connect-src 'self' wss://guest.herdrup.app wss://guest.herdrup.themartian.app; " +
+    "frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'";
+
+  function expectWebHeaders(response: Response, cacheControl: string) {
+    expect(response.headers.get("content-security-policy")).toBe(WEB_CSP);
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("cache-control")).toBe(cacheControl);
+  }
+
+  it("serves the browser guest's index.html at /web/ and every path under it, never cached", async () => {
+    const index = await env.ASSETS.fetch(`${ORIGIN}/web/`);
+    expect(index.status).toBe(200);
+    expect(index.headers.get("content-type")).toMatch(/^text\/html/);
+    expectWebHeaders(index, "no-store");
+    const page = await index.text();
+    expect(page).toContain('<script type="module" crossorigin src="/web/assets/');
+    for (const path of ["/web", "/web/index.html"]) {
+      const response = await env.ASSETS.fetch(`${ORIGIN}${path}`, { redirect: "manual" });
+      expect([path, response.status, response.headers.get("location")]).toEqual([path, 307, "/web/"]);
+    }
+
+    for (const path of ["/web/x", "/web/chat/agent", "/web/a/b/", "/web/x.html", "/web/%2F..%2Fi"]) {
+      const response = await SELF.fetch(`${ORIGIN}${path}`);
+      expect([path, response.status]).toEqual([path, 200]);
+      expect(response.headers.get("content-type")).toMatch(/^text\/html/);
+      expectWebHeaders(response, "no-store");
+      expect(await response.text()).toBe(page);
+    }
+    await expectError(await SELF.fetch(`${ORIGIN}/web/x`, { method: "POST" }), 404, "not_found");
+  });
+
+  it("serves the browser guest's hashed assets with a long immutable cache, and every file as built", async () => {
+    const page = await (await env.ASSETS.fetch(`${ORIGIN}/web/`)).text();
+    const hashed = [...page.matchAll(/(?:src|href)="(\/web\/assets\/[^"]+)"/g)].map((m) => m[1]);
+    expect(hashed).toHaveLength(2);
+    for (const ref of hashed) {
+      const response = await env.ASSETS.fetch(`${ORIGIN}${ref}`);
+      expect([ref, response.status]).toEqual([ref, 200]);
+      expect(response.headers.get("content-type")).toMatch(/^(text\/javascript|application\/javascript|text\/css)/);
+      expectWebHeaders(response, "public, max-age=31536000, immutable");
+    }
+
+    // The manifest's hashes are checked against public/web by node --test; this checks that
+    // ASSETS serves those same bytes at the same paths.
+    const manifest = await (await env.ASSETS.fetch(`${ORIGIN}/web/manifest.json`)).json<{ files: Record<string, string> }>();
+    for (const [path, sha256] of Object.entries(manifest.files)) {
+      const url = path === "index.html" ? `${ORIGIN}/web/` : `${ORIGIN}/web/${path}`;
+      const response = await env.ASSETS.fetch(url);
+      expect([path, response.status]).toEqual([path, 200]);
+      expect(response.headers.get("content-security-policy")).toBe(WEB_CSP);
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", await response.arrayBuffer()));
+      expect([path, Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("")]).toEqual([path, sha256]);
     }
   });
 
@@ -927,6 +986,24 @@ describe("landing page script", () => {
     expect(JSON.parse(atob(opened.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((opened.length + 3) % 4))).relay)
       .toBe(`${ORIGIN}/`);
   });
+
+  it("links Open in browser to /web/ with the app link's payload in the fragment, for long and short links", async () => {
+    const payload = newInvitePayload();
+    const expectLink = (link: string) => {
+      expect(link).toBe(`/web/#${payload}`);
+      const url = new URL(link, ORIGIN);
+      expect([url.origin, url.pathname, url.search, url.hash]).toEqual([ORIGIN, "/web/", "", `#${payload}`]);
+    };
+    expectLink(browserLink(invitePayload(`/i/${payload}`, "")));
+    expectLink(browserLink(invitePayload("/i", `#${payload}`)));
+
+    const id = newInviteId();
+    const keyBytes = crypto.getRandomValues(new Uint8Array(16));
+    const plaintext = Uint8Array.from(atob(payload.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((payload.length + 3) % 4)), (c) => c.charCodeAt(0));
+    const short = shortInvite(`/i/${id}${b64url(keyBytes)}`);
+    expect(short).not.toBeNull();
+    expectLink(browserLink(await openShortInvite(short!, await seal(id, keyBytes, plaintext), ORIGIN)));
+  });
 });
 
 describe("logging", () => {
@@ -994,6 +1071,14 @@ describe("logging", () => {
     await SELF.fetch(`${ORIGIN}/v1/guest/${payload}`, { headers: { Upgrade: "websocket" } });
     const all = lines.join("\n");
     expect(all).not.toContain(payload.slice(0, 40));
+  });
+
+  it("logs nothing for the browser guest", async () => {
+    const payload = newInvitePayload();
+    await SELF.fetch(`${ORIGIN}/web/${payload}`);
+    await SELF.fetch(`${ORIGIN}/web/${payload}`, { method: "POST" });
+    await SELF.fetch(`${ORIGIN}/web/x?${payload}`);
+    expect(lines).toEqual([]);
   });
 
   it("never logs a short invite's id, key, host or secret", async () => {

@@ -23,8 +23,9 @@ once a day (`POST /v1/ping`, see [Usage ping](#usage-ping)).
 - **Logs:** each log line is a JSON object with only `endpoint`, `outcome` and, for
   closes, `code`. The relay never logs payloads, the close reasons that peers send,
   secrets, host ids, invite ids, keys, blobs, IP addresses or request paths. The `/i`
-  landing page and its assets are served before the Worker runs. `/i/<payload>` reaches
-  the Worker, which hands it the same page from `ASSETS` without logging anything.
+  landing page, the `/web/` browser guest and their assets are served before the Worker
+  runs. `/i/<payload>` and other `/web/` paths reach the Worker, which hands them the same
+  page from `ASSETS` without logging anything.
   `POST /v1/ping` logs nothing about a ping, accepted or refused: only a missing binding
   or an internal error logs, with just `endpoint` and `outcome`.
 - **Platform logs:** `wrangler.toml` turns off Workers Logs (including invocation logs,
@@ -45,7 +46,8 @@ once a day (`POST /v1/ping`, see [Usage ping](#usage-ping)).
   Worker once, on the way to the landing page. Nothing stores or logs it, and the page is
   `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. The "Open in HerdrUp"
   button carries it in the fragment of `herdrup://guest-invite#<payload>`, which never
-  leaves the device.
+  leaves the device, and "Open in browser" in the fragment of `/web/#<payload>`, which
+  the browser never sends. For a short link both carry the decrypted payload.
   - The earlier `/i#<payload>` form kept the invite away from the server, but iMessage
     splits a link at `#` into two messages, so the recipient got a bare `/i` link and a
     stray `#eyJ…` text. The page still reads the fragment, so old links keep working.
@@ -63,8 +65,9 @@ once a day (`POST /v1/ping`, see [Usage ping](#usage-ping)).
 | Endpoint | Behaviour |
 | --- | --- |
 | `GET /v1/health` | 200 `{"ok":true,"version":"…"}` |
-| `GET /i/<payload>` | The invite landing page. `<payload>` is the b64url invite (`A-Z a-z 0-9 - _`, 1 to 4096 characters); anything else is 404 `not_found`. The page's script reads the payload from the path, shows who shared which agent, and links "Open in HerdrUp" to `herdrup://guest-invite#<payload>`. It also links to the App Store. A path of exactly 34 b64url characters is a short link `<id><key>`: the script fetches `GET /v1/invite/<id>`, decrypts it (see [Short invites](#short-invites)) and renders the payload inside the same way. A 404 there shows "This invite has expired or was revoked." |
+| `GET /i/<payload>` | The invite landing page. `<payload>` is the b64url invite (`A-Z a-z 0-9 - _`, 1 to 4096 characters); anything else is 404 `not_found`. The page's script reads the payload from the path, shows who shared which agent, links "Open in HerdrUp" to `herdrup://guest-invite#<payload>` and "Open in browser" to `/web/#<payload>`. It also links to the App Store. A path of exactly 34 b64url characters is a short link `<id><key>`: the script fetches `GET /v1/invite/<id>`, decrypts it (see [Short invites](#short-invites)) and renders the payload inside the same way. A 404 there shows "This invite has expired or was revoked." |
 | `GET /i` | The same page for older `/i#<payload>` links: its script falls back to `location.hash`. |
+| `GET /web/` | The browser guest (see [Browser guest](#browser-guest)). Its files are served as they are; every other `GET /web/<path>` gets its `index.html`. `/web` and `/web/index.html` redirect to `/web/`. |
 | `GET /v1/host/<host_id>` | The host's WebSocket. Needs `Authorization: Bearer <relay_secret>`. |
 | `GET /v1/guest/<host_id>` | A guest WebSocket. No auth here: Noise authenticates the guest. |
 | `PUT /v1/invite/<id>` | Stores a short invite's blob. Needs `Authorization: Bearer <relay_secret>` and `X-Herdr-Host: <host_id>`, checked against that host's stored hash like `/v1/host`. The host must have connected at least once: the invite endpoints never enroll a `host_id` (see [Host authentication](#host-authentication)). Counts toward the per-IP host connect limit. `X-Herdr-Expires: <unix seconds>` must be in the future and at most 30 days away. The body is the raw blob (`application/octet-stream`), 29 to 2048 bytes. 201 with no body when stored. |
@@ -224,9 +227,38 @@ Group by `blob2` for versions.
 | `HOST_CONNECT_LIMIT` | Rate limit, 10 per 60 s | Host connects plus invite `PUT`/`DELETE`, keyed by `CF-Connecting-IP` |
 | `PING_LIMIT` | Rate limit, 60 per 60 s | `POST /v1/ping`, keyed by `CF-Connecting-IP`; its own budget, apart from the connect limits |
 | `USAGE` | Analytics Engine dataset `herdrup_usage` | One data point per accepted ping. Analytics Engine creates the dataset on the first write. |
-| `ASSETS` | Static assets from `public/` | The `/i` page. The Worker serves it for `/i/<payload>`, which matches no file. |
+| `ASSETS` | Static assets from `public/` | The `/i` page and the `/web/` browser guest. The Worker serves `/i` for `/i/<payload>`, and `/web/` for any `/web/` path that matches no file. |
 
 The Worker needs no secrets.
+
+## Browser guest
+
+`public/web/` is the browser build of herdrup-desktop's guest screens (web guest
+contract, "Hosting"), copied unchanged from that repo's `dist-web/`. Its `manifest.json`
+names the source commit, the build command and every file's SHA-256. `npm test` runs
+`scripts/web-bundle.mjs` under `node --test`, which fails when a file differs from the
+manifest, is missing, or isn't listed in it. To update it, build at a herdrup-desktop
+commit on `main` and replace the directory:
+
+```sh
+git -C herdrup-desktop checkout <commit>
+(cd herdrup-desktop && bun install --frozen-lockfile && bun run build:guest-web)
+rm -rf GuestRelay/public/web && cp -r herdrup-desktop/dist-web GuestRelay/public/web
+node GuestRelay/scripts/web-bundle.mjs
+```
+
+`public/_headers` sends every `/web/` response the policy below, `Referrer-Policy:
+no-referrer` and `X-Content-Type-Options: nosniff`. `index.html` is `Cache-Control:
+no-store`; `/web/assets/*`, whose names carry a content hash, are cached for a year as
+`immutable`. The bundle's `index.html` carries the same policy as a meta tag, less
+`frame-ancestors`, which only a header can set.
+
+```
+default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self'; connect-src 'self' wss://guest.herdrup.app wss://guest.herdrup.themartian.app; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'
+```
+
+`'unsafe-inline'` is for styles only, as the owner approved; the build has no inline
+script.
 
 ## Develop and deploy
 
@@ -236,7 +268,7 @@ requires it.
 ```sh
 cd GuestRelay
 npm install
-npm test                 # vitest in workerd, against the real Durable Object
+npm test                 # public/web against its manifest, then vitest in workerd
 npm run typecheck
 npx wrangler deploy --dry-run --outdir /tmp/guestrelay-dry   # bundle check only
 wrangler deploy

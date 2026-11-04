@@ -42,6 +42,9 @@ export const BEARER = /^Bearer ([A-Za-z0-9_-]{43})$/;
 const INVITE_PATH = /^\/i\/[A-Za-z0-9_-]{1,4096}$/;
 // A short invite's blob, by id only (9 random bytes as b64url), never the key.
 const INVITE_BLOB_PATH = /^\/v1\/invite\/([A-Za-z0-9_-]{12})$/;
+// The browser guest (public/web, built by herdrup-desktop). Its files are served before the
+// Worker runs; any other path under /web/ is a page of the app, which is its index.html.
+const WEB_APP_PATH = /^\/web\/./;
 
 export async function handleRequest(request: Request, env: Env): Promise<Response> {
   const { pathname } = new URL(request.url);
@@ -52,6 +55,11 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     // The same page as /i; its script reads the payload from the path. The asset request
     // carries neither the path nor the original headers, and nothing here logs.
     return env.ASSETS.fetch(new URL("/i", request.url));
+  }
+  if (request.method === "GET" && WEB_APP_PATH.test(pathname)) {
+    // As for /i/: the asset request carries neither the path nor the original headers, and
+    // nothing here logs. /web/ gets index.html with its CSP and no-store from _headers.
+    return env.ASSETS.fetch(new URL("/web/", request.url));
   }
   const invite = INVITE_BLOB_PATH.exec(pathname);
   if (invite !== null && (request.method === "PUT" || request.method === "GET" || request.method === "DELETE")) {

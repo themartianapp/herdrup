@@ -60,6 +60,16 @@ export async function openShortInvite(short, blob, origin) {
 }
 
 /**
+ * The "Open in browser" link: the browser guest on this relay, with the payload the app link
+ * carries (a short link's decrypted payload) in the fragment, so it never reaches a server.
+ * @param {string} payload b64url invite payload
+ * @returns {string}
+ */
+export function browserLink(payload) {
+  return "/web/#" + payload;
+}
+
+/**
  * Whether an invite's relay names this page's relay: the page origin exactly, with or without
  * one trailing slash, as the app accepts (GuestInvite.Web.isOnRelay). Compared as strings, not
  * parsed: the payload is handed to the app unchanged, and a parser-ambiguous spelling (a

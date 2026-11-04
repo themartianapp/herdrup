@@ -3,8 +3,9 @@
 // A short link /i/<id><key> instead names an encrypted blob on this relay: the page fetches
 // /v1/invite/<id> (never the key), decrypts it here, and renders the payload inside.
 // Every field is written with textContent, and only a b64url payload is ever placed in the
-// app link, which carries it in the fragment so it never leaves the device.
-import { invitePayload, openShortInvite, shortInvite } from "./invite.js";
+// app link and the browser link (/web/#<payload>), which both carry it in the fragment, so
+// no request ever sends it to a server.
+import { browserLink, invitePayload, openShortInvite, shortInvite } from "./invite.js";
 
 (async function () {
   var APP_LINK = "herdrup://guest-invite#";
@@ -87,6 +88,9 @@ import { invitePayload, openShortInvite, shortInvite } from "./invite.js";
   var open = $("open");
   open.href = APP_LINK + payload;
   open.hidden = false;
+  var browser = $("browser");
+  browser.href = browserLink(payload);
+  browser.hidden = false;
 
   var invite;
   try {
