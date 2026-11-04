@@ -55,6 +55,16 @@ public struct GramInbox: Sendable, Equatable {
     /// loaded or nothing older remains.
     public var nextCursor: String? { hasMore ? messages.last?.id : nil }
 
+    /// Whether unread messages the daemon counts lie beyond the loaded window, so opening
+    /// at the first unread message needs another older page first. False once the window
+    /// holds as many unread as the daemon counts, when nothing older remains, or when the
+    /// window has reached `ceiling` (the head refresh's limit, past which a refresh would
+    /// collapse the window again).
+    public func isMissingUnread(ceiling: Int) -> Bool {
+        nextCursor != nil && messages.count < ceiling
+            && messages.filter(\.isUnread).count < unreadCount
+    }
+
     /// Bumped every time the loaded list is REPLACED (a changed head answer, or a store
     /// swap). A page fetch reads the cursor, suspends, and comes back with messages that
     /// only continue the list the cursor came from: appending them after a replacement

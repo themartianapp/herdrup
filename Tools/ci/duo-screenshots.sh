@@ -208,7 +208,13 @@ set_pose() { # <pose>
   fi
   if ! err=$(t 300 duoctl rotate "$ui" 2>&1); then
     # duoctl tried every device orientation; put the device back in the physical one.
-    helper orientation "$device" || true
+    # The interface may refuse to rotate, but the physical orientation must be set,
+    # or the captures would claim a pose the device never took.
+    local herr
+    if ! herr=$(helper orientation "$device" 2>&1); then
+      echo "rotate $ui: $err; setting device orientation $device failed: ${herr:-no output}" > "$dir/pose.err"
+      return 1
+    fi
     sleep 1
     echo "rotate $ui: $err (device orientation set to $device directly)" >> "$dir/pose.notes"
   fi

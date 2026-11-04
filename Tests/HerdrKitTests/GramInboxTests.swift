@@ -327,6 +327,32 @@ final class GramInboxTests: XCTestCase {
         XCTAssertEqual(inbox.conditionalDigest, "head")
     }
 
+    /// The inbox opens at the first unread message, which may sit past the first page: the
+    /// daemon counts unread over the whole store. Until the window holds them all it must
+    /// fetch older pages, or the feed opens at the newest (one unread past the page) or at
+    /// the page's oldest unread instead of the first unread overall.
+    func testUnreadBeyondTheWindowNeedsAnotherPage() throws {
+        var inbox = GramInbox()
+        inbox.apply(page([try message("c", unread: false), try message("b", unread: true)],
+                         hasMore: true, unread: 2))
+        XCTAssertTrue(inbox.isMissingUnread(ceiling: 500), "one of the two unread is older than the window")
+        inbox.appendPage(page([try message("a", unread: true)], hasMore: true, unread: 2),
+                         generation: inbox.generation)
+        XCTAssertFalse(inbox.isMissingUnread(ceiling: 500), "both unread are loaded; older read pages are not needed")
+    }
+
+    func testUnreadPagingStopsAtTheEndAndAtTheCeiling() throws {
+        var ended = GramInbox()
+        ended.apply(page([try message("b", unread: false)], hasMore: false, unread: 1))
+        XCTAssertFalse(ended.isMissingUnread(ceiling: 500), "nothing older to fetch")
+
+        var full = GramInbox()
+        full.apply(page([try message("c", unread: false), try message("b", unread: false)],
+                        hasMore: true, unread: 1))
+        XCTAssertFalse(full.isMissingUnread(ceiling: 2), "the window is at the refresh ceiling")
+        XCTAssertTrue(full.isMissingUnread(ceiling: 3))
+    }
+
     // MARK: - Reads a poll answer could not have seen
 
     private func counted(_ messages: [GramMessage], unread: Int) -> GramListAnswer {

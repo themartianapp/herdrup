@@ -256,7 +256,8 @@ tent, open wide, open tall, and laptop. It reads back the display, fold angle an
 orientation after every launch; `POSES.md` records the result and `FAILURES.txt`
 records capture failures. The requested display and hinge angle must still match
 after rotation and before each screenshot; an unreadable final state fails the pose.
-Rotation's physical-orientation fallback remains recorded in `pose.notes`.
+When the interface refuses to rotate, the device orientation is set directly and
+recorded in `pose.notes`; if that also fails, the pose fails.
 These mock-data screenshots verify layout, not a live connection or physical-device fold transitions.
 
 The shared native composer reconciles external text edits after the SwiftUI layout pass,
@@ -348,7 +349,9 @@ conversations, Gram and Saved, as Messages rows, with Read all and Refresh in th
 Unread-count updates redraw the badge and sidebar readers, not the whole tab host, so they
 do not interrupt a message's open context menu.
 The inbox opens at the first unread message when one exists, otherwise at the
-newest message; Saved continues to open at the newest. The unread opening target
+newest message; Saved continues to open at the newest. When the daemon counts unread
+messages older than the loaded page, older pages load first (up to the 500-message
+refresh window), so the inbox opens at the first unread overall. The opening target
 is drawn before scrolling so it remains reachable outside the initial feed window.
 Saved reads like the feed: oldest at the top, opening at the newest, older ones drawn as you scroll up.
 Search filters the loaded messages, newest match at the bottom; scrolling to the top of the results (or

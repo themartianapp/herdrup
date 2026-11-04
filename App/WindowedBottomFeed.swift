@@ -59,8 +59,10 @@ where Item.ID == String {
     /// of the SYSTEM's scroll-to-top (`ScrollsToTopOff`), which the re-tap runs too and which
     /// in this oldest-first feed goes to the OLDEST message.
     var newestRequest: Int? = nil
-    /// Runs as the feed opens, before the initial scroll is issued.
-    var onOpen: () -> Void = {}
+    /// Runs as the feed opens, before the initial scroll is issued. Awaited, so the owner can
+    /// fetch what the opening row needs first (the inbox's older unread messages); rows that
+    /// appear meanwhile are not read, since the feed has not landed.
+    var onOpen: () async -> Void = {}
     /// The row to open at instead of the newest message, read after `onOpen`: it goes to the
     /// top of the visible feed, just below the floating header. nil opens at the newest.
     /// The inbox names its first unread message here, the row the "N unread" rule sits on.
@@ -258,7 +260,9 @@ where Item.ID == String {
         // feed) re-anchored the feed every frame, a redraw loop that pinned the CPU and
         // hung the composer's UI test.
         .task {
-            onOpen()
+            await onOpen()
+            // Left while the owner was fetching: the next appearance opens afresh.
+            guard !Task.isCancelled else { return }
             visibility.initialScrollIssued = true
             // A named row (the first unread message): its top to the top of the visible feed.
             // Below the header, not under it: a row whose top meets the scroll view's own top
