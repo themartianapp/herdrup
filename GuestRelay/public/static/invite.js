@@ -51,12 +51,35 @@ export async function openShortInvite(short, blob, origin) {
     bytes.subarray(NONCE_BYTES),
   ));
   var invite = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(plain));
-  if (invite === null || typeof invite !== "object" || invite.relay !== origin) {
+  if (invite === null || typeof invite !== "object" || !isRelay(invite.relay, origin)) {
     throw new Error("relay mismatch");
   }
   var binary = "";
   for (var i = 0; i < plain.length; i++) binary += String.fromCharCode(plain[i]);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/**
+ * The "Open in browser" link: the browser guest on this relay, with the payload the app link
+ * carries (a short link's decrypted payload) in the fragment, so it never reaches a server.
+ * @param {string} payload b64url invite payload
+ * @returns {string}
+ */
+export function browserLink(payload) {
+  return "/web/#" + payload;
+}
+
+/**
+ * Whether an invite's relay names this page's relay: the page origin exactly, with or without
+ * one trailing slash, as the app accepts (GuestInvite.Web.isOnRelay). Compared as strings, not
+ * parsed: the payload is handed to the app unchanged, and a parser-ambiguous spelling (a
+ * backslash, dot segments, credentials) can mean this relay to the browser's URL parser and
+ * another host to the app's (review of #608).
+ * @param {unknown} relay
+ * @param {string} origin
+ */
+export function isRelay(relay, origin) {
+  return typeof relay === "string" && (relay === origin || relay === origin + "/");
 }
 
 function b64urlBytes(text) {

@@ -6,6 +6,7 @@
 // path of /i/<payload>).
 import type { HostRelay } from "./host";
 import { handleInvite, type InviteBlob } from "./invite";
+import { handlePing } from "./ping";
 
 export const VERSION = "1.0.0";
 
@@ -14,10 +15,12 @@ export interface Env {
   INVITES: DurableObjectNamespace<InviteBlob>;
   GUEST_CONNECT_LIMIT?: RateLimit;
   HOST_CONNECT_LIMIT?: RateLimit;
+  PING_LIMIT?: RateLimit;
+  USAGE?: AnalyticsEngineDataset;
   ASSETS: Fetcher;
 }
 
-export type Endpoint = "/v1/host" | "/v1/guest" | "/v1/invite";
+export type Endpoint = "/v1/host" | "/v1/guest" | "/v1/invite" | "/v1/ping";
 
 export interface LogLine {
   endpoint: Endpoint;
@@ -39,6 +42,9 @@ export const BEARER = /^Bearer ([A-Za-z0-9_-]{43})$/;
 const INVITE_PATH = /^\/i\/[A-Za-z0-9_-]{1,4096}$/;
 // A short invite's blob, by id only (9 random bytes as b64url), never the key.
 const INVITE_BLOB_PATH = /^\/v1\/invite\/([A-Za-z0-9_-]{12})$/;
+// The browser guest (public/web, built by herdrup-desktop). Its files are served before the
+// Worker runs; any other path under /web/ is a page of the app, which is its index.html.
+const WEB_APP_PATH = /^\/web\/./;
 
 export async function handleRequest(request: Request, env: Env): Promise<Response> {
   const { pathname } = new URL(request.url);
@@ -50,10 +56,16 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     // carries neither the path nor the original headers, and nothing here logs.
     return env.ASSETS.fetch(new URL("/i", request.url));
   }
+  if (request.method === "GET" && WEB_APP_PATH.test(pathname)) {
+    // As for /i/: the asset request carries neither the path nor the original headers, and
+    // nothing here logs. /web/ gets index.html with its CSP and no-store from _headers.
+    return env.ASSETS.fetch(new URL("/web/", request.url));
+  }
   const invite = INVITE_BLOB_PATH.exec(pathname);
   if (invite !== null && (request.method === "PUT" || request.method === "GET" || request.method === "DELETE")) {
     return handleInvite(request, env, invite[1]);
   }
+  if (pathname === "/v1/ping") return handlePing(request, env);
   const match = request.method === "GET" ? SOCKET_PATH.exec(pathname) : null;
   if (match === null) return errorResponse(404, "not_found");
 
@@ -119,4 +131,23 @@ export function refuseGuest(outcome: keyof typeof GUEST_REFUSAL_CLOSE): Response
   server.accept();
   server.close(code, outcome);
   return new Response(null, { status: 101, webSocket: client });
+}
+
+/** The request body, or null once it passes `max` bytes (declared or streamed). */
+export async function readCapped(request: Request, max: number): Promise<ArrayBuffer | null> {
+  if (Number(request.headers.get("Content-Length") ?? 0) > max) return null;
+  if (request.body === null) return new ArrayBuffer(0);
+  const body = new Uint8Array(max);
+  let length = 0;
+  const reader = request.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return body.slice(0, length).buffer;
+    if (length + value.byteLength > max) {
+      await reader.cancel();
+      return null;
+    }
+    body.set(value, length);
+    length += value.byteLength;
+  }
 }

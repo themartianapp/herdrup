@@ -6,7 +6,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "node --test scripts/web-bundle.test.mjs && vitest run",
     "typecheck": "tsc --noEmit",
     "deploy": "wrangler deploy"
   },

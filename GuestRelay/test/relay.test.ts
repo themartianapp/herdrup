@@ -6,8 +6,8 @@ import {
   runDurableObjectAlarm,
   runInDurableObject,
 } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { invitePayload, openShortInvite, shortInvite } from "../public/static/invite.js";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
+import { browserLink, invitePayload, isRelay, openShortInvite, shortInvite } from "../public/static/invite.js";
 
 // Everything here runs against the real Worker and Durable Object in workerd. Each test
 // uses its own host_id and client IPs, so storage and rate-limit state never collide.
@@ -223,6 +223,19 @@ function deleteInvite(host: { hostId: string; secret: string }, id: string, opti
 
 const inviteStub = (id: string) => env.INVITES.get(env.INVITES.idFromName(id));
 
+const newInstall = () => b64url(crypto.getRandomValues(new Uint8Array(16)));
+const validPing = (fields: Record<string, unknown> = {}) => ({ v: 1, install: newInstall(), app: "ios", version: "1.4.0", build: "212", ...fields });
+
+/** `POST /v1/ping` from a fresh IP by default, so the per-IP ping limit never trips. */
+function ping(body: unknown, ip = freshIp(), method = "POST"): Promise<Response> {
+  const raw = typeof body === "string" || body instanceof Uint8Array ? body : JSON.stringify(body);
+  return SELF.fetch(`${ORIGIN}/v1/ping`, {
+    method,
+    headers: { "CF-Connecting-IP": ip, "Content-Type": "application/json" },
+    body: method === "GET" ? undefined : raw,
+  });
+}
+
 describe("routing", () => {
   it("answers health", async () => {
     const response = await SELF.fetch(`${ORIGIN}/v1/health`);
@@ -242,6 +255,7 @@ describe("routing", () => {
     expect(response.headers.get("referrer-policy")).toBe("no-referrer");
     const html = await response.text();
     expect(html).toContain('href="https://apps.apple.com/app/id6798087089"');
+    expect(html).toContain('<a class="btn quiet" id="browser" hidden>Open in browser</a>');
 
     const css = await (await env.ASSETS.fetch(`${ORIGIN}/static/i.css`)).text();
     const refs = [...html.matchAll(/(?:src|href)="(\/[^"]+)"/g), ...css.matchAll(/url\((\/[^)]+)\)/g)].map((m) => m[1]);
@@ -265,6 +279,64 @@ describe("routing", () => {
       expect(response.headers.get("referrer-policy")).toBe("no-referrer");
       expect(response.headers.get("content-security-policy")).toContain("default-src 'none'");
       expect(await response.text()).toBe(page);
+    }
+  });
+
+  // Owner-approved policy for the browser guest (web guest contract, "Hosting").
+  const WEB_CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; " +
+    "font-src 'self'; connect-src 'self' wss://guest.herdrup.app wss://guest.herdrup.themartian.app; " +
+    "frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'";
+
+  function expectWebHeaders(response: Response, cacheControl: string) {
+    expect(response.headers.get("content-security-policy")).toBe(WEB_CSP);
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("cache-control")).toBe(cacheControl);
+  }
+
+  it("serves the browser guest's index.html at /web/ and every path under it, never cached", async () => {
+    const index = await env.ASSETS.fetch(`${ORIGIN}/web/`);
+    expect(index.status).toBe(200);
+    expect(index.headers.get("content-type")).toMatch(/^text\/html/);
+    expectWebHeaders(index, "no-store");
+    const page = await index.text();
+    expect(page).toContain('<script type="module" crossorigin src="/web/assets/');
+    for (const path of ["/web", "/web/index.html"]) {
+      const response = await env.ASSETS.fetch(`${ORIGIN}${path}`, { redirect: "manual" });
+      expect([path, response.status, response.headers.get("location")]).toEqual([path, 307, "/web/"]);
+    }
+
+    for (const path of ["/web/x", "/web/chat/agent", "/web/a/b/", "/web/x.html", "/web/%2F..%2Fi"]) {
+      const response = await SELF.fetch(`${ORIGIN}${path}`);
+      expect([path, response.status]).toEqual([path, 200]);
+      expect(response.headers.get("content-type")).toMatch(/^text\/html/);
+      expectWebHeaders(response, "no-store");
+      expect(await response.text()).toBe(page);
+    }
+    await expectError(await SELF.fetch(`${ORIGIN}/web/x`, { method: "POST" }), 404, "not_found");
+  });
+
+  it("serves the browser guest's hashed assets with a long immutable cache, and every file as built", async () => {
+    const page = await (await env.ASSETS.fetch(`${ORIGIN}/web/`)).text();
+    const hashed = [...page.matchAll(/(?:src|href)="(\/web\/assets\/[^"]+)"/g)].map((m) => m[1]);
+    expect(hashed).toHaveLength(2);
+    for (const ref of hashed) {
+      const response = await env.ASSETS.fetch(`${ORIGIN}${ref}`);
+      expect([ref, response.status]).toEqual([ref, 200]);
+      expect(response.headers.get("content-type")).toMatch(/^(text\/javascript|application\/javascript|text\/css)/);
+      expectWebHeaders(response, "public, max-age=31536000, immutable");
+    }
+
+    // The manifest's hashes are checked against public/web by node --test; this checks that
+    // ASSETS serves those same bytes at the same paths.
+    const manifest = await (await env.ASSETS.fetch(`${ORIGIN}/web/manifest.json`)).json<{ files: Record<string, string> }>();
+    for (const [path, sha256] of Object.entries(manifest.files)) {
+      const url = path === "index.html" ? `${ORIGIN}/web/` : `${ORIGIN}/web/${path}`;
+      const response = await env.ASSETS.fetch(url);
+      expect([path, response.status]).toEqual([path, 200]);
+      expect(response.headers.get("content-security-policy")).toBe(WEB_CSP);
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", await response.arrayBuffer()));
+      expect([path, Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("")]).toEqual([path, sha256]);
     }
   });
 
@@ -781,6 +853,104 @@ describe("short invites", () => {
   });
 });
 
+describe("usage ping", () => {
+  let writes: MockInstance<AnalyticsEngineDataset["writeDataPoint"]>;
+
+  beforeEach(() => {
+    writes = vi.spyOn(env.USAGE, "writeDataPoint");
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("writes one data point of install, app, version and build for an accepted ping", async () => {
+    const body = validPing({ app: "ipados", version: "2.10.1-beta_3", build: "4021" });
+    const response = await ping(body);
+    expect(response.status).toBe(204);
+    expect(await response.text()).toBe("");
+    expect(writes.mock.calls).toEqual([[{ indexes: [body.install], blobs: ["ipados", "2.10.1-beta_3", "4021"], doubles: [1] }]]);
+  });
+
+  it("accepts every client in the contract and a 32-character version and build", async () => {
+    const apps = ["ios", "ipados", "macos-catalyst", "desktop-macos", "desktop-linux", "desktop-windows"];
+    for (const app of apps) expect((await ping(validPing({ app, version: "v".repeat(32), build: "9".repeat(32) }))).status).toBe(204);
+    expect(writes.mock.calls.map(([point]) => point?.blobs?.[0])).toEqual(apps);
+  });
+
+  it("refuses anything but the exact schema with 400 and writes nothing", async () => {
+    const { v: _v, ...noV } = validPing();
+    const { app: _app, ...noApp } = validPing();
+    const bodies: unknown[] = [
+      validPing({ v: 2 }),
+      validPing({ v: "1" }),
+      noV,
+      validPing({ install: newInstall().slice(1) }),
+      validPing({ install: `${newInstall()}A` }),
+      validPing({ install: `${newInstall().slice(2)}==` }),
+      validPing({ install: `${newInstall().slice(1)}+` }),
+      validPing({ install: 42 }),
+      validPing({ app: "android" }),
+      validPing({ app: "iOS" }),
+      noApp,
+      validPing({ version: "" }),
+      validPing({ version: "1".repeat(33) }),
+      validPing({ version: "1.0 beta" }),
+      validPing({ version: 1.4 }),
+      validPing({ build: "" }),
+      validPing({ build: "2".repeat(33) }),
+      validPing({ build: "21/2" }),
+      validPing({ locale: "en_GB" }),
+      [validPing()],
+      "null",
+      "",
+      "not json",
+      `${JSON.stringify(validPing())}x`,
+      new Uint8Array([0x7b, 0xff, 0x7d]),
+    ];
+    for (const body of bodies) await expectError(await ping(body), 400, "bad_request");
+    expect(writes).not.toHaveBeenCalled();
+  });
+
+  it("takes a body of 512 bytes and refuses 513 with 400", async () => {
+    const json = JSON.stringify(validPing());
+    expect((await ping(json.padEnd(512, " "))).status).toBe(204);
+    await expectError(await ping(json.padEnd(513, " ")), 400, "bad_request");
+    expect(writes).toHaveBeenCalledTimes(1);
+  });
+
+  it("answers method_not_allowed to any method but POST", async () => {
+    for (const method of ["GET", "PUT", "DELETE"]) {
+      const response = await ping(validPing(), freshIp(), method);
+      expect(response.headers.get("Allow")).toBe("POST");
+      await expectError(response, 405, "method_not_allowed");
+    }
+    expect(writes).not.toHaveBeenCalled();
+  });
+
+  // About 110 requests, which can pass the default 5 s timeout while the whole suite runs.
+  it("limits pings to 60 per minute per IP, apart from the host and guest connect limits", async () => {
+    const ip = freshIp();
+    const statuses = await Promise.all(Array.from({ length: 60 }, async () => (await ping(validPing(), ip)).status));
+    expect(statuses).toEqual(Array(60).fill(204));
+    await expectError(await ping(validPing(), ip), 429, "rate_limited");
+    expect(writes).toHaveBeenCalledTimes(60);
+    expect((await ping(validPing())).status).toBe(204);
+    // The spent ping budget leaves this IP's connects alone: each still passes its limiter.
+    const hostId = newHostId();
+    await expectRefusal(await guestRequest(hostId, ip), 4503, "host_offline");
+    await expectError(await hostRequest(hostId, "Bearer short", true, ip), 401, "unauthorized");
+
+    // And spent connect budgets leave this IP's pings alone.
+    const busy = freshIp();
+    await Promise.all(Array.from({ length: 30 }, () => guestRequest(hostId, busy)));
+    await Promise.all(Array.from({ length: 10 }, () => hostRequest(hostId, "Bearer short", true, busy)));
+    await expectRefusal(await guestRequest(hostId, busy), 4429, "rate_limited");
+    await expectError(await hostRequest(hostId, "Bearer short", true, busy), 429, "rate_limited");
+    expect((await ping(validPing(), busy)).status).toBe(204);
+  }, 20_000);
+});
+
 describe("landing page script", () => {
   it("takes the payload from the /i/<payload> path, else from the older /i#<payload> fragment", () => {
     expect(invitePayload("/i/eyJ2IjoxfQ", "")).toBe("eyJ2IjoxfQ");
@@ -818,6 +988,52 @@ describe("landing page script", () => {
     tampered[20] ^= 1;
     await expect(openShortInvite({ id, key }, tampered.buffer, ORIGIN)).rejects.toThrow();
     await expect(openShortInvite({ id, key }, new ArrayBuffer(28), ORIGIN)).rejects.toThrow();
+  });
+
+  it("accepts the invite's relay with a trailing slash, as the app does, and nothing else", async () => {
+    expect(isRelay(ORIGIN, ORIGIN)).toBe(true);
+    expect(isRelay(`${ORIGIN}/`, ORIGIN)).toBe(true);
+    for (const other of ["http://guest.herdrup.themartian.app", "https://guest.herdrup.themartian.app:8443",
+      "https://GUEST.herdrup.themartian.app", "https://guest.herdrup.themartian.app:443",
+      "https://evil.example", `${ORIGIN}/relay`, `${ORIGIN}//`, `${ORIGIN}/?x=1`, `${ORIGIN}#x`,
+      `${ORIGIN}\\@evil.example/..`, `${ORIGIN}/..`, `${ORIGIN}/./`,
+      "https://user@guest.herdrup.themartian.app", "not a url", "", 7, null]) {
+      expect(isRelay(other, ORIGIN), String(other)).toBe(false);
+    }
+
+    // Review of #608: the browser's URL parser reads this as the relay, the app's as evil.example.
+    const bypassId = newInviteId();
+    const bypassKey = crypto.getRandomValues(new Uint8Array(16));
+    const bypass = await seal(bypassId, bypassKey,
+      utf8(JSON.stringify({ v: 1, relay: `${ORIGIN}\\@evil.example/..` })));
+    await expect(openShortInvite({ id: bypassId, key: b64url(bypassKey) }, bypass, ORIGIN))
+      .rejects.toThrow("relay mismatch");
+
+    const id = newInviteId();
+    const keyBytes = crypto.getRandomValues(new Uint8Array(16));
+    const plaintext = utf8(JSON.stringify({ v: 1, relay: `${ORIGIN}/` }));
+    const blob = await seal(id, keyBytes, plaintext);
+    const opened = await openShortInvite({ id, key: b64url(keyBytes) }, blob, ORIGIN);
+    expect(JSON.parse(atob(opened.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((opened.length + 3) % 4))).relay)
+      .toBe(`${ORIGIN}/`);
+  });
+
+  it("links Open in browser to /web/ with the app link's payload in the fragment, for long and short links", async () => {
+    const payload = newInvitePayload();
+    const expectLink = (link: string) => {
+      expect(link).toBe(`/web/#${payload}`);
+      const url = new URL(link, ORIGIN);
+      expect([url.origin, url.pathname, url.search, url.hash]).toEqual([ORIGIN, "/web/", "", `#${payload}`]);
+    };
+    expectLink(browserLink(invitePayload(`/i/${payload}`, "")));
+    expectLink(browserLink(invitePayload("/i", `#${payload}`)));
+
+    const id = newInviteId();
+    const keyBytes = crypto.getRandomValues(new Uint8Array(16));
+    const plaintext = Uint8Array.from(atob(payload.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((payload.length + 3) % 4)), (c) => c.charCodeAt(0));
+    const short = shortInvite(`/i/${id}${b64url(keyBytes)}`);
+    expect(short).not.toBeNull();
+    expectLink(browserLink(await openShortInvite(short!, await seal(id, keyBytes, plaintext), ORIGIN)));
   });
 });
 
@@ -888,6 +1104,14 @@ describe("logging", () => {
     expect(all).not.toContain(payload.slice(0, 40));
   });
 
+  it("logs nothing for the browser guest", async () => {
+    const payload = newInvitePayload();
+    await SELF.fetch(`${ORIGIN}/web/${payload}`);
+    await SELF.fetch(`${ORIGIN}/web/${payload}`, { method: "POST" });
+    await SELF.fetch(`${ORIGIN}/web/x?${payload}`);
+    expect(lines).toEqual([]);
+  });
+
   it("never logs a short invite's id, key, host or secret", async () => {
     const host = await enrolledHost();
     const other = await enrolledHost();
@@ -922,5 +1146,14 @@ describe("logging", () => {
     ]);
     const all = lines.join("\n");
     for (const secretText of [id, key, host.hostId, host.secret, other.hostId, other.secret]) expect(all).not.toContain(secretText);
+  });
+
+  it("never logs a ping, accepted or refused", async () => {
+    const install = newInstall();
+    await ping(validPing({ install }));
+    await ping(validPing({ install, app: "android" }));
+    await ping(JSON.stringify(validPing({ install })).padEnd(600, " "));
+    await ping(validPing({ install }), freshIp(), "GET");
+    expect(lines).toEqual([]);
   });
 });

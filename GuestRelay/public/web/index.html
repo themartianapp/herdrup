@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- The relay's policy for /web/ (owner-approved 2026-11-03), less frame-ancestors, which a meta
+         policy cannot set: the relay's header sends it. No inline script anywhere in this build. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' blob: data:; font-src 'self'; connect-src 'self' wss://guest.herdrup.app wss://guest.herdrup.themartian.app; base-uri 'none'; form-action 'none'" />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>herdrup</title>
+    <script type="module" crossorigin src="/web/assets/index-Di90JQRd.js"></script>
+    <link rel="stylesheet" crossorigin href="/web/assets/index-MRzJd6r5.css">
+  </head>
+  <body>
+    <!-- src/main.ts's layout, guest parts only: the detail column under the sidebar card. -->
+    <main id="detail" class="detail">
+      <p id="select" class="select" hidden>Select an agent</p>
+    </main>
+    <aside class="sidebar" id="sidebar">
+      <header class="topbar">
+        <div class="bar-row">
+          <div class="capsule" id="bar-leading" hidden></div>
+          <div class="bar-title" id="bar-title"></div>
+          <div class="capsule" id="bar-actions" hidden></div>
+        </div>
+      </header>
+      <nav class="tabbar" id="tabbar"></nav>
+    </aside>
+    <section id="welcome" class="web-welcome" hidden></section>
+  </body>
+</html>

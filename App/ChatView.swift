@@ -65,7 +65,9 @@ final class ChatModel: ObservableObject {
     /// answer or menu key (`guest_forbidden`). Questions wait for the owner for the session.
     @Published private(set) var answersRefused = false
     /// The server cannot give this agent a transcript (not omp, no session file, an older
-    /// server or peer): the page goes back to the terminal for good.
+    /// server or peer): the page shows the terminal only. Not final: an omp agent answers
+    /// `transcript_unsupported` for its first seconds, until its integration reports a
+    /// session (#604), so any later answer that is not a refusal clears it again.
     @Published private(set) var unsupported = false
     /// The chat's lines, flattened from `turns` and `outgoing` once per change of either
     /// (not per draw), with each row's position by id.
@@ -83,12 +85,20 @@ final class ChatModel: ObservableObject {
     var target: String { store.target }
 
     func stageOutgoing(text: String, author: TranscriptAuthor, files: [ComposerAttachment] = []) -> String {
+        stagedAt = CACurrentMediaTime()
         let id = store.stageOutgoing(text: text, author: author, files: files.map {
             TranscriptAttachment(id: $0.id.uuidString, name: $0.name, isImage: $0.isImage, messageID: $0.messageID)
         })
         followSend()
         return id
     }
+
+    /// When the newest send was staged (`CACurrentMediaTime`). Not published: only the
+    /// tail follow reads it, per frame.
+    private var stagedAt = -CFTimeInterval.infinity
+    /// A send was staged moments ago: the tail follow glides with its bubble
+    /// (`ChatSendMotion.scrollGlideWindow`).
+    var sendIsLanding: Bool { CACurrentMediaTime() - stagedAt < ChatSendMotion.scrollGlideWindow }
 
     func prepareOutgoing(_ id: String, client: HerdrClient) async -> Bool {
         await store.prepareOutgoing(id, client: client)
@@ -264,10 +274,18 @@ final class ChatModel: ObservableObject {
         if let error = store.lastError as? AgentTranscriptError {
             switch error {
             case .unsupported: assign(\.unsupported, true)
-            case .agentNotFound: assign(\.failure, "This agent is gone.")
-            case .unavailable: assign(\.failure, "omp's session file can't be read right now.")
-            case .cursorExpired: assign(\.failure, nil)
-            case .subagentNotFound: assign(\.failure, "This subagent's conversation can't be found.")
+            case .agentNotFound:
+                assign(\.unsupported, false)
+                assign(\.failure, "This agent is gone.")
+            case .unavailable:
+                assign(\.unsupported, false)
+                assign(\.failure, "omp's session file can't be read right now.")
+            case .cursorExpired:
+                assign(\.unsupported, false)
+                assign(\.failure, nil)
+            case .subagentNotFound:
+                assign(\.unsupported, false)
+                assign(\.failure, "This subagent's conversation can't be found.")
             }
         } else if let error = store.lastError {
             // A guest whose host refuses the method for guests: the Chat tab goes away.
@@ -279,6 +297,7 @@ final class ChatModel: ObservableObject {
                 assign(\.failure, "Couldn't load the chat.")
             }
         } else {
+            assign(\.unsupported, false)
             assign(\.failure, nil)
         }
     }
@@ -679,6 +698,13 @@ struct ChatView: View {
         }
     }
 
+    /// A send's new bubble enters on `ChatSendMotion`; every other row keeps SwiftUI's
+    /// default fade (and is not animated at all unless its change is).
+    private func rowTransition(_ row: ChatRow) -> AnyTransition {
+        guard case .outgoing = row else { return .opacity }
+        return ChatSendMotion.bubbleTransition(reduceMotion: reduceMotion)
+    }
+
     private func transcriptColumn(_ proxy: ScrollViewProxy, hits: [TranscriptSearchHit]) -> some View {
         let hitsByRow = Dictionary(grouping: hits, by: \.rowID)
         let actions = rowActions
@@ -688,6 +714,7 @@ struct ChatView: View {
                 chatRow(row, hits: hitsByRow[row.id] ?? [], actions: actions)
                     .equatable()
                     .id(row.id)
+                    .transition(rowTransition(row))
             }
             sessionFooter
         }
@@ -714,7 +741,12 @@ struct ChatView: View {
                 }
                 if followingLatest, model.loaded, findRequest == nil,
                    !view.isTracking, !view.isDragging, !view.isDecelerating {
-                    scrollPosition.jumpToLatest()
+                    // Just after a send the tail springs with the new bubble; otherwise it jumps.
+                    if model.sendIsLanding, ChatSendMotion.scrollGlides(reduceMotion: reduceMotion) {
+                        scrollPosition.glideToLatest()
+                    } else {
+                        scrollPosition.jumpToLatest()
+                    }
                 }
                 let bottom = scrollPosition.isAtBottom
                 if atBottom != bottom { atBottom = bottom }
@@ -1525,6 +1557,9 @@ private struct ChatRowView: View, Equatable {
             }
             Text(receipt).font(Typography.app(11 * textScale)).foregroundStyle(Palette.textFaint)
                 .padding(.trailing, 6)
+                // The server's answer cross-fades in place.
+                .contentTransition(.opacity)
+                .animation(ChatSendMotion.receipt, value: receipt)
                 .accessibilityIdentifier("chat-send-receipt")
                 .onChange(of: receipt) { _, receipt in
                     UIAccessibility.post(notification: .announcement, argument: receipt)

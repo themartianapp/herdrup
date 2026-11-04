@@ -73,6 +73,26 @@ final class ChatViewTests: XCTestCase {
         XCTAssertFalse(app.descendants(matching: .any)["chat-view"].firstMatch.exists)
     }
 
+    /// #604: a just-started omp agent answers `transcript_unsupported` until omp's integration
+    /// reports a session, then `transcript_unavailable` until its first turn. Chat must come
+    /// back without restarting the app, once the transcript can be read. How long Chat stays
+    /// hidden meanwhile depends on retry timing, so it is not asserted; before the fix it never
+    /// came back (this test failed at that assertion).
+    func testChatAppearsOnceAStartingOmpAgentHasATranscript() {
+        let app = launch("chatview", ["HERDR_MOCK_CHAT_STARTUP":
+            "transcript_unsupported,transcript_unsupported,transcript_unavailable"])
+        openAgent("herdr-app", in: app)
+        let chatSwitch = app.buttons["chat-switch-chat"]
+        XCTAssertTrue(app.terminalSurface.waitForExistence(timeout: 10), "the pane opens")
+        XCTAssertTrue(chatSwitch.waitForExistence(timeout: 30),
+                      "Chat should come back once the agent's transcript can be read")
+        let chat = app.descendants(matching: .any)["chat-view"].firstMatch
+        XCTAssertTrue(chat.waitForExistence(timeout: 10), "an omp agent opens in Chat")
+        XCTAssertTrue(poll(15, every: 0.5) { self.turns(chat) > 0 },
+                      "the conversation loads; turns=\(turns(chat))")
+        attach(app, "chat-after-startup")
+    }
+
     /// Settings shows the default (Chat); with Terminal chosen, omp agents open in the
     /// terminal, the switch still offering Chat.
     func testSettingsDefaultDecidesWhereOmpOpens() {
@@ -187,9 +207,15 @@ final class ChatViewTests: XCTestCase {
         let send = try XCTUnwrap(visibleButton("terminal-send-button", in: app), "the reply should be sendable")
         send.tap()
 
+        // The composer clears on the tap itself (Send gives way to Saved Prompts), whatever
+        // the send motion is still drawing.
+        XCTAssertTrue(send.waitForNonExistence(timeout: 5), "the composer should clear when Send is tapped")
+
         // The placeholder (with its receipt) shows first; the transcript's copy replaces it.
         let sent = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Ship the fix"))
         XCTAssertTrue(sent.firstMatch.waitForExistence(timeout: 10), "the chat should show the sent message")
+        XCTAssertTrue(sent.firstMatch.waitForHittable(timeout: 5),
+                      "the chat should follow the sent message to the bottom, on screen")
         // The bubble's identifier also reaches its receipt text, so wait on the bubble itself.
         let placeholder = app.descendants(matching: .any).matching(identifier: "chat-outgoing-message").firstMatch
         XCTAssertTrue(placeholder.waitForNonExistence(timeout: 15),

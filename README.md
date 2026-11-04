@@ -6,7 +6,7 @@ herdrup is an iOS client for [herdr](https://github.com/jerryfane/herdr) — a c
 board for the coding agents running on your machine, with a real terminal one tap behind each.
 When an agent needs you, you see it at a glance and can reply from anywhere.
 
-[**⬇ Download on the App Store**](https://apps.apple.com/app/id6798087089) · 🌐 [herdrup.themartian.app](https://herdrup.themartian.app)
+[**⬇ Download on the App Store**](https://apps.apple.com/app/id6798087089) · 🌐 [herdrup.app](https://herdrup.app)
 
 The framing is *a herdr client that contains a terminal*, not a terminal app that happens to run
 herdr. A generic SSH terminal renders a character grid and cannot know what a pane or an agent is;
@@ -102,6 +102,10 @@ herdr's JSON API exposes both, so panes and agents become real UI objects instea
   back to live output. On iPad, the composer stays focused; use Collapse keyboard to dismiss it.
   Files can upload to a named agent even while it is asking a question. If the host refuses
   the accompanying prompt, the composer keeps the text and sent-file chips for retry.
+  Drop files on the terminal surface or its composer to attach and upload them before Send.
+  File-only drops share the composer's size/count limits; text-only drags do not attach files.
+  Send waits while accepted files are being prepared, including in guest panes.
+  Copied file references attach the document rather than its Finder icon or path text.
 - **Host picker** — native system typography for names, addresses, and guidance, with
   higher-contrast supporting text and the app's text-size preference respected.
   Copyable shell commands and terminal output retain their monospaced fonts.
@@ -146,7 +150,7 @@ install the fork over a herdr that is already running, restart it so the new ver
 shows these commands where they're needed (first run, after pairing, "herdr isn't running", and the
 missing-features notice).
 
-Push notifications go through the HerdrUp push relay (`push.herdrup.themartian.app`), so your machine
+Push notifications go through the HerdrUp push relay (`push.herdrup.app`), so your machine
 needs no Apple push key. The app enrolls its push tokens with the relay and gives the daemon the sealed
 capability it gets back; notification text passes through the relay but is never stored or logged.
 Settings → Notifications shows whether the connected machine can send them.

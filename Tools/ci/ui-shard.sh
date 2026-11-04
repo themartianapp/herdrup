@@ -23,7 +23,7 @@
 set -uo pipefail
 
 shard="${1:?usage: ui-shard.sh iphone-terminal|iphone-app|ipad|settings-build|settings-gram|focused}"
-TERMINAL_CLASSES=(TerminalControlTests TerminalResizeTests TerminalSearchTests TerminalSelectionTests)
+TERMINAL_CLASSES=(TerminalControlTests TerminalResizeTests TerminalSearchTests TerminalSelectionTests TerminalDropTests)
 mkdir -p TestReceipts
 
 TIMEOUT_BIN=$(command -v timeout || command -v gtimeout || true)
@@ -512,6 +512,9 @@ case "$shard" in
     # Leave room for the remaining cases; individual test limits and failures are unchanged.
     run_suite iPadControl "$IPAD_UDID" 20m -only-testing:HerdrUITests/TerminalControlTests || failed=1
     run_suite iPadSelectAgent "$IPAD_UDID" 5m -only-testing:HerdrUITests/SelectAgentFieldTests || failed=1
+    # Files dropped on the terminal attach to the composer (#575): iPad and Mac are where
+    # a file is dragged in from Files or Finder.
+    run_suite iPadTerminalDrop "$IPAD_UDID" 5m -only-testing:HerdrUITests/TerminalDropTests || failed=1
     # The needs-you pill pinned at the top of the sidebar (#551).
     run_suite iPadNeedsYouPill "$IPAD_UDID" 5m -only-testing:HerdrUITests/NeedsYouPillTests || failed=1
     # Agent folders in the sidebar (#552): a closed folder's counts, open in place, kept open.

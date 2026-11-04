@@ -1,4 +1,5 @@
 import Foundation
+import Crypto
 #if canImport(Glibc)
 import Glibc
 #else
@@ -13,11 +14,17 @@ import Darwin
 /// `~/.ssh/authorized_keys`, and from then on the phone authenticates like any other host
 /// entry.
 ///
-/// WHAT PROTECTS THIS EXCHANGE. It is a plaintext line-oriented protocol, deliberately:
-/// `herdr pair` binds to the machine's Tailscale address, so the bytes travel inside
-/// WireGuard, and the listener is not reachable from the internet at all. The token is
-/// single-use and short-lived, so a photograph of the QR is worthless once redeemed. The
+/// WHAT PROTECTS THIS EXCHANGE. Versions 1 and 2 are a plaintext line-oriented protocol,
+/// deliberately: `herdr pair` binds to the machine's Tailscale address, so the bytes travel
+/// inside WireGuard, and the listener is not reachable from the internet at all. The token
+/// is single-use and short-lived, so a photograph of the QR is worthless once redeemed. The
 /// only secret the phone ever holds — its private key — is never sent.
+///
+/// Version 3 (Deimos Forge pairing over the public internet) is still plaintext, but the
+/// token never leaves the phone: the request carries an HMAC proof keyed by the token and
+/// bound to the exact key and label sent, and the machine's `pair.ok` must carry its own
+/// proof over that key. An on-path attacker can then neither swap in its own key nor fake
+/// a success. Spec: deimos-forge `docs/pairing-v3.md`.
 public enum Pairing {}
 
 // MARK: - The payload carried by the QR
@@ -30,14 +37,17 @@ extension Pairing {
         /// Format version. Present so an old app meets a new daemon with a real error
         /// rather than a misparse. 1 is `herdr pair` (SSH on 22). 2 adds `ssh_port`, for a
         /// machine whose SSH is not on 22 (Deimos Forge workspaces); an app that only knows 1
-        /// must refuse it, not pin and save port 22.
+        /// must refuse it, not pin and save port 22. 3 has the same fields as 2 but redeems
+        /// with proofs instead of sending the token (`redeemLineV3`), for pairing over the
+        /// public internet.
         public let v: Int
         /// The address to connect to — the machine's tailnet IP.
         public let host: String
         public let port: Int
         /// The SSH user to log in as.
         public let user: String
-        /// Single-use pairing token.
+        /// Single-use pairing token. Version 3 never sends it: its UTF-8 bytes, exactly as
+        /// they appear here (not base64-decoded), are the HMAC key for both proofs.
         public let token: String
         /// The machine's SSH host-key fingerprint as `ssh-keygen -lf` prints it: `SHA256:`
         /// followed by the unpadded base64 of the 32-byte digest.
@@ -46,8 +56,8 @@ extension Pairing {
         /// when it could not read its own host key; `hostKeyFingerprint` is then `nil`, so an
         /// empty string never flows into a pin call.
         public let fp: String
-        /// The SSH port, required in version 2 and absent in version 1 (where SSH is on 22).
-        /// Not the pairing listener's `port`.
+        /// The SSH port, required in versions 2 and 3 and absent in version 1 (where SSH is
+        /// on 22). Not the pairing listener's `port`.
         public let sshPort: Int?
 
         enum CodingKeys: String, CodingKey {
@@ -91,7 +101,7 @@ extension Pairing {
     }
 
     /// The payload versions this build speaks. 1 must match herdr's `PAIRING_PAYLOAD_VERSION`.
-    public static let supportedPayloadVersions = 1...2
+    public static let supportedPayloadVersions = 1...3
 
     /// Parse and VALIDATE a scanned QR.
     ///
@@ -109,10 +119,10 @@ extension Pairing {
         guard supportedPayloadVersions.contains(payload.v) else {
             throw Error.unsupportedVersion(payload.v)
         }
-        // Version 2 exists to carry the SSH port; version 1 never carries one.
+        // Versions 2 and 3 exist to carry the SSH port; version 1 never carries one.
         switch (payload.v, payload.sshPort) {
         case (1, nil): break
-        case (2, .some(let sshPort)) where (1...65535).contains(sshPort): break
+        case (2...3, .some(let sshPort)) where (1...65535).contains(sshPort): break
         default: throw Error.notAPairingCode
         }
         guard !payload.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -144,6 +154,11 @@ extension Pairing {
         case refused(String)
         /// Connected, but the reply was not something this protocol defines.
         case badResponse(String)
+        /// A version-3 `pair.ok` that did not prove it came from the machine that made the
+        /// code and saw this device's key: no proof, a wrong or malformed one, or a reply
+        /// that is not version 3. Treated as a failure even though it says "ok", because a
+        /// forged success is exactly what an on-path attacker would send.
+        case unverifiedReply
 
         /// What to show a person. The daemon's refusal text is intentionally uninformative,
         /// so the app supplies the actionable sentence instead of surfacing it raw.
@@ -163,6 +178,9 @@ extension Pairing {
                     + "expire — run `herdr pair` again for a fresh one."
             case .badResponse:
                 return "Got an unexpected reply from that computer. Run `herdr pair` again."
+            case .unverifiedReply:
+                return "That computer couldn't prove it made this pairing code, so this "
+                    + "device wasn't paired. Run `herdr pair` again and scan the new code."
             }
         }
     }
@@ -205,6 +223,88 @@ extension Pairing {
         return data
     }
 
+    /// The version-3 request (deimos-forge `docs/pairing-v3.md`). A separate type so the
+    /// token has no field to land in: the server refuses any v3 request that carries one,
+    /// and leaking it is what v3 exists to stop.
+    struct ProvenRedeemRequest: Codable, Equatable {
+        let kind: String
+        let v: Int
+        let publicKey: String
+        let device: String
+        let proof: String
+
+        enum CodingKeys: String, CodingKey {
+            case kind = "type"
+            case v
+            case publicKey = "public_key"
+            case device
+            case proof
+        }
+    }
+
+    /// The payload and reply version that redeems with proofs instead of the token.
+    static let provenVersion = 3
+
+    /// Encode a version-3 redemption: the key, the label, and a proof that this device
+    /// holds the token, bound to exactly that key and label. The token itself is not sent.
+    static func redeemLineV3(token: String, publicKeyLine: String, deviceLabel: String) throws -> Data {
+        let request = ProvenRedeemRequest(
+            kind: redeemKind,
+            v: provenVersion,
+            publicKey: publicKeyLine,
+            device: deviceLabel,
+            proof: Base64URL.encode(requestProof(
+                token: token, publicKeyLine: publicKeyLine, deviceLabel: deviceLabel)))
+        var data = try JSONEncoder().encode(request)
+        data.append(0x0A)  // the daemon reads exactly one line
+        return data
+    }
+
+    /// HMAC-SHA256(UTF-8(token), "forge-pair-v3" 0x00 public_key 0x00 device).
+    static func requestProof(token: String, publicKeyLine: String, deviceLabel: String) -> Data {
+        Data(HMAC<SHA256>.authenticationCode(
+            for: proofMessage("forge-pair-v3", publicKeyLine, deviceLabel),
+            using: proofKey(token)))
+    }
+
+    /// HMAC-SHA256(UTF-8(token), "forge-pair-v3-ok" 0x00 public_key): what a genuine
+    /// `pair.ok` carries, proving the machine knows the token and accepted THIS key.
+    static func okProof(token: String, publicKeyLine: String) -> Data {
+        Data(HMAC<SHA256>.authenticationCode(
+            for: proofMessage("forge-pair-v3-ok", publicKeyLine), using: proofKey(token)))
+    }
+
+    /// Whether a version-3 `pair.ok` reply is genuine: `v` is 3 and `proof` is the
+    /// canonical base64url of `okProof`, compared in constant time. Missing, malformed or
+    /// wrong all answer false.
+    static func okReplyIsGenuine(_ reply: [String: Any], token: String, publicKeyLine: String) -> Bool {
+        guard (reply["v"] as? Int) == provenVersion,
+              let proof = reply["proof"] as? String,
+              let mac = Base64URL.decode(proof),
+              // Canonical spelling only: the spec compares the proof as a string, so stray
+              // trailing bits must not give the same 32 bytes a second accepted form.
+              Base64URL.encode(mac) == proof
+        else { return false }
+        return HMAC<SHA256>.isValidAuthenticationCode(
+            mac, authenticating: proofMessage("forge-pair-v3-ok", publicKeyLine),
+            using: proofKey(token))
+    }
+
+    /// The token's UTF-8 bytes as they appear in the QR, NOT base64-decoded.
+    private static func proofKey(_ token: String) -> SymmetricKey {
+        SymmetricKey(data: Data(token.utf8))
+    }
+
+    /// The parts' UTF-8 bytes joined by single 0x00 bytes.
+    private static func proofMessage(_ parts: String...) -> Data {
+        var message = Data()
+        for (index, part) in parts.enumerated() {
+            if index > 0 { message.append(0x00) }
+            message.append(contentsOf: part.utf8)
+        }
+        return message
+    }
+
     /// Redeem a scanned code: hand the machine this device's PUBLIC key.
     ///
     /// Blocking, by design — it is one short request/response and the caller runs it off
@@ -219,8 +319,13 @@ extension Pairing {
         deviceLabel: String,
         timeout: TimeInterval = 15
     ) throws {
-        let line = try redeemLine(
-            token: payload.token, publicKeyLine: publicKeyLine, deviceLabel: deviceLabel)
+        // Version 3 never puts the token on the wire; older versions send it as before.
+        let proven = payload.v >= provenVersion
+        let line = try proven
+            ? redeemLineV3(
+                token: payload.token, publicKeyLine: publicKeyLine, deviceLabel: deviceLabel)
+            : redeemLine(
+                token: payload.token, publicKeyLine: publicKeyLine, deviceLabel: deviceLabel)
 
         let fd = try connectSocket(host: payload.host, port: payload.port, timeout: timeout)
         defer { platformClose(fd) }
@@ -235,6 +340,10 @@ extension Pairing {
 
         switch type {
         case "pair.ok":
+            // An unproven "ok" over the internet could come from anyone on the path.
+            guard !proven || okReplyIsGenuine(
+                object, token: payload.token, publicKeyLine: publicKeyLine)
+            else { throw Error.unverifiedReply }
             return
         case "pair.error":
             throw Error.refused((object["message"] as? String) ?? "pairing refused")
