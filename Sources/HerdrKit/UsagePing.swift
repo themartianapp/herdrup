@@ -61,13 +61,26 @@ public actor UsagePing {
 
     /// Off stops pings and deletes the install ID at once; on makes a new ID. The last-sent
     /// day is kept, so switching off and on again does not count this phone twice in a day.
+    /// Serialized with a ping's switch check and ID lookup (`enabledInstallID`), so a ping
+    /// that is starting can never recreate the ID after the switch has gone off (#623).
     public static func setEnabled(_ on: Bool, in defaults: UserDefaults) {
-        defaults.set(on, forKey: Key.enabled)
-        if on {
-            _ = installID(in: defaults)
-        } else {
-            defaults.removeObject(forKey: Key.install)
+        switchLock.withLock {
+            defaults.set(on, forKey: Key.enabled)
+            if on {
+                _ = installID(in: defaults)
+            } else {
+                defaults.removeObject(forKey: Key.install)
+            }
         }
+    }
+
+    /// Guards the switch and the install ID together. Process-wide: the switch is flipped
+    /// on the main actor while a ping runs on the `UsagePing` actor.
+    private static let switchLock = NSLock()
+
+    /// The install ID to send, or nil when the switch is off: one step under `switchLock`.
+    static func enabledInstallID(in defaults: UserDefaults) -> String? {
+        switchLock.withLock { isEnabled(in: defaults) ? installID(in: defaults) : nil }
     }
 
     // MARK: Pure parts
@@ -154,10 +167,13 @@ public actor UsagePing {
     /// tries again (no retry loop). Returns whether a ping was accepted.
     @discardableResult
     public func pingIfDue(platform: Platform, version: String, build: String) async -> Bool {
-        guard !sending, Self.isEnabled(in: defaults) else { return false }
+        guard !sending else { return false }
         let today = Self.utcDay(now())
         guard defaults.string(forKey: Key.lastSentDay) != today else { return false }
-        guard let body = Self.body(install: Self.installID(in: defaults), platform: platform,
+        // The switch check and the ID lookup are one step, so an opt-out can never be
+        // followed by a recreated ID (#623).
+        guard let install = Self.enabledInstallID(in: defaults),
+              let body = Self.body(install: install, platform: platform,
                                    version: version, build: build)
         else { return false }
 
@@ -167,6 +183,10 @@ public actor UsagePing {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = body
 
+        // An opt-out that finished while the request was being built stops it here. One that
+        // lands after this line cannot stop a request already on its way; the ID it carries
+        // is deleted by that opt-out and never recreated.
+        guard Self.isEnabled(in: defaults) else { return false }
         sending = true
         let status = await send(request)
         sending = false
