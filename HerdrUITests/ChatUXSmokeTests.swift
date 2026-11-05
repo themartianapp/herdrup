@@ -348,28 +348,34 @@ final class ChatUXSmokeTests: XCTestCase {
         for element in [lead, paragraph, item, code] {
             XCTAssertTrue(element.waitForExistence(timeout: 5), app.debugDescription)
         }
-        // The chat's top edge fades content out under the bar (26 pt), so bring the thought's
-        // first line well clear of it with one exact drag (no fling). The top is the chat's
-        // own, or the Chat/Terminal switch's bottom if lower.
+        // The chat's top edge fades content out under the bar (26 pt), and the composer card
+        // covers its bottom. The top is the chat's own, or the Chat/Terminal switch's bottom if
+        // lower; the bottom is the composer card's top.
         let mode = app.buttons["Terminal"].firstMatch
         let top = max(chat.frame.minY, mode.exists ? mode.frame.maxY : 0)
-        let clear = top + 70
-        if lead.frame.minY < clear {
-            let start = chat.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
-            start.press(forDuration: 0.2, thenDragTo: start.withOffset(CGVector(dx: 0, dy: clear - lead.frame.minY + 10)))
-        }
-        for element in [lead, paragraph, item, code] {
-            XCTAssertTrue(element.isHittable && element.frame.minY >= top + 40,
-                          "\(element.label) must be on screen, clear of the top fade: \(element.frame) below \(top)")
-        }
+        let composer = app.descendants(matching: .any)["composer-card"].firstMatch
+        let bottom = composer.exists ? composer.frame.minY : chat.frame.maxY
         record(app, "Expanded thought box")
 
-        // Measure each line from a fresh screenshot and a fresh frame until the reading lands in
-        // the secondary-ink band, for up to 5 s. One early screenshot could catch the box still
+        // Bring each line into the clear band on its own with one exact drag (no fling), then
+        // measure it. The whole box (about 575 pt) does not always fit between the top fade and
+        // the composer on an iPhone, so requiring all four lines on screen at once failed with
+        // the last lines under the composer (y 771 and 788 on CI for #630 and an earlier run).
+        // Each line is then read from a fresh screenshot and frame until the reading lands in
+        // the secondary-ink band, for up to 5 s: one early screenshot could catch the box still
         // opening or the drag still settling and read the bare background (0.068 on CI for
         // #593, #594, #602, #613 and #614). A line that stays white, or stays too dim to read,
         // still fails with its last reading.
         for (name, element) in [("bold lead", lead), ("text", paragraph), ("list item", item), ("inline code", code)] {
+            let target = (top + 40 + bottom) / 2
+            let offset = target - element.frame.midY
+            if element.frame.minY < top + 40 || element.frame.maxY > bottom {
+                let start = chat.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                start.press(forDuration: 0.2, thenDragTo: start.withOffset(CGVector(dx: 0, dy: offset)))
+            }
+            XCTAssertTrue(poll(3, every: 0.2) {
+                element.isHittable && element.frame.minY >= top + 40 && element.frame.maxY <= bottom
+            }, "The thought's \(name) must be on screen, clear of the top fade and the composer: \(element.frame), clear band \(top + 40)…\(bottom)")
             var value = 0.0
             _ = poll(5, every: 0.25) {
                 value = Self.brightest(element.frame, in: XCUIScreen.main.screenshot().image, app: app)
