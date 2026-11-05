@@ -9,7 +9,9 @@ import XCTest
 /// from hetzner-1) with a one-line code fence and a zip; g3 a vetrina image; g4 vetrina's
 /// 11-line "Deployed." report that folds at 8 lines; g5 a queue post grabbed by ci-watch; g6
 /// trend-scout's "Digest ready" (relayed); g10 a LOCAL clientloop's "Lint is clean on my branch."
-/// (two agents share the name clientloop); g7–g9 yesterday's vetrina thread. g2–g4 are unread.
+/// (two agents share the name clientloop); g7–g9 yesterday's vetrina thread. g2–g4 are unread,
+/// so the feed opens at g4 under the "3 unread" rule; `HERDR_MOCK_GRAM_READ` reads them all,
+/// and the feed then opens at the newest message (g1).
 final class GramTests: XCTestCase {
 
     override func setUp() { continueAfterFailure = false }
@@ -65,13 +67,61 @@ final class GramTests: XCTestCase {
         // its machine ("· hetzner-1") a separate span.
         XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 5),
                       "an agent->owner message should render its sender")
-        // Like Messages, the feed opens at the NEWEST message (g1, the owner's reply), not
-        // part-way up: a lazy feed once opened mid-history on iPhone.
-        let newest = app.descendants(matching: .any)["gram-bubble-g1"]
-        XCTAssertTrue(newest.waitForExistence(timeout: 5), "the newest message should be laid out")
-        XCTAssertTrue(newest.isHittable, "the feed should open showing the newest message")
+        // With unread messages the feed opens where they begin (owner 2026-10-29): the
+        // "3 unread" rule above g4, on screen below the floating header. This pinned the
+        // newest message (g1) before; with nothing unread it still opens there (below).
+        assertOpensAtTheUnreadRule(app, count: 3)
 
         attach(app, "gram-page")
+    }
+
+    /// With nothing unread the feed opens at the NEWEST message (g1, the owner's reply), as
+    /// Messages does, not part-way up: a lazy feed once opened mid-history on iPhone.
+    func testGramOpensAtTheNewestWhenNothingIsUnread() {
+        let app = launchGram(environment: ["HERDR_MOCK_GRAM_READ": "1"])
+        let newest = app.descendants(matching: .any)["gram-bubble-g1"]
+        XCTAssertTrue(newest.waitForExistence(timeout: 10), "the newest message should be laid out")
+        XCTAssertTrue(waitForPredicate(NSPredicate(format: "hittable == true"), object: newest, timeout: 5),
+                      "the feed should open showing the newest message")
+        XCTAssertFalse(app.descendants(matching: .any)["gram-unread-rule"].exists,
+                       "nothing is unread, so there is no unread rule")
+    }
+
+    /// With unread messages far above the newest, the feed opens at the first unread: its rule
+    /// at the top of the visible feed, just BELOW the floating header (not under it), and the
+    /// newest message well off screen. Fourteen read messages newer than g1
+    /// (`HERDR_MOCK_GRAM_NEWER`) put the unread g2–g4 more than a screen above the newest.
+    func testGramOpensAtTheFirstUnreadMessageBelowTheHeader() {
+        let app = launchGram(environment: ["HERDR_MOCK_GRAM_NEWER": "1"])
+        let newest = app.descendants(matching: .any)["gram-bubble-gn14"]
+        XCTAssertTrue(newest.waitForExistence(timeout: 10), "the newer messages should load")
+        let rule = assertOpensAtTheUnreadRule(app, count: 3)
+        let header = app.buttons["gram-header-pill"]
+        XCTAssertLessThan(rule.frame.minY - header.frame.maxY, 120,
+                          "the rule should sit at the top of the visible feed; rule \(rule.frame), header bottom \(header.frame.maxY)")
+        let feed = app.scrollViews["gram-feed"]
+        XCTAssertFalse(newest.isHittable && newest.frame.minY < feed.frame.maxY,
+                       "the feed should open at the first unread, not at the newest message")
+        attach(app, "gram-opens-at-first-unread")
+    }
+
+    /// The feed has opened at its first unread message: the "`count` unread" rule is on screen,
+    /// below the floating header's controls and above the bottom of the feed. Returns the rule.
+    @discardableResult
+    private func assertOpensAtTheUnreadRule(_ app: XCUIApplication, count: Int,
+                                            file: StaticString = #filePath, line: UInt = #line) -> XCUIElement {
+        let feed = app.scrollViews["gram-feed"]
+        let header = app.buttons["gram-header-pill"]
+        let rule = app.descendants(matching: .any)["gram-unread-rule"]
+        XCTAssertTrue(rule.waitForExistence(timeout: 10), "the unread rule should draw", file: file, line: line)
+        XCTAssertTrue(header.waitForExistence(timeout: 5), "the floating header shows the Gram pill", file: file, line: line)
+        XCTAssertEqual(rule.label, "\(count) unread", file: file, line: line)
+        let landed = poll(5, every: 0.25) {
+            rule.isHittable && rule.frame.minY >= header.frame.maxY && rule.frame.maxY <= feed.frame.maxY
+        }
+        XCTAssertTrue(landed, "the feed should open with the unread rule on screen below the header; rule \(rule.frame), header bottom \(header.frame.maxY), feed \(feed.frame)",
+                      file: file, line: line)
+        return rule
     }
 
     /// The search field filters the loaded inbox, and a filter that matches nothing says so
@@ -158,12 +208,12 @@ final class GramTests: XCTestCase {
     /// iPhone it is in the sheet the header's "Gram ›" pill opens, and its value is the unread
     /// count ("3 unread", empty at zero).
     ///
-    /// Fourteen newer messages (`HERDR_MOCK_GRAM_NEWER`) keep the unread ones above the fold,
-    /// so their rows do not mark themselves read on screen first and Read all has them to
-    /// clear. The mock keeps what `gram.mark_read` marked, as the daemon does, so the count
-    /// stays at zero once cleared.
+    /// Fourteen newer messages with seven of them unread (`HERDR_MOCK_GRAM_NEWER=unread`): the
+    /// feed opens at the first unread (g4) and the rows on that screen mark themselves read, but
+    /// the unread ones further down stay unread, so Read all has them to clear. The mock keeps
+    /// what `gram.mark_read` marked, as the daemon does, so the count stays at zero once cleared.
     func testGramReadAllClearsTheUnreadCount() {
-        let app = launchGram(environment: ["HERDR_MOCK_GRAM_NEWER": "1"])
+        let app = launchGram(environment: ["HERDR_MOCK_GRAM_NEWER": "unread"])
         let readAll = tapReadAll(app)
         XCTAssertTrue(waitUntilNothingUnread(readAll, timeout: 4),
                       "tapping Read all should drive the unread count to zero")
@@ -175,7 +225,7 @@ final class GramTests: XCTestCase {
     /// above Read all, starts one right before the tap. iPhone only: the sheet holds both.
     func testAPollInFlightDuringReadAllDoesNotBringTheCountBack() throws {
         try XCTSkipIf(hasSidebar, "Refresh and Read all share the iPhone pill's sheet")
-        let app = launchGram(environment: ["HERDR_MOCK_GRAM_NEWER": "1", "HERDR_MOCK_GRAM_HOLD_POLL": "1"])
+        let app = launchGram(environment: ["HERDR_MOCK_GRAM_NEWER": "unread", "HERDR_MOCK_GRAM_HOLD_POLL": "1"])
         let refresh = app.buttons["Refresh"].firstMatch
         let readAll = tapReadAll(app, after: refresh)
         XCTAssertTrue(waitUntilNothingUnread(readAll, timeout: 4),
@@ -250,7 +300,7 @@ final class GramTests: XCTestCase {
         let feed = app.scrollViews["gram-feed"]
         XCTAssertTrue(feed.waitForExistence(timeout: 10), "the Gram feed should load")
         XCTAssertTrue(app.staticTexts["Great, ship it."].waitForExistence(timeout: 5),
-                      "the feed opens at the newest message")
+                      "the first page should load")
         func label(_ prefix: String) -> XCUIElement {
             app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", prefix)).firstMatch
         }
@@ -297,7 +347,7 @@ final class GramTests: XCTestCase {
         let feed = app.scrollViews["gram-feed"]
         XCTAssertTrue(feed.waitForExistence(timeout: 10), "the Gram feed should load")
         XCTAssertTrue(app.staticTexts["Great, ship it."].waitForExistence(timeout: 5),
-                      "the feed opens at the newest message")
+                      "the first page should load")
         let messages = app.otherElements["gram-feed-messages"]
         XCTAssertTrue(messages.waitForExistence(timeout: 5))
         XCTAssertEqual(messages.value as? String, "12 messages", "one page is loaded")
@@ -317,10 +367,13 @@ final class GramTests: XCTestCase {
     /// exactly as it was. Leaving clears what the feed knows is on screen; coming back must
     /// re-learn it without the reader scrolling, or the initial scroll never finishes and the
     /// top sentinel never fetches (nor do rows mark read or new messages follow). After the
-    /// round trip, reaching the top loads exactly one older page, as on first open.
+    /// round trip, reaching the top loads exactly one older page, as on first open. Nothing
+    /// unread (`HERDR_MOCK_GRAM_READ`), so both openings are at the newest message: with unread
+    /// messages the first opening is at the first of them, and the rows read there change
+    /// where the second one opens.
     func testGramStillPagesAfterATabRoundTrip() throws {
         try XCTSkipIf(hasSidebar, "iPad/Mac show Gram in the split view, not a tab")
-        let app = launchGram(environment: ["HERDR_MOCK_GRAM_PAGED": "1"])
+        let app = launchGram(environment: ["HERDR_MOCK_GRAM_PAGED": "1", "HERDR_MOCK_GRAM_READ": "1"])
 
         let feed = app.scrollViews["gram-feed"]
         XCTAssertTrue(feed.waitForExistence(timeout: 10), "the Gram feed should load")
@@ -360,8 +413,9 @@ final class GramTests: XCTestCase {
 
     /// Tapping the selected Gram tab again goes to the NEWEST message, at the bottom of this
     /// oldest-first feed, as the feed's own "follow newest" does; not to the OLDEST at the top
-    /// (the system's scroll-to-top on a tab re-tap did that on iPhone). Read up into the older
-    /// page first, so the newest is well off screen. iPad's section bar does the same.
+    /// (the system's scroll-to-top on a tab re-tap did that on iPhone), and not to the first
+    /// unread message, where the feed opens. Read up into the older page first, so the newest
+    /// is well off screen. iPad's section bar does the same.
     func testTappingTheSelectedGramTabGoesToTheNewestMessage() {
         let app = launchGram(environment: ["HERDR_MOCK_GRAM_PAGED": "1"])
         let feed = app.scrollViews["gram-feed"]
@@ -371,8 +425,9 @@ final class GramTests: XCTestCase {
                 && element.frame.minY >= feed.frame.minY && element.frame.maxY <= feed.frame.maxY
         }
         let newest = app.staticTexts["Great, ship it."]
-        XCTAssertTrue(newest.waitForExistence(timeout: 5) && poll(5, every: 0.25) { onScreen(newest) },
-                      "the feed opens at the newest message")
+        XCTAssertTrue(newest.waitForExistence(timeout: 5), "the newest message should be laid out")
+        // g2–g4 are unread: the feed opens at them (this asserted the newest before, 2026-10-29).
+        assertOpensAtTheUnreadRule(app, count: 3)
 
         // Up to the older page's oldest message (reaching the top fetched that page).
         let olderOldest = app.staticTexts.matching(
@@ -411,7 +466,8 @@ final class GramTests: XCTestCase {
     /// swipes carry a dozen pictures across the edges: about 30-60 row renders now, and well
     /// over 800 (two dozen crossings x 34 rows, plus a page render per prefetch) before.
     func testScrollingPicturesStaysWithinARowRenderBudget() {
-        let app = launchGram(environment: ["HERDR_MOCK_GRAM_IMAGES": "12"])
+        // Nothing unread (`HERDR_MOCK_GRAM_READ`): the feed opens at the newest picture.
+        let app = launchGram(environment: ["HERDR_MOCK_GRAM_IMAGES": "12", "HERDR_MOCK_GRAM_READ": "1"])
         let feed = app.scrollViews["gram-feed"]
         XCTAssertTrue(feed.waitForExistence(timeout: 10), "the Gram feed should load")
         let newest = app.descendants(matching: .any)["gram-bubble-gt12"]
@@ -585,7 +641,7 @@ final class GramTests: XCTestCase {
         let showLess = app.buttons["gram-show-less"].firstMatch
         XCTAssertTrue(readMore.waitForExistence(timeout: 5), "a long report should fold with Read more")
         XCTAssertFalse(showLess.exists, "a folded report offers Read more, not Show less")
-        // The feed opens at the newest message; on a phone the report can sit just above it.
+        // The feed opens at the first unread message, which is this report.
         for _ in 0..<3 where !readMore.isHittable { app.swipeDown() }
         XCTAssertTrue(readMore.isHittable, "Read more should be reachable")
 
@@ -988,7 +1044,8 @@ final class GramTests: XCTestCase {
     func testSavingAMessageRedrawsItsBadge() {
         // A Gram pass at every touch-down (as a poll landing mid-tap): the open menu must
         // still take the tap (#437).
-        let app = launchGram(environment: ["HERDR_REDRAW_ON_TOUCH": "1"])
+        // Nothing unread (`HERDR_MOCK_GRAM_READ`), so the feed opens at g1, the newest.
+        let app = launchGram(environment: ["HERDR_REDRAW_ON_TOUCH": "1", "HERDR_MOCK_GRAM_READ": "1"])
         let bubble = app.descendants(matching: .any)["gram-bubble-g1"]
         XCTAssertTrue(bubble.waitForExistence(timeout: 10), "the newest message should draw")
         let badge = bubble.descendants(matching: .any)["gram-saved-badge"]
@@ -1123,9 +1180,11 @@ final class GramTests: XCTestCase {
 
     /// The feed is an eager stack, so a drawn row exists whether it is seen or not: the
     /// image card must fetch only once it is really on screen. Fourteen newer messages
-    /// (`HERDR_MOCK_GRAM_NEWER`) put g3 above the fold, inside a window that draws it.
+    /// (`HERDR_MOCK_GRAM_NEWER`) put g3 above the fold, inside a window that draws it, with
+    /// nothing unread (`HERDR_MOCK_GRAM_READ`) so the feed opens at the newest, not at g4.
     func testAnImageCardAboveTheFoldFetchesOnlyOnceScrolledIntoView() {
-        let app = launchGram(environment: ["HERDR_MOCK_GRAM_NEWER": "1", "HERDR_GRAM_RENDER_WINDOW": "200"])
+        let app = launchGram(environment: ["HERDR_MOCK_GRAM_NEWER": "1", "HERDR_MOCK_GRAM_READ": "1",
+                                           "HERDR_GRAM_RENDER_WINDOW": "200"])
         let newest = app.descendants(matching: .any)["gram-bubble-gn14"]
         XCTAssertTrue(newest.waitForExistence(timeout: 10), "the newer messages should load")
         let landed = NSPredicate(format: "hittable == true")
@@ -1270,9 +1329,10 @@ final class GramTests: XCTestCase {
 
     /// A reader at the newest message who starts typing stays there, as in Messages: the
     /// keyboard shrinks the feed, and the newest message must stay visible above the composer
-    /// (not slide under it, and no "New messages" pill when nothing arrived).
+    /// (not slide under it, and no "New messages" pill when nothing arrived). Nothing unread
+    /// (`HERDR_MOCK_GRAM_READ`), so the feed opens at the newest.
     func testReaderAtTheBottomStaysThereWhenTheKeyboardComesUp() throws {
-        let app = launchGram()
+        let app = launchGram(environment: ["HERDR_MOCK_GRAM_READ": "1"])
         let newest = app.descendants(matching: .any)["gram-bubble-g1"]
         XCTAssertTrue(newest.waitForExistence(timeout: 10))
         XCTAssertTrue(newest.isHittable, "the feed opens at the newest message")

@@ -2,9 +2,10 @@ import SwiftUI
 import UIKit
 
 /// The Gram feed's scrolling, shared by the inbox and Saved: an EAGER, windowed stack read
-/// oldest at the top and newest at the bottom, that opens at the newest message, reveals or
-/// fetches older history when the reader reaches the top, and keeps the reader's place when
-/// it lands above them.
+/// oldest at the top and newest at the bottom, that opens at the newest message (or at a row
+/// the owner names, just below the floating header: the inbox's first unread message),
+/// reveals or fetches older history when the reader reaches the top, and keeps the reader's
+/// place when it lands above them.
 ///
 /// EAGER, NOT LAZY, AND WINDOWED. A LazyVStack here never settled while the composer's pull-up
 /// editor shrank the feed: main thread at 100% in layout, the composer UI test hung on CI's
@@ -45,7 +46,8 @@ where Item.ID == String {
     /// without this nothing would say the bottom or the rows are on screen again until the
     /// reader scrolled. See `onFeedPlacementChange` and the bottom/sentinel trackers.
     @Binding var appearance: Int
-    /// True once the feed has been scrolled to its newest message for this appearance. The
+    /// True once the feed has been scrolled to where it opens (the newest message, or the
+    /// `openAt` row) for this appearance. The
     /// first layout starts at the TOP, before the scroll runs, so until then rows appearing
     /// are not being read and the top sentinel is not a request for older messages.
     @Binding var landed: Bool
@@ -57,9 +59,16 @@ where Item.ID == String {
     /// of the SYSTEM's scroll-to-top (`ScrollsToTopOff`), which the re-tap runs too and which
     /// in this oldest-first feed goes to the OLDEST message.
     var newestRequest: Int? = nil
-    /// Runs as the feed opens, before the initial scroll is issued.
-    var onOpen: () -> Void = {}
-    /// The feed has landed on the newest message (see `finishInitialScroll`).
+    /// Runs as the feed opens, before the initial scroll is issued. Awaited, so the owner can
+    /// fetch what the opening row needs first (the inbox's older unread messages); rows that
+    /// appear meanwhile are not read, since the feed has not landed.
+    var onOpen: () async -> Void = {}
+    /// The row to open at instead of the newest message, read after `onOpen`: it goes to the
+    /// top of the visible feed, just below the floating header. nil opens at the newest.
+    /// The inbox names its first unread message here, the row the "N unread" rule sits on.
+    /// A hook, like the others, so the initial scroll reads what `onOpen` just captured.
+    var openAt: () -> String? = { nil }
+    /// The feed has landed where it opens (see `finishInitialScroll`).
     var onLanded: () -> Void
     /// A row came on screen after the feed landed.
     var onRowSeen: (Item) -> Void = { _ in }
@@ -83,9 +92,12 @@ where Item.ID == String {
     /// How long a shrinking feed must stay still before the reader is kept at the bottom:
     /// longer than one frame, short enough to read as part of the keyboard/editor motion.
     private static var shrinkJumpSettleNanos: UInt64 { 150_000_000 }
+    /// The id of the open row's header-clear scroll target (see the initial scroll).
+    private static var openMarkerID: String { "feed-open-marker" }
 
     var body: some View {
-        ScrollView {
+        let opening = openAt()
+        return ScrollView {
             VStack(spacing: spacing) {
                 // The sentinel, at the TOP: the feed is oldest-first and opens at the bottom, so
                 // it comes on screen only when the reader scrolls up past the oldest drawn
@@ -124,7 +136,7 @@ where Item.ID == String {
                         // On screen, not merely built: every drawn row exists, on screen or not,
                         // and before the initial scroll the first layout sits at the top, which
                         // the reader never sees (`finishInitialScroll` hands the owner what is
-                        // on screen once the feed has landed on the newest message).
+                        // on screen once the feed has landed where it opens).
                         // `appearance` is part of the reported value, so a row still on screen
                         // when the tab comes back reports again (rows are not re-identified:
                         // that would rebuild every bubble).
@@ -141,10 +153,26 @@ where Item.ID == String {
                             } else {
                                 visibility.rowsAtTop.remove(item.id)
                             }
+                            if placement.atVisibleTop {
+                                visibility.rowsAtVisibleTop.insert(item.id)
+                            } else {
+                                visibility.rowsAtVisibleTop.remove(item.id)
+                            }
                         }
                         .onDisappear {
                             visibility.rows.remove(item.id)
                             visibility.rowsAtTop.remove(item.id)
+                            visibility.rowsAtVisibleTop.remove(item.id)
+                        }
+                        // The open row's second scroll target: a point the header's height
+                        // above its top, for a scroll view whose `.top` anchor ignores the
+                        // header's content margin (see the initial scroll).
+                        .background(alignment: .top) {
+                            if item.id == opening {
+                                Color.clear.frame(width: 1, height: 1)
+                                    .alignmentGuide(.top) { _ in max(0, visibleTop) }
+                                    .id(Self.openMarkerID)
+                            }
                         }
                 }
                 footer()
@@ -226,13 +254,37 @@ where Item.ID == String {
         }
         // Before the `.task` below, so the scroll loop already sees fresh reports.
         .onAppear { appearance += 1 }
-        // Oldest at the top, newest at the bottom: open at the newest. NOT
+        // Oldest at the top, newest at the bottom: open at the newest, or at the owner's
+        // `openAt` row. NOT
         // `.defaultScrollAnchor(.bottom)`: with it, growing the composer (which shrinks the
         // feed) re-anchored the feed every frame, a redraw loop that pinned the CPU and
         // hung the composer's UI test.
         .task {
-            onOpen()
+            await onOpen()
+            // Left while the owner was fetching: the next appearance opens afresh.
+            guard !Task.isCancelled else { return }
             visibility.initialScrollIssued = true
+            // A named row (the first unread message): its top to the top of the visible feed.
+            // Below the header, not under it: a row whose top meets the scroll view's own top
+            // sits behind the header's controls, so only the header's bottom edge counts as
+            // landed here (`atVisibleTop`). The row itself first; if that puts it under the
+            // header (the `.top` anchor did not count the header's content margin), the marker
+            // the header's height above it. Bounded and repeated, as for the newest below,
+            // since rows above may still be settling their heights. A row whose remaining
+            // feed is shorter than the screen cannot rise that far: on screen with the bottom
+            // marker, it has landed too.
+            if let target = openAt() {
+                var scrollTarget = target
+                for _ in 0..<10 {
+                    feed.scrollTo(scrollTarget, anchor: .top)
+                    try? await Task.sleep(nanoseconds: 60_000_000)
+                    if visibility.rowsAtVisibleTop.contains(target)
+                        || (visibility.rows.contains(target) && visibility.atBottom) { break }
+                    if visibility.rowsAtTop.contains(target) { scrollTarget = Self.openMarkerID }
+                }
+                finishInitialScroll()
+                return
+            }
             // The first jump can land short of the bottom while rows (images, folded
             // text) still settle their heights (on iPhone it opened mid-history). Jump again after each
             // layout pass until the bottom marker is really on screen; bounded so a feed
@@ -329,8 +381,9 @@ where Item.ID == String {
         }
     }
 
-    /// The feed has landed on the newest message (its bottom marker came on screen after the
-    /// scroll was issued): from now on rows that appear are being read, and the owner's
+    /// The feed has landed where it opens (its bottom marker came on screen after the scroll
+    /// was issued, or the `openAt` row reached the top): from now on rows that appear are
+    /// being read, and the owner's
     /// `onLanded` handles what is on screen already.
     private func finishInitialScroll() {
         guard visibility.initialScrollIssued, !landed else { return }
@@ -348,6 +401,9 @@ final class FeedVisibility {
     /// Feed rows whose top sits at the top of the visible bounds: where an anchor scroll
     /// (`scrollTo(id, anchor: .top)`) puts a row once it has really landed.
     var rowsAtTop: Set<String> = []
+    /// Feed rows whose top sits at the floating header's bottom edge (at the scroll view's
+    /// top when there is no header): below the header, where the feed opens at a named row.
+    var rowsAtVisibleTop: Set<String> = []
     /// The bottom marker is on screen: the reader is at the newest message.
     var atBottom = false
     /// The older-messages sentinel at the top is on screen.
@@ -407,7 +463,8 @@ extension View {
                                _ action: @escaping (FeedPlacement) -> Void) -> some View {
         onGeometryChange(for: FeedPlacement.self) { proxy in
             guard let scrollBounds = proxy.bounds(of: .scrollView) else {
-                return FeedPlacement(onScreen: false, atTop: false, appearance: appearance)
+                return FeedPlacement(onScreen: false, atTop: false, atVisibleTop: false,
+                                     appearance: appearance)
             }
             let page = proxy.frame(in: .named(GramView.feedPageSpace))
             var visible = scrollBounds
@@ -423,11 +480,11 @@ extension View {
                 .intersects(CGRect(origin: .zero, size: proxy.size))
             // `scrollBounds` is in this view's own coordinates, so its minY is how far the
             // scroll view's top lies below this view's top.
-            var atTop = abs(scrollBounds.minY) <= 8
-            if !atTop, let visibleTop {
-                atTop = abs(page.minY - visibleTop) <= 8
-            }
-            return FeedPlacement(onScreen: onScreen, atTop: atTop, appearance: appearance)
+            let atScrollTop = abs(scrollBounds.minY) <= 8
+            // At the header's bottom edge: the top of what the reader can see.
+            let atHeaderEdge = visibleTop.map { abs(page.minY - $0) <= 8 }
+            return FeedPlacement(onScreen: onScreen, atTop: atScrollTop || atHeaderEdge == true,
+                                 atVisibleTop: atHeaderEdge ?? atScrollTop, appearance: appearance)
         } action: { action($0) }
     }
 
@@ -449,6 +506,10 @@ extension View {
 struct FeedPlacement: Equatable {
     let onScreen: Bool
     let atTop: Bool
+    /// The view's top sits at the top of the visible feed: the floating header's bottom edge
+    /// when there is a header, else the scroll view's top. `atTop` also counts the scroll
+    /// view's own top under a header.
+    let atVisibleTop: Bool
     let appearance: Int
 }
 

@@ -1829,12 +1829,17 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         setNeedsDisplay(bounds)
     }
 
-    func backingScaleFactor () -> CGFloat
+    /// herdr: public so the app's stream-width font fit (LiveTerminalView
+    /// .fitFontToStreamWidth) snaps to exactly the scale the cells are drawn at.
+    public func backingScaleFactor () -> CGFloat
     {
         #if os(visionOS)
         1.0
         #else
-        UIScreen.main.scale
+        // herdr: the display this view is on, not UIScreen.main, which is ambiguous on
+        // a device with two displays (iPhone Duo). A view not yet in a window reports 0
+        // (unspecified); the cell size is first measured then, so fall back for it.
+        traitCollection.displayScale > 0 ? traitCollection.displayScale : UIScreen.main.scale
         #endif
     }
     

@@ -2991,6 +2991,12 @@ struct TerminalHomeView: View {
         }
         .frame(width: DesignTokens.Size.rail)
         .padding(.top, 12)
+        // The top bars' clearance from the glass: on iPhone Duo's inner display held wide the
+        // status bar is on the side, so the rail starts at the window's top edge, and its
+        // expand button sat 12 pt from the glass, 4 pt above the terminal bar's controls
+        // beside it. It now keeps their 16 pt. No change where there is a status bar above
+        // or window chrome (iPad, Mac).
+        .topEdgeClearance(base: 12, rowHeight: DesignTokens.Size.topBarRow)
         .background(Palette.ground)
         .overlay(alignment: .trailing) {
             Rectangle().fill(Palette.hairlineQuiet).frame(width: 0.5).ignoresSafeArea()
@@ -6110,7 +6116,10 @@ struct TerminalPaneContent: View {
         // to the accessibility tree. VoiceOver could then land on a hidden pane's controls,
         // and an automation query for one button legitimately matches several.
         .accessibilityHidden(!isForeground)
-        .padding(.horizontal, 16).padding(.top, 6).padding(.bottom, 8)
+        .padding(.horizontal, 16).padding(.top, 6)
+        // Off the glass where nothing sits above the pane (iPhone Duo's side status bar).
+        .topEdgeClearance(base: 6, rowHeight: 44)
+        .padding(.bottom, 8)
         .background(Palette.groundMachine)
         .modifier(GuestSharePresenter(model: guestShare, client: client, agent: agent,
                                       fallbackTitle: title, isForeground: isForeground))
@@ -6628,6 +6637,10 @@ struct TerminalPaneContent: View {
                         Button {
                             sendTapped()
                             terminalInputFocused = false
+                            // A device behaviour, not layout: only the iPhone keyboard is always
+                            // docked full-width over the pane, hiding the reply just sent and the
+                            // agent's answer, so Send puts it away there. iPad's can float or be
+                            // hardware and stays up. Holds on both iPhone Duo displays (idiom .phone).
                             if UIDevice.current.userInterfaceIdiom == .phone {
                                 terminalCollapseToken += 1
                                 replyFocused = false
@@ -9959,7 +9972,7 @@ struct MockTransport: HerdrTransport {
             else if Self.gramExpiresSaved { list = await Self.gramListExpiringSaved() }
             else if Self.gramHtml { list = Self.gramListWithHtml }
             else { list = Self.gramNewer ? Self.gramListWithNewer : MockWireFixtures.gramList }
-            let answer = Self.applyingOwnerReads(reads, to: list)
+            let answer = Self.applyingOwnerReads(reads, to: Self.gramAllRead ? Self.markingAllRead(list) : list)
             if Self.gramHoldsPollAcrossRead, Self.isGramHeadPoll(requestLine) {
                 await Self.gramOwnerReads.holdPastNextRead()
             }
@@ -10320,13 +10333,28 @@ struct MockTransport: HerdrTransport {
 
     /// `HERDR_MOCK_GRAM_NEWER=1`: `gram.list` answers `gramList` with `gramNewerRows` above
     /// its newest message, so the image (g3) sits above the fold on every device when the
-    /// feed opens at the bottom.
-    static var gramNewer: Bool {
-        ProcessInfo.processInfo.environment["HERDR_MOCK_GRAM_NEWER"] == "1"
+    /// feed opens at the newest. `=unread`: the newer agent messages are unread too, so more
+    /// unread messages lie below the fold than one screen from the first unread shows.
+    static var gramNewer: Bool { gramNewerSetting == "1" || gramNewerSetting == "unread" }
+
+    private static var gramNewerSetting: String? {
+        ProcessInfo.processInfo.environment["HERDR_MOCK_GRAM_NEWER"]
     }
 
     static var gramListWithNewer: String {
-        MockWireFixtures.gramList.replacingOccurrences(of: #""messages":["#, with: #""messages":["# + gramNewerRows + ",")
+        MockWireFixtures.gramList.replacingOccurrences(
+            of: #""messages":["#,
+            with: #""messages":["# + gramNewerRows(unread: gramNewerSetting == "unread") + ",")
+    }
+
+    /// `HERDR_MOCK_GRAM_READ=1`: every message in `gram.list` answers read, so the feed has
+    /// nothing unread and opens at the newest message.
+    static var gramAllRead: Bool {
+        ProcessInfo.processInfo.environment["HERDR_MOCK_GRAM_READ"] == "1"
+    }
+
+    private static func markingAllRead(_ list: String) -> String {
+        list.replacingOccurrences(of: #""read_by_owner":false"#, with: #""read_by_owner":true"#)
     }
 
     /// `HERDR_MOCK_GRAM_HTML=1`: `gram.list` answers `gramList` with `gramHtmlRow` above its
@@ -10356,14 +10384,18 @@ struct MockTransport: HerdrTransport {
         return MockWireFixtures.gramList.replacingOccurrences(of: #""messages":["#, with: #""messages":["# + rows + ",")
     }
 
-    /// Fourteen read five-line messages, newer than g1 and newest first: taller together
-    /// than any screen the tests run on.
-    static let gramNewerRows: String = (1...14).reversed().map { n in
-        let from = n.isMultiple(of: 2)
-            ? #""direction":"owner_to_agent","from":"owner","to":"vetrina""#
-            : #""direction":"agent_to_owner","from":"vetrina""#
-        return #"{"id":"gn\#(n)",\#(from),"text":"Status \#(n).\nLine two.\nLine three.\nLine four.\nLine five.","created_unix_ms":\#(1723041360000 + n * 60000),"read_by_owner":true}"#
-    }.joined(separator: ",")
+    /// Fourteen five-line messages, newer than g1 and newest first: taller together than any
+    /// screen the tests run on. Read, or with the agents' seven unread.
+    static func gramNewerRows(unread: Bool) -> String {
+        (1...14).reversed().map { n in
+            let fromAgent = !n.isMultiple(of: 2)
+            let from = fromAgent
+                ? #""direction":"agent_to_owner","from":"vetrina""#
+                : #""direction":"owner_to_agent","from":"owner","to":"vetrina""#
+            let read = !(unread && fromAgent)
+            return #"{"id":"gn\#(n)",\#(from),"text":"Status \#(n).\nLine two.\nLine three.\nLine four.\nLine five.","created_unix_ms":\#(1723041360000 + n * 60000),"read_by_owner":\#(read)}"#
+        }.joined(separator: ",")
+    }
 
     /// Records a `gram.post`; false when the post is to be refused.
     private static func recordGramPost(_ requestLine: String) -> Bool {

@@ -45,14 +45,79 @@ extension EnvironmentValues {
     }
 }
 
+/// Whether the app's windows can carry window chrome at all: inline window controls on an
+/// iPad, a title row on Mac. A real platform capability, not a layout guess: an iPhone
+/// window (both displays of iPhone Duo included) never has controls, and there a nonzero
+/// top-leading corner inset is the display's rounded corner, which must not be read as
+/// controls (it shrank the bar to a 20 pt row pressed against the glass on iPhone Duo).
+@MainActor var appWindowsHaveChrome: Bool {
+    UIDevice.current.userInterfaceIdiom == .pad || ProcessInfo.processInfo.isiOSAppOnMac
+}
+
 /// The window controls' corner as `geometry` sees it, nil when there is none.
-func sectionWindowControls(_ geometry: GeometryProxy) -> SectionWindowControls? {
+@MainActor func sectionWindowControls(_ geometry: GeometryProxy) -> SectionWindowControls? {
+    guard appWindowsHaveChrome else { return nil }
     if #available(iOS 26.0, *) {
         let corner = geometry.containerCornerInsets.topLeading
         guard corner.width > 0, corner.height > 0 else { return nil }
         return SectionWindowControls(top: geometry.frame(in: .global).minY, height: corner.height)
     }
     return nil
+}
+
+/// Extra room above a top bar whose usual gap (`base`) is measured from the top of the
+/// safe area, for the two cases where that gap alone puts it against hardware:
+///
+/// - Nothing above it. iPhone Duo moves the status bar to the side of the cover and of the
+///   inner display held wide, so the top safe-area inset is 0 and a 6 pt gap is 6 pt from
+///   the glass. With no window chrome (`appWindowsHaveChrome`), a bar at the window's top
+///   edge keeps the same distance from it as its capsules keep from the sides.
+/// - A reserved region (iOS 27.1: the cameras, the side status bar) over the bar's top
+///   band. Each region is taken where it is, left or right, and the row moves below it.
+///
+/// Measured on the padded view, whose origin does not move with the padding, so the value
+/// cannot feed back into itself.
+struct TopEdgeClearance: ViewModifier {
+    let base: CGFloat
+    let rowHeight: CGFloat
+    @State private var extra: CGFloat = 0
+
+    func body(content: Content) -> some View {
+        let chrome = appWindowsHaveChrome, base = base, rowHeight = rowHeight
+        return content
+            .padding(.top, extra)
+            .onGeometryChange(for: CGFloat.self) {
+                Self.extra(in: $0, base: base, rowHeight: rowHeight, windowChrome: chrome)
+            } action: {
+                if abs($0 - extra) > 0.5 { extra = $0 }
+            }
+    }
+
+    nonisolated static func extra(in geometry: GeometryProxy, base: CGFloat, rowHeight: CGFloat,
+                                  windowChrome: Bool) -> CGFloat {
+        guard !windowChrome else { return 0 }
+        var extra: CGFloat = 0
+        if geometry.frame(in: .global).minY < 1 {
+            extra = max(0, DesignTokens.Space.screenInset - base)
+        }
+        if #available(iOS 27.1, *) {
+            let width = geometry.size.width
+            for region in geometry.reservedRegions(kind: .occlusion) {
+                let frame = region.frame
+                guard frame.maxX > 0, frame.minX < width, frame.maxY > 0,
+                      frame.minY < base + extra + rowHeight else { continue }
+                extra = max(extra, frame.maxY + DesignTokens.Space.stackSmall - base)
+            }
+        }
+        return extra.rounded()
+    }
+}
+
+extension View {
+    /// See `TopEdgeClearance`.
+    func topEdgeClearance(base: CGFloat, rowHeight: CGFloat) -> some View {
+        modifier(TopEdgeClearance(base: base, rowHeight: rowHeight))
+    }
 }
 
 /// Where Back goes in a `SectionTopBar`. Put one in `leading` and one in `actions`;
@@ -108,7 +173,12 @@ struct SectionTopBar<Leading: View, Actions: View>: View {
                 let sharesRow = windowed && !ProcessInfo.processInfo.isiOSAppOnMac
                 let row = DesignTokens.Size.topBarRow
                 let rowHeight = sharesRow ? max(20, (controls?.pillHeight ?? row).rounded()) : row
-                content(leading: corners.topLeading.width, trailing: corners.topTrailing.width,
+                // Corner insets shift the capsules sideways only where windows carry
+                // chrome; on iPhone the safe area already keeps the bar out of the side
+                // status bar, and the display's rounded corners are cleared from above.
+                let sideways = appWindowsHaveChrome
+                content(leading: sideways ? corners.topLeading.width : 0,
+                        trailing: sideways ? corners.topTrailing.width : 0,
                         windowed: windowed, rowHeight: rowHeight)
                     .frame(height: rowHeight)
                     // In an iPad window the capsules take the controls' pill height and
@@ -124,6 +194,7 @@ struct SectionTopBar<Leading: View, Actions: View>: View {
             }
         }
         .frame(height: DesignTokens.Size.topBar)
+        .topEdgeClearance(base: 6, rowHeight: DesignTokens.Size.topBarRow)
         .padding(.horizontal, DesignTokens.Space.screenInset)
         .padding(.bottom, 8)
     }
@@ -135,9 +206,9 @@ struct SectionTopBar<Leading: View, Actions: View>: View {
     }
 
     private func content(leading: CGFloat, trailing: CGFloat, windowed: Bool, rowHeight: CGFloat) -> some View {
-        let backLeads = UIDevice.current.userInterfaceIdiom != .pad
-            || ProcessInfo.processInfo.isiOSAppOnMac
-            || !windowed
+        // Back leads unless window controls share this row and take its top-left corner
+        // (an iPad window); Mac keeps its controls in their own row above.
+        let backLeads = !windowed || ProcessInfo.processInfo.isiOSAppOnMac
         return SectionBarLayout(leadingInset: leading, trailingInset: trailing) {
             HStack(spacing: 0, content: self.leading)
                 .padding(.horizontal, 2)
