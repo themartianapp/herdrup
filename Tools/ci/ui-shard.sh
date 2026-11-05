@@ -594,9 +594,11 @@ case "$shard" in
     # Agent folders in the sidebar (#552): a closed folder's counts, open in place, kept open.
     run_suite iPadAgentFolders "$IPAD_UDID" 5m \
       -only-testing:HerdrUITests/AgentFoldersTests/testClosedFolderShowsWaitingCountAndOpensOnTap || failed=1
-    # 20m: the chat-width tests (#523, ~100 s on iPad) took run 40289743354's slow runner to
-    # 848 s of tests, past the old 15m once xcodebuild's own start-up was added.
-    run_suite iPadChatUX "$IPAD_UDID" 20m -only-testing:HerdrUITests/ChatUXSmokeTests || failed=1
+    # 30m: the suite grew to 19 tests, and full passes now take 17.2-19.2 min of tests
+    # alone (8 runs, e.g. 41647821103, 41432817977), before xcodebuild's start-up; the old
+    # 20m cut runs 41169998628, 41177678247, 41402649405, 41402663682 and 41801268261
+    # short (the last with 13 of 19 passed in 19.2 min).
+    run_suite iPadChatUX "$IPAD_UDID" 30m -only-testing:HerdrUITests/ChatUXSmokeTests || failed=1
     check_classes_ran TestReceipts/iPadChatUX-first.xcresult ChatUXSmokeTests || failed=1
     # Gram's column width (#541): handles, drag, snap, reset and relaunch on the iPad. The
     # iPhone half (no handles) runs in the iPhone app round.
