@@ -54,18 +54,23 @@ final class PairingTests: XCTestCase {
     /// A version mismatch is a DIFFERENT failure from a bad code, because the remedy
     /// differs: update the app, versus scan a real code.
     func testAFutureVersionIsReportedAsAVersionProblem() {
-        let future = sampleJSON(v: 3, sshPort: 2222)
+        let future = sampleJSON(v: 4, sshPort: 2222)
         XCTAssertThrowsError(try Pairing.parse(qrText: future)) { error in
-            XCTAssertEqual(error as? Pairing.Error, .unsupportedVersion(3))
+            XCTAssertEqual(error as? Pairing.Error, .unsupportedVersion(4))
         }
     }
 
-    /// Version 2 (Deimos Forge) carries the SSH port; version 1 never does. A version-2
-    /// code without a usable port, or a version-1 code with one, is not a real code.
-    func testVersionTwoCarriesTheSSHPortAndVersionOneDoesNot() throws {
+    /// Versions 2 and 3 (Deimos Forge) carry the SSH port; version 1 never does. A
+    /// version-2 or -3 code without a usable port, or a version-1 code with one, is not a
+    /// real code.
+    func testVersionsTwoAndThreeCarryTheSSHPortAndVersionOneDoesNot() throws {
         XCTAssertEqual(try Pairing.parse(qrText: sampleJSON(v: 2, sshPort: 43341)).sshPort, 43341)
+        let v3 = try Pairing.parse(qrText: sampleJSON(v: 3, sshPort: 22220))
+        XCTAssertEqual(v3.v, 3)
+        XCTAssertEqual(v3.sshPort, 22220)
         XCTAssertNil(try Pairing.parse(qrText: sampleJSON()).sshPort)
         for bad in [sampleJSON(v: 2), sampleJSON(v: 2, sshPort: 0), sampleJSON(v: 2, sshPort: 65536),
+                    sampleJSON(v: 3), sampleJSON(v: 3, sshPort: 0), sampleJSON(v: 3, sshPort: 65536),
                     sampleJSON(v: 1, sshPort: 2222)] {
             XCTAssertThrowsError(try Pairing.parse(qrText: bad), "accepted: \(bad)") { error in
                 XCTAssertEqual(error as? Pairing.Error, .notAPairingCode)
@@ -236,12 +241,123 @@ final class PairingTests: XCTestCase {
         }
     }
 
+    // MARK: - Version 3: proofs instead of the token
+
+    /// The known-answer vectors from deimos-forge `docs/pairing-v3.md`. The server computes
+    /// the same values from the same inputs; a mismatch here is a pairing that always fails.
+    func testV3ProofsMatchTheSpecVectors() throws {
+        // The label's apostrophe is U+2019; an editor "fixing" it would change every proof.
+        XCTAssertEqual(Array(V3Vector.device.utf8),
+                       [0x4a, 0x65, 0x72, 0x72, 0x79, 0xe2, 0x80, 0x99, 0x73, 0x20, 0x69, 0x50,
+                        0x68, 0x6f, 0x6e, 0x65])
+
+        let request = Pairing.requestProof(
+            token: V3Vector.token, publicKeyLine: V3Vector.publicKey, deviceLabel: V3Vector.device)
+        XCTAssertEqual(request, try XCTUnwrap(Base64URL.decode(V3Vector.requestProof)))
+        XCTAssertEqual(Base64URL.encode(request), V3Vector.requestProof)
+
+        let ok = Pairing.okProof(token: V3Vector.token, publicKeyLine: V3Vector.publicKey)
+        XCTAssertEqual(ok, try XCTUnwrap(Base64URL.decode(V3Vector.okProof)))
+        XCTAssertTrue(Pairing.okReplyIsGenuine(
+            ["type": "pair.ok", "v": 3, "proof": V3Vector.okProof],
+            token: V3Vector.token, publicKeyLine: V3Vector.publicKey))
+    }
+
+    /// THE TOKEN MUST NOT BE ON THIS WIRE. The server refuses a v3 request with a `token`
+    /// field, and an on-path reader who saw it could redeem the code with its own key.
+    func testTheV3RedeemLineCarriesAProofAndNoToken() throws {
+        let line = try Pairing.redeemLineV3(
+            token: V3Vector.token, publicKeyLine: V3Vector.publicKey, deviceLabel: V3Vector.device)
+        let text = String(decoding: line, as: UTF8.self)
+
+        XCTAssertEqual(line.last, 0x0A, "the daemon reads exactly one line")
+        XCTAssertFalse(text.contains(V3Vector.token))
+        XCTAssertTrue(text.contains(#""v":3"#), "v must be the JSON integer 3: \(text)")
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: line) as? [String: Any])
+        XCTAssertEqual(Set(object.keys), ["type", "v", "public_key", "device", "proof"])
+        XCTAssertEqual(object["type"] as? String, "pair.redeem")
+        XCTAssertEqual(object["public_key"] as? String, V3Vector.publicKey)
+        XCTAssertEqual(object["device"] as? String, V3Vector.device)
+        XCTAssertEqual(object["proof"] as? String, V3Vector.requestProof)
+    }
+
+    func testAV3RedemptionWithTheMachinesProofSucceedsOverARealSocket() throws {
+        let server = try StubDaemon(
+            reply: #"{"type":"pair.ok","v":3,"proof":"\#(V3Vector.okProof)"}"#)
+        defer { server.stop() }
+
+        XCTAssertNoThrow(try Pairing.redeem(
+            payload: server.payload(v: 3, sshPort: 22220, token: V3Vector.token),
+            publicKeyLine: V3Vector.publicKey,
+            deviceLabel: V3Vector.device,
+            timeout: 5))
+
+        let received = try XCTUnwrap(server.waitForRequest())
+        XCTAssertFalse(received.contains(V3Vector.token))
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(received.utf8)) as? [String: Any])
+        XCTAssertNil(object["token"], "a v3 request must not carry the token")
+        XCTAssertEqual(object["v"] as? Int, 3)
+        XCTAssertEqual(object["proof"] as? String, V3Vector.requestProof)
+    }
+
+    /// A v3 `pair.ok` is success ONLY with the machine's proof over this key. Over the
+    /// internet an unproven "ok" could come from anyone on the path.
+    func testAV3OkWithoutTheMachinesProofIsAFailure() throws {
+        let otherToken = Base64URL.encode(
+            Pairing.okProof(token: "some-other-token", publicKeyLine: V3Vector.publicKey))
+        let otherKey = Base64URL.encode(
+            Pairing.okProof(token: V3Vector.token, publicKeyLine: "ssh-ed25519 AAAA attacker"))
+        let replies = [
+            #"{"type":"pair.ok","v":3,"proof":"\#(otherToken)"}"#,          // wrong token
+            #"{"type":"pair.ok","v":3,"proof":"\#(otherKey)"}"#,            // substituted key
+            #"{"type":"pair.ok","v":3,"proof":"\#(V3Vector.requestProof)"}"#,  // our proof echoed
+            #"{"type":"pair.ok","v":3}"#,                                   // missing proof
+            #"{"type":"pair.ok","v":3,"proof":null}"#,                      // null proof
+            #"{"type":"pair.ok","v":3,"proof":"\#(V3Vector.okProof)="}"#,   // padded
+            #"{"type":"pair.ok","v":3,"proof":"not a proof!"}"#,            // malformed
+            #"{"type":"pair.ok"}"#,                                         // a v2 success
+            #"{"type":"pair.ok","v":2,"proof":"\#(V3Vector.okProof)"}"#,    // v mismatch
+            #"{"type":"pair.ok","proof":"\#(V3Vector.okProof)"}"#,          // v missing
+            #"{"type":"pair.ok","v":"3","proof":"\#(V3Vector.okProof)"}"#,  // v not an integer
+        ]
+        for reply in replies {
+            let server = try StubDaemon(reply: reply)
+            defer { server.stop() }
+
+            XCTAssertThrowsError(try Pairing.redeem(
+                payload: server.payload(v: 3, sshPort: 22220, token: V3Vector.token),
+                publicKeyLine: V3Vector.publicKey, deviceLabel: V3Vector.device, timeout: 5),
+                "accepted: \(reply)"
+            ) { error in
+                XCTAssertEqual(error as? Pairing.Error, .unverifiedReply, "for \(reply)")
+            }
+        }
+    }
+
+    /// Version 3 changes nothing for version 2: the token is still sent, there is no proof,
+    /// and a bare `pair.ok` is success.
+    func testAV2RedemptionStillSendsTheTokenAndAcceptsAPlainOk() throws {
+        let server = try StubDaemon(reply: #"{"type":"pair.ok"}"#)
+        defer { server.stop() }
+
+        XCTAssertNoThrow(try Pairing.redeem(
+            payload: server.payload(v: 2, sshPort: 43341), publicKeyLine: "ssh-ed25519 AAAA x",
+            deviceLabel: "iPhone", timeout: 5))
+
+        let received = try XCTUnwrap(server.waitForRequest())
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(received.utf8)) as? [String: Any])
+        XCTAssertEqual(Set(object.keys), ["type", "token", "public_key", "device"])
+        XCTAssertEqual(object["token"] as? String, "test-token")
+    }
+
     /// Every error must produce a sentence that tells a person what to DO. An error whose
     /// message only restates the failure sends them back to the screen that blocked them.
     func testEveryErrorHasAnActionableMessage() {
         let errors: [Pairing.Error] = [
             .notAPairingCode, .unsupportedVersion(2), .unreachable("x"),
-            .refused("pairing refused"), .badResponse("x"),
+            .refused("pairing refused"), .badResponse("x"), .unverifiedReply,
         ]
         for error in errors {
             let message = error.userFacingMessage
@@ -274,12 +390,24 @@ enum PairingFixture {
         "360b7ddedba74ddba966b999333dc76e75e7c05ff05c21c53f3ffece4cfd76be"
 }
 
+/// The pairing-v3 test vectors from deimos-forge `docs/pairing-v3.md`, verbatim. The token is
+/// base64url of bytes 0x00...0x1f, but the proofs key on its UTF-8 text, not those bytes.
+enum V3Vector {
+    static let token = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+    static let publicKey =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBw"
+    static let device = "Jerry\u{2019}s iPhone"
+    static let requestProof = "PuR15vzOIbxGh1CUYsPhARz4Ng8mthBo0_l84U3votU"
+    static let okProof = "tovCz8GMEp1nj2sCCdjMW0Q7VaNUQ7jhPXamxCMvcM8"
+}
+
 /// A minimal stand-in for `serve_one_pairing`: accept one connection, read one line, send
-/// the configured reply (or none), close.
+/// the reply computed from that line (or none), close.
 ///
 /// This is a stand-in for the DAEMON, not for the code under test — the client's socket
-/// path, encoding and parsing are all real.
-private final class StubDaemon {
+/// path, encoding and parsing are all real. Internal, not private, so the coordinator tests
+/// can run a version-3 pairing end to end against it.
+final class StubDaemon {
     private let listenFD: Int32
     let port: Int
     private let received: Box
@@ -287,7 +415,13 @@ private final class StubDaemon {
     private let arrived: DispatchSemaphore
     private var stopped = false
 
-    init(reply: String?) throws {
+    convenience init(reply: String?) throws {
+        try self.init(respond: { _ in reply })
+    }
+
+    /// - Parameter respond: given the request line (without its newline), the reply to
+    ///   send, or nil to close without replying.
+    init(respond: @escaping (String) -> String?) throws {
         // Everything the worker thread touches is built as a LOCAL first. Capturing a
         // stored property in a closure's capture list captures `self`, which the compiler
         // rejects during init — and the fix is not `[weak self]`, it is not needing self.
@@ -341,11 +475,12 @@ private final class StubDaemon {
                 if n != 1 || byte == 0x0A { break }
                 line.append(byte)
             }
+            let request = String(decoding: line, as: UTF8.self)
             lock.lock()
-            box.value = String(decoding: line, as: UTF8.self)
+            box.value = request
             lock.unlock()
             arrived.signal()
-            if let reply {
+            if let reply = respond(request) {
                 let out = reply + "\n"
                 _ = out.withCString { send(client, $0, strlen($0), 0) }
             }
@@ -354,10 +489,11 @@ private final class StubDaemon {
         thread.start()
     }
 
-    func payload() -> Pairing.Payload {
+    func payload(v: Int = 1, sshPort: Int? = nil, token: String = "test-token",
+                 fp: String = "SHA256:stub") -> Pairing.Payload {
         Pairing.Payload(
-            v: 1, host: "127.0.0.1", port: port, user: "tester",
-            token: "test-token", fp: "SHA256:stub")
+            v: v, host: "127.0.0.1", port: port, user: "tester",
+            token: token, fp: fp, sshPort: sshPort)
     }
 
     func waitForRequest(timeout: TimeInterval = 5) -> String? {

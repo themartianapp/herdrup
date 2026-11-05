@@ -1,0 +1,260 @@
+# Attribution for SymbolsNerdFontMono-Regular.ttf
+
+The bundled `HerdrupSymbols-Regular.ttf` is a MODIFIED version of the upstream
+`NerdFontsSymbolsOnly` artifact from Nerd Fonts v3.5.1
+(`SymbolsNerdFontMono-Regular.ttf`, sha256
+fe471e538392f51910faab985fa8e192a39dd3426125edd15b71b3680df0e749, retained at
+`Tools/upstream/` so the modification can be re-derived and audited).
+
+WHAT WAS CHANGED. The intent is a private-use-only character map and a rename;
+the full measured difference against the upstream binary, since an earlier
+version of this file claimed "and nothing else" and was refuted by parsing the
+two fonts:
+
+  * cmap reduced from 10629 to 10610 codepoints. 19 dropped: the 14 outside the
+    private-use area (U+23FB-U+23FE, U+2630, U+2665, U+26A1, U+276C-U+2771,
+    U+2B58) and 5 control codepoints (U+0000, U+0008, U+0009, U+000D, U+001D).
+  * cmap subtables 5 -> 4; the (platform 1, encoding 0) format-0 Macintosh
+    subtable is dropped.
+  * glyph records 10627 -> 10611, i.e. 16 removed, not 19: some dropped
+    codepoints shared a glyph.
+  * tables GDEF and PfEd are dropped (fontTools cannot subset PfEd, an editor
+    private table).
+  * head.yMin -473 -> -472, hhea.minLeftSideBearing -123 -> -122 and
+    hhea.xMaxExtent 2171 -> 2170, all because the same removed glyph carried
+    those extremes.
+  * head.flags bit 1 cleared (0b1011 -> 0b1001) and head.checkSumAdjustment
+    0x74c7a366 -> 0x07ec140b.
+  * hhea.numberOfHMetrics 4 -> 1 (hmtx trailing-width compression); all 10610
+    surviving advance widths are unchanged.
+  * OS/2.usFirstCharIndex 9211 (U+23FB) -> 57344 (U+E000),
+    OS/2.ulUnicodeRange2 0x1200C0A0 -> 0x12000000, and OS/2.ulCodePageRange1
+    bit 31 (Macintosh character set) cleared, consistent with dropping the Mac
+    cmap subtable.
+  * post drops the 14 removed glyph names.
+  * 2833 per-glyph bounding boxes are recompiled on save by fontTools.
+  * name table retitled to "Herdrup Symbols" / PostScript "HerdrupSymbols".
+
+Everything after the first three entries is bookkeeping the subsetter and the
+compiler regenerate, and none of it is legally substantive — but it is listed
+because this paragraph twice claimed a narrower scope than the binary had.
+
+NO GLYPH CONTOUR IS EDITED: surviving outlines are the upstream outlines.
+
+Why: the terminal needs the symbols ahead of Apple Color Emoji, which still maps
+the legacy SoftBank private-use block and would otherwise hide 170 of these
+glyphs; but ahead of the system it also won those 14 non-private-use codepoints,
+turning emoji-presentation characters such as U+26A1 into monochrome glyphs. No
+cascade order satisfies both, so the coverage changed instead. The reduction is
+reproducible and CI-enforced: see `Tools/subset-symbols-font.py`.
+
+The OFL permits modification and restricts only RESERVED FONT NAMES; the rename
+above keeps that condition met. No reserved name is used by this font: not
+Pomicons, and not "Font Awesome" — Font Awesome's own LICENSE.txt grants its
+SVG/JS icons under CC BY 4.0 and its FONT FILES under OFL 1.1 with that reserved
+name, and although Nerd Fonts patches from the SVGs (which is why both upstream's
+table and the one below say CC BY 4.0), the artifact shipped here is a desktop
+font file, so the stricter reading is assumed and satisfied.
+
+It is an AGGREGATE: the binary contains glyphs from fourteen icon sets, each
+under its own terms. The Nerd Fonts root licence below covers the project's own
+source and patched fonts, and defers the rest to an out-of-band audit URL —
+which is not a notice, and not something a shipped app can rely on. The sets
+actually inside this binary, from upstream's own
+`patched-fonts/NerdFontsSymbolsOnly/README.md` at v3.5.1:
+
+| Icon set               | Version         | Licence      |
+|------------------------|-----------------|--------------|
+| Codicons               | 0.0.45          | CC BY 4.0    |
+| Devicons               | 2.17.0          | MIT          |
+| extraglyphs (Hack)     | -               | MIT          |
+| Font Awesome           | 6.5.1           | CC BY 4.0    |
+| Font Awesome Extension | 0.0.3           | MIT          |
+| Font Logos             | 1.3.0           | The Unlicense (public domain) |
+| MaterialDesign         | Oct 6, 2022     | Apache 2.0   |
+| Octicons               | 18.3.0          | MIT          |
+| Seti and original      | 0.8.1           | MIT          |
+| Pomicons               | 1.001           | OFL 1.1, Reserved Font Name |
+| Powerline Extra        | 1.200           | MIT          |
+| Powerline Symbols      | 1.000           | MIT          |
+| Power Symbols IEC      | Feb 2015        | MIT          |
+| Weather Icons          | 2.0.10          | OFL 1.1      |
+
+Attribution, as CC BY 4.0 requires for Codicons and Font Awesome:
+
+* Codicons — © Microsoft Corporation, https://github.com/microsoft/vscode-codicons,
+  licensed CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/).
+* Font Awesome Free — © Fonticons, Inc., https://fontawesome.com, icons licensed
+  CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/).
+
+Apache 2.0 notice, as its section 4(d) requires for MaterialDesign:
+
+* Material Design Icons — © Google, Inc. and Austin Andrews / Templarian,
+  https://github.com/Templarian/MaterialDesign-Font, licensed under the Apache
+  License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0). Pictograms
+  by Google are also available under Apache 2.0.
+
+OFL 1.1 sets: clause 2 conditions redistribution on each copy carrying "the
+above copyright notice and this license", where "the above" is THAT SET'S own
+notice. The OFL text reproduced below carries only Nerd Fonts' own line, so the
+two sets distributed under their own OFL grants are named here:
+
+* Pomicons — Copyright (c) 2021, Gabriele Lana <gabriele.lana@gmail.com>, with
+  Reserved Font Name Pomicons (https://github.com/gabrielelana/pomicons),
+  licensed SIL OFL 1.1.
+* Weather Icons — Copyright (c) Erik Flowers, icon designs originally by Lukas
+  Bischoff (https://github.com/erikflowers/weather-icons), licensed SIL OFL 1.1.
+  Upstream ships no OFL text file with a copyright line; these are the holders
+  its README names, cited as such rather than invented.
+
+
+THE SHIPPED FONT IS MODIFIED — the measured scope is at the top of this file and
+is the only description of it that should be trusted. Two earlier versions of
+this paragraph were wrong in turn: first it claimed the artifact "ships
+unmodified ... shipped whole rather than trimmed", true when written and left
+standing once it stopped being true; then its replacement narrowed the claim to
+"limited to the character map and name table with no outline altered", which
+parsing the binary also refuted — GDEF and PfEd are dropped, head, hhea, OS/2
+and post all move, and 2833 bounding boxes are recompiled.
+
+What holds: no glyph CONTOUR is edited, and the OFL condition is met by the
+RENAME rather than by being unmodified. The font is titled "Herdrup Symbols"
+(PostScript "HerdrupSymbols") and is not distributed under any reserved name.
+
+Font Logos is listed as "unlicensed" in upstream's table. That label is
+misleading and worth recording: its repository (https://github.com/lukas-w/font-logos)
+ships The Unlicense, a public-domain dedication, so redistribution IS granted.
+A review flagged this as a blocker on the upstream wording; the upstream
+repository is the authority and it grants the right.
+
+MIT-licensed sets are covered by the MIT text below; copyright remains with each
+upstream project listed above.
+
+---
+
+# Nerd Fonts Licensing
+
+There are various sources used under various licenses:
+
+* Nerd Fonts source fonts, patched fonts, and folders with explict OFL SIL files are licensed under SIL OPEN FONT LICENSE Version 1.1 (see below).
+* Nerd Fonts original source code files (such as `.sh`, `.py`, `font-patcher` and others) are licensed under the MIT License (MIT) (see below).
+* Many other licenses are present in this project for even more detailed breakdown see: [License Audit](https://github.com/ryanoasis/nerd-fonts/blob/-/license-audit.md).
+
+## Source files not in folders containing an explicit license are using the MIT License (MIT)
+
+The MIT License (MIT)
+
+Copyright (c) 2014 Ryan L McIntyre
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+## Various Fonts, Patched Fonts, SVGs, Glyph Fonts, and any files in a folder with explicit SIL OFL 1.1 License
+
+Copyright (c) 2014, Ryan L McIntyre (https://ryanlmcintyre.com).
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+This license is copied below, and is also available with a FAQ at:
+http://scripts.sil.org/OFL
+
+-----------------------------------------------------------
+SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
+-----------------------------------------------------------
+
+PREAMBLE
+The goals of the Open Font License (OFL) are to stimulate worldwide
+development of collaborative font projects, to support the font creation
+efforts of academic and linguistic communities, and to provide a free and
+open framework in which fonts may be shared and improved in partnership
+with others.
+
+The OFL allows the licensed fonts to be used, studied, modified and
+redistributed freely as long as they are not sold by themselves. The
+fonts, including any derivative works, can be bundled, embedded,
+redistributed and/or sold with any software provided that any reserved
+names are not used by derivative works. The fonts and derivatives,
+however, cannot be released under any other type of license. The
+requirement for fonts to remain under this license does not apply
+to any document created using the fonts or their derivatives.
+
+DEFINITIONS
+"Font Software" refers to the set of files released by the Copyright
+Holder(s) under this license and clearly marked as such. This may
+include source files, build scripts and documentation.
+
+"Reserved Font Name" refers to any names specified as such after the
+copyright statement(s).
+
+"Original Version" refers to the collection of Font Software components as
+distributed by the Copyright Holder(s).
+
+"Modified Version" refers to any derivative made by adding to, deleting,
+or substituting -- in part or in whole -- any of the components of the
+Original Version, by changing formats or by porting the Font Software to a
+new environment.
+
+"Author" refers to any designer, engineer, programmer, technical
+writer or other person who contributed to the Font Software.
+
+PERMISSION & CONDITIONS
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of the Font Software, to use, study, copy, merge, embed, modify,
+redistribute, and sell modified and unmodified copies of the Font
+Software, subject to the following conditions:
+
+1) Neither the Font Software nor any of its individual components,
+in Original or Modified Versions, may be sold by itself.
+
+2) Original or Modified Versions of the Font Software may be bundled,
+redistributed and/or sold with any software, provided that each copy
+contains the above copyright notice and this license. These can be
+included either as stand-alone text files, human-readable headers or
+in the appropriate machine-readable metadata fields within text or
+binary files as long as those fields can be easily viewed by the user.
+
+3) No Modified Version of the Font Software may use the Reserved Font
+Name(s) unless explicit written permission is granted by the corresponding
+Copyright Holder. This restriction only applies to the primary font name as
+presented to the users.
+
+4) The name(s) of the Copyright Holder(s) or the Author(s) of the Font
+Software shall not be used to promote, endorse or advertise any
+Modified Version, except to acknowledge the contribution(s) of the
+Copyright Holder(s) and the Author(s) or with their explicit written
+permission.
+
+5) The Font Software, modified or unmodified, in part or in whole,
+must be distributed entirely under this license, and must not be
+distributed under any other license. The requirement for fonts to
+remain under this license does not apply to any document created
+using the Font Software.
+
+TERMINATION
+This license becomes null and void if any of the above conditions are
+not met.
+
+DISCLAIMER
+THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT
+OF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
+DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
+OTHER DEALINGS IN THE FONT SOFTWARE.

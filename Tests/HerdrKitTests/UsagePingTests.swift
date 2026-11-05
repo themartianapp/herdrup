@@ -260,6 +260,35 @@ final class UsagePingTests: XCTestCase {
         XCTAssertTrue(body.contains(second), body)
     }
 
+    /// #623: the user switches off while a ping is reading the switch. The opt-out runs on
+    /// another thread at that moment and is given 0.5 s to finish before the read returns.
+    /// Before the fix it finished there, and the ping then recreated an install ID and sent
+    /// it. Now the opt-out waits for the ping's check-and-lookup step, so the ping it races
+    /// may still go out (it had started; like any request in flight), but it carries an ID
+    /// that the opt-out then deletes, and nothing is left on disk.
+    func testSwitchingOffDuringAPingLeavesNoInstallIDBehind() async throws {
+        let suite = "UsagePingTests.race.\(UUID().uuidString)"
+        let racing = try XCTUnwrap(OptOutWhileReading(suiteName: suite))
+        defer { racing.removePersistentDomain(forName: suite) }
+        let relay = Relay(status: 204)
+        let clock = Clock(try date("2026-11-02 12:00", in: "UTC"))
+        let pinger = UsagePing(defaults: racing, now: { clock.now }, send: relay.send)
+        racing.armed = true
+        _ = await ping(pinger)
+        XCTAssertEqual(racing.optedOut.wait(timeout: .now() + 2), .success, "the opt-out finished")
+
+        XCTAssertFalse(UsagePing.isEnabled(in: racing), "the opt-out took effect")
+        XCTAssertNil(racing.string(forKey: UsagePing.Key.install),
+                     "a ping that was starting must not leave an install ID behind")
+        XCTAssertLessThanOrEqual(relay.requests.count, 1, "only the ping that had started")
+
+        clock.now += 86_400
+        let afterOptOut = await ping(pinger)
+        XCTAssertFalse(afterOptOut)
+        XCTAssertLessThanOrEqual(relay.requests.count, 1, "nothing starts once the switch is off")
+        XCTAssertNil(racing.string(forKey: UsagePing.Key.install))
+    }
+
     /// Review F1 on #607: the real session must not keep a cookie the relay sets, or a
     /// response could link a new install ID to the old one across an off → on reset.
     func testTheRealSessionNeverReplaysACookieAcrossAReset() async throws {
@@ -350,4 +379,33 @@ private final class CookieRelay: @unchecked Sendable {
             close(client)
         }
     }
+}
+
+/// UserDefaults that, the first time the usage switch is read while armed, switches it off
+/// from another thread and waits up to 0.5 s for that to finish before answering "on".
+private final class OptOutWhileReading: UserDefaults, @unchecked Sendable {
+    let optedOut = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var _armed = false
+    var armed: Bool {
+        get { lock.withLock { _armed } }
+        set { lock.withLock { _armed = newValue } }
+    }
+
+    override func object(forKey defaultName: String) -> Any? {
+        let fire = defaultName == UsagePing.Key.enabled && lock.withLock {
+            defer { _armed = false }
+            return _armed
+        }
+        guard fire else { return super.object(forKey: defaultName) }
+        let finished = DispatchSemaphore(value: 0)
+        Thread.detachNewThread {
+            UsagePing.setEnabled(false, in: self)
+            finished.signal()
+            self.optedOut.signal()
+        }
+        _ = finished.wait(timeout: .now() + 0.5)
+        return true
+    }
+
 }

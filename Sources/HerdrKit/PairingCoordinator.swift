@@ -103,8 +103,8 @@ public struct PairingCoordinator {
         guard let fingerprint = payload.hostKeyFingerprint else {
             throw Failure.noHostKeyToPin
         }
-        // Version 2 names the SSH port; the host is then a bare address, used as is (no
-        // ":port" stripping, which would misread the last group of an IPv6 literal).
+        // Versions 2 and 3 name the SSH port; the host is then a bare address, used as is
+        // (no ":port" stripping, which would misread the last group of an IPv6 literal).
         let pinHost = payload.sshPort == nil ? bareHost(payload.host) : payload.host
         let port = payload.sshPort.flatMap(UInt16.init(exactly:)) ?? sshPort(for: payload.host)
         guard pinner.pin(host: pinHost, port: port, fingerprint: fingerprint) else {
@@ -156,8 +156,8 @@ public struct PairingCoordinator {
         return String(host[host.startIndex..<colon])
     }
 
-    /// The destination to save: the payload's host, plus ":<ssh_port>" when a version-2
-    /// payload names an SSH port other than 22, in the "host:port" form `HostEndpoint`
+    /// The destination to save: the payload's host, plus ":<ssh_port>" when a version-2 or
+    /// version-3 payload names an SSH port other than 22, in the "host:port" form `HostEndpoint`
     /// parses (bracketed for an IPv6 literal).
     private func savedHost(_ payload: Pairing.Payload) -> String {
         guard let sshPort = payload.sshPort, sshPort != 22 else { return payload.host }

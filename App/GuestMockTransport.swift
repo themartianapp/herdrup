@@ -44,6 +44,11 @@ struct GuestMockTransport: HerdrTransport {
     /// (`agent.answer`, and the menu keys while the agent is blocked).
     static let ownerOnlyAnswers = ProcessInfo.processInfo.environment["HERDR_MOCK_GUEST_OWNER_ANSWERS"] != nil
 
+    /// `HERDR_MOCK_GUEST_KEYS_PAUSE_AFTER_FIRST`: the host takes the guest's first menu key,
+    /// then refuses the next with `guest_forbidden` while the agent still shows its menu: the
+    /// pause after a committing key, before detection sees the menu close.
+    static let pausesAfterFirstKey = ProcessInfo.processInfo.environment["HERDR_MOCK_GUEST_KEYS_PAUSE_AFTER_FIRST"] != nil
+
     /// The keys a guest may press while the agent waits on a menu, as the host's guest gate.
     static let menuKeys: Set<String> = [
         "Up", "Down", "Left", "Right", "Enter", "Tab", "Escape", "Space",
@@ -196,7 +201,8 @@ struct GuestMockTransport: HerdrTransport {
             // a guest never types into the pane.
             let keys = params["keys"] as? [String] ?? []
             guard params["pane_id"] as? String == Self.access.agentTarget, awaitingMenu,
-                  !keys.isEmpty, keys.allSatisfy(Self.menuKeys.contains)
+                  !keys.isEmpty, keys.allSatisfy(Self.menuKeys.contains),
+                  !(Self.pausesAfterFirstKey && Self.hostRecorder.calls.contains { $0.hasPrefix("pane.send_keys:") })
             else {
                 Self.recorder.append("\(method):\(keys.joined(separator: ","))")
                 return Self.errorLine(id: id, code: "guest_forbidden", message: "guests can't send those keys now")

@@ -118,6 +118,33 @@ jobs:
             exit 1
           fi
 
+  # The guest relay Worker (GuestRelay): its tests in workerd, its typecheck, and the
+  # browser guest it serves from public/web checked byte for byte against the manifest
+  # herdrup-desktop's build wrote (npm test runs scripts/web-bundle.mjs first).
+  guest-relay:
+    name: Guest relay (Linux)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: GuestRelay
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Typecheck
+        run: npm run typecheck
+
   # THE DEVICE SUITE, AS PARALLEL SIMULATOR JOBS. It used to be one serial job: the
   # iPhone suite (~45 min of tests), then the iPad rounds (~25 min) waiting behind it,
   # ~90 min per green run and 2-3 h whenever a failure triggered a whole-suite rerun.
@@ -141,6 +168,8 @@ jobs:
     # SwiftTerm build 10 + test 15, six 10-min diagnostic rounds + SwiftTerm's 15 = 185m.
     # At most nine boot checks: first 10m, next eight 5m, each with 15s kill grace.
     # That adds <53m, leaving >17m for setup/build/upload inside the 255m ceiling.
+    # A round that ran no test case is retried once inside its own budget (ui-shard.sh
+    # run_suite); each such retry adds a 2m-bounded shutdown and one more 5m boot check.
     # The deadline is a failure ceiling, not the expected green-run duration.
     timeout-minutes: 255
     env:

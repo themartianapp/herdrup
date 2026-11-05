@@ -4,7 +4,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { CLOSE, DATA, OPEN, closeReason, encodeFrame, parseFrame } from "./frames";
 import type { InviteOutcome } from "./invite";
-import { BEARER, errorResponse, log, type Env } from "./relay";
+import { BEARER, errorResponse, log, refuseGuest, type Env } from "./relay";
 
 /** Largest WebSocket message either side may send; anything bigger closes with 1009. */
 export const MAX_MESSAGE_BYTES = 70_000;
@@ -135,13 +135,9 @@ export class HostRelay extends DurableObject<Env> {
   private connectGuest(): Response {
     const endpoint = "/v1/guest";
     const host = this.currentHost();
-    if (host === undefined) {
-      log({ endpoint, outcome: "host_offline" });
-      return errorResponse(503, "host_offline");
-    }
+    if (host === undefined) return refuseGuest("host_offline");
     if (this.ctx.getWebSockets("guest").filter((ws) => !attachment(ws).ended).length >= MAX_SESSIONS) {
-      log({ endpoint, outcome: "host_busy" });
-      return errorResponse(503, "host_busy");
+      return refuseGuest("host_busy");
     }
 
     // Persisted, so ids keep increasing across host reconnects and evictions. After the u32
