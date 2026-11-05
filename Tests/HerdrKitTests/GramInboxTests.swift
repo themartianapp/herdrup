@@ -335,22 +335,23 @@ final class GramInboxTests: XCTestCase {
         var inbox = GramInbox()
         inbox.apply(page([try message("c", unread: false), try message("b", unread: true)],
                          hasMore: true, unread: 2))
-        XCTAssertTrue(inbox.isMissingUnread(ceiling: 500), "one of the two unread is older than the window")
+        XCTAssertTrue(inbox.isMissingUnread, "one of the two unread is older than the window")
         inbox.appendPage(page([try message("a", unread: true)], hasMore: true, unread: 2),
                          generation: inbox.generation)
-        XCTAssertFalse(inbox.isMissingUnread(ceiling: 500), "both unread are loaded; older read pages are not needed")
+        XCTAssertFalse(inbox.isMissingUnread, "both unread are loaded; older read pages are not needed")
     }
 
-    func testUnreadPagingStopsAtTheEndAndAtTheCeiling() throws {
+    func testUnreadPagingStopsOnlyAtTheEndOfTheStore() throws {
         var ended = GramInbox()
         ended.apply(page([try message("b", unread: false)], hasMore: false, unread: 1))
-        XCTAssertFalse(ended.isMissingUnread(ceiling: 500), "nothing older to fetch")
+        XCTAssertFalse(ended.isMissingUnread, "nothing older to fetch")
 
-        var full = GramInbox()
-        full.apply(page([try message("c", unread: false), try message("b", unread: false)],
+        // Past the head refresh's 500 rows the first unread is still where the inbox opens.
+        var deep = GramInbox()
+        deep.apply(page(try (1...500).reversed().map { try message("m\($0 + 100)", unread: false) },
                         hasMore: true, unread: 1))
-        XCTAssertFalse(full.isMissingUnread(ceiling: 2), "the window is at the refresh ceiling")
-        XCTAssertTrue(full.isMissingUnread(ceiling: 3))
+        XCTAssertEqual(deep.messages.count, 500)
+        XCTAssertTrue(deep.isMissingUnread, "the one unread is older than 500 loaded rows")
     }
 
     // MARK: - Reads a poll answer could not have seen

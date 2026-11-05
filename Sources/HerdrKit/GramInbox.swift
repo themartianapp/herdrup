@@ -57,12 +57,11 @@ public struct GramInbox: Sendable, Equatable {
 
     /// Whether unread messages the daemon counts lie beyond the loaded window, so opening
     /// at the first unread message needs another older page first. False once the window
-    /// holds as many unread as the daemon counts, when nothing older remains, or when the
-    /// window has reached `ceiling` (the head refresh's limit, past which a refresh would
-    /// collapse the window again).
-    public func isMissingUnread(ceiling: Int) -> Bool {
-        nextCursor != nil && messages.count < ceiling
-            && messages.filter(\.isUnread).count < unreadCount
+    /// holds as many unread as the daemon counts, or when nothing older remains. Not
+    /// bounded by the head refresh's limit: cursor paging reaches the whole store, and a
+    /// first unread past that limit is still where the inbox must open.
+    public var isMissingUnread: Bool {
+        nextCursor != nil && messages.filter(\.isUnread).count < unreadCount
     }
 
     /// Bumped every time the loaded list is REPLACED (a changed head answer, or a store

@@ -1130,6 +1130,10 @@ struct GramView: View {
                 onOpen: {
                     if !unreadRuleCaptured {
                         await loadUnreadIntoWindow()
+                        // Left while loading: `onDisappear` reset the capture, and the next
+                        // appearance must load and capture again rather than find a rule
+                        // taken from a partial window.
+                        guard !Task.isCancelled else { return }
                         captureUnreadRule()
                     }
                     drawUnreadOpenTarget()
@@ -2482,10 +2486,11 @@ struct GramView: View {
     /// Loads older pages until the window holds every unread message, so the inbox opens at
     /// the first unread one even when it is older than the first page: the daemon's unread
     /// count covers the whole store, while `captureUnreadRule` can only see loaded messages.
-    /// Stops at `GramInbox.isMissingUnread`'s bounds, or when a page does not grow the list.
+    /// Stops when nothing is missing (`GramInbox.isMissingUnread`), on cancellation, or when
+    /// a page does not grow the list.
     private func loadUnreadIntoWindow() async {
         guard search.isEmpty else { return }
-        while !Task.isCancelled, inboxStore.inbox.isMissingUnread(ceiling: Self.maxRefreshLimit) {
+        while !Task.isCancelled, inboxStore.inbox.isMissingUnread {
             guard await loadMore() else { return }
         }
     }

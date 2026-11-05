@@ -350,9 +350,9 @@ Unread-count updates redraw the badge and sidebar readers, not the whole tab hos
 do not interrupt a message's open context menu.
 The inbox opens at the first unread message when one exists, otherwise at the
 newest message; Saved continues to open at the newest. When the daemon counts unread
-messages older than the loaded page, older pages load first (up to the 500-message
-refresh window), so the inbox opens at the first unread overall. The opening target
-is drawn before scrolling so it remains reachable outside the initial feed window.
+messages older than the loaded page, older pages load first, so the inbox opens at the
+first unread overall. The opening target is drawn before scrolling so it remains
+reachable outside the initial feed window.
 Saved reads like the feed: oldest at the top, opening at the newest, older ones drawn as you scroll up.
 Search filters the loaded messages, newest match at the bottom; scrolling to the top of the results (or
 “Search older messages” when none match) fetches older pages until another match turns up.
