@@ -83,6 +83,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     }
     const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
     if (!(await limiter.limit({ key: ip })).success) {
+      if (endpoint === "/v1/guest") return refuseGuest("rate_limited");
       log({ endpoint, outcome: "rate_limited" });
       return errorResponse(429, "rate_limited");
     }
@@ -112,6 +113,24 @@ export function json(status: number, body: unknown, headers: Record<string, stri
  */
 export function errorResponse(status: number, code: string, headers: Record<string, string> = {}): Response {
   return json(status, { error: code }, { ...headers, "X-Herdr-Guest-Error": code });
+}
+
+/** Close codes for a refused guest upgrade: 4000 plus the HTTP status it replaces. */
+export const GUEST_REFUSAL_CLOSE = { rate_limited: 4429, host_offline: 4503, host_busy: 4504 } as const;
+
+/**
+ * Refuses a guest WebSocket upgrade by accepting it and closing at once with a
+ * GUEST_REFUSAL_CLOSE code and the refusal as its reason. A browser can't read the status
+ * of a failed upgrade, but it does see the close code. The socket is never attached to a
+ * host, so it opens no session.
+ */
+export function refuseGuest(outcome: keyof typeof GUEST_REFUSAL_CLOSE): Response {
+  const code = GUEST_REFUSAL_CLOSE[outcome];
+  log({ endpoint: "/v1/guest", outcome, code });
+  const [client, server] = Object.values(new WebSocketPair());
+  server.accept();
+  server.close(code, outcome);
+  return new Response(null, { status: 101, webSocket: client });
 }
 
 /** The request body, or null once it passes `max` bytes (declared or streamed). */

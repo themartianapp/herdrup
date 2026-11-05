@@ -344,8 +344,12 @@ final class GuestSessionReuseTests: XCTestCase {
         XCTAssertFalse(connector.sockets[0].closed)
     }
 
-    /// The reconnect still maps a refused upgrade (here 429 `rate_limited`).
-    func testAReconnectRefusedByTheRelayReportsWhy() async throws {
+    /// herdr reads a read request and ends the reused session; `refuse` scripts how the
+    /// relay refuses the one reconnect. The call reports `expected` and connects no more.
+    func assertReconnectRefused(
+        by refuse: @escaping (FakeRelaySocket) -> Void, reports expected: GuestError,
+        file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
         let host = multiRequestHost()
         host.dropAfter = { $0 == Self.request("2", "gram.list") }
         let hostSockets = host.connector()
@@ -355,20 +359,34 @@ final class GuestSessionReuseTests: XCTestCase {
             let index = lock.withLock { () -> Int in opened += 1; return opened }
             if index == 1 { return hostSockets.connect(to: host.endpoint.socketURL) as! FakeRelaySocket }
             let refused = FakeRelaySocket()
-            refused.fail(GuestError.rateLimited)
+            refuse(refused)
             return refused
         }
         let transport = transport(host, connector)
         _ = try await transport.roundTrip(Self.request("1"))
-        // herdr reads the read request and ends the session; the one reconnect is refused.
 
         do {
             _ = try await transport.roundTrip(Self.request("2", "gram.list"))
-            XCTFail("expected rate limiting")
+            XCTFail("expected \(expected)", file: file, line: line)
         } catch let error as GuestError {
-            XCTAssertEqual(error, .rateLimited)
+            XCTAssertEqual(error, expected, file: file, line: line)
         }
-        XCTAssertEqual(connector.sockets.count, 2, "one reconnect, no more")
+        XCTAssertEqual(connector.sockets.count, 2, "one reconnect, no more", file: file, line: line)
+    }
+
+    /// The reconnect still maps a refused upgrade: an older relay's HTTP answer (here 429
+    /// `rate_limited`), or the close a current relay sends right after accepting it.
+    func testAReconnectRefusedByTheRelayReportsWhy() async throws {
+        try await assertReconnectRefused(by: { $0.fail(GuestError.rateLimited) }, reports: .rateLimited)
+        try await assertReconnectRefused(
+            by: { $0.push(.closed(code: 4429, reason: "rate_limited")) }, reports: .rateLimited)
+        try await assertReconnectRefused(
+            by: { $0.push(.closed(code: 4504, reason: "host_busy")) }, reports: .hostBusy)
+    }
+
+    func testAReconnectClosedHostOfflineReportsItOnce() async throws {
+        try await assertReconnectRefused(
+            by: { $0.push(.closed(code: 4503, reason: "host_offline")) }, reports: .hostOffline)
     }
 
     /// A mapped close on the reused session is the call's answer, not a reason to reconnect.

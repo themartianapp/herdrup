@@ -157,6 +157,12 @@ async function expectError(response: Response, status: number, code: string): Pr
   expect(await response.json()).toEqual({ error: code });
 }
 
+/** A refused guest upgrade: accepted, then closed at once with the refusal's code and reason. */
+async function expectRefusal(response: Response, code: number, reason: string): Promise<void> {
+  expect(response.status).toBe(101);
+  expect(await new Peer(response.webSocket!).closed).toEqual({ code, reason });
+}
+
 const stub = (hostId: string) => env.HOSTS.get(env.HOSTS.idFromName(hostId));
 
 const newInviteId = () => b64url(crypto.getRandomValues(new Uint8Array(9)));
@@ -431,15 +437,17 @@ describe("host authentication", () => {
 });
 
 describe("guest sessions", () => {
-  it("answers host_offline before any upgrade when no host is connected", async () => {
+  it("closes with 4503 host_offline when no host is connected", async () => {
     const hostId = newHostId();
-    await expectError(await guestRequest(hostId), 503, "host_offline");
+    await expectRefusal(await guestRequest(hostId), 4503, "host_offline");
 
     const host = await connectHost(hostId, newSecret());
     await connectGuest(host, hostId);
     host.ws.close(1000, "bye");
     await host.closed;
-    await expectError(await guestRequest(hostId), 503, "host_offline");
+    await expectRefusal(await guestRequest(hostId), 4503, "host_offline");
+    // A request that isn't an upgrade still gets the HTTP error.
+    await expectError(await guestRequest(hostId, freshIp(), false), 426, "upgrade_required");
   });
 
   it("routes two concurrent guests to their own sessions", async () => {
@@ -594,7 +602,7 @@ describe("limits", () => {
     host.send(frame(DATA, session, new Uint8Array(MAX_MESSAGE - 4)));
     expect((await host.closed).code).toBe(1009);
     expect(await guest.closed).toEqual({ code: 1001, reason: "host_offline" });
-    await expectError(await guestRequest(hostId), 503, "host_offline");
+    await expectRefusal(await guestRequest(hostId), 4503, "host_offline");
   });
 
   it("caps a host at 32 open sessions", async () => {
@@ -603,9 +611,10 @@ describe("limits", () => {
     const guests: GuestSession[] = [];
     for (let i = 0; i < 32; i++) guests.push(await connectGuest(host, hostId));
 
-    await expectError(await guestRequest(hostId), 503, "host_busy");
+    await expectRefusal(await guestRequest(hostId), 4504, "host_busy");
 
     guests[0].guest.ws.close(1000, "done");
+    // The refused guest opened no session: the host's next frame is this CLOSE, not an OPEN.
     expect((await host.nextFrame()).type).toBe(CLOSE);
     const admitted = await connectGuest(host, hostId);
     expect(admitted.session).toBe(guests[31].session + 1);
@@ -614,10 +623,32 @@ describe("limits", () => {
   it("limits guest connects to 30 per minute per IP", async () => {
     const hostId = newHostId();
     const ip = freshIp();
-    // With no host, each connect that passes the limiter gets host_offline.
-    for (let i = 0; i < 30; i++) await expectError(await guestRequest(hostId, ip), 503, "host_offline");
-    await expectError(await guestRequest(hostId, ip), 429, "rate_limited");
-    await expectError(await guestRequest(hostId, freshIp()), 503, "host_offline");
+    // With no host, each connect that passes the limiter is closed host_offline. Each counts
+    // once: accepting and closing a refused socket is not another connect.
+    for (let i = 0; i < 30; i++) await expectRefusal(await guestRequest(hostId, ip), 4503, "host_offline");
+    await expectRefusal(await guestRequest(hostId, ip), 4429, "rate_limited");
+    await expectRefusal(await guestRequest(hostId, freshIp()), 4503, "host_offline");
+  });
+
+  it("closes a rate-limited guest before any Durable Object is reached", async () => {
+    const ip = freshIp();
+    const spent = newHostId();
+    for (let i = 0; i < 30; i++) await expectRefusal(await guestRequest(spent, ip), 4503, "host_offline");
+
+    const unseen = newHostId();
+    await expectRefusal(await guestRequest(unseen, ip), 4429, "rate_limited");
+    const created = (await listDurableObjectIds(env.HOSTS)).map((id) => id.toString());
+    expect(created).not.toContain(env.HOSTS.idFromName(unseen).toString());
+
+    // A connected host never hears of a rate-limited guest: the next admitted guest's OPEN
+    // is the host's first frame, with the first session id.
+    const hostId = newHostId();
+    const host = await connectHost(hostId, newSecret());
+    await expectRefusal(await guestRequest(hostId, ip), 4429, "rate_limited");
+    expect((await connectGuest(host, hostId)).session).toBe(1);
+
+    // A request that isn't an upgrade still gets the HTTP error, before the limiter.
+    await expectError(await guestRequest(hostId, ip, false), 426, "upgrade_required");
   });
 
   it("limits host connects to 10 per minute per IP before the Durable Object is reached", async () => {
@@ -907,7 +938,7 @@ describe("usage ping", () => {
     expect((await ping(validPing())).status).toBe(204);
     // The spent ping budget leaves this IP's connects alone: each still passes its limiter.
     const hostId = newHostId();
-    await expectError(await guestRequest(hostId, ip), 503, "host_offline");
+    await expectRefusal(await guestRequest(hostId, ip), 4503, "host_offline");
     await expectError(await hostRequest(hostId, "Bearer short", true, ip), 401, "unauthorized");
 
     // And spent connect budgets leave this IP's pings alone. Spend them one at a time, as
@@ -916,7 +947,7 @@ describe("usage ping", () => {
     const busy = freshIp();
     for (let i = 0; i < 30; i++) await guestRequest(hostId, busy);
     for (let i = 0; i < 10; i++) await hostRequest(hostId, "Bearer short", true, busy);
-    await expectError(await guestRequest(hostId, busy), 429, "rate_limited");
+    await expectRefusal(await guestRequest(hostId, busy), 4429, "rate_limited");
     await expectError(await hostRequest(hostId, "Bearer short", true, busy), 429, "rate_limited");
     expect((await ping(validPing(), busy)).status).toBe(204);
   }, 20_000);
