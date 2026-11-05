@@ -310,46 +310,38 @@ retry_unstarted_round=yes
 run_suite() {
   local label="$1" udid="$2" budget="$3"
   shift 3
-  local status=0 started budget_left runner_error part
+  local status=0 runner_error part
   # Boot outside the test deadline. Booting during the build was measured to slow both.
   boot_simulator "$udid" "TestReceipts/$label-boot.log" || return 1
   install_app_under_test "$udid" "TestReceipts/$label-install.log" || return 1
-  started=$(date +%s)
   first_run "$label" "$udid" "$budget" "$@" || status=$?
   # A round whose test runner died before any test started is a simulator failure, not a
   # test result. Run 41775711449 (iPhoneTerminal, Xcode 27): 199 s after launch, "Early
   # unexpected exit, operation never finished bootstrapping ... The test runner crashed
   # while preparing to run tests", zero test cases, and the whole PR's CI ran again. Such a
-  # round gets ONE retry on a rebooted simulator, inside what is left of its own budget, so
-  # the round's test time stays within the budget the job deadline was sized for. A round
-  # in which any test case ran is never retried, and a timeout is never retried (below).
+  # round gets ONE retry on a rebooted simulator, with a fresh copy of its budget. The
+  # retry used to get only what was left: on #628 run 41996536208 the crash took 4 min of
+  # iPhoneChat's 10m, the retry got 429 s, ran 13 of 15 ChatViewTests and timed out. The
+  # job deadline stays the ceiling on the total. A round in which any test case ran is
+  # never retried, and a timeout is never retried (below).
   if [ "$status" -ne 0 ] && [ "$status" -ne 124 ] && [ "$status" -ne 130 ] \
       && [ "$retry_unstarted_round" = yes ] \
       && ran_no_test_case "TestReceipts/$label-first.log" "TestReceipts/$label-first.xcresult"; then
-    # Every caller passes whole minutes.
-    case "$budget" in
-      *[0-9]m) budget_left=$(( ${budget%m} * 60 - ($(date +%s) - started) )) ;;
-      *) budget_left=0 ;;
-    esac
-    if [ "$budget_left" -le 0 ]; then
-      echo "::warning::$label executed no test case; no retry, since no time is left of its ${budget} budget"
-    else
-      stop_recording
-      runner_error=$(grep -m1 -E 'encountered an error' "TestReceipts/$label-first.log" | sed 's/^[[:space:]]*//')
-      echo "::warning::$label executed no test case (xcodebuild exit $status): ${runner_error:-no runner error line in the log}. Infrastructure failure, not a test result: rebooting $udid and retrying the round once in the ${budget_left}s left of its ${budget} budget; the first attempt is TestReceipts/$label-first-unstarted.*"
-      # xcodebuild refuses an existing -resultBundlePath, and the retry rewrites the boot
-      # and install logs, so the first attempt's evidence moves aside first.
-      for part in first.log first.xcresult boot.log install.log; do
-        mv "TestReceipts/$label-$part" "TestReceipts/$label-${part%%.*}-unstarted.${part#*.}"
-      done
-      "$TIMEOUT_BIN" --signal=TERM --kill-after=15s 2m \
-        xcrun simctl shutdown "$udid" >"TestReceipts/$label-shutdown.log" 2>&1 || true
-      ready_devices="${ready_devices/ $udid / }"
-      status=0
-      boot_simulator "$udid" "TestReceipts/$label-boot.log" || return 1
-      install_app_under_test "$udid" "TestReceipts/$label-install.log" || return 1
-      first_run "$label" "$udid" "${budget_left}s" "$@" || status=$?
-    fi
+    stop_recording
+    runner_error=$(grep -m1 -E 'encountered an error' "TestReceipts/$label-first.log" | sed 's/^[[:space:]]*//')
+    echo "::warning::$label executed no test case (xcodebuild exit $status): ${runner_error:-no runner error line in the log}. Infrastructure failure, not a test result: rebooting $udid and retrying the round once with a fresh ${budget} budget; the first attempt is TestReceipts/$label-first-unstarted.*"
+    # xcodebuild refuses an existing -resultBundlePath, and the retry rewrites the boot
+    # and install logs, so the first attempt's evidence moves aside first.
+    for part in first.log first.xcresult boot.log install.log; do
+      mv "TestReceipts/$label-$part" "TestReceipts/$label-${part%%.*}-unstarted.${part#*.}"
+    done
+    "$TIMEOUT_BIN" --signal=TERM --kill-after=15s 2m \
+      xcrun simctl shutdown "$udid" >"TestReceipts/$label-shutdown.log" 2>&1 || true
+    ready_devices="${ready_devices/ $udid / }"
+    status=0
+    boot_simulator "$udid" "TestReceipts/$label-boot.log" || return 1
+    install_app_under_test "$udid" "TestReceipts/$label-install.log" || return 1
+    first_run "$label" "$udid" "$budget" "$@" || status=$?
   fi
   [ "$status" -eq 0 ] && return 0
   stop_recording

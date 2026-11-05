@@ -168,8 +168,9 @@ jobs:
     # run_suite rounds 120m incl. Chat UX 30m, four 15m desktop-reference rounds,
     # SwiftTerm build 10 + test 15), plus a 10m diagnostic rerun for each round that fails
     # and the boot checks. Green iPad jobs take 90-105 min (runs 41647821103-41801268261).
-    # A round that ran no test case is retried once inside its own budget (ui-shard.sh
-    # run_suite); each such retry adds a 2m-bounded shutdown and one more 5m boot check.
+    # A round that ran no test case is retried once with a fresh copy of its budget
+    # (ui-shard.sh run_suite); each such retry adds up to that budget, a 2m-bounded
+    # shutdown and one more 5m boot check.
     # So 255m does not cover every round failing at once; it is a failure ceiling that a
     # badly broken run hits, not the expected green-run duration.
     timeout-minutes: 255
