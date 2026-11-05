@@ -327,6 +327,33 @@ final class GramInboxTests: XCTestCase {
         XCTAssertEqual(inbox.conditionalDigest, "head")
     }
 
+    /// The inbox opens at the first unread message, which may sit past the first page: the
+    /// daemon counts unread over the whole store. Until the window holds them all it must
+    /// fetch older pages, or the feed opens at the newest (one unread past the page) or at
+    /// the page's oldest unread instead of the first unread overall.
+    func testUnreadBeyondTheWindowNeedsAnotherPage() throws {
+        var inbox = GramInbox()
+        inbox.apply(page([try message("c", unread: false), try message("b", unread: true)],
+                         hasMore: true, unread: 2))
+        XCTAssertTrue(inbox.isMissingUnread, "one of the two unread is older than the window")
+        inbox.appendPage(page([try message("a", unread: true)], hasMore: true, unread: 2),
+                         generation: inbox.generation)
+        XCTAssertFalse(inbox.isMissingUnread, "both unread are loaded; older read pages are not needed")
+    }
+
+    func testUnreadPagingStopsOnlyAtTheEndOfTheStore() throws {
+        var ended = GramInbox()
+        ended.apply(page([try message("b", unread: false)], hasMore: false, unread: 1))
+        XCTAssertFalse(ended.isMissingUnread, "nothing older to fetch")
+
+        // Past the head refresh's 500 rows the first unread is still where the inbox opens.
+        var deep = GramInbox()
+        deep.apply(page(try (1...500).reversed().map { try message("m\($0 + 100)", unread: false) },
+                        hasMore: true, unread: 1))
+        XCTAssertEqual(deep.messages.count, 500)
+        XCTAssertTrue(deep.isMissingUnread, "the one unread is older than 500 loaded rows")
+    }
+
     // MARK: - Reads a poll answer could not have seen
 
     private func counted(_ messages: [GramMessage], unread: Int) -> GramListAnswer {

@@ -164,11 +164,14 @@ jobs:
       fail-fast: false
       matrix:
         shard: ${{ fromJSON(github.event.inputs.only_suite == '' && '["iphone-terminal","iphone-app","ipad","settings-gram"]' || '["focused"]') }}
-    # Worst test/build rounds (iPad), including Chat UX and Gram column: 25 + 20 + 5 + 5 + 20 + 10,
-    # SwiftTerm build 10 + test 15, six 10-min diagnostic rounds + SwiftTerm's 15 = 185m.
-    # At most nine boot checks: first 10m, next eight 5m, each with 15s kill grace.
-    # That adds <53m, leaving >17m for setup/build/upload inside the 255m ceiling.
-    # The deadline is a failure ceiling, not the expected green-run duration.
+    # The iPad shard is the longest. Its first-run round budgets add up to 205m (ten
+    # run_suite rounds 120m incl. Chat UX 30m, four 15m desktop-reference rounds,
+    # SwiftTerm build 10 + test 15), plus a 10m diagnostic rerun for each round that fails
+    # and the boot checks. Green iPad jobs take 90-105 min (runs 41647821103-41801268261).
+    # A round that ran no test case is retried once inside its own budget (ui-shard.sh
+    # run_suite); each such retry adds a 2m-bounded shutdown and one more 5m boot check.
+    # So 255m does not cover every round failing at once; it is a failure ceiling that a
+    # badly broken run hits, not the expected green-run duration.
     timeout-minutes: 255
     env:
       SHARD: ${{ matrix.shard }}

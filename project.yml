@@ -226,9 +226,14 @@ targets:
           - IBMPlexMono-Bold.ttf
           - HerdrupSymbols-Regular.ttf
         UILaunchScreen: {}
+        # iPhone rotates to landscape too (owner, 2026-10-28): iPhone Duo's cover display is
+        # held sideways in the tent pose and turned. Upside-down stays off on iPhone, as the
+        # system default. The inner display of iPhone Duo ignores this list and always fills.
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
-        # iPhone stays portrait-only (above); iPad (universal now) rotates freely.
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        # iPad rotates freely.
         UISupportedInterfaceOrientations~ipad:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationPortraitUpsideDown

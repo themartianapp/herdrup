@@ -250,6 +250,16 @@ It saves a successful build before testing, so a test failure does not discard t
 Cache hits still run the Settings regression and attached-crash check; test results are
 never cached. Release archives and TestFlight builds are unchanged.
 
+The manual [`Duo screenshots` workflow](.github/workflows/duo-screenshots.yml)
+captures nine screens in six simulator poses: closed portrait, closed landscape,
+tent, open wide, open tall, and laptop. It reads back the display, fold angle and
+orientation after every launch; `POSES.md` records the result and `FAILURES.txt`
+records capture failures. The requested display and hinge angle must still match
+after rotation and before each screenshot; an unreadable final state fails the pose.
+When the interface refuses to rotate, the device orientation is set directly and
+recorded in `pose.notes`; if that also fails, the pose fails.
+These mock-data screenshots verify layout, not a live connection or physical-device fold transitions.
+
 The shared native composer reconciles external text edits after the SwiftUI layout pass,
 using the current binding rather than a captured layout value. This preserves newer
 keystrokes while still applying dictation, mention completion, restored drafts, and send clears.
@@ -306,6 +316,12 @@ Settings builds its compact index in a separate view body, keeping the large sec
 off the adaptive navigation stack. CI checks resize/resume in an optimized simulator build
 with a device-sized 1008 KiB main stack, and rejects attached crashes even if XCTest reports a pass.
 
+iPhone Duo uses the same continuous layout when open or partly folded: regular
+width exposes the agent sidebar, which can collapse to a rail or hide; compact
+width keeps the single-pane phone layout. Geometry and size class, not device
+idiom, choose the layout. Phones support landscape, and custom bars account for
+the Duo cover's side status area and the inner display's taller top inset.
+
 Compact and regular home layouts share one split-view detail tree. The persistent
 Agents tab owns the terminal container, isolating its controls from Gram and Settings
 without moving the pane between size-class branches. Changing size class changes
@@ -332,6 +348,11 @@ sidebar holds Gram's search field (⌘F; no mic, the composer keeps dictation) a
 conversations, Gram and Saved, as Messages rows, with Read all and Refresh in the bar.
 Unread-count updates redraw the badge and sidebar readers, not the whole tab host, so they
 do not interrupt a message's open context menu.
+The inbox opens at the first unread message when one exists, otherwise at the
+newest message; Saved continues to open at the newest. When the daemon counts unread
+messages older than the loaded page, older pages load first, so the inbox opens at the
+first unread overall. The opening target is drawn before scrolling so it remains
+reachable outside the initial feed window.
 Saved reads like the feed: oldest at the top, opening at the newest, older ones drawn as you scroll up.
 Search filters the loaded messages, newest match at the bottom; scrolling to the top of the results (or
 “Search older messages” when none match) fetches older pages until another match turns up.

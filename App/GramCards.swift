@@ -1008,6 +1008,7 @@ struct GramUnreadRule: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(count) unread")
+        .accessibilityIdentifier("gram-unread-rule")
     }
 
     private var line: some View {

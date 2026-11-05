@@ -258,16 +258,37 @@ for node in data.get("testNodes", []):
 '
 }
 
-run_suite() {
-  local label="$1" udid="$2" budget="$3"
+# Succeeds only when a round executed no test case at all: its log has no XCTest result
+# line and its result bundle records no Class/method test case. The runner-error pseudo
+# case (see failed_tests) does not count as a test. A bundle that cannot be read counts
+# as "tests may have run", so a round that ran a test is never treated as unstarted.
+ran_no_test_case() {
+  local log="$1" bundle="$2"
+  if grep -qE "^Test Case '.*' (passed|failed|skipped) \(" "$log"; then
+    return 1
+  fi
+  xcrun xcresulttool get test-results tests --path "$bundle" 2>/dev/null | python3 -c '
+import json, re, sys
+try:
+    data = json.load(sys.stdin)
+except ValueError:
+    sys.exit(1)
+def ran(node):
+    identifier = node.get("nodeIdentifier", "").removesuffix("()")
+    if node.get("nodeType") == "Test Case" and re.fullmatch(r"\w+/\w+", identifier):
+        return True
+    return any(ran(child) for child in node.get("children", []))
+sys.exit(1 if any(ran(node) for node in data.get("testNodes", [])) else 0)
+'
+}
+
+# One xcodebuild invocation of a round into TestReceipts/$label-first.*.
+# A WALL-CLOCK BOUND PER INVOCATION, so one wedged case cannot eat the job budget
+# and take the receipt upload down with it. Per-case allowances make xcodebuild
+# fail a stuck test with diagnostics instead of blocking to the deadline.
+first_run() {
+  local label="$1" udid="$2" budget="$3" status=0
   shift 3
-  local status=0
-  # Boot outside the test deadline. Booting during the build was measured to slow both.
-  boot_simulator "$udid" "TestReceipts/$label-boot.log" || return 1
-  install_app_under_test "$udid" "TestReceipts/$label-install.log" || return 1
-  # A WALL-CLOCK BOUND PER INVOCATION, so one wedged case cannot eat the job budget
-  # and take the receipt upload down with it. Per-case allowances make xcodebuild
-  # fail a stuck test with diagnostics instead of blocking to the deadline.
   "$TIMEOUT_BIN" --signal=INT "$budget" xcodebuild test-without-building "${PROJECT[@]}" \
       -destination "platform=iOS Simulator,id=$udid" \
       -parallel-testing-enabled NO \
@@ -279,6 +300,57 @@ run_suite() {
   # The first case's result and time is the first real XCTest launch after install.
   grep -m1 -E "^Test Case '.*' (passed|failed|skipped) \(" "TestReceipts/$label-first.log" \
     | sed 's/^/first test after install: /' >>"TestReceipts/$label-install.log" || true
+  return "$status"
+}
+
+# desktop_reference_round sets this to no for its rounds: their screenshots depend on the
+# status bar override and appearance it set on the booted device, which the reboot before
+# a retry is not known to keep.
+retry_unstarted_round=yes
+run_suite() {
+  local label="$1" udid="$2" budget="$3"
+  shift 3
+  local status=0 started budget_left runner_error part
+  # Boot outside the test deadline. Booting during the build was measured to slow both.
+  boot_simulator "$udid" "TestReceipts/$label-boot.log" || return 1
+  install_app_under_test "$udid" "TestReceipts/$label-install.log" || return 1
+  started=$(date +%s)
+  first_run "$label" "$udid" "$budget" "$@" || status=$?
+  # A round whose test runner died before any test started is a simulator failure, not a
+  # test result. Run 41775711449 (iPhoneTerminal, Xcode 27): 199 s after launch, "Early
+  # unexpected exit, operation never finished bootstrapping ... The test runner crashed
+  # while preparing to run tests", zero test cases, and the whole PR's CI ran again. Such a
+  # round gets ONE retry on a rebooted simulator, inside what is left of its own budget, so
+  # the round's test time stays within the budget the job deadline was sized for. A round
+  # in which any test case ran is never retried, and a timeout is never retried (below).
+  if [ "$status" -ne 0 ] && [ "$status" -ne 124 ] && [ "$status" -ne 130 ] \
+      && [ "$retry_unstarted_round" = yes ] \
+      && ran_no_test_case "TestReceipts/$label-first.log" "TestReceipts/$label-first.xcresult"; then
+    # Every caller passes whole minutes.
+    case "$budget" in
+      *[0-9]m) budget_left=$(( ${budget%m} * 60 - ($(date +%s) - started) )) ;;
+      *) budget_left=0 ;;
+    esac
+    if [ "$budget_left" -le 0 ]; then
+      echo "::warning::$label executed no test case; no retry, since no time is left of its ${budget} budget"
+    else
+      stop_recording
+      runner_error=$(grep -m1 -E 'encountered an error' "TestReceipts/$label-first.log" | sed 's/^[[:space:]]*//')
+      echo "::warning::$label executed no test case (xcodebuild exit $status): ${runner_error:-no runner error line in the log}. Infrastructure failure, not a test result: rebooting $udid and retrying the round once in the ${budget_left}s left of its ${budget} budget; the first attempt is TestReceipts/$label-first-unstarted.*"
+      # xcodebuild refuses an existing -resultBundlePath, and the retry rewrites the boot
+      # and install logs, so the first attempt's evidence moves aside first.
+      for part in first.log first.xcresult boot.log install.log; do
+        mv "TestReceipts/$label-$part" "TestReceipts/$label-${part%%.*}-unstarted.${part#*.}"
+      done
+      "$TIMEOUT_BIN" --signal=TERM --kill-after=15s 2m \
+        xcrun simctl shutdown "$udid" >"TestReceipts/$label-shutdown.log" 2>&1 || true
+      ready_devices="${ready_devices/ $udid / }"
+      status=0
+      boot_simulator "$udid" "TestReceipts/$label-boot.log" || return 1
+      install_app_under_test "$udid" "TestReceipts/$label-install.log" || return 1
+      first_run "$label" "$udid" "${budget_left}s" "$@" || status=$?
+    fi
+  fi
   [ "$status" -eq 0 ] && return 0
   stop_recording
   if [ "$status" -eq 124 ] || [ "$status" -eq 130 ]; then
@@ -350,6 +422,8 @@ DESKTOP_REFERENCE_STATUS_BAR=(--time 9:41 --batteryLevel 100 --batteryState char
 DESKTOP_REFERENCE_CLASSES=(DesktopReferenceShots DesktopGramReferenceShots DesktopSettingsReferenceShots DesktopDetailReferenceShots)
 desktop_reference_round() {
   local label="$1" udid="$2" bundle_id class round status=0
+  # See retry_unstarted_round; read by run_suite for this round's classes only.
+  local retry_unstarted_round=no
   shift 2
   local classes=("${DESKTOP_REFERENCE_CLASSES[@]}")
   if [ "$#" -gt 0 ]; then classes=("$@"); fi
@@ -520,9 +594,11 @@ case "$shard" in
     # Agent folders in the sidebar (#552): a closed folder's counts, open in place, kept open.
     run_suite iPadAgentFolders "$IPAD_UDID" 5m \
       -only-testing:HerdrUITests/AgentFoldersTests/testClosedFolderShowsWaitingCountAndOpensOnTap || failed=1
-    # 20m: the chat-width tests (#523, ~100 s on iPad) took run 40289743354's slow runner to
-    # 848 s of tests, past the old 15m once xcodebuild's own start-up was added.
-    run_suite iPadChatUX "$IPAD_UDID" 20m -only-testing:HerdrUITests/ChatUXSmokeTests || failed=1
+    # 30m: the suite grew to 19 tests, and full passes now take 17.2-19.2 min of tests
+    # alone (8 runs, e.g. 41647821103, 41432817977), before xcodebuild's start-up; the old
+    # 20m cut runs 41169998628, 41177678247, 41402649405, 41402663682 and 41801268261
+    # short (the last with 13 of 19 passed in 19.2 min).
+    run_suite iPadChatUX "$IPAD_UDID" 30m -only-testing:HerdrUITests/ChatUXSmokeTests || failed=1
     check_classes_ran TestReceipts/iPadChatUX-first.xcresult ChatUXSmokeTests || failed=1
     # Gram's column width (#541): handles, drag, snap, reset and relaunch on the iPad. The
     # iPhone half (no handles) runs in the iPhone app round.

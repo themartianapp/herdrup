@@ -1,0 +1,81 @@
+# iPhone Duo screenshots: the app's main screens in each pose (closed, tent, open wide,
+# open tall, laptop), from the DEBUG screenshot mock, on the iOS 27.1 iPhone Duo simulator.
+# Manual only. Tools/ci/duo-screenshots.sh does the folding and the captures.
+name: Duo screenshots
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: duo-screenshots-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  screenshots:
+    # The Xcode 27 image: Xcode 27.1 and the iOS 27.1 runtime, the only one with iPhone Duo.
+    runs-on: xcode-27
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode and assert the iOS SDK
+        # The image's default Xcode (/Applications/Xcode.app), not the newest path: the
+        # newest is a release candidate (Xcode_27.2.app links to it). Assert the SDK
+        # instead of a filename: iPhone Duo full screen needs iOS 27.1 or newer.
+        run: |
+          echo "Xcodes present:"; ls -d /Applications/Xcode*.app || true
+          sudo xcode-select -s /Applications/Xcode.app; xcodebuild -version
+          SDK=$(xcodebuild -showsdks | grep -oE 'iphonesimulator[0-9.]+' | sed 's/iphonesimulator//' | sort -V | tail -1)
+          echo "newest iOS simulator SDK: ${SDK:-<none>}"
+          if [ -z "$SDK" ] || [ "$(printf '%s\n27.1\n' "$SDK" | sort -V | head -1)" != "27.1" ]; then
+            echo "::error::iOS simulator SDK '${SDK:-none}' is older than 27.1, which iPhone Duo needs."
+            exit 1
+          fi
+
+      - name: Download the Metal toolchain
+        # SwiftTerm bundles Metal shaders; the Metal compiler is a separate Xcode component.
+        run: |
+          xcodebuild -downloadComponent MetalToolchain 2>&1 | tail -20 || \
+            echo "::warning::-downloadComponent MetalToolchain returned nonzero (may already be present); continuing"
+
+      - name: Install XcodeGen
+        # coreutils supplies `gtimeout`, which bounds every simulator call in the script.
+        run: HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen coreutils
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Build the Debug app for the iOS simulator
+        # Debug, because the screenshot mock (HERDR_SCREENSHOT_MOCK) is DEBUG-only.
+        # arm64 only: the runner is Apple silicon, so the x86_64 slice would be unused.
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project Herdr.xcodeproj -scheme Herdr -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath .build-dd \
+            -clonedSourcePackagesDirPath SourcePackages \
+            ARCHS=arm64 CODE_SIGNING_ALLOWED=NO | xcbeautify || xcodebuild build \
+            -project Herdr.xcodeproj -scheme Herdr -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath .build-dd \
+            -clonedSourcePackagesDirPath SourcePackages \
+            ARCHS=arm64 CODE_SIGNING_ALLOWED=NO
+
+      - name: Screenshot every screen in every pose
+        run: Tools/ci/duo-screenshots.sh
+
+      - name: Collect simulator runtimes and devices
+        if: always()
+        run: |
+          mkdir -p duo-shots
+          { xcrun simctl list runtimes; xcrun simctl list devicetypes | grep -i duo; } > duo-shots/simulators.txt 2>&1 || true
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: duo-screenshots
+          # duo-shots/run.log is the script's log; POSES.md and FAILURES.txt sit beside it.
+          path: duo-shots/
+          if-no-files-found: warn

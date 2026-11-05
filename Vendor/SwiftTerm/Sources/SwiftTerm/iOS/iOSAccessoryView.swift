@@ -157,9 +157,12 @@ public class TerminalAccessory: UIInputView, UIInputViewAudioFeedback {
                                                                       height: 400)),
                                          terminalView: terminalView)
             #else
+            // herdr: the terminal's window, not UIScreen.main, which is ambiguous on a
+            // device with two displays (iPhone Duo).
+            let bounds = tv.window?.bounds ?? tv.bounds
             tv.inputView = KeyboardView (frame: CGRect (origin: CGPoint.zero,
-                                                        size: CGSize (width: UIScreen.main.bounds.width,
-                                                                      height: max((UIScreen.main.bounds.height / 5),140))),
+                                                        size: CGSize (width: bounds.width,
+                                                                      height: max((bounds.height / 5),140))),
                                          terminalView: terminalView)
             #endif
         } else {
