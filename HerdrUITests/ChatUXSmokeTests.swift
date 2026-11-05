@@ -348,13 +348,19 @@ final class ChatUXSmokeTests: XCTestCase {
         for element in [lead, paragraph, item, code] {
             XCTAssertTrue(element.waitForExistence(timeout: 5), app.debugDescription)
         }
-        // The chat's top edge fades content out under the bar (26 pt), and the composer card
-        // covers its bottom. The top is the chat's own, or the Chat/Terminal switch's bottom if
-        // lower; the bottom is the composer card's top.
+        // The chat's top edge fades content out under the bar (26 pt), the composer card
+        // covers its bottom, and the jump-to-latest button floats just above the composer.
+        // The top is the chat's own, or the Chat/Terminal switch's bottom if lower; the bottom
+        // is the composer card's top, or the jump button's top while it shows (its white arrow
+        // over a line read as 0.948 white on CI, #631 run 42035642472).
         let mode = app.buttons["Terminal"].firstMatch
         let top = max(chat.frame.minY, mode.exists ? mode.frame.maxY : 0)
         let composer = app.descendants(matching: .any)["composer-card"].firstMatch
-        let bottom = composer.exists ? composer.frame.minY : chat.frame.maxY
+        let jump = app.buttons["chat-jump-latest"].firstMatch
+        func bottom() -> CGFloat {
+            let card = composer.exists ? composer.frame.minY : chat.frame.maxY
+            return jump.exists ? min(card, jump.frame.minY - 8) : card
+        }
         record(app, "Expanded thought box")
 
         // Bring each line into the clear band on its own with one exact drag (no fling), then
@@ -367,15 +373,15 @@ final class ChatUXSmokeTests: XCTestCase {
         // #593, #594, #602, #613 and #614). A line that stays white, or stays too dim to read,
         // still fails with its last reading.
         for (name, element) in [("bold lead", lead), ("text", paragraph), ("list item", item), ("inline code", code)] {
-            let target = (top + 40 + bottom) / 2
+            let target = (top + 40 + bottom()) / 2
             let offset = target - element.frame.midY
-            if element.frame.minY < top + 40 || element.frame.maxY > bottom {
+            if element.frame.minY < top + 40 || element.frame.maxY > bottom() {
                 let start = chat.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
                 start.press(forDuration: 0.2, thenDragTo: start.withOffset(CGVector(dx: 0, dy: offset)))
             }
             XCTAssertTrue(poll(3, every: 0.2) {
-                element.isHittable && element.frame.minY >= top + 40 && element.frame.maxY <= bottom
-            }, "The thought's \(name) must be on screen, clear of the top fade and the composer: \(element.frame), clear band \(top + 40)…\(bottom)")
+                element.isHittable && element.frame.minY >= top + 40 && element.frame.maxY <= bottom()
+            }, "The thought's \(name) must be on screen, clear of the top fade, the jump button and the composer: \(element.frame), clear band \(top + 40)…\(bottom())")
             var value = 0.0
             _ = poll(5, every: 0.25) {
                 value = Self.brightest(element.frame, in: XCUIScreen.main.screenshot().image, app: app)
