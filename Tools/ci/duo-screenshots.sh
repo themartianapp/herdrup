@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Screenshots the app's main screens on the iPhone Duo simulator in each pose.
 #
-# Run by .github/workflows/duo-screenshots.yml after the Debug simulator build. Writes
+# Run by .github/workflows/duo-screenshots.yml after the Debug simulator build, and by the
+# macserve host's script template (org-ios-sim-script-v1, `.macserve.json` shard "duo"),
+# which sets MACSERVE_APP_DIR and MACSERVE_OUTPUT. Writes
 #   duo-shots/<pose>/<screen>.png         the active display, via `duoctl screenshot`
 #   duo-shots/<pose>/<screen>.state.json  `duoctl state` read right before the capture
 #   duo-shots/<pose>/pose.state.json      `duoctl state` once the pose was set
@@ -30,8 +32,11 @@
 
 set -uo pipefail
 
+# macserve hands over the Debug-iphonesimulator products directory and an output directory
+# it uploads as artifacts. An explicit APP or OUT still wins; GitHub sets neither variable.
+APP=${APP:-${MACSERVE_APP_DIR:+$MACSERVE_APP_DIR/Herdr.app}}
 APP=${APP:-.build-dd/Build/Products/Debug-iphonesimulator/Herdr.app}
-OUT=${OUT:-duo-shots}
+OUT=${OUT:-${MACSERVE_OUTPUT:-duo-shots}}
 RUNTIME=com.apple.CoreSimulator.SimRuntime.iOS-27-1
 # skarol/duoctl "Release 0.2.1" (supports the Xcode 27.1 image and the iOS 27.1 runtime).
 DUOCTL_REPO=https://github.com/skarol/duoctl.git
@@ -59,8 +64,51 @@ export XDG_CACHE_HOME="$WORK/cache"   # duoctl caches its compiled helper here
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 fail() { log "FAILURE: $*"; printf '%s\n' "$*" >> "$OUT/FAILURES.txt"; }
 
-# Bounded so a wedged CoreSimulator call cannot eat the job's deadline.
-t() { local secs=$1; shift; gtimeout -k 15 "$secs" "$@"; }
+# Bounded so a wedged CoreSimulator call cannot eat the job's deadline: TERM at the
+# deadline, KILL 15 s later, exit 124 on a timeout. GNU timeout when present (GitHub's job
+# installs coreutils); otherwise the same bound in bash, because macserve runs this with
+# PATH=/usr/bin:/bin:/usr/sbin:/sbin and no Homebrew. The fallback signals the command and
+# its direct children (no process group: macOS has no setsid, and the script is not run
+# with job control), the command FIRST, so a shell cannot run its next step when its child
+# dies; the children are listed before that, since they are reparented once it exits. Its
+# watcher writes no output, so `$(t ...)` returns when the command does, not at the deadline.
+if command -v gtimeout >/dev/null 2>&1; then
+  t() { local secs=$1; shift; gtimeout -k 15 "$secs" "$@"; }
+else
+  t() {
+    local secs=$1 pid watcher rc flag
+    shift
+    flag="$WORK/timed-out.$$.$RANDOM"
+    "$@" &
+    pid=$!
+    (
+      sleep "$secs"
+      kill -0 "$pid" 2>/dev/null || exit 0
+      # The flag marks the timeout and lists the children, which are reparented (and no
+      # longer findable under the command) once it exits.
+      pgrep -P "$pid" > "$flag" 2>/dev/null
+      kill -TERM "$pid" 2>/dev/null
+      xargs kill -TERM < "$flag" 2>/dev/null
+      sleep 15
+      kill -KILL "$pid" 2>/dev/null
+      xargs kill -KILL < "$flag" 2>/dev/null
+    ) </dev/null >/dev/null 2>&1 &
+    watcher=$!
+    wait "$pid"
+    rc=$?
+    pkill -P "$watcher" 2>/dev/null
+    kill "$watcher" 2>/dev/null
+    wait "$watcher" 2>/dev/null
+    if [ -e "$flag" ]; then
+      # The command exited at TERM; a child that ignored TERM would outlive it here,
+      # since the watcher's KILL no longer runs.
+      xargs kill -KILL < "$flag" 2>/dev/null
+      rm -f "$flag"
+      return 124
+    fi
+    return "$rc"
+  }
+fi
 
 # ---------------------------------------------------------------- duoctl
 
@@ -90,6 +138,10 @@ import json, sys
 types = json.load(sys.stdin)["devicetypes"]
 print(next(t["identifier"] for t in types if "iPhone-Duo" in t["identifier"]))')
 log "app $BUNDLE_ID, device type $DEVICE_TYPE, runtime $RUNTIME"
+# macserve also boots a Duo simulator for the job (MACSERVE_SIMULATOR_ID). The script keeps
+# creating its own, because a pose that fails verification is retried on a recreated one,
+# and it never shuts down or deletes a simulator it did not create.
+[ -z "${MACSERVE_JOB_ID:-}" ] || log "macserve job $MACSERVE_JOB_ID; provided simulator ${MACSERVE_SIMULATOR_ID:-none} left untouched"
 
 UDID=
 delete_sim() {
