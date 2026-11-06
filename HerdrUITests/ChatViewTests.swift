@@ -170,6 +170,28 @@ final class ChatViewTests: XCTestCase {
         XCTAssertTrue(chat.waitForExistence(timeout: 6), "Chat should come back")
     }
 
+    /// Leaving Chat while it still scrolls tears its scroll observer down mid-scroll. The
+    /// observer used to report "scrolling ended" during that teardown, writing Chat's state
+    /// inside SwiftUI's graph update: an exclusivity abort (TestFlight crash, 1.2.1 (238),
+    /// `ScrollActivityObserver.Coordinator.stop` from `dismantleUIView`). Flick, switch to the
+    /// terminal at once, several times; the app must stay up and Chat must come back.
+    func testLeavingChatWhileItStillScrollsDoesNotCrash() {
+        let app = launch("chatview")
+        openAgent("herdr-app", in: app)
+        let chat = app.descendants(matching: .any)["chat-view"].firstMatch
+        XCTAssertTrue(chat.waitForExistence(timeout: 10), "an omp agent should open in Chat")
+        XCTAssertTrue(poll(8, every: 0.3) { self.turns(chat) > 0 }, "the newest page should load")
+        for round in 0..<4 {
+            if round.isMultiple(of: 2) { chat.swipeDown(velocity: .fast) } else { chat.swipeUp(velocity: .fast) }
+            app.buttons["chat-switch-terminal"].tap()
+            XCTAssertEqual(app.state, .runningForeground, "leaving Chat mid-scroll must not crash (round \(round))")
+            XCTAssertTrue(chat.waitForNonExistence(timeout: 6), "Terminal should hide the chat")
+            app.buttons["chat-switch-chat"].tap()
+            XCTAssertTrue(chat.waitForExistence(timeout: 6), "Chat should come back (round \(round))")
+        }
+        XCTAssertEqual(app.state, .runningForeground)
+    }
+
     /// A Claude agent has no Chat: no switch, the terminal as before.
     func testClaudeAgentHasNoSwitch() {
         let app = launch("chatview", still: false)
