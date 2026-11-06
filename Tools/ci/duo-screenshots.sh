@@ -2,7 +2,8 @@
 # Screenshots the app's main screens on the iPhone Duo simulator in each pose.
 #
 # Run by .github/workflows/duo-screenshots.yml after the Debug simulator build, and by the
-# macserve host's script template (org-ios-sim-script-v1, `.macserve.json` shard "duo"),
+# macserve host's script template (org-ios-sim-script-v1, `.macserve.json` script shard
+# "duo-screenshots"),
 # which sets MACSERVE_APP_DIR and MACSERVE_OUTPUT. Writes
 #   duo-shots/<pose>/<screen>.png         the active display, via `duoctl screenshot`
 #   duo-shots/<pose>/<screen>.state.json  `duoctl state` read right before the capture
