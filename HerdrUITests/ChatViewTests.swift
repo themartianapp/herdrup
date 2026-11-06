@@ -130,9 +130,10 @@ final class ChatViewTests: XCTestCase {
     }
 
     /// Review 18e58fbbc4ef6e41 F2: the up arrow is waiting on an older page (held back 8 s) to
-    /// reach question 37 when search opens and selects the CI question, already loaded. When
-    /// the page lands, the chat stays on the search result: the old code went on to question 37.
-    func testSearchOpenedWhileTheUpArrowLoadsKeepsTheSearchResult() {
+    /// reach question 37 when search opens. When the page lands, the chat stays where search left
+    /// it: the old code went on to question 37. The term matches nothing: a match would pull the
+    /// chat back to itself when the page lands and hide the stray jump (it did, CI 42297542162).
+    func testSearchOpenedWhileTheUpArrowLoadsStopsTheJump() {
         let app = launch("chatview", ["HERDR_MOCK_CHAT_ORIGINS": "some", "HERDR_MOCK_CHAT_OLDER_DELAY": "8"])
         openAgent("herdr-app", in: app)
         let chat = app.descendants(matching: .any)["chat-view"].firstMatch
@@ -154,15 +155,16 @@ final class ChatViewTests: XCTestCase {
         let field = app.textFields["terminal-find-field"]
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         field.tap()
-        field.typeText("CI running again")
-        expectation(for: NSPredicate(format: "label == %@", "1/1"), evaluatedWith: app.staticTexts["terminal-find-count"])
-        waitForExpectations(timeout: 5)
+        field.typeText("zebra quartz")
+        // Past the typing pause, so the search has run (and found nothing to move to).
+        Thread.sleep(forTimeInterval: 1.5)
+        let q37 = app.staticTexts["Synthetic question 37: is check 37 green?"].firstMatch
+        XCTAssertFalse(q37.exists && chat.frame.intersects(q37.frame), "question 37 is still on the held-back page")
 
         XCTAssertTrue(poll(15, every: 0.3) { self.turns(chat) > loaded }, "the held-back older page lands")
         // The old code's jump glides for about 0.3 s after the page lands.
         Thread.sleep(forTimeInterval: 1.5)
         attach(app, "chat-previous-mine-search-took-over")
-        let q37 = app.staticTexts["Synthetic question 37: is check 37 green?"].firstMatch
         let shown = q37.exists && !q37.frame.isEmpty && chat.frame.intersects(q37.frame)
         XCTAssertFalse(shown, "search took over: the up arrow must not scroll to question 37")
         XCTAssertTrue(field.exists, "search is still open")
