@@ -345,7 +345,9 @@ public actor GuestPushCoordinator {
         guard !superseded(intent, access), state.choices[access.id] != .off else { return }
         sent[access.id] = registration
         do {
-            try await client.registerDevice(token: token, needsInput: true, dies: true, finishes: true,
+            // A guest's share pushes every finished turn of the shared agent, as before:
+            // "Only my requests" is the owner's choice (a guest never starts a "mine" turn).
+            try await client.registerDevice(token: token, needsInput: true, dies: true, finishes: .always,
                                             gram: features.gram, mutedPanes: [], relayCapability: capability)
         } catch {
             // The next connection, token or Retry tries again.

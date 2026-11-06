@@ -884,8 +884,16 @@ extension StreamFrame: Decodable {
 /// Open params for `pane.input.stream`: the write-side mirror of `pane.stream`.
 public struct PaneInputStreamParams: Encodable, Sendable {
     public let paneID: String
-    public init(paneID: String) { self.paneID = paneID }
-    enum CodingKeys: String, CodingKey { case paneID = "pane_id" }
+    /// `"app"` when the owner's app opens it: every frame on the stream is the owner's typing.
+    public let inputSource: String?
+    public init(paneID: String, inputSource: String?) {
+        self.paneID = paneID
+        self.inputSource = inputSource
+    }
+    enum CodingKeys: String, CodingKey {
+        case paneID = "pane_id"
+        case inputSource = "input_source"
+    }
 }
 
 /// One line the daemon writes on an open `pane.input.stream`. Frames themselves are
@@ -1163,6 +1171,10 @@ public struct ServerCapabilities: Decodable, Equatable, Sendable {
     /// the newest signed preview (jerryfane/herdr#336). False on older servers, which have to
     /// be updated once by hand.
     public let serverUpdate: Bool
+    /// herdr keeps each turn's origin (owner's or not, from `input_source: "app"`): finished
+    /// pushes honour `notify_finishes_mine_only`, and `agent.transcript` marks prompts that
+    /// were not the owner's with `origin: "other"` (owner decision 2026-11-06).
+    public let turnOrigin: Bool
 
     enum CodingKeys: String, CodingKey {
         case liveHandoff = "live_handoff"
@@ -1179,6 +1191,7 @@ public struct ServerCapabilities: Decodable, Equatable, Sendable {
         case agentAvatar = "agent_avatar"
         case agentGroups = "agent_groups"
         case serverUpdate = "server_update"
+        case turnOrigin = "turn_origin"
     }
 
     public init(from decoder: Decoder) throws {
@@ -1200,6 +1213,7 @@ public struct ServerCapabilities: Decodable, Equatable, Sendable {
         agentAvatar = try c.decodeIfPresent(Bool.self, forKey: .agentAvatar) ?? false
         agentGroups = try c.decodeIfPresent(Bool.self, forKey: .agentGroups) ?? false
         serverUpdate = try c.decodeIfPresent(Bool.self, forKey: .serverUpdate) ?? false
+        turnOrigin = try c.decodeIfPresent(Bool.self, forKey: .turnOrigin) ?? false
     }
 }
 
@@ -1315,6 +1329,35 @@ public enum PushAvailability: Sendable, Equatable {
             self = .daemonTooOld
         case is DecodingError: self = .daemonTooOld
         default: self = .unreachable
+        }
+    }
+}
+
+/// Settings > Notifications > "An agent finishes" (owner decision 2026-11-06). Stored as two
+/// switches, `notify.finishes` and `notify.finishesMineOnly`, so the old single switch carries
+/// over without a migration step: an install that had it on (and never saw this setting) is
+/// `always`; the default stays `off`.
+public enum FinishNotifications: String, CaseIterable, Sendable, Equatable {
+    case off
+    /// Only turns the owner started (herdr's `turn_origin` "mine"): not gitmoot, scripts,
+    /// other agents or guests.
+    case mine
+    case always
+
+    public init(notifies: Bool, mineOnly: Bool) {
+        self = !notifies ? .off : mineOnly ? .mine : .always
+    }
+
+    /// `notify_finishes` and the stored `notify.finishes`.
+    public var notifies: Bool { self != .off }
+    /// `notify_finishes_mine_only` and the stored `notify.finishesMineOnly`.
+    public var mineOnly: Bool { self == .mine }
+
+    public var label: String {
+        switch self {
+        case .off: return "Off"
+        case .mine: return "Only my requests"
+        case .always: return "Always"
         }
     }
 }

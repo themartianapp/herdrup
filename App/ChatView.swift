@@ -358,6 +358,12 @@ private enum ChatRow: Identifiable, Equatable {
         return nil
     }
 
+    /// The turn whose prompt this row draws.
+    var promptTurnID: String? {
+        if case .prompt(let prompt) = self { return prompt.id }
+        return nil
+    }
+
     /// The row's searchable text before markdown is stripped (`plainSearchText`).
     var searchSource: String {
         switch self {
@@ -407,6 +413,37 @@ private final class ChatSearchTextCache {
         let text = ChatRow.plainSearchText(source)
         entries[row.id] = (source, text)
         return TranscriptSearchRow(id: row.id, text: text)
+    }
+}
+
+/// Where the drawn prompts are against the top of the screen, for the up arrow (owner decision
+/// 2026-11-06). Rows write it as they cross the top; reading it redraws nothing.
+private final class ChatPromptTops {
+    /// Turn id → its prompt's top is above the viewport. Only drawn rows report.
+    var above: [String: Bool] = [:]
+    /// The turn the up arrow last scrolled to, so a tap before the scroll has settled still
+    /// goes one further up. Cleared when the reader drags or goes back to the latest.
+    var lastJump: String?
+}
+
+/// Reports whether a prompt row's top is above the chat's viewport (`space`), when the row is
+/// a prompt the up arrow may need; any other row is left as it is. Reports only crossings,
+/// like the top sentinel, so scrolling does not redraw the chat.
+private struct ChatPromptTopProbe: ViewModifier {
+    let turnID: String?
+    let space: String
+    let report: (String, Bool) -> Void
+
+    func body(content: Content) -> some View {
+        if let turnID {
+            content.onGeometryChange(for: Bool.self) { proxy in
+                proxy.frame(in: .named(space)).minY < -1
+            } action: { above in
+                report(turnID, above)
+            }
+        } else {
+            content
+        }
     }
 }
 
@@ -478,6 +515,15 @@ struct ChatView: View {
     @State private var selectingText: ChatSelectableText?
     /// The subagent whose conversation is open (owner only).
     @State private var openSubagent: TranscriptSubagent?
+    /// Which drawn prompts sit above the viewport, as their rows report it (the up arrow).
+    @State private var promptTops = ChatPromptTops()
+    /// The oldest drawn prompt on screen or below it: the up arrow searches above this turn.
+    /// Nil while every drawn prompt is above the screen.
+    @State private var mineBoundary: String?
+    /// The up arrow is loading older pages to find the owner's previous message.
+    @State private var findingPreviousMine = false
+    /// The host keeps turn origins (`turn_origin`): the up arrow skips turns marked "other".
+    @State private var honoursTurnOrigin = false
 
     /// Which rows are drawn (`drawnStart`): the newest `renderWindow` until the chat lands,
     /// then from a fixed row down, so rows arriving at the tail never push out the top of
@@ -612,6 +658,10 @@ struct ChatView: View {
             guard isActive else { return }
             Task { await model.refresh(client: client) }
         }
+        .task(id: offersPreviousMine) {
+            guard offersPreviousMine else { return }
+            honoursTurnOrigin = await client.advertisesTurnOrigin()
+        }
         .sheet(item: Binding(get: { openNote.map(IdentifiedNote.init) }, set: { openNote = $0?.note })) { item in
             ChatNoteSheet(note: item.note)
         }
@@ -651,10 +701,27 @@ struct ChatView: View {
             if !atBottom { ChatComposerFade(ground: ground) }
         }
         .overlay(alignment: .bottom) {
-            if landed, !atBottom, findRequest == nil {
-                JumpToLatestButton(label: "Jump to latest message", identifier: "chat-jump-latest") {
-                    scrollPosition.animateToLatest()
-                    followingLatest = true
+            if landed, findRequest == nil {
+                let showsUp = showsPreviousMine
+                VStack(spacing: 12) {
+                    if showsUp {
+                        JumpToLatestButton(label: "Jump to my previous message", identifier: "chat-jump-previous-mine",
+                                           systemImage: "arrow.up", busy: findingPreviousMine) {
+                            jumpToPreviousMine(proxy)
+                        }
+                    }
+                    if !atBottom {
+                        JumpToLatestButton(label: "Jump to latest message", identifier: "chat-jump-latest") {
+                            promptTops.lastJump = nil
+                            scrollPosition.animateToLatest()
+                            followingLatest = true
+                        }
+                    } else if showsUp {
+                        // The down arrow's place, kept so the up arrow does not move when it shows.
+                        Color.clear.frame(width: 44, height: 44)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
                 }
                 .padding(.bottom, 16)
             }
@@ -708,11 +775,16 @@ struct ChatView: View {
     private func transcriptColumn(_ proxy: ScrollViewProxy, hits: [TranscriptSearchHit]) -> some View {
         let hitsByRow = Dictionary(grouping: hits, by: \.rowID)
         let actions = rowActions
+        let probesPrompts = offersPreviousMine
         return VStack(alignment: .leading, spacing: 10) {
             topSentinel(proxy)
             ForEach(model.rows[drawnStart...]) { row in
                 chatRow(row, hits: hitsByRow[row.id] ?? [], actions: actions)
                     .equatable()
+                    .modifier(ChatPromptTopProbe(turnID: probesPrompts ? row.promptTurnID : nil,
+                                                 space: Self.scrollSpace) { id, above in
+                        promptTopChanged(id, above: above)
+                    })
                     .id(row.id)
                     .transition(rowTransition(row))
             }
@@ -739,6 +811,8 @@ struct ChatView: View {
                     if !userScrolling { userScrolling = true }
                     if followingLatest { followingLatest = false }
                 }
+                // The reader moved the chat: the up arrow searches from where they are now.
+                if view.isDragging, promptTops.lastJump != nil { promptTops.lastJump = nil }
                 if followingLatest, model.loaded, findRequest == nil,
                    !view.isTracking, !view.isDragging, !view.isDecelerating {
                     // Just after a send the tail springs with the new bubble; otherwise it jumps.
@@ -877,7 +951,7 @@ struct ChatView: View {
                case .ask(let id, let ask, let pending) = item {
                 VStack(alignment: .leading, spacing: 12) {
                     questionCard(id: id, ask: ask, pending: pending)
-                    if case .user(let text, _) = turn.prompt?.kind, !text.isEmpty {
+                    if case .user(let text, _, _) = turn.prompt?.kind, !text.isEmpty {
                         DisclosureGroup("Show context") { ChatMarkdownView(markdown: text).textSelection(.enabled) }
                             .font(Typography.app(14 * textScale))
                     }
@@ -903,6 +977,99 @@ struct ChatView: View {
                         openQuestionID = nil
                         onOpenTerminal()
                     })
+    }
+
+    // MARK: - My previous message (the up arrow)
+
+    /// The up arrow is for the owner's own conversation with the agent: not a guest (whose
+    /// prompts are not the owner's) and not a subagent's read-only transcript.
+    private var offersPreviousMine: Bool {
+        viewer == .owner && model.store.subagent == nil
+    }
+
+    /// A turn the up arrow stops at is loaded above the screen, or older pages may hold one.
+    private var showsPreviousMine: Bool {
+        guard offersPreviousMine else { return false }
+        if findingPreviousMine { return true }
+        return TranscriptPreviousMine.step(in: model.turns, above: mineBoundary, hasOlder: model.hasOlder,
+                                           honoursOrigin: honoursTurnOrigin) != .none
+    }
+
+    /// The oldest drawn prompt on screen or below it (`ChatPromptTops`); nil when every drawn
+    /// prompt is above the screen. Rows above the drawn window are above the screen too.
+    private var currentMineBoundary: String? {
+        let rows = model.rows
+        guard drawnStart < rows.count else { return nil }
+        for row in rows[drawnStart...] {
+            if let id = row.promptTurnID, promptTops.above[id] == false { return id }
+        }
+        return nil
+    }
+
+    private func promptTopChanged(_ turnID: String, above: Bool) {
+        promptTops.above[turnID] = above
+        let boundary = currentMineBoundary
+        if mineBoundary != boundary { mineBoundary = boundary }
+    }
+
+    /// Where a tap searches from: above the screen, and above the last jump while the reader
+    /// has not moved the chat since (its scroll may not have settled yet).
+    private var previousMineSearchStart: String? {
+        let boundary = currentMineBoundary
+        guard let last = promptTops.lastJump, let lastIndex = model.turns.firstIndex(where: { $0.id == last })
+        else { return boundary }
+        guard let boundary, let boundaryIndex = model.turns.firstIndex(where: { $0.id == boundary }) else { return last }
+        return lastIndex < boundaryIndex ? last : boundary
+    }
+
+    /// Scrolls to the owner's previous message above the screen, loading older pages (as search
+    /// does) until one turns up or the history ends. Never stops at a guest's prompt or, on a
+    /// host with turn origins, at one herdr marked as someone else's.
+    private func jumpToPreviousMine(_ proxy: ScrollViewProxy) {
+        guard !findingPreviousMine else { return }
+        let start = previousMineSearchStart
+        Task { @MainActor in
+            defer { if findingPreviousMine { findingPreviousMine = false } }
+            while findRequest == nil, !Task.isCancelled {
+                switch TranscriptPreviousMine.step(in: model.turns, above: start, hasOlder: model.hasOlder,
+                                                   honoursOrigin: honoursTurnOrigin) {
+                case .jump(let turnID):
+                    await revealPrompt(turnID, proxy)
+                    return
+                case .none:
+                    return
+                case .loadOlder:
+                    findingPreviousMine = true
+                    if model.loadingOlder {
+                        // The top of the list is already fetching that page.
+                        try? await Task.sleep(nanoseconds: 100_000_000)
+                        continue
+                    }
+                    await model.loadOlder(client: client)
+                    if model.olderFailed { return }
+                }
+            }
+        }
+    }
+
+    /// Puts a turn's prompt at the top of the screen, drawing the rows down from it first when
+    /// it is above the drawn window. Glides like the down arrow; Reduce Motion jumps.
+    private func revealPrompt(_ turnID: String, _ proxy: ScrollViewProxy) async {
+        let rowID = "prompt:" + turnID
+        guard let index = model.rowIndex[rowID] else { return }
+        promptTops.lastJump = turnID
+        followingLatest = false
+        atBottom = false
+        if index < drawnStart {
+            drawWindow = windowStarting(at: index)
+            // Rows just drawn above the window are laid out before the scroll can find them.
+            try? await Task.sleep(nanoseconds: 30_000_000)
+        }
+        if reduceMotion {
+            proxy.scrollTo(rowID, anchor: .top)
+        } else {
+            withAnimation(.easeOut(duration: 0.3)) { proxy.scrollTo(rowID, anchor: .top) }
+        }
     }
 
     // MARK: - Top of the list

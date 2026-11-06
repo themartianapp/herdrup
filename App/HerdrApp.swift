@@ -99,6 +99,7 @@ struct RootView: View {
     @AppStorage("notify.needsInput") private var notifyNeedsInput = true
     @AppStorage("notify.dies") private var notifyDies = true
     @AppStorage("notify.finishes") private var notifyFinishes = false
+    @AppStorage("notify.finishesMineOnly") private var notifyFinishesMineOnly = false
     @AppStorage("notify.gram") private var notifyGram = true
     /// UI text-size multiplier (the "Text size" setting). Applied to `Typography`
     /// so all app chrome scales; the terminal has its own font control.
@@ -237,6 +238,7 @@ struct RootView: View {
             .onChange(of: notifyNeedsInput) { _, _ in pushPrefsChanged() }
             .onChange(of: notifyDies) { _, _ in pushPrefsChanged() }
             .onChange(of: notifyFinishes) { _, _ in pushPrefsChanged() }
+            .onChange(of: notifyFinishesMineOnly) { _, _ in pushPrefsChanged() }
             .onChange(of: notifyGram) { _, _ in pushPrefsChanged() }
             // A per-agent mute toggled in the terminal header: re-register the new set
             // so the daemon starts/stops skipping that pane's pushes immediately.
@@ -7435,6 +7437,8 @@ struct SettingsView: View {
     @AppStorage("notify.needsInput") private var notifyNeedsInput = true
     @AppStorage("notify.dies") private var notifyDies = true
     @AppStorage("notify.finishes") private var notifyFinishes = false
+    /// With `notify.finishes`: only the owner's own requests (`FinishNotifications.mine`).
+    @AppStorage("notify.finishesMineOnly") private var notifyFinishesMineOnly = false
     @AppStorage("notify.gram") private var notifyGram = true
     /// About's "Share anonymous usage count" switch (absent = on). Written through
     /// `UsagePing.setEnabled`, which also deletes or makes the install ID.
@@ -7481,6 +7485,9 @@ struct SettingsView: View {
     /// Whether the connected machine can send push (`notifications.status`); nil until the first
     /// answer. Refreshed with the permission on appear and on foreground.
     @State private var pushAvailability: PushAvailability?
+    /// The connected machine keeps turn origins (`turn_origin`), so "Only my requests" can
+    /// filter; nil until asked. False shows that the choice falls back to every finished turn.
+    @State private var turnOriginSupported: Bool?
     /// The tip jar (StoreKit 2). Renders nothing until products load, so the section
     /// is invisible before the App Store Connect products exist.
     @ObservedObject private var tipStore = TipStore.shared
@@ -8867,7 +8874,7 @@ struct SettingsView: View {
                 rowDivider
                 groupedToggleRow("An agent dies", $notifyDies)
                 rowDivider
-                groupedToggleRow("An agent finishes", $notifyFinishes)
+                finishesRow
                 rowDivider
                 groupedToggleRow("A gram message arrives", $notifyGram)
                 if let fix = notifyPermissionFix {
@@ -8880,6 +8887,44 @@ struct SettingsView: View {
             .settingsGroup()
             .padding(.horizontal, 16).padding(.top, 10)
         }
+    }
+
+    /// The "An agent finishes" choice, read from and written to its two stored switches.
+    private var finishNotifications: Binding<FinishNotifications> {
+        Binding(
+            get: { FinishNotifications(notifies: notifyFinishes, mineOnly: notifyFinishesMineOnly) },
+            set: { choice in
+                notifyFinishesMineOnly = choice.mineOnly
+                notifyFinishes = choice.notifies
+            })
+    }
+
+    /// "An agent finishes": Off / Only my requests / Always (owner decision 2026-11-06). Only
+    /// my requests skips turns started by gitmoot, scripts, other agents and guests; a machine
+    /// whose herdr does not tell them apart pushes every finished turn, which the row says.
+    private var finishesRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("An agent finishes").font(Typography.app(17)).foregroundStyle(Palette.text)
+                Spacer()
+                menuPicker("An agent finishes", value: finishNotifications.wrappedValue.label,
+                           identifier: "settings-notify-finishes") {
+                    Picker("An agent finishes", selection: finishNotifications) {
+                        ForEach(FinishNotifications.allCases, id: \.self) { choice in
+                            Text(choice.label).tag(choice)
+                        }
+                    }
+                }
+            }
+            if finishNotifications.wrappedValue == .mine, turnOriginSupported == false {
+                Text("Herdr on this machine can't tell your requests apart yet, so you'll hear about every agent that finishes.")
+                    .font(Typography.app(12)).foregroundStyle(Palette.textFaint)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("settings-notify-finishes-fallback")
+            }
+        }
+        .padding(.horizontal, 18).padding(.vertical, 8)
+        .frame(minHeight: 52)
     }
 
     /// Starts at the 18 pt leading inset every Settings row uses (#357), so it lines up
@@ -9010,6 +9055,7 @@ struct SettingsView: View {
     /// change or a fresh relay enrollment shows up without reconnecting.
     private func refreshPushAvailability() async {
         pushAvailability = await client.pushAvailability()
+        turnOriginSupported = await client.advertisesTurnOrigin()
     }
 
     /// At least one alert category is on. A permission FIX is only surfaced when this is
@@ -9943,6 +9989,12 @@ struct MockTransport: HerdrTransport {
         if let avatar = AgentAvatarMockServer.answer(requestLine) { return avatar }
         if AgentAvatarMockServer.enabled, requestLine.contains(#""method":"ping""#) {
             return #"{"id":"mock","result":{"type":"pong","version":"0.9.4","protocol":22,"capabilities":{"agent_avatar":true}}}"#
+        }
+        // `HERDR_MOCK_TURN_ORIGIN=1`: a herdr that keeps turn origins, so Settings' "Only my
+        // requests" has no fallback note. Unset, the mock's ping predates capabilities.
+        if ProcessInfo.processInfo.environment["HERDR_MOCK_TURN_ORIGIN"] == "1",
+           requestLine.contains(#""method":"ping""#) {
+            return #"{"id":"mock","result":{"type":"pong","version":"0.9.4","protocol":22,"capabilities":{"turn_origin":true}}}"#
         }
         if requestLine.contains("notifications.status") { return Self.notificationsStatus }
         if requestLine.contains("accounts.list") { return MockWireFixtures.accountsList }

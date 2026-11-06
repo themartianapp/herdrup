@@ -36,8 +36,17 @@ public actor HerdrClient {
     }
     private var capabilityCache: CapabilityCache = .unknown
 
+    /// `input_source` on every write this client makes: `"app"` for the owner (herdr counts
+    /// the turn it starts as the owner's, for "Only my requests" and the Chat's up arrow),
+    /// nil over the guest relay, so a guest's prompt is never the owner's.
+    let inputSource: String?
+
+    /// The value herdr reads as "a HerdrUp client acting for the owner".
+    public static let appInputSource = "app"
+
     public init(transport: HerdrTransport) {
         self.transport = transport
+        self.inputSource = transport.actsAsGuest ? nil : Self.appInputSource
     }
 
     private func nextID(_ method: String) -> String {
@@ -166,6 +175,13 @@ public actor HerdrClient {
         } catch {
             return false
         }
+    }
+
+    /// The daemon keeps each turn's origin (`turn_origin`): "Only my requests" can filter
+    /// finished pushes, and the Chat's up arrow can skip turns that are not the owner's.
+    /// From the per-client capability cache, so asking again costs no `ping`.
+    public func advertisesTurnOrigin() async -> Bool {
+        await supports(\.turnOrigin)
     }
 
     struct AccountsCreateParams: Encodable {
@@ -325,6 +341,12 @@ public actor HerdrClient {
         let target: String
         let text: String
         let wait: PromptWaitOptions?
+        /// `"app"` from the owner, omitted from a guest (`HerdrClient.inputSource`).
+        let inputSource: String?
+        enum CodingKeys: String, CodingKey {
+            case target, text, wait
+            case inputSource = "input_source"
+        }
     }
 
     /// The `wait` block herdr's `agent.prompt` accepts: block until the agent
@@ -365,23 +387,27 @@ public actor HerdrClient {
     ) async throws -> PromptDelivery? {
         let wait = waitUntil.map { PromptWaitOptions(until: $0, timeoutMs: timeoutMs) }
         let result = try await call(
-            "agent.prompt", PromptParams(target: pane, text: text, wait: wait), as: PromptResult.self)
+            "agent.prompt", PromptParams(target: pane, text: text, wait: wait, inputSource: inputSource),
+            as: PromptResult.self)
         return result.delivery
     }
 
     struct SendTextParams: Encodable {
         let paneID: String
         let text: String
+        let inputSource: String?
         enum CodingKeys: String, CodingKey {
             case paneID = "pane_id"
             case text
+            case inputSource = "input_source"
         }
     }
 
     /// Types literal characters into a pane. Does not submit — Enter is a
     /// separate call, so nothing executes without a deliberate second action.
     public func sendText(pane: String, text: String) async throws {
-        _ = try await call("pane.send_text", SendTextParams(paneID: pane, text: text), as: JSONNull.self)
+        _ = try await call("pane.send_text", SendTextParams(paneID: pane, text: text, inputSource: inputSource),
+                           as: JSONNull.self)
     }
 
     /// Opens an ordered, fire-and-forget `pane.input.stream` to a local pane, or nil
@@ -396,7 +422,8 @@ public actor HerdrClient {
         guard await supports(\.paneInputStream) else { return nil }
         let openLine: String
         do {
-            openLine = try encodeRequest("pane.input.stream", PaneInputStreamParams(paneID: pane))
+            openLine = try encodeRequest("pane.input.stream",
+                                         PaneInputStreamParams(paneID: pane, inputSource: inputSource))
         } catch {
             return nil
         }
@@ -409,6 +436,10 @@ public actor HerdrClient {
         let notifyNeedsInput: Bool
         let notifyDies: Bool
         let notifyFinishes: Bool
+        /// With `notifyFinishes`: push a finished turn only when the owner started it (herdr's
+        /// `turn_origin` "mine"; an unknown origin counts as mine). A daemon without
+        /// `turn_origin` ignores it and pushes every finished turn.
+        let notifyFinishesMineOnly: Bool
         let notifyGram: Bool
         /// Public pane ids the owner muted on this device — the server skips their
         /// pushes. The client owns the set and sends the full list each time.
@@ -422,6 +453,7 @@ public actor HerdrClient {
             case notifyNeedsInput = "notify_needs_input"
             case notifyDies = "notify_dies"
             case notifyFinishes = "notify_finishes"
+            case notifyFinishesMineOnly = "notify_finishes_mine_only"
             case notifyGram = "notify_gram"
             case mutedPanes = "muted_panes"
             case relayCapability = "relay_capability"
@@ -434,15 +466,18 @@ public actor HerdrClient {
     /// pref changes. A server that does not yet implement the method (or the `notify_gram` field)
     /// just ignores what it does not know, and an older server throws, which the caller ignores.
     /// `relayCapability` lets a daemon without its own APNs key push through the relay; the raw
-    /// token is still sent so a daemon with a key keeps pushing directly.
+    /// token is still sent so a daemon with a key keeps pushing directly. `finishes` is the
+    /// three-way "An agent finishes" choice (`notify_finishes` + `notify_finishes_mine_only`).
     public func registerDevice(
-        token: String, needsInput: Bool, dies: Bool, finishes: Bool, gram: Bool,
+        token: String, needsInput: Bool, dies: Bool, finishes: FinishNotifications, gram: Bool,
         mutedPanes: [String] = [], relayCapability: String? = nil
     ) async throws {
         _ = try await call("notifications.register_device",
                            RegisterDeviceParams(deviceToken: token, platform: "apns",
                                                 notifyNeedsInput: needsInput, notifyDies: dies,
-                                                notifyFinishes: finishes, notifyGram: gram,
+                                                notifyFinishes: finishes.notifies,
+                                                notifyFinishesMineOnly: finishes.mineOnly,
+                                                notifyGram: gram,
                                                 mutedPanes: mutedPanes,
                                                 relayCapability: relayCapability),
                            as: JSONNull.self)
@@ -1077,6 +1112,11 @@ public actor HerdrClient {
     struct SendKeysParams: Encodable {
         let target: String
         let keys: [String]
+        let inputSource: String?
+        enum CodingKeys: String, CodingKey {
+            case target, keys
+            case inputSource = "input_source"
+        }
     }
 
     /// Sends named keys (e.g. "Enter", "Escape", "Up") to an AGENT pane, for dialog
@@ -1088,15 +1128,18 @@ public actor HerdrClient {
     /// really hosts an agent — the server rejects anything else with `agent_not_found`.
     /// For a plain shell pane use `sendPaneKeys`.
     public func sendKeys(pane: String, keys: [String]) async throws {
-        _ = try await call("agent.send_keys", SendKeysParams(target: pane, keys: keys), as: JSONNull.self)
+        _ = try await call("agent.send_keys", SendKeysParams(target: pane, keys: keys, inputSource: inputSource),
+                           as: JSONNull.self)
     }
 
     struct PaneSendKeysParams: Encodable {
         let paneID: String
         let keys: [String]
+        let inputSource: String?
         enum CodingKeys: String, CodingKey {
             case keys
             case paneID = "pane_id"
+            case inputSource = "input_source"
         }
     }
 
@@ -1108,7 +1151,8 @@ public actor HerdrClient {
     /// when that pane is an agent terminal, so a bare shell came back as
     /// `agent target <pane> not found`.
     public func sendPaneKeys(pane: String, keys: [String]) async throws {
-        _ = try await call("pane.send_keys", PaneSendKeysParams(paneID: pane, keys: keys), as: JSONNull.self)
+        _ = try await call("pane.send_keys", PaneSendKeysParams(paneID: pane, keys: keys, inputSource: inputSource),
+                           as: JSONNull.self)
     }
 
     // MARK: - Spawning agents

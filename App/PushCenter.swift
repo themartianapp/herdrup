@@ -81,17 +81,21 @@ final class PushCenter: ObservableObject {
     struct Prefs: Equatable {
         var needsInput: Bool
         var dies: Bool
-        var finishes: Bool
+        /// "An agent finishes": Off / Only my requests / Always. `notify.finishesMineOnly` is
+        /// new; an install that only has `notify.finishes` on reads as Always.
+        var finishes: FinishNotifications
         var gram: Bool
         static var current: Prefs {
             let d = UserDefaults.standard
             return Prefs(
                 needsInput: d.object(forKey: "notify.needsInput") as? Bool ?? true,
                 dies:       d.object(forKey: "notify.dies") as? Bool ?? true,
-                finishes:   d.object(forKey: "notify.finishes") as? Bool ?? false,
+                finishes:   FinishNotifications(
+                    notifies: d.object(forKey: "notify.finishes") as? Bool ?? false,
+                    mineOnly: d.object(forKey: "notify.finishesMineOnly") as? Bool ?? false),
                 gram:       d.object(forKey: "notify.gram") as? Bool ?? true)
         }
-        var anyEnabled: Bool { needsInput || dies || finishes || gram }
+        var anyEnabled: Bool { needsInput || dies || finishes.notifies || gram }
     }
 }
 

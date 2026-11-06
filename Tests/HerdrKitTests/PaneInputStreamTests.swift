@@ -366,6 +366,8 @@ final class PaneInputOpenTests: XCTestCase {
         let open = try XCTUnwrap(link.bridge.requests.first)
         XCTAssertTrue(open.contains(#""method":"pane.input.stream""#), open)
         XCTAssertTrue(open.contains(#""pane_id":"w1:p1""#), open)
+        // The owner's typing on the stream counts as the owner's turn (turn origin, 2026-11-06).
+        XCTAssertTrue(open.contains(#""input_source":"app""#), open)
         channel?.close()
     }
 

@@ -67,7 +67,7 @@ public struct TranscriptTurn: Identifiable, Sendable, Equatable {
         self.prompt = prompt
         self.items = items
         self.startMs = startMs
-        if case .user(let text, _)? = prompt?.kind {
+        if case .user(let text, _, _)? = prompt?.kind {
             attachmentPrompt = GramAttachmentPrompt.parse(text)
         } else {
             attachmentPrompt = nil
@@ -75,12 +75,17 @@ public struct TranscriptTurn: Identifiable, Sendable, Equatable {
     }
 
     public var promptText: String? {
-        if case .user(let text, _)? = prompt?.kind { return text }
+        if case .user(let text, _, _)? = prompt?.kind { return text }
         return nil
     }
 
     public var promptAuthor: TranscriptAuthor? {
-        if case .user(_, let author)? = prompt?.kind { return author }
+        if case .user(_, let author, _)? = prompt?.kind { return author }
+        return nil
+    }
+
+    public var promptOrigin: TranscriptOrigin? {
+        if case .user(_, _, let origin)? = prompt?.kind { return origin }
         return nil
     }
 }

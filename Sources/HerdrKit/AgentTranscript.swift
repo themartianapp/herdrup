@@ -49,6 +49,15 @@ public enum TranscriptAuthor: Sendable, Equatable {
     case guest(name: String?)
 }
 
+/// Whose request a user turn was, as herdr records it (owner decision 2026-11-06). herdr marks a
+/// brokered prompt that was not the owner's (gitmoot, a script, another agent) `origin: "other"`
+/// and omits the field otherwise, so `mine` also covers "unknown": an older herdr, or a prompt
+/// typed straight into the terminal. Independent of `TranscriptAuthor`, which names a guest.
+public enum TranscriptOrigin: Sendable, Equatable {
+    case mine
+    case other
+}
+
 public enum TranscriptStepStatus: String, Sendable, Equatable {
     case running, ok, error
 }
@@ -226,7 +235,7 @@ public struct TranscriptAsk: Sendable, Equatable {
 
 public struct TranscriptEntry: Decodable, Sendable, Equatable, Identifiable {
     public enum Kind: Sendable, Equatable {
-        case user(text: String, author: TranscriptAuthor)
+        case user(text: String, author: TranscriptAuthor, origin: TranscriptOrigin = .mine)
         /// Markdown. `final` marks the turn's final answer; a non-final reply is text omp
         /// wrote before a tool call, a real mid-task update.
         case reply(text: String, final: Bool)
@@ -254,7 +263,7 @@ public struct TranscriptEntry: Decodable, Sendable, Equatable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id, kind, text, author, final, tool, intent, status, detail, source, title, from, body
-        case items, questions, answer, error
+        case items, questions, answer, error, origin
         case tsMs = "ts_ms"
         case authorName = "author_name"
     }
@@ -270,7 +279,11 @@ public struct TranscriptEntry: Decodable, Sendable, Equatable, Identifiable {
             let authorName = try c.decodeIfPresent(String.self, forKey: .authorName)
             let author: TranscriptAuthor = try c.decodeIfPresent(String.self, forKey: .author) == "guest"
                 ? .guest(name: authorName) : .owner
-            kind = .user(text: try text(), author: author)
+            // Only "other" is a claim; anything else (absent, unknown) stays the owner's, so
+            // the up arrow never loses a turn to data it cannot read.
+            let origin: TranscriptOrigin = try c.decodeIfPresent(String.self, forKey: .origin) == "other"
+                ? .other : .mine
+            kind = .user(text: try text(), author: author, origin: origin)
         case "reply":
             kind = .reply(text: try text(), final: try c.decodeIfPresent(Bool.self, forKey: .final) ?? false)
         case "thinking":
