@@ -1008,7 +1008,7 @@ describe("landing page script", () => {
   });
 
   // Owner report 2026-11-05: on a Windows computer the page offered the App Store.
-  it("offers the App Store only on an iPhone or iPad, and HerdrUp Desktop on a computer", () => {
+  it("offers the App Store only on an iPhone or iPad and HerdrUp Desktop on a computer", () => {
     const cases: [string, number, string][] = [
       ["Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1", 5, "ios"],
       // iPadOS Safari asks for the desktop site and reports a Mac; only the touch screen tells.
