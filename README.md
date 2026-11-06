@@ -259,6 +259,10 @@ after rotation and before each screenshot; an unreadable final state fails the p
 When the interface refuses to rotate, the device orientation is set directly and
 recorded in `pose.notes`; if that also fails, the pose fails.
 These mock-data screenshots verify layout, not a live connection or physical-device fold transitions.
+The same script runs on the macserve Mac Studio through its script template
+(`.macserve.json` script shard `duo-screenshots`). There it takes the app and output directories from
+`MACSERVE_APP_DIR` and `MACSERVE_OUTPUT`, and it runs without Homebrew: when GNU
+`gtimeout` is missing, the bounds on simulator calls come from the script itself.
 
 The shared native composer reconciles external text edits after the SwiftUI layout pass,
 using the current binding rather than a captured layout value. This preserves newer

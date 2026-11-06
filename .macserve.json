@@ -7,4 +7,7 @@
   "agents":["HerdrUITests/AgentFoldersTests","HerdrUITests/AgentListChromeTests","HerdrUITests/AgentRosterScrollTests","HerdrUITests/AgentAvatarUITests","HerdrUITests/ArchivedCloseTests","HerdrUITests/NeedsYouPillTests","HerdrUITests/SelectAgentFieldTests","HerdrUITests/SessionPillsTests","HerdrUITests/StaleFleetRowTests","HerdrUITests/StatusMotionTests","HerdrUITests/LiveEventsTests"],
   "settings":["HerdrUITests/SettingsTests","HerdrUITests/ServerUpdateUITests","HerdrUITests/SavedHostMissingSecretTests","HerdrUITests/GitHubStarPromptTests","HerdrUITests/OnboardingTests"],
   "duo":["HerdrUITests/DuoTransitionTests"]
+ }},
+ "script":{"shards":{
+  "duo-screenshots":{"run":"Tools/ci/duo-screenshots.sh"}
  }}}
