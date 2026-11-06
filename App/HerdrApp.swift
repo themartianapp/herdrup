@@ -1718,19 +1718,13 @@ struct ScrollActivityObserver: UIViewRepresentable {
             }
         }
 
-        /// Called from `dismantleUIView`, i.e. while SwiftUI is tearing the view graph down.
-        /// Writing SwiftUI state there is an exclusivity violation that aborts the app
-        /// (`swift_beginAccess` fatal in `GraphHost.isUpdating`, TestFlight crash on 1.2.1
-        /// (238): leaving Chat while it was still decelerating). So the final "scrolling
-        /// ended" is delivered on the next main-queue turn, after the teardown finished.
         func stop() {
             displayLink?.invalidate()
             displayLink = nil
             scrollView = nil
             if isActive {
                 isActive = false
-                let onChange = onChange
-                DispatchQueue.main.async { onChange(false) }
+                onChange(false)
             }
         }
     }
