@@ -422,8 +422,12 @@ private final class ChatPromptTops {
     /// Turn id → its prompt's top is above the viewport. Only drawn rows report.
     var above: [String: Bool] = [:]
     /// The turn the up arrow last scrolled to, so a tap before the scroll has settled still
-    /// goes one further up. Cleared when the reader drags or goes back to the latest.
-    var lastJump: String?
+    /// goes one further up. Valid only while the chat stays at the offset the jump left it at
+    /// (`TranscriptPreviousMine.LastJump`): a drag, search, Jump to latest or any other move
+    /// retires it.
+    var lastJump: TranscriptPreviousMine.LastJump?
+    /// Bumped per jump, so a superseded jump's settle does not record its offset.
+    var jumpGeneration = 0
 }
 
 /// Reports whether a prompt row's top is above the chat's viewport (`space`), when the row is
@@ -662,6 +666,9 @@ struct ChatView: View {
             guard offersPreviousMine else { return }
             honoursTurnOrigin = await client.advertisesTurnOrigin()
         }
+        // Search moves the chat on its own: the up arrow then starts from what is on screen.
+        // (The offset check retires a settled jump anyway; this also covers one still gliding.)
+        .onChange(of: findRequest != nil) { _, _ in promptTops.lastJump = nil }
         .sheet(item: Binding(get: { openNote.map(IdentifiedNote.init) }, set: { openNote = $0?.note })) { item in
             ChatNoteSheet(note: item.note)
         }
@@ -1012,14 +1019,13 @@ struct ChatView: View {
         if mineBoundary != boundary { mineBoundary = boundary }
     }
 
-    /// Where a tap searches from: above the screen, and above the last jump while the reader
-    /// has not moved the chat since (its scroll may not have settled yet).
+    /// Where a tap searches from: above the screen, and above the last jump while the chat is
+    /// still where that jump left it (its scroll may not have settled yet). Once anything else
+    /// moved the chat, the screen alone decides (`TranscriptPreviousMine.searchStart`).
     private var previousMineSearchStart: String? {
-        let boundary = currentMineBoundary
-        guard let last = promptTops.lastJump, let lastIndex = model.turns.firstIndex(where: { $0.id == last })
-        else { return boundary }
-        guard let boundary, let boundaryIndex = model.turns.firstIndex(where: { $0.id == boundary }) else { return last }
-        return lastIndex < boundaryIndex ? last : boundary
+        TranscriptPreviousMine.searchStart(in: model.turns, boundary: currentMineBoundary,
+                                           lastJump: promptTops.lastJump,
+                                           offset: scrollPosition.offset.map(Double.init))
     }
 
     /// Scrolls to the owner's previous message above the screen, loading older pages (as search
@@ -1057,7 +1063,9 @@ struct ChatView: View {
     private func revealPrompt(_ turnID: String, _ proxy: ScrollViewProxy) async {
         let rowID = "prompt:" + turnID
         guard let index = model.rowIndex[rowID] else { return }
-        promptTops.lastJump = turnID
+        promptTops.jumpGeneration += 1
+        let generation = promptTops.jumpGeneration
+        promptTops.lastJump = TranscriptPreviousMine.LastJump(turnID: turnID)
         followingLatest = false
         atBottom = false
         if index < drawnStart {
@@ -1070,6 +1078,25 @@ struct ChatView: View {
         } else {
             withAnimation(.easeOut(duration: 0.3)) { proxy.scrollTo(rowID, anchor: .top) }
         }
+        Task { await recordJumpSettled(turnID, generation: generation) }
+    }
+
+    /// Records the offset the jump settled at; from then on any other move of the chat (search,
+    /// a drag, Jump to latest, an older page's anchor) retires it. Starts after the glide, so a
+    /// still offset before the scroll begins is not taken for the end of it.
+    private func recordJumpSettled(_ turnID: String, generation: Int) async {
+        try? await Task.sleep(nanoseconds: reduceMotion ? 50_000_000 : 350_000_000)
+        var previous: CGFloat?
+        for _ in 0..<20 {
+            guard promptTops.jumpGeneration == generation, promptTops.lastJump?.turnID == turnID else { return }
+            let now = scrollPosition.offset
+            if let now, let previous, abs(now - previous) < 0.5 { break }
+            previous = now
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        guard promptTops.jumpGeneration == generation, promptTops.lastJump?.turnID == turnID,
+              let now = scrollPosition.offset else { return }
+        promptTops.lastJump?.offset = Double(now)
     }
 
     // MARK: - Top of the list

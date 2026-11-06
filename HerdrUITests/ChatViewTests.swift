@@ -83,6 +83,52 @@ final class ChatViewTests: XCTestCase {
         XCTAssertTrue(app.buttons["chat-jump-latest"].waitForExistence(timeout: 4), "the down arrow comes back")
     }
 
+    /// Review 18e58482c5fdb8ca F1: after the up arrow reached question 38, search moved the
+    /// chat down to the CI question. Once search closes, the next tap goes to the owner's
+    /// message just above what is on screen (question 40 or 39, both loaded), not on from
+    /// question 38 to 37, which the old code fetched an older page for.
+    func testUpArrowAfterSearchStartsFromWhatIsOnScreen() {
+        let app = launch("chatview")
+        openAgent("herdr-app", in: app)
+        let chat = app.descendants(matching: .any)["chat-view"].firstMatch
+        XCTAssertTrue(chat.waitForExistence(timeout: 10))
+        XCTAssertTrue(poll(8, every: 0.3) { self.turns(chat) > 0 }, "the newest page should load")
+        let up = app.buttons["chat-jump-previous-mine"]
+        XCTAssertTrue(up.waitForExistence(timeout: 8))
+        func atTop(_ text: String) -> Bool {
+            let element = app.staticTexts[text].firstMatch
+            return element.exists && !element.frame.isEmpty
+                && element.frame.minY >= chat.frame.minY - 1 && element.frame.minY - chat.frame.minY < chat.frame.height / 3
+        }
+        let q38 = "Synthetic question 38: is check 38 green?"
+        var reached = false
+        for _ in 0..<6 where !reached {
+            up.tap()
+            reached = poll(3, every: 0.3) { atTop(q38) }
+        }
+        XCTAssertTrue(reached, "the up arrow should step up to question 38 on the newest page")
+        let loaded = turns(chat)
+
+        app.buttons["terminal-find"].tap()
+        let field = app.textFields["terminal-find-field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap()
+        field.typeText("CI running again")
+        expectation(for: NSPredicate(format: "label == %@", "1/1"), evaluatedWith: app.staticTexts["terminal-find-count"])
+        waitForExpectations(timeout: 5)
+        app.buttons["terminal-find"].tap()
+        XCTAssertTrue(poll(5, every: 0.3) { !atTop(q38) }, "search moved the chat away from question 38")
+
+        XCTAssertTrue(up.waitForExistence(timeout: 5))
+        up.tap()
+        let landed = poll(6, every: 0.3) {
+            atTop("Synthetic question 40: is check 40 green?") || atTop("Synthetic question 39: is check 39 green?")
+        }
+        attach(app, "chat-previous-mine-after-search")
+        XCTAssertTrue(landed, "the tap should land on the owner's message just above the screen")
+        XCTAssertEqual(turns(chat), loaded, "no older page: question 37 was never the target")
+    }
+
     /// `HERDR_MOCK_CHAT_ORIGINS=none`: every prompt but the newest is someone else's. The up arrow
     /// pages through the whole history, finds nothing to stop at, and hides.
     func testUpArrowHidesWhenNoEarlierMessageIsMine() {

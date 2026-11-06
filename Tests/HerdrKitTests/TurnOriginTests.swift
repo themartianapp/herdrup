@@ -181,6 +181,54 @@ final class TranscriptPreviousMineTests: XCTestCase {
         XCTAssertEqual(TranscriptPreviousMine.step(in: loaded, above: "u1", hasOlder: false, honoursOrigin: true),
                        TranscriptPreviousMine.Step.none)
     }
+
+    /// One tap as the Chat runs it: where to search from, then where to go.
+    private func tap(_ loaded: [TranscriptTurn], boundary: String?, lastJump: TranscriptPreviousMine.LastJump?,
+                     offset: Double?) -> TranscriptPreviousMine.Step {
+        let start = TranscriptPreviousMine.searchStart(in: loaded, boundary: boundary, lastJump: lastJump, offset: offset)
+        return TranscriptPreviousMine.step(in: loaded, above: start, hasOlder: false, honoursOrigin: true)
+    }
+
+    /// Review 18e58482c5fdb8ca F1: up-arrow to m2, search moves the chat to m4, search closes,
+    /// the next tap goes to m3 (the owner's message just above the screen), not m1.
+    func testAfterSearchMovesTheChatTheNextTapStartsFromTheScreen() throws {
+        let loaded = try turns([Self.user("m1", 1), Self.user("m2", 2), Self.user("m3", 3), Self.user("m4", 4)])
+        // The jump to m2 settled at offset 1000.
+        let jumped = TranscriptPreviousMine.LastJump(turnID: "m2", offset: 1000)
+        // Search revealed m4 lower down: the chat sits at 2600, m4 the oldest prompt on screen.
+        XCTAssertEqual(tap(loaded, boundary: "m4", lastJump: jumped, offset: 2600), .jump(turnID: "m3"))
+        // Without the move, the jump still stands and the tap goes on from it.
+        XCTAssertEqual(tap(loaded, boundary: "m2", lastJump: jumped, offset: 1002), .jump(turnID: "m1"),
+                       "a few points of layout drift keep the jump")
+    }
+
+    /// Quick taps while a jump is still gliding (its offset not recorded yet, the screen still
+    /// showing the bottom) step one further up each time.
+    func testQuickTapsWhileAJumpGlidesStepTwoTurns() throws {
+        let loaded = try turns([Self.user("m1", 1), Self.user("m2", 2), Self.user("m3", 3), Self.user("m4", 4)])
+        // At the bottom every prompt is above the screen.
+        guard case .jump(let first) = tap(loaded, boundary: nil, lastJump: nil, offset: 3000) else {
+            return XCTFail("the first tap should jump")
+        }
+        XCTAssertEqual(first, "m4")
+        // The scroll has barely moved when the second tap lands.
+        guard case .jump(let second) = tap(loaded, boundary: nil,
+                                           lastJump: .init(turnID: first), offset: 2980) else {
+            return XCTFail("the second tap should jump")
+        }
+        XCTAssertEqual(second, "m3", "two quick taps step two turns")
+        XCTAssertEqual(tap(loaded, boundary: nil, lastJump: .init(turnID: second), offset: 2900),
+                       .jump(turnID: "m2"))
+    }
+
+    func testALastJumpHoldsOnlyWhereItSettled() {
+        let gliding = TranscriptPreviousMine.LastJump(turnID: "m2")
+        XCTAssertTrue(gliding.holds(at: 500), "not settled yet: still the reader's place")
+        let settled = TranscriptPreviousMine.LastJump(turnID: "m2", offset: 500)
+        XCTAssertTrue(settled.holds(at: 504))
+        XCTAssertFalse(settled.holds(at: 505), "moved past the tolerance")
+        XCTAssertFalse(settled.holds(at: nil))
+    }
 }
 
 /// The up arrow against a real `TranscriptStore`: when no owner turn is loaded above, it asks
