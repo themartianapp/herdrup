@@ -368,6 +368,51 @@ final class SettingsTests: XCTestCase {
         }
     }
 
+    /// "An agent finishes" is Off / Only my requests / Always (owner decision 2026-11-06). On a
+    /// herdr without `turn_origin` (the plain mock), Only my requests says it falls back to every
+    /// finished turn; with it (`HERDR_MOCK_TURN_ORIGIN`), no note. Ends on Off, the default.
+    func testAgentFinishesOffersOnlyMyRequestsWithAFallbackNote() {
+        for turnOrigin in [false, true] {
+            let app = XCUIApplication.launched(mock: "settings",
+                                               environment: turnOrigin ? ["HERDR_MOCK_TURN_ORIGIN": "1"] : [:])
+            let manage = app.staticTexts["Notifications"].firstMatch
+            XCTAssertTrue(manage.waitForExistence(timeout: 15), "Settings should list Notifications")
+            manage.tap()
+            let picker = app.buttons["settings-notify-finishes"]
+            XCTAssertTrue(picker.waitForExistence(timeout: 10), "\"An agent finishes\" should be a picker")
+
+            func choose(_ option: String) {
+                // Tap the item once it is hittable; reopen if the first tap hit the dismissing
+                // backdrop (see testSettingsDefaultDecidesWhereOmpOpens).
+                for _ in 0..<2 where picker.value as? String != option {
+                    picker.tap()
+                    let item = app.buttons[option].firstMatch
+                    XCTAssertTrue(poll(5, every: 0.2) { item.exists && !item.frame.isEmpty && item.isHittable },
+                                  "the menu should offer \(option)")
+                    for other in ["Off", "Only my requests", "Always"] {
+                        XCTAssertTrue(app.buttons[other].firstMatch.exists, "the menu should offer \(other)")
+                    }
+                    item.tap()
+                    _ = poll(3, every: 0.3) { picker.value as? String == option }
+                }
+                XCTAssertEqual(picker.value as? String, option)
+            }
+
+            choose("Only my requests")
+            let note = app.staticTexts["settings-notify-finishes-fallback"]
+            if turnOrigin {
+                XCTAssertFalse(note.waitForExistence(timeout: 3), "a herdr with turn origins filters: no fallback note")
+            } else {
+                XCTAssertTrue(note.waitForExistence(timeout: 10), "without turn origins the row says it falls back")
+            }
+            attach(app, "settings-notify-finishes-\(turnOrigin ? "turn-origin" : "fallback")")
+            choose("Always")
+            XCTAssertFalse(note.exists, "the note is only for Only my requests")
+            choose("Off")
+            app.terminate()
+        }
+    }
+
     /// PROPOSAL B's SUGGESTIONS (#572): an update waiting and an exhausted account show as
     /// rows under the machine card, each with its count, and each opens the page that acts
     /// on it. The `serverupdate` mock offers herdr 0.9.5 to a 0.9.3 mac-mini, and its

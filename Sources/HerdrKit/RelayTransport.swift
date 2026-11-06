@@ -269,6 +269,9 @@ public struct RelayTransport: HerdrTransport {
 
     public var gramUploadChunkBytes: Int { Self.gramUploadChunkBytes }
 
+    /// The relay is the guest's way in: its writes are never the owner's.
+    public var actsAsGuest: Bool { true }
+
     public init(guestID: String, endpoint: RelayEndpoint, identity: GuestIdentity, connector: RelaySocketConnector = URLSessionRelayConnector(),
                 onFeatures: (@Sendable (GuestFeatures) -> Void)? = nil) {
         self.endpoint = endpoint

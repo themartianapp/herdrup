@@ -97,10 +97,16 @@ public protocol HerdrTransport: Sendable {
     /// SSH-sized `HerdrClient.gramUploadChunkBytes`; a transport without the SSH
     /// argv cap (`RelayTransport`) sends larger chunks.
     var gramUploadChunkBytes: Int { get }
+
+    /// The calls reach the host as a guest (the guest relay), not as its owner. A guest's
+    /// writes never claim `input_source: "app"`: only the owner's requests are "mine"
+    /// to herdr's turn origin (owner decision 2026-11-06).
+    var actsAsGuest: Bool { get }
 }
 
 extension HerdrTransport {
     public var gramUploadChunkBytes: Int { HerdrClient.gramUploadChunkBytes }
+    public var actsAsGuest: Bool { false }
 }
 
 /// Optional host capability for changing saved-machine federation through Herdr's CLI.

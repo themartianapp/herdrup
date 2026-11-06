@@ -242,7 +242,38 @@ final class ChatMockConversation: @unchecked Sendable {
         for (index, sent) in prompted.enumerated() {
             turns.append([Self.entry("sent\(index)u", sent.ms, ["kind": "user", "text": sent.text, "author": "owner"])])
         }
+        if audience == .owner, let origins = Self.origins {
+            turns = turns.map { turn in turn.map { Self.marked($0, origins: origins) } }
+        }
         return turns
+    }
+
+    /// `HERDR_MOCK_CHAT_ORIGINS` (owner): who started each turn, as a host with `turn_origin`
+    /// reports it, for the Chat's up arrow (`chat-jump-previous-mine`). `some`: synthetic
+    /// questions 38 and 40 and the CI question came from someone else (`origin: "other"`, as
+    /// gitmoot's would) and 39 from a guest, so the newest page holds only the newest owner
+    /// prompt; `none`: every prompt but the newest is someone else's. Unset: a host without
+    /// turn origins (the ping does not advertise them).
+    static let origins = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_ORIGINS"]
+
+    /// A user entry with the origin or author `origins` gives its turn; other entries as they are.
+    private static func marked(_ entry: [String: Any], origins: String) -> [String: Any] {
+        guard entry["kind"] as? String == "user", let id = entry["id"] as? String else { return entry }
+        let turn = String(id.dropLast())
+        var marked = entry
+        switch origins {
+        case "some":
+            if ["f38", "f40", "o1"].contains(turn) { marked["origin"] = "other" }
+            if turn == "f39" {
+                marked["author"] = "guest"
+                marked["author_name"] = "sam"
+            }
+        case "none":
+            if turn != "o2", !turn.hasPrefix("sent") { marked["origin"] = "other" }
+        default:
+            break
+        }
+        return marked
     }
 
     private static let ownerStepIntents = [
@@ -434,7 +465,9 @@ struct ChatMockTransport: HerdrTransport {
         let params = request["params"] as? [String: Any] ?? [:]
         switch request["method"] as? String {
         case "ping":
-            return #"{"id":"\#(id)","result":{"type":"pong","version":"0.9.4","protocol":22,"capabilities":{"agent_transcript":true,"agent_answer":true,"agent_avatar":true}}}"#
+            // A host that keeps turn origins whenever the conversation carries them.
+            let turnOrigin = ChatMockConversation.origins == nil ? "" : #","turn_origin":true"#
+            return #"{"id":"\#(id)","result":{"type":"pong","version":"0.9.4","protocol":22,"capabilities":{"agent_transcript":true,"agent_answer":true,"agent_avatar":true\#(turnOrigin)}}}"#
         case "agent.list":
             return AgentAvatarMockServer.overlay(#"{"id":"\#(id)","result":{"type":"agent_list","agents":[\#(Self.agentsJSON)]}}"#)
         case "agent.transcript":

@@ -884,7 +884,7 @@ final class TranscriptStoreTests: XCTestCase {
         let recapText = try XCTUnwrap(store.recap?.text)
         let entryTexts = store.entries.compactMap { entry -> String? in
             switch entry.kind {
-            case let .user(text, _), let .reply(text, _), let .summary(text): text
+            case let .user(text, _, _), let .reply(text, _), let .summary(text): text
             default: nil
             }
         }

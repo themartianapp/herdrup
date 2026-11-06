@@ -27,14 +27,14 @@ final class PushRelayTests: XCTestCase {
         let client = HerdrClient(transport: capture)
 
         try await client.registerDevice(token: "abcd", needsInput: true, dies: false,
-                                        finishes: false, gram: true)
+                                        finishes: .off, gram: true)
         var p = try params(capture.lastRequest)
         XCTAssertEqual(p["device_token"] as? String, "abcd")
         XCTAssertNil(p["relay_capability"], "nil capability must be omitted: \(capture.lastRequest)")
         XCTAssertFalse(capture.lastRequest.contains("relay_capability"))
 
         try await client.registerDevice(token: "abcd", needsInput: true, dies: false,
-                                        finishes: false, gram: true, relayCapability: "hpr1.cap")
+                                        finishes: .off, gram: true, relayCapability: "hpr1.cap")
         p = try params(capture.lastRequest)
         XCTAssertEqual(p["device_token"] as? String, "abcd", "the raw token must still be sent")
         XCTAssertEqual(p["relay_capability"] as? String, "hpr1.cap")

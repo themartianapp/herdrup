@@ -107,7 +107,7 @@ public struct TranscriptOutbox: Sendable, Equatable {
         }
         for entry in entries {
             switch entry.kind {
-            case .user(let text, let author):
+            case .user(let text, let author, _):
                 guard !recordedPromptIDs.contains(entry.id) else { continue }
                 let recorded = Self.normalized(text)
                 if let index = messages.firstIndex(where: { message in
