@@ -5,12 +5,26 @@
 // Every field is written with textContent, and only a b64url payload is ever placed in the
 // app link and the browser link (/web/#<payload>), which both carry it in the fragment, so
 // no request ever sends it to a server.
-import { browserLink, invitePayload, openShortInvite, shortInvite } from "./invite.js";
+import { browserLink, installTarget, invitePayload, openShortInvite, shortInvite } from "./invite.js";
 
 (async function () {
   var APP_LINK = "herdrup://guest-invite#";
   var B64URL = /^[A-Za-z0-9_-]+$/;
   var $ = function (id) { return document.getElementById(id); };
+
+  // The App Store app is for iPhone and iPad only; a computer gets HerdrUp Desktop instead.
+  var target = installTarget(navigator.userAgent, navigator.maxTouchPoints);
+  var device = target === "ios" ? "phone" : target === "desktop" ? "computer" : "device";
+  if (target === "ios") {
+    $("store").hidden = false;
+  } else if (target === "desktop") {
+    $("desktop").hidden = false;
+    $("lead").textContent = "Open this link on the computer or iPhone where HerdrUp is installed.";
+    $("hint").textContent = "No HerdrUp yet? Click Open in browser, or install HerdrUp for desktop, then come back to this page and click Open in HerdrUp.";
+  } else {
+    $("lead").textContent = "Open this link on the iPhone or computer where HerdrUp is installed.";
+    $("hint").textContent = "No HerdrUp for this device? Tap Open in browser.";
+  }
 
   function decode(payload) {
     var base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
@@ -106,7 +120,7 @@ import { browserLink, invitePayload, openShortInvite, shortInvite } from "./invi
   document.title = invite.owner_name + " shared " + invite.agent_name + " with you · HerdrUp";
   $("avatar").textContent = Array.from(invite.agent_name)[0].toUpperCase();
   $("title").textContent = invite.owner_name + " shared " + invite.agent_name + " with you";
-  $("lead").textContent = "You'll be able to watch it work and send it messages and files from this phone.";
+  $("lead").textContent = "You'll be able to watch it work and send it messages and files from this " + device + ".";
   $("machine").textContent = invite.machine_label;
   $("agent").textContent = invite.agent_name;
   $("guest").textContent = invite.guest_name;

@@ -70,6 +70,22 @@ export function browserLink(payload) {
 }
 
 /**
+ * Which HerdrUp this browser's device installs: "ios" on an iPhone or iPad (iPadOS Safari
+ * reports a Mac, told apart by its touch screen), "desktop" on a Windows, Mac or Linux
+ * computer (HerdrUp Desktop), "" anywhere else, such as Android, which has no HerdrUp.
+ * @param {string} userAgent navigator.userAgent
+ * @param {number} maxTouchPoints navigator.maxTouchPoints
+ * @returns {"ios" | "desktop" | ""}
+ */
+export function installTarget(userAgent, maxTouchPoints) {
+  if (/iPhone|iPad|iPod/.test(userAgent)) return "ios";
+  if (/Macintosh/.test(userAgent)) return maxTouchPoints > 1 ? "ios" : "desktop";
+  if (/Android|Mobile/.test(userAgent)) return "";
+  if (/Windows|Linux|X11/.test(userAgent)) return "desktop";
+  return "";
+}
+
+/**
  * Whether an invite's relay names this page's relay: the page origin exactly, with or without
  * one trailing slash, as the app accepts (GuestInvite.Web.isOnRelay). Compared as strings, not
  * parsed: the payload is handed to the app unchanged, and a parser-ambiguous spelling (a
