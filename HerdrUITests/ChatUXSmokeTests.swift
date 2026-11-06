@@ -570,12 +570,13 @@ final class ChatUXSmokeTests: XCTestCase {
     }
 
     /// Scrolls the chat until `element` sits well inside the transcript: clear of the header,
-    /// and of the composer and the fade above it, so its pixels are the colours drawn.
-    private func bringIntoView(_ element: XCUIElement, in app: XCUIApplication, _ what: String,
+    /// and of the composer and the fade above it, so its pixels are the colours drawn. It
+    /// drags toward the element, whichever side it is on; `steps` bounds how far it goes.
+    private func bringIntoView(_ element: XCUIElement, in app: XCUIApplication, _ what: String, steps: Int = 8,
                                file: StaticString = #filePath, line: UInt = #line) {
         let chat = app.descendants(matching: .any)["chat-view"].firstMatch
         let composer = app.descendants(matching: .any)["composer-card"].firstMatch
-        for _ in 0..<8 {
+        for _ in 0..<steps {
             let top = chat.frame.minY + 48
             let bottom = (composer.exists ? composer.frame.minY : chat.frame.maxY) - 48
             let frame = element.frame
@@ -793,11 +794,9 @@ final class ChatUXSmokeTests: XCTestCase {
     /// in a selectable text view; a fenced code block has its own Copy.
     func testMessagesCopyAndSelectText() {
         let app = launch(copyFixture: true)
-        let chat = app.descendants(matching: .any)["chat-view"].firstMatch
         let paragraph = app.staticTexts["Copy this reply, then paste it."].firstMatch
         XCTAssertTrue(paragraph.waitForExistence(timeout: 12), app.debugDescription)
-        for _ in 0..<4 where !paragraph.isHittable { chat.swipeDown() }
-        XCTAssertTrue(paragraph.isHittable, app.debugDescription)
+        bringIntoView(paragraph, in: app, "the reply")
         XCTAssertNil(copiedText(app), "precondition: nothing copied yet")
 
         let codeCopy = app.buttons["gram-code-copy"].firstMatch
@@ -831,9 +830,12 @@ final class ChatUXSmokeTests: XCTestCase {
         app.buttons["chat-select-text-done"].tap()
         XCTAssertTrue(textView.waitForNonExistence(timeout: 5), "Done closes the Select Text sheet")
 
+        // A swipe-down-only loop failed here on CI (#595, #627, #632 run 42137284739): after the
+        // Select Text sheet closed, the prompt sat ~2,200 pt BELOW the visible chat, and each
+        // swipe down moved it further away. Scroll toward it instead.
         let bubble = app.staticTexts["Check typography and wrapped tables."].firstMatch
-        for _ in 0..<6 where !bubble.isHittable { chat.swipeDown() }
-        XCTAssertTrue(bubble.isHittable, app.debugDescription)
+        XCTAssertTrue(bubble.waitForExistence(timeout: 5), app.debugDescription)
+        bringIntoView(bubble, in: app, "the prompt bubble", steps: 24)
         let bubbleCopy = openMenu(app, on: bubble, entry: "Copy")
         XCTAssertFalse(app.buttons["Copy as Markdown"].exists, "a prompt is copied as typed, with no markdown variant")
         XCTAssertTrue(app.buttons["Select Text"].exists, "a prompt offers Select Text")
