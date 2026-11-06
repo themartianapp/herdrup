@@ -448,6 +448,11 @@ struct ChatMockTransport: HerdrTransport {
         ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_STARTUP"]?
             .split(separator: ",").map(String.init) ?? [])
 
+    /// `HERDR_MOCK_CHAT_OLDER_DELAY=<seconds>`: older pages (`before`) answer that much later,
+    /// so a test can act while one is still on the way.
+    private static let olderDelay = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_OLDER_DELAY"]
+        .flatMap(Double.init) ?? 0
+
     private final class ScriptedCodes: @unchecked Sendable {
         private let lock = NSLock()
         private var codes: [String]
@@ -477,6 +482,9 @@ struct ChatMockTransport: HerdrTransport {
             }
             if let code = Self.startupErrors.next() {
                 return ChatMockConversation.error(id: id, code: code, message: "agent still starting")
+            }
+            if Self.olderDelay > 0, params["before"] is String {
+                try? await Task.sleep(for: .seconds(Self.olderDelay))
             }
             return ChatMockConversation.owner.transcript(id: id, params: params)
         case "agent.answer":

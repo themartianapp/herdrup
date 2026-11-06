@@ -428,6 +428,10 @@ private final class ChatPromptTops {
     var lastJump: TranscriptPreviousMine.LastJump?
     /// Bumped per jump, so a superseded jump's settle does not record its offset.
     var jumpGeneration = 0
+    /// Bumped when search opens or closes. An up-arrow search reads it after every wait (an
+    /// older page, the top already fetching one): the view value it captured still has no
+    /// search, so this is how it learns search took over and gives up (review 18e58fbbc4ef6e41).
+    var navigation = 0
 }
 
 /// Reports whether a prompt row's top is above the chat's viewport (`space`), when the row is
@@ -668,7 +672,10 @@ struct ChatView: View {
         }
         // Search moves the chat on its own: the up arrow then starts from what is on screen.
         // (The offset check retires a settled jump anyway; this also covers one still gliding.)
-        .onChange(of: findRequest != nil) { _, _ in promptTops.lastJump = nil }
+        .onChange(of: findRequest != nil) { _, _ in
+            promptTops.lastJump = nil
+            promptTops.navigation += 1
+        }
         .sheet(item: Binding(get: { openNote.map(IdentifiedNote.init) }, set: { openNote = $0?.note })) { item in
             ChatNoteSheet(note: item.note)
         }
@@ -1034,9 +1041,10 @@ struct ChatView: View {
     private func jumpToPreviousMine(_ proxy: ScrollViewProxy) {
         guard !findingPreviousMine else { return }
         let start = previousMineSearchStart
+        let navigation = promptTops.navigation
         Task { @MainActor in
             defer { if findingPreviousMine { findingPreviousMine = false } }
-            while findRequest == nil, !Task.isCancelled {
+            while promptTops.navigation == navigation, !Task.isCancelled {
                 switch TranscriptPreviousMine.step(in: model.turns, above: start, hasOlder: model.hasOlder,
                                                    honoursOrigin: honoursTurnOrigin) {
                 case .jump(let turnID):
@@ -1072,6 +1080,8 @@ struct ChatView: View {
             drawWindow = windowStarting(at: index)
             // Rows just drawn above the window are laid out before the scroll can find them.
             try? await Task.sleep(nanoseconds: 30_000_000)
+            // Search may have opened meanwhile; it retires this jump.
+            guard promptTops.jumpGeneration == generation, promptTops.lastJump?.turnID == turnID else { return }
         }
         if reduceMotion {
             proxy.scrollTo(rowID, anchor: .top)
