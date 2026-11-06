@@ -7,7 +7,7 @@ import {
   runInDurableObject,
 } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
-import { browserLink, invitePayload, isRelay, openShortInvite, shortInvite } from "../public/static/invite.js";
+import { browserLink, installTarget, invitePayload, isRelay, openShortInvite, shortInvite } from "../public/static/invite.js";
 
 // Everything here runs against the real Worker and Durable Object in workerd. Each test
 // uses its own host_id and client IPs, so storage and rate-limit state never collide.
@@ -1005,6 +1005,24 @@ describe("landing page script", () => {
     const short = shortInvite(`/i/${id}${b64url(keyBytes)}`);
     expect(short).not.toBeNull();
     expectLink(browserLink(await openShortInvite(short!, await seal(id, keyBytes, plaintext), ORIGIN)));
+  });
+
+  // Owner report 2026-11-05: on a Windows computer the page offered the App Store.
+  it("offers the App Store only on an iPhone or iPad, and HerdrUp Desktop on a computer", () => {
+    const cases: [string, number, string][] = [
+      ["Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1", 5, "ios"],
+      // iPadOS Safari asks for the desktop site and reports a Mac; only the touch screen tells.
+      ["Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15", 5, "ios"],
+      ["Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15", 0, "desktop"],
+      ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0", 0, "desktop"],
+      // A Windows laptop with a touch screen is still a computer.
+      ["Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:144.0) Gecko/20100101 Firefox/144.0", 10, "desktop"],
+      ["Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36", 0, "desktop"],
+      ["Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36", 5, ""],
+    ];
+    for (const [userAgent, touchPoints, want] of cases) {
+      expect([userAgent, touchPoints, installTarget(userAgent, touchPoints)]).toEqual([userAgent, touchPoints, want]);
+    }
   });
 });
 
