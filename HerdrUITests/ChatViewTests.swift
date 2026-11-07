@@ -129,6 +129,47 @@ final class ChatViewTests: XCTestCase {
         XCTAssertEqual(turns(chat), loaded, "no older page: question 37 was never the target")
     }
 
+    /// Review 18e58fbbc4ef6e41 F2: the up arrow is waiting on an older page (held back 8 s) to
+    /// reach question 37 when search opens. When the page lands, the chat stays where search left
+    /// it: the old code went on to question 37. The term matches nothing: a match would pull the
+    /// chat back to itself when the page lands and hide the stray jump (it did, CI 42297542162).
+    func testSearchOpenedWhileTheUpArrowLoadsStopsTheJump() {
+        let app = launch("chatview", ["HERDR_MOCK_CHAT_ORIGINS": "some", "HERDR_MOCK_CHAT_OLDER_DELAY": "8"])
+        openAgent("herdr-app", in: app)
+        let chat = app.descendants(matching: .any)["chat-view"].firstMatch
+        XCTAssertTrue(chat.waitForExistence(timeout: 10))
+        XCTAssertTrue(poll(8, every: 0.3) { self.turns(chat) > 0 }, "the newest page should load")
+        let loaded = turns(chat)
+        let up = app.buttons["chat-jump-previous-mine"]
+        XCTAssertTrue(up.waitForExistence(timeout: 8))
+        // The newest prompt may be above the screen (a tap lands on it first); the next tap then
+        // fetches the older page. Find opens only once that fetch is under way (review 18e590a31540072c).
+        var loading = false
+        for _ in 0..<2 where !loading {
+            up.tap()
+            loading = poll(4, every: 0.2) { up.exists && (up.value as? String) == "Loading earlier messages" }
+        }
+        XCTAssertTrue(loading, "the up arrow should be fetching the held-back older page")
+
+        app.buttons["terminal-find"].tap()
+        let field = app.textFields["terminal-find-field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap()
+        field.typeText("zebra quartz")
+        // Past the typing pause, so the search has run (and found nothing to move to).
+        Thread.sleep(forTimeInterval: 1.5)
+        let q37 = app.staticTexts["Synthetic question 37: is check 37 green?"].firstMatch
+        XCTAssertFalse(q37.exists && chat.frame.intersects(q37.frame), "question 37 is still on the held-back page")
+
+        XCTAssertTrue(poll(15, every: 0.3) { self.turns(chat) > loaded }, "the held-back older page lands")
+        // The old code's jump glides for about 0.3 s after the page lands.
+        Thread.sleep(forTimeInterval: 1.5)
+        attach(app, "chat-previous-mine-search-took-over")
+        let shown = q37.exists && !q37.frame.isEmpty && chat.frame.intersects(q37.frame)
+        XCTAssertFalse(shown, "search took over: the up arrow must not scroll to question 37")
+        XCTAssertTrue(field.exists, "search is still open")
+    }
+
     /// `HERDR_MOCK_CHAT_ORIGINS=none`: every prompt but the newest is someone else's. The up arrow
     /// pages through the whole history, finds nothing to stop at, and hides.
     func testUpArrowHidesWhenNoEarlierMessageIsMine() {
