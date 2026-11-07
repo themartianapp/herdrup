@@ -596,6 +596,11 @@ case "$shard" in
     # iPhone half (no handles) runs in the iPhone app round.
     run_suite iPadGramColumn "$IPAD_UDID" 10m -only-testing:HerdrUITests/GramColumnTests || failed=1
     check_classes_ran TestReceipts/iPadGramColumn-first.xcresult GramColumnTests || failed=1
+    # The Chat's corner up arrow over the column's right resize band (#638 review F1): a tap
+    # on the arrow must jump. The rest of ChatViewTests runs on the iPhone.
+    run_suite iPadChatUpArrow "$IPAD_UDID" 5m \
+      -only-testing:HerdrUITests/ChatViewTests/testUpArrowOverTheIPadColumnEdgeStillJumps || failed=1
+    check_classes_ran TestReceipts/iPadChatUpArrow-first.xcresult ChatViewTests || failed=1
     # The GitHub star bar in the 320 pt sidebar (#602): compact layout, title on one line.
     run_suite iPadStarPrompt "$IPAD_UDID" 10m \
       -only-testing:HerdrUITests/GitHubStarPromptTests/testBarFitsTheIPadSidebar || failed=1

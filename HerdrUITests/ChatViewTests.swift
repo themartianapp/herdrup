@@ -83,6 +83,38 @@ final class ChatViewTests: XCTestCase {
         XCTAssertTrue(app.buttons["chat-jump-latest"].waitForExistence(timeout: 4), "the down arrow comes back")
     }
 
+    /// Review 18e5a606c8b8d005 F1: on the iPad the corner up arrow lies in the column's right
+    /// resize band (a 44 pt full-height drag target) whenever the column fills the chat, as the
+    /// default Wide does here. A tap on the arrow's centre must jump, not start a resize.
+    func testUpArrowOverTheIPadColumnEdgeStillJumps() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .pad, "the column resizer exists on regular width only")
+        let app = launch("chatview", ["HERDR_MOCK_CHAT_ORIGINS": "some"])
+        openAgent("herdr-app", in: app)
+        let chat = app.descendants(matching: .any)["chat-view"].firstMatch
+        XCTAssertTrue(chat.waitForExistence(timeout: 10))
+        XCTAssertTrue(poll(8, every: 0.3) { self.turns(chat) > 0 }, "the newest page should load")
+        let up = app.buttons["chat-jump-previous-mine"]
+        XCTAssertTrue(up.waitForExistence(timeout: 8))
+        let handle = app.descendants(matching: .any)["chat-width-handle-right"].firstMatch
+        XCTAssertTrue(handle.waitForExistence(timeout: 5))
+        // The case under test: the arrow's centre is inside the handle's band.
+        XCTAssertTrue(handle.frame.contains(CGPoint(x: up.frame.midX, y: up.frame.midY)),
+                      "precondition: the arrow (\(up.frame)) sits in the resize band (\(handle.frame))")
+
+        let target = app.staticTexts["Synthetic question 37: is check 37 green?"].firstMatch
+        let column = app.descendants(matching: .any)["chat-column"].firstMatch
+        let width = column.exists ? column.frame.width : 0
+        var landed = false
+        // As on the iPhone: the first tap may stop at the newest prompt above the screen.
+        for _ in 0..<2 where !landed {
+            up.tap()
+            landed = poll(8, every: 0.3) { target.exists && chat.frame.intersects(target.frame) }
+        }
+        attach(app, "chat-previous-mine-ipad")
+        XCTAssertTrue(landed, "a tap on the arrow should jump to question 37, not grab the column edge")
+        if column.exists { XCTAssertEqual(column.frame.width, width, accuracy: 0.5, "the tap must not resize the column") }
+    }
+
     /// Review 18e58482c5fdb8ca F1: after the up arrow reached question 38, search moved the
     /// chat down to the CI question. Once search closes, the next tap goes to the owner's
     /// message just above what is on screen (question 40 or 39, both loaded), not on from

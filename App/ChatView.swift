@@ -715,27 +715,11 @@ struct ChatView: View {
             if !atBottom { ChatComposerFade(ground: ground) }
         }
         .overlay(alignment: .bottom) {
-            if landed, findRequest == nil {
-                let showsUp = showsPreviousMine
-                VStack(spacing: 12) {
-                    if showsUp {
-                        JumpToLatestButton(label: "Jump to my previous message", identifier: "chat-jump-previous-mine",
-                                           systemImage: "arrow.up", busy: findingPreviousMine) {
-                            jumpToPreviousMine(proxy)
-                        }
-                    }
-                    if !atBottom {
-                        JumpToLatestButton(label: "Jump to latest message", identifier: "chat-jump-latest") {
-                            promptTops.lastJump = nil
-                            scrollPosition.animateToLatest()
-                            followingLatest = true
-                        }
-                    } else if showsUp {
-                        // The down arrow's place, kept so the up arrow does not move when it shows.
-                        Color.clear.frame(width: 44, height: 44)
-                            .allowsHitTesting(false)
-                            .accessibilityHidden(true)
-                    }
+            if landed, findRequest == nil, !atBottom {
+                JumpToLatestButton(label: "Jump to latest message", identifier: "chat-jump-latest") {
+                    promptTops.lastJump = nil
+                    scrollPosition.animateToLatest()
+                    followingLatest = true
                 }
                 .padding(.bottom, 16)
             }
@@ -749,6 +733,26 @@ struct ChatView: View {
         }
         // The resizer's width is the chat's whole width: the most the column can take.
         .conversationColumnResizer(.chat)
+        // The up arrow sits in the bottom-right corner, clear of the reading column (owner chose
+        // proposal C, 2026-11-07): a 40 pt circle whose right edge lines up with the composer's,
+        // 12 pt above it. Its 44 pt tap box is 2 pt larger each side, hence 11 and 5. In the
+        // composer's column (no readable cap, as there), so it stays over the composer on a
+        // narrowed iPad column; and over the resizer, whose 44 pt edge band it overlaps, so a tap
+        // on the arrow jumps rather than starting a resize (review 18e5a606c8b8d005 F1).
+        .overlay(alignment: .bottom) {
+            if landed, findRequest == nil, showsPreviousMine {
+                HStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    JumpToLatestButton(label: "Jump to my previous message", identifier: "chat-jump-previous-mine",
+                                       systemImage: "arrow.up", busy: findingPreviousMine, diameter: 40) {
+                        jumpToPreviousMine(proxy)
+                    }
+                }
+                .padding(.trailing, 11)
+                .padding(.bottom, 5)
+                .conversationColumn()
+            }
+        }
         .task(id: model.loaded) {
             guard model.loaded, !landed, findRequest == nil else { return }
             for _ in 0..<8 {
