@@ -3,7 +3,8 @@ import SwiftUI
 /// The glass circle that returns a scrolled-back reader to the newest content, bottom-centre
 /// over the chat or the terminal. Shown only while the reader is away from the tail. An
 /// overlay, not a gesture: only the circle hit-tests, so touches elsewhere reach the content.
-/// The Chat stacks a second one above it, the up arrow to the owner's previous message.
+/// The Chat also shows a smaller one in its bottom-right corner, the up arrow to the owner's
+/// previous message.
 struct JumpToLatestButton: View {
     let label: String
     let identifier: String
@@ -14,6 +15,8 @@ struct JumpToLatestButton: View {
     /// The jump is still finding its target (the up arrow loading older pages): a spinner
     /// replaces the arrow.
     var busy = false
+    /// The visible circle. The tap area stays 44 pt whatever the size.
+    var diameter: CGFloat = 44
     let action: () -> Void
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -24,12 +27,13 @@ struct JumpToLatestButton: View {
                     ProgressView().controlSize(.small).tint(Palette.text)
                 } else {
                     Image(systemName: systemImage)
-                        .font(.system(size: 18, weight: .medium))
+                        .font(.system(size: 18 * diameter / 44, weight: .medium))
                         .foregroundStyle(Palette.text)
                 }
             }
-            .frame(width: 44, height: 44)
+            .frame(width: diameter, height: diameter)
             .modifier(GlassCircle(regular: regularGlass, reduceTransparency: reduceTransparency))
+            .frame(width: max(44, diameter), height: max(44, diameter))
             .contentShape(Circle())
         }
         .buttonStyle(.plain)
