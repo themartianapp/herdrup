@@ -4,7 +4,7 @@
   "chat":["HerdrUITests/ChatViewTests","HerdrUITests/ChatUXSmokeTests"],
   "gram":["HerdrUITests/GramTests","HerdrUITests/GramColumnTests"],
   "guest":["HerdrUITests/GuestPaneTests","HerdrUITests/GuestGramPaneTests","HerdrUITests/GuestPushTests","HerdrUITests/GuestShareTests","HerdrUITests/GuestShellTests"],
-  "agents":["HerdrUITests/AgentFoldersTests","HerdrUITests/AgentListChromeTests","HerdrUITests/AgentRosterScrollTests","HerdrUITests/AgentAvatarUITests","HerdrUITests/ArchivedCloseTests","HerdrUITests/NeedsYouPillTests","HerdrUITests/SelectAgentFieldTests","HerdrUITests/SessionPillsTests","HerdrUITests/StaleFleetRowTests","HerdrUITests/StatusMotionTests","HerdrUITests/LiveEventsTests"],
+  "agents":["HerdrUITests/AgentFoldersTests","HerdrUITests/AgentListChromeTests","HerdrUITests/AgentRosterScrollTests","HerdrUITests/AgentAvatarUITests","HerdrUITests/ArchivedCloseTests","HerdrUITests/NeedsYouPillTests","HerdrUITests/SessionPillsTests","HerdrUITests/StaleFleetRowTests","HerdrUITests/StatusMotionTests","HerdrUITests/LiveEventsTests"],
   "settings":["HerdrUITests/SettingsTests","HerdrUITests/ServerUpdateUITests","HerdrUITests/SavedHostMissingSecretTests","HerdrUITests/GitHubStarPromptTests","HerdrUITests/OnboardingTests"],
   "duo":["HerdrUITests/DuoTransitionTests"]
  }},
