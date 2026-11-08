@@ -74,6 +74,11 @@ targets:
       - path: App
         excludes:
           - "Resources/Mermaid/README.md"
+      # Apple privacy manifest (required-reason APIs + collected data). One per
+      # shipped bundle, kept outside each target's source folder so it is added
+      # exactly once, as a resource.
+      - path: PrivacyManifests/Herdr/PrivacyInfo.xcprivacy
+        buildPhase: resources
       # The Live Activity model (#90), shared verbatim with the widget extension so
       # both encode/decode the same ContentState. Kept out of HerdrKit (which must stay
       # Linux-buildable) and out of App/ (widget can't see App/).
@@ -353,6 +358,8 @@ targets:
     platform: iOS
     sources:
       - path: HerdrWidgets
+      - path: PrivacyManifests/HerdrWidgets/PrivacyInfo.xcprivacy
+        buildPhase: resources
       - path: Shared
       # ONLY THE FACES THE WIDGET REGISTERS. `App/Fonts` is shared with the app, and
       # pulling the whole directory in put a second copy of SymbolsNerdFontMono
@@ -421,6 +428,8 @@ targets:
     platform: iOS
     sources:
       - path: HerdrNotificationService
+      - path: PrivacyManifests/HerdrNotificationService/PrivacyInfo.xcprivacy
+        buildPhase: resources
       - path: AskPush/AskPush.swift
     dependencies:
       - sdk: UserNotifications.framework
@@ -455,6 +464,8 @@ targets:
     platform: iOS
     sources:
       - path: HerdrShareExtension
+      - path: PrivacyManifests/HerdrShareExtension/PrivacyInfo.xcprivacy
+        buildPhase: resources
       - path: App/SavedHosts.swift
       - path: App/GuestKeychain.swift
       - path: App/KeychainHostKeyPolicy.swift
