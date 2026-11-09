@@ -36,9 +36,9 @@ struct GuestHomeView: View {
     let onBack: (() -> Void)?
     /// Called after the share was removed (Leave, or Remove from the row or its menu).
     let onLeave: () -> Void
-    /// Hears the row's state in a word or two ("omp · idle", "unavailable") whenever it
-    /// changes, for the machine's Settings list.
-    let onStatus: ((String) -> Void)?
+    /// Where the row posts its state in a word or two ("omp · idle", "unavailable"), for
+    /// the machine's Settings list; nil when nothing lists it.
+    let statusBoard: GuestShareStatusBoard?
     let pollInterval: Duration
     let embedded: Bool
 
@@ -70,14 +70,14 @@ struct GuestHomeView: View {
 
     init(access: GuestAccess, connect: @escaping () throws -> GuestConnection,
          pollInterval: Duration = .seconds(5), embedded: Bool = false,
-         onBack: (() -> Void)?, onLeave: @escaping () -> Void, onStatus: ((String) -> Void)? = nil) {
+         onBack: (() -> Void)?, onLeave: @escaping () -> Void, statusBoard: GuestShareStatusBoard? = nil) {
         self.access = access
         self.connect = connect
         self.pollInterval = pollInterval
         self.embedded = embedded
         self.onBack = onBack
         self.onLeave = onLeave
-        self.onStatus = onStatus
+        self.statusBoard = statusBoard
     }
 
     var body: some View {
@@ -115,7 +115,9 @@ struct GuestHomeView: View {
             }
         }
         .task { await poll() }
-        .onChange(of: statusSummary, initial: true) { _, summary in onStatus?(summary) }
+        .onChange(of: statusSummary, initial: true) { _, summary in
+            statusBoard?.summaries[access.id] = summary
+        }
         // Each connection registers this phone's push token with the host once it learns the
         // host's features, so the host holds the current token and Gram preference.
         .onReceive(connection?.features.$current.eraseToAnyPublisher()

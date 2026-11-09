@@ -12,9 +12,9 @@ struct SharedMachineHomeView: View {
     @ObservedObject private var store = SharedMachinesStore.shared
     @State private var settingsAccess: GuestAccess?
     @State private var settingsConnection: GuestConnection?
-    /// What each grant's row last read ("omp · idle", "unavailable"), by grant id, so the
-    /// Settings list tells apart agents that share a name.
-    @State private var statuses: [GuestAccess.ID: String] = [:]
+    /// What each grant's row last read, so the Settings list tells apart agents that share
+    /// a name.
+    @State private var statuses = GuestShareStatusBoard()
 
     private var peers: [GuestAccess] {
         store.groups.first { $0.id == SharedMachineGroup.Identity(access) }?.accesses ?? [access]
@@ -53,7 +53,7 @@ struct SharedMachineHomeView: View {
                             ForEach(peers) { peer in
                                 GuestHomeView(access: peer, connect: { try connect(peer) },
                                               embedded: true, onBack: nil, onLeave: leftShare,
-                                              onStatus: { statuses[peer.id] = $0 })
+                                              statusBoard: statuses)
                             }
                         }
                     }
@@ -71,7 +71,7 @@ struct SharedMachineHomeView: View {
                             Label {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(peer.agentName)
-                                    Text(statuses[peer.id] ?? "connecting")
+                                    Text(statuses.summaries[peer.id] ?? "connecting")
                                         .font(Typography.app(13)).foregroundStyle(Palette.textDim)
                                 }
                             } icon: {
@@ -102,4 +102,11 @@ struct SharedMachineHomeView: View {
             onLeave()
         }
     }
+}
+
+/// Each share's row state in a word or two ("omp · idle", "unavailable"), by grant id: the
+/// rows post it, the machine's Settings list reads it.
+@Observable
+final class GuestShareStatusBoard {
+    var summaries: [GuestAccess.ID: String] = [:]
 }
