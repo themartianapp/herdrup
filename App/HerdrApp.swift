@@ -544,6 +544,14 @@ struct RootView: View {
             } else {
                 ConnectView { _ in }
             }
+        case .guestMachine:
+            // Three shares on one machine; the store empties as the test removes them.
+            if let access = sharedMachines.machines.first {
+                SharedMachineHomeView(access: access, connect: GuestMockTransport.connection(for:),
+                                      onBack: nil, onLeave: {})
+            } else {
+                ConnectView { _ in }
+            }
         case .guestPane, .guestPaused, .guestBlocked, .guestOldHost:
             GuestPaneMockHost(
                 scenario: mode == .guestPaused ? .paused : mode == .guestBlocked ? .blocked
@@ -560,12 +568,7 @@ struct RootView: View {
     private func mockGuestHome(_ access: GuestAccess) -> some View {
         GuestHomeView(
             access: access,
-            connect: {
-                let features = GuestFeaturesModel()
-                return GuestConnection(
-                    client: HerdrClient(transport: GuestMockTransport(scenario: .running, onFeatures: features.sink())),
-                    fingerprint: try GuestDevice.identity().fingerprint, features: features)
-            },
+            connect: { try GuestMockTransport.connection(for: access) },
             onBack: nil,
             onLeave: { openGuest = nil })
     }
@@ -9769,6 +9772,8 @@ struct HtmlPreviewHarness: View {
 enum ScreenshotMock {
     case onboarding, pairingGuidance, forkNotice, list, rosterStress, pane, settings, scroll, ccscroll, busyScroll, paging, backfill, keyframeHistory, keyframeHistoryRead, historyPaging, gram, resize, control, htmlPreview, widgets
     case guestAccept, guest, guestPane, guestPaused, guestBlocked, guestOldHost
+    // A guest's machine with several shared agents, one of them unavailable.
+    case guestMachine
     // Guest access, owner side: the pane with its share sheet, and Settings → Shared access.
     case share, sharedAccess
     // The home list's live status stream: an events_v2 daemon, and an older one.
@@ -9863,6 +9868,7 @@ enum ScreenshotMock {
         // pane in each state, all over GuestMockTransport.
         case "guestaccept": return .guestAccept
         case "guest": return .guest
+        case "guestmachine": return .guestMachine
         case "guestpane": return .guestPane
         case "guestpaused": return .guestPaused
         case "guestblocked": return .guestBlocked

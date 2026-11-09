@@ -34,8 +34,11 @@ struct GuestHomeView: View {
     let connect: () throws -> GuestConnection
     /// Back to the machine list; nil when this share is the only thing on the phone.
     let onBack: (() -> Void)?
-    /// Called after the share was removed (Leave, or Remove once access is lost).
+    /// Called after the share was removed (Leave, or Remove from the row or its menu).
     let onLeave: () -> Void
+    /// Hears the row's state in a word or two ("omp · idle", "unavailable") whenever it
+    /// changes, for the machine's Settings list.
+    let onStatus: ((String) -> Void)?
     let pollInterval: Duration
     let embedded: Bool
 
@@ -67,13 +70,14 @@ struct GuestHomeView: View {
 
     init(access: GuestAccess, connect: @escaping () throws -> GuestConnection,
          pollInterval: Duration = .seconds(5), embedded: Bool = false,
-         onBack: (() -> Void)?, onLeave: @escaping () -> Void) {
+         onBack: (() -> Void)?, onLeave: @escaping () -> Void, onStatus: ((String) -> Void)? = nil) {
         self.access = access
         self.connect = connect
         self.pollInterval = pollInterval
         self.embedded = embedded
         self.onBack = onBack
         self.onLeave = onLeave
+        self.onStatus = onStatus
     }
 
     var body: some View {
@@ -86,10 +90,6 @@ struct GuestHomeView: View {
                             GuestPaneView(client: connection.client, access: access, features: connection.features,
                                           tab: $paneTab) { showingPane = false }
                         }
-                    }
-                    .confirmationDialog("Remove \(access.agentName)?", isPresented: $confirmingRemove,
-                                        titleVisibility: .visible) {
-                        Button("Remove share", role: .destructive) { leave() }
                     }
             } else {
                 ZStack {
@@ -115,6 +115,7 @@ struct GuestHomeView: View {
             }
         }
         .task { await poll() }
+        .onChange(of: statusSummary, initial: true) { _, summary in onStatus?(summary) }
         // Each connection registers this phone's push token with the host once it learns the
         // host's features, so the host holds the current token and Gram preference.
         .onReceive(connection?.features.$current.eraseToAnyPublisher()
@@ -154,11 +155,6 @@ struct GuestHomeView: View {
             }
         }
         .toolbar(showingPane ? .hidden : .automatic, for: .tabBar)
-        .confirmationDialog("Remove \(access.machineLabel)?", isPresented: $confirmingRemove, titleVisibility: .visible) {
-            Button("Remove share", role: .destructive) { leave() }
-        } message: {
-            Text("\(access.ownerName) no longer shares \(access.agentName) with you.")
-        }
     }
 
     /// The owner's Agents bar: a small centred title, Back in its capsule. In an iPad window
@@ -193,8 +189,30 @@ struct GuestHomeView: View {
         .padding(.horizontal, 20).padding(.top, 4).padding(.bottom, 10)
     }
 
-    @ViewBuilder
+    /// The share's state, with removal in every state: a long-press menu on whatever shows,
+    /// and the Remove share button where the agent is unavailable or access was lost. Both
+    /// confirm before the share goes.
     private var content: some View {
+        stateContent
+            .stableContextMenu {
+                StableMenuItem("Remove share", systemImage: "trash", role: .destructive) {
+                    confirmingRemove = true
+                }
+            }
+            .confirmationDialog("Remove \(access.agentName)?", isPresented: $confirmingRemove,
+                                titleVisibility: .visible) {
+                Button("Remove share", role: .destructive) { leave() }
+            } message: {
+                if case .lost(let why) = status {
+                    Text(why)
+                } else {
+                    Text("To see \(access.agentName) again you'll need a new invite from \(access.ownerName).")
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var stateContent: some View {
         if let connectError {
             message(icon: "key.slash", title: "\(access.agentName): key unavailable", body: connectError)
         } else {
@@ -202,26 +220,31 @@ struct GuestHomeView: View {
             case .loading:
                 ProgressView().tint(Palette.textDim).frame(height: 64).padding(.top, 26)
             case .live(let row):
-                Button {
-                    withAnimation(.easeOut(duration: 0.26)) { showingPane = true }
-                } label: {
-                    agentRow(row)
+                HStack(spacing: 0) {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.26)) { showingPane = true }
+                    } label: {
+                        agentRow(row)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("guest-agent-row")
+                    if !Self.isRunning(row) {
+                        removeShareButton.padding(.trailing, 16)
+                    }
                 }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("guest-agent-row")
+                // The divider starts where the text starts, not under the avatar, and runs
+                // under the Remove share button too.
+                .overlay(alignment: .bottom) {
+                    Rectangle().fill(Palette.hairline).frame(height: 1 / displayScale)
+                        .padding(.leading, 20 + DesignTokens.Size.avatarPhone + 12)
+                        .padding(.trailing, 16)
+                }
             case .offline:
                 message(icon: "wifi.slash", title: "\(access.machineLabel) is offline",
                         body: "\(access.agentName) will show here again when the machine is back.")
             case .lost(let why):
                 message(icon: "person.crop.circle.badge.xmark", title: "\(access.agentName): access removed", body: why) {
-                    Button { confirmingRemove = true } label: {
-                        Text("Remove share")
-                            .font(Typography.app(13.5, .semibold)).foregroundStyle(Palette.died)
-                            .padding(.horizontal, 14).frame(height: 34)
-                            .overlay(Capsule().stroke(Palette.died.opacity(0.45), lineWidth: 1))
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.top, 6)
+                    removeShareButton.padding(.top, 6)
                 }
             case .failed(let why):
                 message(icon: "exclamationmark.triangle", title: "Can't reach \(access.agentName)", body: why)
@@ -229,12 +252,41 @@ struct GuestHomeView: View {
         }
     }
 
+    private var removeShareButton: some View {
+        Button { confirmingRemove = true } label: {
+            Text("Remove share")
+                .font(Typography.app(13.5, .semibold)).foregroundStyle(Palette.died)
+                .padding(.horizontal, 14).frame(height: 34)
+                .overlay(Capsule().stroke(Palette.died.opacity(0.45), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("guest-remove-share")
+    }
+
+    /// Whether the host lists the shared agent as running; otherwise its row reads
+    /// "Agent unavailable".
+    private static func isRunning(_ row: AgentRow?) -> Bool {
+        row.map { $0.info.guestRunning != false } ?? false
+    }
+
+    /// The row's state in a word or two, for the machine's Settings list.
+    private var statusSummary: String {
+        if connectError != nil { return "key unavailable" }
+        return switch status {
+        case .loading: "connecting"
+        case .live(let row): Self.isRunning(row) ? row.map(meta) ?? "running" : "unavailable"
+        case .offline: "offline"
+        case .lost: "access removed"
+        case .failed: "can't reach"
+        }
+    }
+
     /// The shared agent as a Messages-style row, like the owner's roster (#352): full width
-    /// on the ground, the round avatar with its status badge, the name over the preview, and
-    /// an inset divider. With no listed agent, or one the host reports as not the pane's
-    /// foreground program, it reads "Agent unavailable" with a dimmed avatar.
+    /// on the ground, the round avatar with its status badge, the name over the preview (the
+    /// caller draws the inset divider). With no listed agent, or one the host reports as not
+    /// the pane's foreground program, it reads "Agent unavailable" with a dimmed avatar.
     private func agentRow(_ row: AgentRow?) -> some View {
-        let running = row.map { $0.info.guestRunning != false } ?? false
+        let running = Self.isRunning(row)
         let group = running ? row?.group : nil
         return HStack(alignment: .center, spacing: 0) {
             Color.clear.frame(width: 20, height: 1)
@@ -250,10 +302,13 @@ struct GuestHomeView: View {
                         .font(.system(size: 17 * Typography.scale, weight: .semibold))
                         .foregroundStyle(Palette.text).lineLimit(1)
                     Spacer(minLength: 6)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Palette.textFaint)
-                        .accessibilityHidden(true)
+                    // Unavailable, the row's Remove share button stands where the chevron was.
+                    if running {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Palette.textFaint)
+                            .accessibilityHidden(true)
+                    }
                 }
                 // A waiting agent's preview reads in the primary colour, like an unread message.
                 Text(running ? row.map(meta) ?? "" : "Agent unavailable")
@@ -266,11 +321,6 @@ struct GuestHomeView: View {
             .padding(.trailing, 16)
             .frame(maxWidth: .infinity)
             .frame(height: 86 * max(1, Typography.scale), alignment: .center)
-            // The divider starts where the text starts, not under the avatar.
-            .overlay(alignment: .bottom) {
-                Rectangle().fill(Palette.hairline).frame(height: 1 / displayScale)
-                    .padding(.trailing, 16)
-            }
         }
         .contentShape(Rectangle())
     }

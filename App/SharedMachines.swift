@@ -23,9 +23,13 @@ final class SharedMachinesStore: ObservableObject {
     static let shared: SharedMachinesStore = {
         #if DEBUG
         // Screenshot mocks and UI tests never read or write the real list; the guest
-        // home mock starts with the mock share, which Leave then removes.
+        // home mocks start with their mock shares, which Leave then removes.
         if let mode = ScreenshotMock.mode {
-            let seeded = mode == .guest ? [GuestMockTransport.access] : []
+            let seeded: [GuestAccess] = switch mode {
+            case .guest: [GuestMockTransport.access]
+            case .guestMachine: GuestMockTransport.machineAccesses
+            default: []
+            }
             return SharedMachinesStore(defaults: nil, machines: seeded)
         }
         #endif
