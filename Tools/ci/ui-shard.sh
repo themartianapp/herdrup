@@ -5,9 +5,9 @@
 #
 #   iphone-terminal  TERMINAL_CLASSES, then ChatViewTests and PagingTests in rounds of
 #                    their own, on iPhone
-#   iphone-app       HerdrFontTests, then StatusMotionTests in its own round, then
-#                    every other HerdrUITests class on iPhone, then the SwiftTerm UIKit API
-#                    tests on iPhone
+#   iphone-app       HerdrFontTests, then StatusMotionTests and the guest classes in rounds
+#                    of their own, then every other HerdrUITests class on iPhone, then the
+#                    SwiftTerm UIKit API tests on iPhone
 #   ipad             iPad-specific rounds, then the SwiftTerm UIKit API tests on iPad
 #   settings-build   optimized simulator build; CI caches its products before testing
 #   settings-gram    iPad Settings resize/resume regression using that Distribution build
@@ -542,10 +542,19 @@ case "$shard" in
     # in iPhoneApp repeatedly exhausted its 30-minute cap before the last classes.
     run_suite iPhoneServerUpdate "$IPHONE_UDID" 10m -only-testing:HerdrUITests/ServerUpdateUITests || failed=1
     check_classes_ran TestReceipts/iPhoneServerUpdate-first.xcresult ServerUpdateUITests || failed=1
+    # The guest classes (#312) took ~18 min of the app round in run 42599598427, which with
+    # two new GuestShellTests cases exceeded its 40m twice; macserve runs them in ~11 min
+    # as its guest shard. 25m, as their slowest hosted run plus a third.
+    GUEST_CLASSES=(GuestPaneTests GuestGramPaneTests GuestPushTests GuestShareTests GuestShellTests)
+    guest=()
+    for class in "${GUEST_CLASSES[@]}"; do guest+=("-only-testing:HerdrUITests/$class"); done
+    run_suite iPhoneGuest "$IPHONE_UDID" 25m "${guest[@]}" || failed=1
+    check_classes_ran TestReceipts/iPhoneGuest-first.xcresult "${GUEST_CLASSES[@]}" || failed=1
     skip=(-skip-testing:HerdrUITests/GramTests -skip-testing:HerdrUITests/StatusMotionTests
       -skip-testing:HerdrUITests/ChatViewTests -skip-testing:HerdrUITests/ChatUXSmokeTests -skip-testing:HerdrUITests/PagingTests
       -skip-testing:HerdrUITests/AgentFoldersTests -skip-testing:HerdrUITests/NeedsYouPillTests
       -skip-testing:HerdrUITests/ServerUpdateUITests)
+    for class in "${GUEST_CLASSES[@]}"; do skip+=("-skip-testing:HerdrUITests/$class"); done
     for class in "${DESKTOP_REFERENCE_CLASSES[@]}"; do skip+=("-skip-testing:HerdrUITests/$class"); done
     for class in "${TERMINAL_CLASSES[@]}"; do skip+=("-skip-testing:HerdrUITests/$class"); done
     # 40m: on the Xcode 27 image every class ran slower. Run 40728450580 logged "iPhoneApp
