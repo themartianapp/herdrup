@@ -105,14 +105,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     // A tap on the notification → deep-link. `PushTapTarget` decides: anything carrying
     // `herdr_guest` goes to that share's screens or nowhere, never an owner screen; a gram alert
     // (`gram: true`, empty `pane_id`) is checked before the pane branch. A question's button
-    // (#483) answers in place instead: no screen opens, and iOS keeps the app alive until this
-    // returns, so the answer and its follow-up notification finish first.
+    // (#483), or a form's "Accept recommendations", answers in place instead: no screen opens,
+    // and iOS keeps the app alive until this returns, so the answer and its follow-up
+    // notification finish first.
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse) async {
         let userInfo = response.notification.request.content.userInfo
         switch AskActionRoute(actionIdentifier: response.actionIdentifier, userInfo: userInfo) {
         case .answer(let ask, let option):
             await AskPushAnswer.answer(ask, option: option)
+        case .acceptRecommendations(let ask):
+            await AskPushAnswer.answer(ask, option: nil)
         case .other:
             await MainActor.run { Self.routeTap(userInfo: userInfo) }
         }

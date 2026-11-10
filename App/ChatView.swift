@@ -64,6 +64,11 @@ final class ChatModel: ObservableObject {
     /// withheld `answerable` from a question the buttons could answer, or refused a guest's
     /// answer or menu key (`guest_forbidden`). Questions wait for the owner for the session.
     @Published private(set) var answersRefused = false
+    /// The server reads and answers omp's HTML-form asks (`ask_form`); nil until its ping answered.
+    @Published private(set) var formsSupported: Bool?
+    /// The pending forms' answers in progress, by ask id: in memory, for as long as the ask is
+    /// pending, so scrolling and reloading the view keep them.
+    private var formDrafts: [String: AskFormDraft] = [:]
     /// The server cannot give this agent a transcript (not omp, no session file, an older
     /// server or peer): the page shows the terminal only. Not final: an omp agent answers
     /// `transcript_unsupported` for its first seconds, until its integration reports a
@@ -174,6 +179,70 @@ final class ChatModel: ObservableObject {
                         ? "This question can't be answered from the chat."
                         : "Couldn't answer: \(error.message)",
                     offersTerminal: error.asksForTerminalAnswer)
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            answerProblem = ChatAnswerProblem(askID: askID, message: "Couldn't reach the agent. Try again.",
+                                              offersTerminal: false)
+        }
+        await store.refresh(client: client)
+    }
+
+    /// The draft for a pending form ask, made on first use.
+    func formDraft(askID: String, form: AskForm) -> AskFormDraft {
+        if let draft = formDrafts[askID], draft.form == form { return draft }
+        let draft = AskFormDraft(form: form)
+        formDrafts[askID] = draft
+        return draft
+    }
+
+    func probeFormSupport(client: HerdrClient) async {
+        let supported = await client.advertisesAskForm()
+        if formsSupported != supported { formsSupported = supported }
+    }
+
+    /// Answers omp's pending form with the fields the person changed (`agent.answer_form`).
+    /// The card shows the answers at once; a refusal keeps the draft, on the refused field's
+    /// step when herdr names one.
+    func answerForm(client: HerdrClient, askID: String, draft: AskFormDraft) async {
+        guard answeringAskID == nil, store.subagent == nil else { return }
+        answeringAskID = askID
+        answerProblem = nil
+        draft.errors = [:]
+        defer { answeringAskID = nil }
+        do {
+            let result = try await client.agentAnswerForm(target: target, askID: askID, values: draft.values)
+            switch result.status {
+            case .answered:
+                store.noteFormAnswered(askID: askID, answers: result.answers.isEmpty ? draft.localAnswers : result.answers)
+            case .sentUnconfirmed:
+                store.noteFormAnswered(askID: askID, answers: draft.localAnswers, confirmed: false)
+            }
+            formDrafts[askID] = nil
+        } catch let error as AgentAnswerFormError {
+            switch error {
+            case .notPending:
+                // Answered elsewhere (the terminal, the lock screen): the refresh shows it.
+                break
+            case .invalid(let field, let reason):
+                if !draft.reject(field: field, reason: reason) {
+                    answerProblem = ChatAnswerProblem(askID: askID, message: "Couldn't answer: \(reason)",
+                                                      offersTerminal: false)
+                }
+            case .moved:
+                answerProblem = ChatAnswerProblem(
+                    askID: askID, message: "The form changed in the Terminal. Finish it there.", offersTerminal: true)
+            case .unsupported:
+                answerProblem = ChatAnswerProblem(
+                    askID: askID, message: "This form can't be answered from the chat.", offersTerminal: true)
+            case .refused(let refusal):
+                if refusal.code == "guest_forbidden" {
+                    answersRefused = true
+                } else {
+                    answerProblem = ChatAnswerProblem(askID: askID, message: "Couldn't answer: \(refusal.message)",
+                                                      offersTerminal: false)
+                }
             }
         } catch is CancellationError {
             return
@@ -384,7 +453,13 @@ private enum ChatRow: Identifiable, Equatable {
             case .plan(_, let items):
                 return items.map { [$0.phase, $0.text].compactMap { $0 }.joined(separator: "\n") }.joined(separator: "\n")
             case .ask(_, let ask, _):
-                return (ask.questions.flatMap { [$0.question] + $0.options } + (ask.answer ?? [])).joined(separator: "\n")
+                var lines = ask.questions.flatMap { [$0.question] + $0.options } + (ask.answer ?? [])
+                if let form = ask.form {
+                    lines = [form.intro].compactMap { $0 } + form.fields.flatMap { field in
+                        [field.title, field.description].compactMap { $0 } + field.options.map(\.label)
+                    } + (ask.formAnswer?.map(\.answer) ?? [])
+                }
+                return lines.joined(separator: "\n")
             case .turnFailed(_, _, let error): return error ?? ""
             }
         }
@@ -670,6 +745,10 @@ struct ChatView: View {
             guard offersPreviousMine else { return }
             honoursTurnOrigin = await client.advertisesTurnOrigin()
         }
+        .task(id: isActive) {
+            guard isActive else { return }
+            await model.probeFormSupport(client: client)
+        }
         // Search moves the chat on its own: the up arrow then starts from what is on screen.
         // (The offset check retires a settled jump anyway; this also covers one still gliding.)
         .onChange(of: findRequest != nil) { _, _ in
@@ -939,11 +1018,17 @@ struct ChatView: View {
         var recorded = false
         if case .prompt(let prompt) = row { recorded = model.store.outbox.recordedPromptIDs.contains(prompt.id) }
         let askID = row.askID
+        var formDraft: AskFormDraft?
+        if case .item(.ask(let id, let ask, let pending?)) = row, let form = pending.form ?? ask.form,
+           !form.fields.isEmpty {
+            formDraft = model.formDraft(askID: id, form: form)
+        }
         return ChatRowView(
             row: row, viewer: viewer, client: client, expanded: keys, recorded: recorded,
             answering: askID != nil && model.answeringAskID == askID,
             problem: askID != nil && model.answerProblem?.askID == askID ? model.answerProblem : nil,
             answersRefused: model.answersRefused,
+            formsSupported: model.formsSupported, formDraft: formDraft,
             hits: hits, query: hits.isEmpty ? "" : searchKey.query,
             selectedHitID: hits.isEmpty ? nil : selectedSearchHit,
             actions: actions)
@@ -955,6 +1040,8 @@ struct ChatView: View {
             openNote: { note in openNote = note },
             openQuestion: { id in openQuestionID = id },
             answer: { id, option in Task { await model.answer(client: client, askID: id, option: option) } },
+            submitForm: { id, draft in Task { await model.answerForm(client: client, askID: id, draft: draft) } },
+            canAnswer: model.store.subagent == nil,
             openTerminal: {
                 openQuestionID = nil
                 onOpenTerminal()
@@ -1547,6 +1634,9 @@ private struct ChatRowActions {
     let openNote: (TranscriptNote) -> Void
     let openQuestion: (String) -> Void
     let answer: (_ askID: String, _ option: String) -> Void
+    let submitForm: (_ askID: String, _ draft: AskFormDraft) -> Void
+    /// Questions can be answered from this chat (not a subagent's read-only transcript).
+    let canAnswer: Bool
     let openTerminal: () -> Void
     let selectText: (ChatSelectableText) -> Void
 }
@@ -1568,6 +1658,9 @@ private struct ChatRowView: View, Equatable {
     let problem: ChatAnswerProblem?
     /// The guest's host refused guest answers: the question waits for the owner.
     let answersRefused: Bool
+    /// The server's `ask_form` (nil until known), and a pending form's draft.
+    let formsSupported: Bool?
+    let formDraft: AskFormDraft?
     /// The search's excerpts under the row. Without a hit the query and selection are left
     /// out too, so a search touches only the rows it finds.
     let hits: [TranscriptSearchHit]
@@ -1589,6 +1682,8 @@ private struct ChatRowView: View, Equatable {
             && lhs.answering == rhs.answering
             && lhs.problem == rhs.problem
             && lhs.answersRefused == rhs.answersRefused
+            && lhs.formsSupported == rhs.formsSupported
+            && lhs.formDraft === rhs.formDraft
             && lhs.hits == rhs.hits
             && lhs.query == rhs.query
             && lhs.selectedHitID == rhs.selectedHitID
@@ -1644,13 +1739,24 @@ private struct ChatRowView: View, Equatable {
         case .plan:
             EmptyView() // The current snapshot stays visible once at the conversation's end.
         case .ask(let id, let ask, let pending):
-            VStack(alignment: .leading, spacing: 6) {
-                askCard(id: id, ask: ask, pending: pending)
-                Button("Open question") { actions.openQuestion(id) }
-                    .font(Typography.app(13 * textScale))
-                    .accessibilityIdentifier("chat-question-open")
+            if let form = ask.form ?? pending?.form, !form.fields.isEmpty {
+                // A form's stepper is the whole question: no "Open question" sheet.
+                ChatAskFormCard(ask: ask, form: form, pending: pending, viewer: viewer,
+                                formsSupported: formsSupported, draft: formDraft, answering: answering,
+                                problem: problem, answersRefused: answersRefused,
+                                canAnswerHere: actions.canAnswer,
+                                onSubmit: { if let formDraft { actions.submitForm(id, formDraft) } },
+                                onOpenTerminal: actions.openTerminal)
+                    .frame(maxWidth: sizeClass == .regular ? 520 : .infinity, alignment: .leading)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    askCard(id: id, ask: ask, pending: pending)
+                    Button("Open question") { actions.openQuestion(id) }
+                        .font(Typography.app(13 * textScale))
+                        .accessibilityIdentifier("chat-question-open")
+                }
+                .frame(maxWidth: sizeClass == .regular ? 520 : .infinity, alignment: .leading)
             }
-            .frame(maxWidth: sizeClass == .regular ? 520 : .infinity, alignment: .leading)
         case .turnFailed(_, let status, let error):
             HStack(alignment: .firstTextBaseline, spacing: 7) {
                 Image(systemName: status == .aborted ? "stop.circle" : "exclamationmark.circle")

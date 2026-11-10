@@ -9,13 +9,23 @@ import Foundation
 enum AskActionRoute: Equatable, Sendable {
     /// One of the question's buttons: answer `ask` with `option`.
     case answer(AskPush, option: String)
+    /// A form's "Accept recommendations": `agent.answer_form` with no values.
+    case acceptRecommendations(AskPush)
     /// Anything else (the notification itself was tapped): the usual tap routing.
     case other
 
     init(actionIdentifier: String, userInfo: [AnyHashable: Any]) {
+        if actionIdentifier == AskCategory.acceptDefaultsAction {
+            guard let ask = AskPush(userInfo: userInfo), ask.form != nil else {
+                self = .other
+                return
+            }
+            self = .acceptRecommendations(ask)
+            return
+        }
         guard let index = AskCategory.optionIndex(actionIdentifier: actionIdentifier),
               let ask = AskPush(userInfo: userInfo),
-              ask.options.indices.contains(index) else {
+              ask.form == nil, ask.options.indices.contains(index) else {
             self = .other
             return
         }
@@ -108,8 +118,10 @@ enum AskAnswerOutcome: Equatable, Sendable {
         return reachedADaemon ? .needsApp : .unreachable
     }
 
-    /// The local notification posted after the attempt.
-    func message(for ask: AskPush, option: String) -> (title: String, body: String) {
+    /// The local notification posted after the attempt. `option` is nil for a form's
+    /// "Accept recommendations".
+    func message(for ask: AskPush, option: String?) -> (title: String, body: String) {
+        guard let option else { return formMessage(for: ask) }
         switch self {
         case .answered:
             return (ask.agent, "You chose “\(option)”.")
@@ -121,6 +133,22 @@ enum AskAnswerOutcome: Equatable, Sendable {
             return ("Couldn't answer \(ask.agent)", "Open herdrup to answer: \(ask.question)")
         case .unreachable:
             return ("Couldn't reach \(ask.agent)", "Open herdrup to answer: \(ask.question)")
+        }
+    }
+
+    private func formMessage(for ask: AskPush) -> (title: String, body: String) {
+        let what = ask.form?.intro ?? ask.question
+        switch self {
+        case .answered:
+            return (ask.agent, "You accepted the recommendations.")
+        case .sentUnconfirmed:
+            return (ask.agent, "Sent the recommendations. Open herdrup if \(ask.agent) doesn't continue.")
+        case .alreadyAnswered:
+            return (ask.agent, "This form was already answered.")
+        case .needsApp:
+            return ("Couldn't answer \(ask.agent)", "Open herdrup to answer: \(what)")
+        case .unreachable:
+            return ("Couldn't reach \(ask.agent)", "Open herdrup to answer: \(what)")
         }
     }
 }

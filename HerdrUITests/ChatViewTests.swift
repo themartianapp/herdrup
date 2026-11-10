@@ -438,6 +438,162 @@ final class ChatViewTests: XCTestCase {
         XCTAssertEqual(sent.count, 1, "the message should show once, not twice")
     }
 
+    // MARK: Form asks (omp ≥ 18.18.3, proposal B: the stepper)
+
+    /// `HERDR_MOCK_CHAT_FORM`: herdr-app's question is omp's HTML form (the enyo-ui ask plus
+    /// a checkbox field), on a server with `ask_form`.
+    private func launchForm(_ environment: [String: String] = [:]) -> XCUIApplication {
+        let app = launch("chatview", environment.merging(["HERDR_MOCK_CHAT_FORM": "1"]) { given, _ in given })
+        openAgent("herdr-app", in: app)
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-form"].waitForExistence(timeout: 10),
+                      "the form ask should show as the stepper")
+        return app
+    }
+
+    private func formStep(_ app: XCUIApplication) -> String {
+        app.staticTexts["chat-ask-form-step"].firstMatch.label
+    }
+
+    private func waitForStep(_ label: String, in app: XCUIApplication, _ message: String = "") {
+        XCTAssertTrue(poll(5, every: 0.2) { self.formStep(app) == label },
+                      "expected step \(label), got \(formStep(app)). \(message)")
+    }
+
+    /// Step through, change one field, answer another with Other, review (two "Changed"
+    /// marks), submit: the card turns into the answered summary carrying both changes, which
+    /// the mock server computed from the `agent.answer_form` values it received.
+    func testFormStepperChangesAFieldUsesOtherReviewsAndSubmits() {
+        let app = launchForm()
+        waitForStep("1 OF 6", in: app)
+        XCTAssertFalse(app.buttons["chat-ask-form-back"].isEnabled, "the first step has nothing to go back to")
+        XCTAssertTrue(app.buttons["chat-ask-form-option-0"].isSelected, "omp's recommendation is preselected")
+        XCTAssertTrue(app.buttons["chat-ask-form-option-0"].label.contains("Recommended"),
+                      "the agent's default is marked: \(app.buttons["chat-ask-form-option-0"].label)")
+        attach(app, "form-open")
+
+        // Steps 1–3: keep the recommendation (a tap on a radio answers it and moves on).
+        for step in 1...3 {
+            app.buttons["chat-ask-form-option-0"].tap()
+            waitForStep("\(step + 1) OF 6", in: app)
+        }
+        // Step 4: change it.
+        app.buttons["chat-ask-form-option-1"].tap()
+        waitForStep("5 OF 6", in: app)
+        app.buttons["chat-ask-form-back"].tap()
+        waitForStep("4 OF 6", in: app, "Back returns to the changed step")
+        XCTAssertTrue(app.buttons["chat-ask-form-option-1"].isSelected, "the change is kept")
+        attach(app, "form-mid1")
+        app.buttons["chat-ask-form-option-1"].tap()
+        waitForStep("5 OF 6", in: app)
+
+        // Step 5: Other opens a text field with the keyboard.
+        app.buttons["chat-ask-form-other"].tap()
+        let other = app.textViews["chat-ask-form-other-field"].exists
+            ? app.textViews["chat-ask-form-other-field"] : app.textFields["chat-ask-form-other-field"]
+        XCTAssertTrue(other.waitForExistence(timeout: 5), "Other opens its text field")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "and the keyboard")
+        XCTAssertFalse(app.buttons["chat-ask-form-next"].isEnabled, "an empty Other cannot move on")
+        other.typeText("Both: a dashboard row and email to demo@lenscale.ai")
+        XCTAssertTrue(app.buttons["chat-ask-form-next"].isEnabled)
+        attach(app, "form-mid2")
+        other.typeText("\n")
+        waitForStep("6 OF 6", in: app, "Return moves on like Next")
+
+        // Step 6: the checkbox group keeps its two recommendations; Next goes to the review.
+        XCTAssertTrue(app.buttons["chat-ask-form-option-0"].isSelected)
+        XCTAssertTrue(app.buttons["chat-ask-form-option-1"].isSelected)
+        XCTAssertFalse(app.buttons["chat-ask-form-option-2"].isSelected)
+        app.buttons["chat-ask-form-next"].tap()
+        waitForStep("REVIEW", in: app)
+        let changed = (0..<6).filter { app.buttons["chat-ask-form-review-\($0)"].label.contains("Changed") }
+        XCTAssertEqual(changed, [3, 4], "the review marks exactly the two changed answers")
+        XCTAssertTrue(app.buttons["chat-ask-form-review-4"].label
+            .contains("Both: a dashboard row and email to demo@lenscale.ai"))
+        attach(app, "form-review")
+
+        // Tap an answer to change it, then come straight back to the review.
+        app.buttons["chat-ask-form-review-0"].tap()
+        waitForStep("1 OF 6", in: app)
+        app.buttons["chat-ask-form-option-0"].tap()
+        waitForStep("REVIEW", in: app, "an answer edited from the review returns to it")
+
+        app.buttons["chat-ask-form-submit"].tap()
+        let answered = app.descendants(matching: .any)["chat-ask-form-answered"]
+        XCTAssertTrue(answered.waitForExistence(timeout: 10), "Submit shows the answered summary")
+        XCTAssertTrue(answered.label.contains("You answered 6 of 6"), answered.label)
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-form-answer-3"].label
+            .contains("I'll pick first; the build waits"), "the changed field reached the server")
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-form-answer-4"].label
+            .contains("Both: a dashboard row and email to demo@lenscale.ai"), "Other's text reached the server")
+        XCTAssertFalse(app.buttons["chat-ask-form-submit"].exists, "an answered form offers no stepper")
+        sleep(1)
+        attach(app, "form-done")
+    }
+
+    /// The selections and the step survive the chat being torn down (the Terminal and back).
+    func testFormSelectionsSurviveLeavingTheChat() {
+        let app = launchForm()
+        app.buttons["chat-ask-form-option-1"].tap()
+        waitForStep("2 OF 6", in: app)
+        app.buttons["chat-switch-terminal"].tap()
+        XCTAssertTrue(app.buttons["chat-switch-terminal"].isSelected)
+        sleep(1)
+        app.buttons["chat-switch-chat"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-form"].waitForExistence(timeout: 8))
+        waitForStep("2 OF 6", in: app, "the step is kept")
+        app.buttons["chat-ask-form-back"].tap()
+        waitForStep("1 OF 6", in: app)
+        XCTAssertTrue(app.buttons["chat-ask-form-option-1"].isSelected, "the change is kept")
+    }
+
+    /// herdr cannot drive the terminal form any more (someone is answering it there): the
+    /// card offers the Terminal.
+    func testFormMovedInTheTerminalOffersTheTerminal() {
+        let app = launchForm(["HERDR_MOCK_CHAT_FORM_ANSWER": "ask_form_moved"])
+        app.buttons["chat-ask-form-review-all"].tap()
+        waitForStep("REVIEW", in: app)
+        app.buttons["chat-ask-form-submit"].tap()
+        let terminal = app.buttons["chat-ask-terminal"]
+        XCTAssertTrue(terminal.waitForExistence(timeout: 8), "ask_form_moved offers Answer in Terminal")
+        terminal.tap()
+        XCTAssertTrue(app.buttons["chat-switch-terminal"].isSelected)
+    }
+
+    /// herdr refuses a value: the card goes to that field's step and says why.
+    func testFormInvalidShowsTheErrorOnItsStep() {
+        let app = launchForm(["HERDR_MOCK_CHAT_FORM_ANSWER": "ask_form_invalid"])
+        app.buttons["chat-ask-form-review-all"].tap()
+        app.buttons["chat-ask-form-submit"].tap()
+        let error = app.staticTexts["chat-ask-form-error"]
+        XCTAssertTrue(error.waitForExistence(timeout: 8), "the refused field shows herdr's reason")
+        XCTAssertEqual(formStep(app), "5 OF 6", "on the refused field's step")
+    }
+
+    /// A server without `ask_form`: the steps read-only, and Answer in Terminal.
+    func testFormOnAServerWithoutTheCapabilityIsReadOnly() {
+        let app = launchForm(["HERDR_MOCK_CHAT_FORM_CAPABILITY": "0"])
+        let terminal = app.buttons["chat-ask-terminal"]
+        XCTAssertTrue(terminal.waitForExistence(timeout: 8), "an older server answers in the Terminal")
+        XCTAssertFalse(app.buttons["chat-ask-form-option-0"].isEnabled, "the options are read-only")
+        XCTAssertFalse(app.buttons["chat-ask-form-submit"].exists)
+        attach(app, "form-no-capability")
+        app.buttons["chat-ask-form-next"].tap()
+        waitForStep("2 OF 6", in: app, "the steps can still be read")
+        terminal.tap()
+        XCTAssertTrue(app.buttons["chat-switch-terminal"].isSelected, "Answer in Terminal switches to it")
+    }
+
+    /// A form that timed out reads as one compact line.
+    func testTimedOutFormIsACompactLine() {
+        let app = launch("chatview", ["HERDR_MOCK_CHAT_FORM": "1", "HERDR_MOCK_CHAT_FORM_STATUS": "timed_out"], still: false)
+        openAgent("herdr-app", in: app)
+        let ended = app.staticTexts["chat-ask-form-ended"]
+        XCTAssertTrue(ended.waitForExistence(timeout: 10))
+        XCTAssertEqual(ended.label, "Timed out · not answered")
+        XCTAssertFalse(app.buttons["chat-ask-form-option-0"].exists)
+        attach(app, "form-timed-out")
+    }
+
     // MARK: - Guest
 
     /// A shared omp agent on a host serving guests its transcript: the Chat tab, first;
@@ -484,6 +640,19 @@ final class ChatViewTests: XCTestCase {
                       "the guest sees the question waiting for the owner")
         XCTAssertFalse(app.buttons["chat-ask-option-0"].exists, "this host keeps answers for the owner")
         attach(app, "chat-guest-owner-answers")
+    }
+
+    /// A guest whose host keeps answers for the owner: the form read-only, waiting for them.
+    func testGuestFormWaitsForTheOwner() {
+        let app = launch("guestchat", ["HERDR_MOCK_CHAT_FORM": "1", "HERDR_MOCK_GUEST_OWNER_ANSWERS": "1"])
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-form"].waitForExistence(timeout: 12))
+        let waiting = app.descendants(matching: .any)["chat-ask-waiting"]
+        XCTAssertTrue(waiting.waitForExistence(timeout: 8), "the guest sees the form waiting for the owner")
+        XCTAssertTrue(waiting.label.contains("WAITING FOR JERRY TO ANSWER"), waiting.label)
+        XCTAssertFalse(app.buttons["chat-ask-form-option-0"].isEnabled, "the guest cannot answer")
+        XCTAssertFalse(app.buttons["chat-ask-form-submit"].exists)
+        XCTAssertFalse(app.buttons["chat-ask-terminal"].exists, "a guest has no Terminal to answer in")
+        attach(app, "form-guest")
     }
 
     /// A paused share (its agent not in the pane's foreground) still has its conversation in
