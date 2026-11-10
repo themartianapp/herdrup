@@ -10,11 +10,19 @@ import Foundation
 /// - `HERDR_MOCK_CHAT_FORM_ANSWER=<code>`: `agent.answer_form` refuses with that code.
 ///   `ask_form_invalid` names the Other field ("form: …").
 /// - `HERDR_MOCK_CHAT_FORM_STATUS=timed_out|cancelled`: the form ended unanswered.
+/// - `HERDR_MOCK_CHAT_FORM_TEXTAREA=1`: a prefilled `<textarea>` comes last, so herdr marks
+///   the form `form_answerable: false` and `agent.answer_form` refuses it (`ask_unsupported`):
+///   the owner steps through it read-only and answers in the Terminal.
 enum ChatMockAskForm {
     static let enabled = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM"] == "1"
     static let advertised = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM_CAPABILITY"] != "0"
     static let refusal = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM_ANSWER"]
     static let endedStatus = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM_STATUS"]
+    static let hasTextarea = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM_TEXTAREA"] == "1"
+
+    /// What herdr reports as `form_answerable` for a viewer who may answer: never for a
+    /// form with a textarea.
+    static var answerable: Bool { advertised && !hasTextarea }
 
     /// The `ping` capabilities fragment: `,"ask_form":true` when advertised.
     static var capability: String { advertised ? #","ask_form":true"# : "" }
@@ -72,7 +80,17 @@ enum ChatMockAskForm {
               checked: ["gram", "preview"]),
     ]
 
-    static var form: [String: Any] { ["intro": intro, "fields": fields] }
+    static let textareaValue = "Keep the 1 Nov palette.\nNo stock photos on the landing."
+
+    /// omp's prefilled `<textarea>`, as herdr lists it.
+    private static let notes: [String: Any] = [
+        "name": "notes", "kind": "text", "title": "Anything else for the build", "description": "Optional.",
+        "multi": false, "select": false, "other": false, "required": false, "options": [[String: Any]](),
+        "input_type": "textarea", "placeholder": "Notes for enyo-ui", "value": textareaValue,
+        "min": NSNull(), "max": NSNull(), "minlength": NSNull(), "maxlength": NSNull(), "pattern": NSNull(),
+    ]
+
+    static var form: [String: Any] { ["intro": intro, "fields": fields + (hasTextarea ? [notes] : [])] }
 
     /// The `questions` herdr keeps for older apps: one per choice field.
     static var questions: [[String: Any]] {

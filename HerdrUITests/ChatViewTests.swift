@@ -589,6 +589,34 @@ final class ChatViewTests: XCTestCase {
         XCTAssertTrue(app.buttons["chat-switch-terminal"].isSelected, "Answer in Terminal switches to it")
     }
 
+    /// herdr cannot fill a `<textarea>`: such a form is `form_answerable: false` for the owner
+    /// too. Every field reads on its own step, the textarea with omp's prefilled value, and
+    /// each step offers Answer in Terminal; there is no review and no Submit.
+    func testFormWithATextareaStepsReadOnlyToTheTerminal() {
+        let app = launchForm(["HERDR_MOCK_CHAT_FORM_TEXTAREA": "1"])
+        let terminal = app.buttons["chat-ask-terminal"]
+        XCTAssertTrue(terminal.waitForExistence(timeout: 8), "a textarea's form answers in the Terminal")
+        XCTAssertEqual(formStep(app), "1 OF 7")
+        XCTAssertFalse(app.buttons["chat-ask-form-option-0"].isEnabled, "the options are read-only")
+        for step in 2...7 {
+            app.buttons["chat-ask-form-next"].tap()
+            waitForStep("\(step) OF 7", in: app, "the read-only form steps through every field")
+            XCTAssertTrue(terminal.exists, "Answer in Terminal on step \(step)")
+            XCTAssertFalse(app.buttons["chat-ask-form-review-all"].exists, "no review on a read-only form")
+            XCTAssertFalse(app.buttons["chat-ask-form-submit"].exists, "no Submit on a read-only form")
+        }
+        XCTAssertEqual(app.staticTexts["chat-ask-form-title"].firstMatch.label, "Anything else for the build")
+        let value = app.staticTexts["chat-ask-form-text"].firstMatch
+        XCTAssertTrue(value.waitForExistence(timeout: 5), "the textarea shows read-only")
+        XCTAssertTrue(value.label.contains("Keep the 1 Nov palette.") && value.label.contains("No stock photos"),
+                      "the textarea shows omp's prefilled value: \(value.label)")
+        XCTAssertFalse(app.buttons["chat-ask-form-next"].isEnabled, "the last field has no Next")
+        sleep(1)
+        attach(app, "form-textarea")
+        terminal.tap()
+        XCTAssertTrue(app.buttons["chat-switch-terminal"].isSelected, "Answer in Terminal switches to it")
+    }
+
     /// A form that timed out reads as one compact line.
     func testTimedOutFormIsACompactLine() {
         let app = launch("chatview", ["HERDR_MOCK_CHAT_FORM": "1", "HERDR_MOCK_CHAT_FORM_STATUS": "timed_out"], still: false)
@@ -659,6 +687,12 @@ final class ChatViewTests: XCTestCase {
         XCTAssertFalse(app.buttons["chat-ask-form-submit"].exists)
         XCTAssertFalse(app.buttons["chat-ask-terminal"].exists, "a guest has no Terminal to answer in")
         attach(app, "form-guest")
+        // The guest reads every field, the waiting line under each.
+        app.buttons["chat-ask-form-next"].tap()
+        waitForStep("2 OF 6", in: app, "a guest steps through the form")
+        XCTAssertTrue(waiting.exists, "the waiting line stays on every step")
+        app.buttons["chat-ask-form-back"].tap()
+        waitForStep("1 OF 6", in: app)
     }
 
     /// A paused share (its agent not in the pane's foreground) still has its conversation in

@@ -464,24 +464,39 @@ struct AskFormStepper: View {
         }
     }
 
+    @ViewBuilder
     private func textInput(_ field: AskFormField) -> some View {
         let state = draft.state(field)
-        return TextField("", text: Binding(get: { state.text }, set: { draft.setText($0, in: field) }),
-                         prompt: Text(field.placeholder ?? "").foregroundColor(Palette.textFaint),
-                         axis: field.inputType == "textarea" ? .vertical : .horizontal)
-            .font(Typography.app(15 * textScale))
-            .foregroundStyle(mode == .answer ? Palette.text : Palette.textDim)
-            .tint(Palette.brand)
-            .keyboardType(Self.keyboard(field.inputType))
-            .textInputAutocapitalization(["email", "url"].contains(field.inputType ?? "")
-                                         ? TextInputAutocapitalization.never : .sentences)
-            .focused($focused)
-            .disabled(!interactive)
-            .padding(.horizontal, 10).padding(.vertical, 7)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Palette.ground))
-            .overlay(RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(focused ? Palette.textDim : Palette.hairline, lineWidth: 1))
-            .accessibilityIdentifier("chat-ask-form-text")
+        if mode == .answer {
+            TextField("", text: Binding(get: { state.text }, set: { draft.setText($0, in: field) }),
+                      prompt: Text(field.placeholder ?? "").foregroundColor(Palette.textFaint),
+                      axis: field.inputType == "textarea" ? .vertical : .horizontal)
+                .font(Typography.app(15 * textScale))
+                .foregroundStyle(Palette.text)
+                .tint(Palette.brand)
+                .keyboardType(Self.keyboard(field.inputType))
+                .textInputAutocapitalization(["email", "url"].contains(field.inputType ?? "")
+                                             ? TextInputAutocapitalization.never : .sentences)
+                .focused($focused)
+                .disabled(!interactive)
+                .padding(.horizontal, 10).padding(.vertical, 7)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Palette.ground))
+                .overlay(RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(focused ? Palette.textDim : Palette.hairline, lineWidth: 1))
+                .accessibilityIdentifier("chat-ask-form-text")
+        } else {
+            // Read-only (a textarea's form is always): omp's prefilled value in full, else
+            // the placeholder, as the Terminal shows it.
+            let value = state.text
+            Text(value.isEmpty ? field.placeholder ?? "" : value)
+                .font(Typography.app(15 * textScale))
+                .foregroundStyle(value.isEmpty ? Palette.textFaint : Palette.textDim)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10).padding(.vertical, 7)
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Palette.hairlineQuiet, lineWidth: 1))
+                .accessibilityIdentifier("chat-ask-form-text")
+        }
     }
 
     private static func keyboard(_ inputType: String?) -> UIKeyboardType {
@@ -556,6 +571,8 @@ struct AskFormStepper: View {
     private var footer: some View {
         switch mode {
         case .waiting(let owner):
+            // Every field is read on its own step; the owner answers.
+            navigation(next: .link("Next"))
             HStack(spacing: 8) {
                 Circle().fill(Palette.waiting).frame(width: 7, height: 7)
                 Text("WAITING FOR \(owner.uppercased()) TO ANSWER")
