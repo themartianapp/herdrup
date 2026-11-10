@@ -514,10 +514,13 @@ final class ChatViewTests: XCTestCase {
             .contains("Both: a dashboard row and email to demo@lenscale.ai"))
         attach(app, "form-review")
 
-        // Tap an answer to change it, then come straight back to the review.
-        app.buttons["chat-ask-form-review-0"].tap()
-        waitForStep("1 OF 6", in: app)
-        app.buttons["chat-ask-form-option-0"].tap()
+        // Tap an answer to change it, then come straight back to the review. The last row
+        // sits just above Submit, on screen; the first can be under the navigation bar.
+        let lastRow = app.buttons["chat-ask-form-review-5"]
+        XCTAssertTrue(lastRow.waitForHittable(timeout: 5))
+        lastRow.tap()
+        waitForStep("6 OF 6", in: app)
+        app.buttons["chat-ask-form-next"].tap()
         waitForStep("REVIEW", in: app, "an answer edited from the review returns to it")
 
         app.buttons["chat-ask-form-submit"].tap()
