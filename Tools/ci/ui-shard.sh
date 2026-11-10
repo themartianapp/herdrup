@@ -27,6 +27,7 @@ set -uo pipefail
 shard="${1:?usage: ui-shard.sh iphone-terminal|iphone-app|ipad|settings-build|settings-gram|focused|wait-runtimes}"
 TERMINAL_CLASSES=(TerminalControlTests TerminalResizeTests TerminalSearchTests TerminalSelectionTests TerminalDropTests)
 SIM_STATE="$(cd "$(dirname "$0")" && pwd)/sim-state.py"
+XCRESULT_TESTS="$(dirname "$SIM_STATE")/xcresult-tests.py"
 mkdir -p TestReceipts
 SIM_TMP=$(mktemp -d)
 
@@ -449,30 +450,9 @@ settings_device_setup() {
   xcrun simctl uninstall "$1" com.jerryfane.herdr.uitests.xctrunner 2>/dev/null || true
 }
 
-# Prints one -only-testing argument per failed test case in an .xcresult. A runner that
-# crashes while bootstrapping is recorded as a failed "Test Case" named like
-# "HerdrUITests-Runner (21391) encountered an error" (run 40728450580, iPhoneStatusMotion);
-# passed to xcodebuild, it failed with "Unknown build action '(21391)'". Only Class/method
-# identifiers are tests to rerun.
+# Prints one -only-testing argument per failed Class/method test case in an .xcresult.
 failed_tests() {
-  xcrun xcresulttool get test-results tests --path "$1" 2>/dev/null | python3 -c '
-import json, re, sys
-try:
-    data = json.load(sys.stdin)
-except ValueError:
-    sys.exit(0)
-def walk(node, bundle):
-    if node.get("nodeType") in ("UI test bundle", "Unit test bundle"):
-        bundle = node.get("name")
-    if node.get("nodeType") == "Test Case" and node.get("result") == "Failed" and bundle:
-        identifier = node["nodeIdentifier"].removesuffix("()")
-        if re.fullmatch(r"\w+/\w+", identifier):
-            print("-only-testing:%s/%s" % (bundle, identifier))
-    for child in node.get("children", []):
-        walk(child, bundle)
-for node in data.get("testNodes", []):
-    walk(node, None)
-'
+  xcrun xcresulttool get test-results tests --path "$1" 2>/dev/null | python3 "$XCRESULT_TESTS" failed-tests
 }
 
 # Succeeds only when a round executed no test case at all: its log has no XCTest result
@@ -484,19 +464,7 @@ ran_no_test_case() {
   if grep -qE "^Test Case '.*' (passed|failed|skipped) \(" "$log"; then
     return 1
   fi
-  xcrun xcresulttool get test-results tests --path "$bundle" 2>/dev/null | python3 -c '
-import json, re, sys
-try:
-    data = json.load(sys.stdin)
-except ValueError:
-    sys.exit(1)
-def ran(node):
-    identifier = node.get("nodeIdentifier", "").removesuffix("()")
-    if node.get("nodeType") == "Test Case" and re.fullmatch(r"\w+/\w+", identifier):
-        return True
-    return any(ran(child) for child in node.get("children", []))
-sys.exit(1 if any(ran(node) for node in data.get("testNodes", [])) else 0)
-'
+  xcrun xcresulttool get test-results tests --path "$bundle" 2>/dev/null | python3 "$XCRESULT_TESTS" ran-none
 }
 
 # One xcodebuild invocation of a round into TestReceipts/$label-first.*.
@@ -591,36 +559,7 @@ check_classes_ran() {
   local bundle="$1"
   shift
   xcrun xcresulttool get test-results tests --path "$bundle" 2>/dev/null |
-    ROUND_RESULT="$last_round_result" python3 -c '
-import json, os, sys
-bundle, names = sys.argv[1], sys.argv[2:]
-round_name = os.path.basename(bundle).removesuffix("-first.xcresult")
-listed = ", ".join(names)
-try:
-    data = json.load(sys.stdin)
-except ValueError:
-    print(f"::error::{round_name} left no readable result bundle, so it cannot show that {listed} ran: the round failed before testing (see its error above)")
-    sys.exit(1)
-ran = set()
-def walk(node, suite):
-    if node.get("nodeType") == "Test Suite":
-        suite = node.get("name")
-    if node.get("nodeType") == "Test Case" and node.get("result") != "Skipped" and suite:
-        ran.add(suite)
-    for child in node.get("children", []):
-        walk(child, suite)
-for node in data.get("testNodes", []):
-    walk(node, None)
-missing = [name for name in names if name not in ran]
-if missing and not ran:
-    print(f"::error::{round_name} executed no test case, so it cannot show that {listed} ran: the round failed before testing (see its error above)")
-elif missing and os.environ.get("ROUND_RESULT") == "timeout":
-    print(f"::error::{round_name} ran out of its budget before {', '.join(missing)} ran (see its error above)")
-else:
-    for name in missing:
-        print(f"::error::{name} executed no tests in this round; the listed name no longer matches a class, so that class falls through to the iphone-app catch-all round")
-sys.exit(1 if missing else 0)
-' "$bundle" "$@"
+    python3 "$XCRESULT_TESTS" check-classes "$bundle" "${last_round_result:-unknown}" "$@"
 }
 
 # Herdrup Desktop's agent-list, Gram and Settings reference screenshots on one iPad.
