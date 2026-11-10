@@ -1297,6 +1297,7 @@ struct LiveTerminalView: UIViewRepresentable {
             // nothing.
             historyCursor = inserted == 0 ? nil : page.cursor
             publishTopRowProbe()
+            publishHistoryProbe()
         }
 
         /// Auto-reconnect. `reconnectBackoff` drives capped, jittered exponential backoff (reset once a
@@ -2368,6 +2369,44 @@ struct LiveTerminalView: UIViewRepresentable {
         private var gridProbe: UIView?
         #endif
 
+        /// DEBUG-only receipt for the reconnect-history test (`keyframehistory`): the OLDEST row
+        /// the emulator holds and the row drawn at the TOP of the viewport, as
+        /// "oldest=<row> top=<row>". The oldest row says whether a keyframe's history reached the
+        /// scrollback at all. The top row is read from `contentOffset`, like the interaction
+        /// harness's viewport, not from `yDisp`: at the tail a viewport taller than the grid
+        /// already shows history above the live screen. It replaced reading those rows off
+        /// screenshots with Vision, which returned rows the screenshot plainly showed as
+        /// upside-down glyphs in both orientations it was asked for (run 41616977089, job
+        /// 125925583153; the macserve iPad terminal shard, 2026-11-09). Compiled out of Release
+        /// and published only under that mock, so no other pane does the work.
+        fileprivate func publishHistoryProbe() {
+            #if DEBUG
+            guard Self.publishesHistoryProbe, let view else { return }
+            let probe: UIView
+            if let existing = historyProbe {
+                probe = existing
+            } else {
+                probe = UIView(frame: .zero)
+                probe.isAccessibilityElement = true
+                probe.accessibilityIdentifier = "terminal-history-probe"
+                view.addSubview(probe)
+                historyProbe = probe
+            }
+            let terminal = view.getTerminal()
+            let start = terminal.buffer.totalLinesTrimmed
+            let cell = view.cellSize.height
+            let top = cell > 0 ? max(0, Int(floor(view.contentOffset.y / cell))) : 0
+            func row(_ index: Int) -> String {
+                terminal.getScrollInvariantLine(row: start + index)?.translateToString(trimRight: true) ?? ""
+            }
+            probe.accessibilityLabel = "oldest=\(row(0)) top=\(row(top))"
+            #endif
+        }
+        #if DEBUG
+        private var historyProbe: UIView?
+        private static let publishesHistoryProbe = ScreenshotMock.mode == .keyframeHistory
+        #endif
+
         func stop() {
             stopped = true                  // no new resize/scroll may start after this
             #if DEBUG
@@ -2937,6 +2976,7 @@ struct LiveTerminalView: UIViewRepresentable {
                     prediction.reset()   // a keyframe replaced the screen the guesses stood on
                     noteStreamData()
                     publishTopRowProbe()
+                    publishHistoryProbe()
                 case .data(_, _, let data):
                     noteStreamData()
                     // Typing-latency diagnostics: only the pane being typed into can echo.
@@ -2945,6 +2985,7 @@ struct LiveTerminalView: UIViewRepresentable {
                     // Instant typing checks its guesses against the screen this frame made.
                     if foreground, !data.isEmpty { prediction.outputArrived() }
                     publishTopRowProbe()   // a repaint (after a resize, say) moves the top row too
+                    publishHistoryProbe()
                 case .resize(_, _, let cols, let rows):
                     applyStreamGeometry(cols: cols, rows: rows, in: view)
                 case .ping:
@@ -3786,6 +3827,7 @@ struct LiveTerminalView: UIViewRepresentable {
                     // guard uses. See `handleFocusTap` for why a timestamp rather than a live flag.
                     if userDriven { self.lastContentMotion = CACurrentMediaTime() }
                     self.publishTopRowProbe()
+                    self.publishHistoryProbe()
                     self.prediction.viewScrolled()   // guesses stand only on the live screen
                     // Geometry pages once armed, whatever moved the offset (a Mac wheel or
                     // trackpad sets neither flag); a finger always may. Seeding writes offset 0
