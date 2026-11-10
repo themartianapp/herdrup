@@ -423,26 +423,24 @@ ensure_simulator() {
   boot_simulator "$udid" "TestReceipts/$label-boot.log"
 }
 
-# Boots, applies round_setup and installs round_app for a round, with the round's one recovery
-# when that fails. round_setup, when a caller sets it, applies device settings the caller's
-# rounds need (desktop_reference_device_setup, settings_device_setup); it runs again after a
-# recovery rebooted or erased the device.
-round_app="$APP_UNDER_TEST"
-round_setup=
+# prepare_round LABEL UDID APP [SETUP]: boots the device, runs SETUP UDID (device settings the
+# round needs: desktop_reference_device_setup, settings_device_setup) and installs APP, with
+# the round's one recovery when that fails. reprepare_round takes the same arguments and
+# does it once, after a recovery rebooted or erased the device, so the settings hold again.
 prepare_round() {
-  local label="$1" udid="$2"
-  reprepare_round "$label" "$udid" && return 0
+  local label="$1" udid="$2" app="$3" setup="${4:-}"
+  reprepare_round "$label" "$udid" "$app" "$setup" && return 0
   recover_simulator "$udid" "$label" "its simulator could not be prepared (see the error above)" erase || return 1
-  reprepare_round "$label" "$udid"
+  reprepare_round "$label" "$udid" "$app" "$setup"
 }
 reprepare_round() {
-  local label="$1" udid="$2"
+  local label="$1" udid="$2" app="$3" setup="${4:-}"
   boot_simulator "$udid" "TestReceipts/$label-boot.log" || return 1
-  if [ -n "$round_setup" ] && ! "$round_setup" "$udid"; then
-    echo "::error::$label: $round_setup failed on $udid"
+  if [ -n "$setup" ] && ! "$setup" "$udid"; then
+    echo "::error::$label: $setup failed on $udid"
     return 1
   fi
-  install_app_under_test "$udid" "TestReceipts/$label-install.log" "$round_app"
+  install_app_under_test "$udid" "TestReceipts/$label-install.log" "$app"
 }
 # The optimized Settings regression starts from a fresh install of its Distribution app.
 settings_device_setup() {
@@ -491,13 +489,20 @@ first_run() {
 # What the last run_suite round came to, for check_classes_ran's message: passed, failed,
 # timeout (its budget ran out) or unstarted (no test case could run).
 last_round_result=
+# run_suite [--setup FN] LABEL UDID BUDGET XCODEBUILD_ARGS...: one round of the Debug app.
+# FN UDID applies device settings the round needs, before every install (prepare_round).
 run_suite() {
+  local setup=
+  if [ "$1" = --setup ]; then
+    setup="$2"
+    shift 2
+  fi
   local label="$1" udid="$2" budget="$3"
   shift 3
   local status=0 runner_error
   last_round_result=unstarted
   # Boot outside the test deadline. Booting during the build was measured to slow both.
-  prepare_round "$label" "$udid" || return 1
+  prepare_round "$label" "$udid" "$APP_UNDER_TEST" "$setup" || return 1
   first_run "$label" "$udid" "$budget" "$@" || status=$?
   # A round whose test runner died before any test started is a simulator failure, not a
   # test result. Run 41775711449 (iPhoneTerminal, Xcode 27): 199 s after launch, "Early
@@ -513,7 +518,7 @@ run_suite() {
     runner_error=$(grep -m1 -E 'encountered an error|Unable to find a device matching' "TestReceipts/$label-first.log" | sed 's/^[[:space:]]*//')
     recover_simulator "$udid" "$label" "executed no test case (xcodebuild exit $status): ${runner_error:-no runner error line in the log}" reboot || return 1
     status=0
-    reprepare_round "$label" "$udid" || return 1
+    reprepare_round "$label" "$udid" "$APP_UNDER_TEST" "$setup" || return 1
     first_run "$label" "$udid" "$budget" "$@" || status=$?
   fi
   if [ "$status" -eq 0 ]; then
@@ -532,7 +537,7 @@ run_suite() {
   failed=$(failed_tests "TestReceipts/$label-first.xcresult")
   if [ -n "$failed" ]; then
     rerun=0
-    infra_rerun "$label" "$udid" "$failed" || rerun=$?
+    infra_rerun "$label" "$udid" "$failed" "$APP_UNDER_TEST" "$setup" || rerun=$?
     if [ "$rerun" -ne 2 ]; then
       [ "$rerun" -eq 0 ] && last_round_result=passed
       return "$rerun"
@@ -567,13 +572,14 @@ run_suite() {
 # Run 42770272602's iPad shard failed iPadResize on "Critical process SpringBoard crashed"
 # (SpringBoard SIGBUS in NSXPCEncoder) and its follow-on "pid 0", and iPadGramColumn on an
 # app.launch() that got no process in 153 s; the diagnostic reruns of all three passed.
+# infra_rerun LABEL UDID FAILED APP [SETUP]: APP and SETUP as for prepare_round.
 # Returns 0 when the rerun passed, 1 when it ran and failed, 2 when the round does not qualify.
 infra_rerun() {
-  local label="$1" udid="$2" failed="$3" status=0 bundle_id part
+  local label="$1" udid="$2" failed="$3" app="$4" setup="${5:-}" status=0 bundle_id part
   local kinds="TestReceipts/$label-failure-kinds.txt"
   xcrun xcresulttool get test-results tests --path "TestReceipts/$label-first.xcresult" 2>/dev/null \
     | python3 "$XCRESULT_TESTS" infra-only >"$kinds" 2>&1 || return 2
-  bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$round_app/Info.plist") || return 2
+  bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist") || return 2
   # Without the attachments there is no proof the app did not crash: no rerun then.
   xcrun xcresulttool export attachments --path "TestReceipts/$label-first.xcresult" \
     --output-path "$SIM_TMP/$label-attachments" >/dev/null 2>&1 || return 2
@@ -588,7 +594,7 @@ infra_rerun() {
   for part in boot.log install.log; do
     mv "TestReceipts/$label-$part" "TestReceipts/$label-${part%%.*}-before-infra-rerun.${part#*.}" 2>/dev/null || true
   done
-  reprepare_round "$label" "$udid" || return 1
+  reprepare_round "$label" "$udid" "$app" "$setup" || return 1
   # shellcheck disable=SC2086 # one -only-testing argument per line
   "$TIMEOUT_BIN" --signal=INT 15m xcodebuild test-without-building "${PROJECT[@]}" \
       -destination "platform=iOS Simulator,id=$udid" \
@@ -629,16 +635,14 @@ check_classes_ran() {
 DESKTOP_REFERENCE_STATUS_BAR=(--time 9:41 --batteryLevel 100 --batteryState charged
   --cellularMode notSupported --wifiBars 3)
 DESKTOP_REFERENCE_CLASSES=(DesktopReferenceShots DesktopGramReferenceShots DesktopSettingsReferenceShots DesktopDetailReferenceShots)
-# The desktop references' device settings. prepare_round applies them before each class's
-# round, so they hold even after a recovery rebooted or erased the device mid-way.
+# The desktop references' device settings. Each class's round applies them before its
+# install (run_suite --setup), so they hold even after a recovery rebooted or erased the device.
 desktop_reference_device_setup() {
   xcrun simctl ui "$1" appearance dark || return 1
   xcrun simctl status_bar "$1" override "${DESKTOP_REFERENCE_STATUS_BAR[@]}" || return 1
 }
 desktop_reference_round() {
   local label="$1" udid="$2" bundle_id class round budget status=0
-  # Read by prepare_round for this round's classes only.
-  local round_setup=desktop_reference_device_setup
   shift 2
   local classes=("${DESKTOP_REFERENCE_CLASSES[@]}")
   if [ "$#" -gt 0 ]; then classes=("$@"); fi
@@ -663,7 +667,8 @@ desktop_reference_round() {
       DesktopGramReferenceShots*) budget=20m ;;
       *) budget=15m ;;
     esac
-    run_suite "$round" "$udid" "$budget" "-only-testing:HerdrUITests/$class" || status=1
+    run_suite --setup desktop_reference_device_setup "$round" "$udid" "$budget" \
+      "-only-testing:HerdrUITests/$class" || status=1
     check_classes_ran "TestReceipts/$round-first.xcresult" "${class%%/*}" || status=1
   done
   stop_recording
@@ -882,8 +887,7 @@ case "$shard" in
     if [ "${#settings_runs[@]}" -ne 1 ] || [ ! -f "${settings_runs[0]}" ]; then
       echo "::error::expected one optimized Settings .xctestrun in Build/Products"
       failed=1
-    elif ! round_app="$SETTINGS_APP_UNDER_TEST" round_setup=settings_device_setup \
-        prepare_round settings-device-stack "$IPAD_UDID"; then
+    elif ! prepare_round settings-device-stack "$IPAD_UDID" "$SETTINGS_APP_UNDER_TEST" settings_device_setup; then
       failed=1
     else
       "$TIMEOUT_BIN" --signal=INT 40m xcodebuild test-without-building -xctestrun "${settings_runs[0]}" \
