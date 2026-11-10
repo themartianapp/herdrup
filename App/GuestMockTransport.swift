@@ -15,11 +15,16 @@ struct GuestMockTransport: HerdrTransport {
     enum Scenario: String { case running, paused, blocked, oldHost }
 
     let scenario: Scenario
+    /// The grant this connection authenticates as; `agent.list` answers what the host
+    /// lists to it (`listedAgentsJSON`).
+    let share: GuestAccess
     /// Hears each call's hello features, like `RelayTransport`'s.
     let onFeatures: (@Sendable (GuestFeatures) -> Void)?
 
-    init(scenario: Scenario, onFeatures: (@Sendable (GuestFeatures) -> Void)? = nil) {
+    init(scenario: Scenario, share: GuestAccess = GuestMockTransport.access,
+         onFeatures: (@Sendable (GuestFeatures) -> Void)? = nil) {
         self.scenario = scenario
+        self.share = share
         self.onFeatures = onFeatures
         _ = Self.freshGuestSettings
     }
@@ -87,6 +92,27 @@ struct GuestMockTransport: HerdrTransport {
         agentName: access.agentName,
         guestName: access.guestName,
         expires: Date(timeIntervalSince1970: 4_102_444_800))
+
+    /// The `guestmachine` mock's three grants on one machine: llm-opt, then two agents both
+    /// named enyo-ui. The first enyo-ui is listed and idle; the second's terminal is gone, so
+    /// its row reads "Agent unavailable" while the share itself still exists.
+    static let machineAccesses = [access, share("g-enyo-a", target: "w2-4"), share("g-enyo-b", target: "w2-9")]
+
+    private static func share(_ guestID: String, target: String) -> GuestAccess {
+        GuestAccess(guestID: guestID, guestName: access.guestName, machineLabel: access.machineLabel,
+                    ownerName: access.ownerName, agentName: "enyo-ui", agentTarget: target,
+                    endpoint: access.endpoint, acceptedAt: access.acceptedAt)
+    }
+
+    /// A guest connection to the mock host as `share`, running scenario: what the guest
+    /// mocks' homes connect with instead of the relay.
+    static func connection(for share: GuestAccess) throws -> GuestConnection {
+        let features = GuestFeaturesModel()
+        return GuestConnection(
+            client: HerdrClient(transport: GuestMockTransport(scenario: .running, share: share,
+                                                              onFeatures: features.sink())),
+            fingerprint: try GuestDevice.identity().fingerprint, features: features)
+    }
 
     /// Methods called that a guest may not call (anything but the allowlist), in order.
     /// Read by UI tests via GuestPaneView's DEBUG probe.
@@ -185,7 +211,7 @@ struct GuestMockTransport: HerdrTransport {
         case "agent.transcript":
             return ChatMockConversation.guest.transcript(id: id, params: params)
         case "agent.list":
-            return #"{"id":"\#(id)","result":{"type":"agent_list","agents":[\#(sharedAgentJSON),\#(Self.otherAgentJSON)]}}"#
+            return #"{"id":"\#(id)","result":{"type":"agent_list","agents":[\#(listedAgentsJSON)]}}"#
         case "agent.get":
             return #"{"id":"\#(id)","result":{"type":"agent_info","agent":\#(sharedAgentJSON)}}"#
         case "agent.answer":
@@ -356,6 +382,21 @@ struct GuestMockTransport: HerdrTransport {
     /// Not shared with this guest; the UI must never show it.
     private static let otherAgentJSON =
         #"{"terminal_id":"term_jarvis","pane_id":"w1-1","name":"jarvis","agent":"claude","display_agent":null,"agent_status":"idle","guest_running":false}"#
+
+    /// The live enyo-ui of `machineAccesses`, idle.
+    private static let enyoAgentJSON =
+        #"{"terminal_id":"w2-4","pane_id":"w2-4","name":"enyo-ui","agent":"omp","display_agent":"omp","agent_status":"idle","guest_running":true}"#
+
+    /// What the host lists to `share`: its agent, plus one that was not shared (which the
+    /// UI must drop). A grant whose agent's terminal is gone gets only the unshared one.
+    private var listedAgentsJSON: String {
+        let shared: String? = switch share.agentTarget {
+        case Self.access.agentTarget: sharedAgentJSON
+        case "w2-4": Self.enyoAgentJSON
+        default: nil
+        }
+        return [shared, Self.otherAgentJSON].compactMap { $0 }.joined(separator: ",")
+    }
 
     private static let esc = "\u{1b}["
     private static let body = esc + "38;2;201;205;224m"
