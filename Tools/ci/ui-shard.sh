@@ -563,12 +563,13 @@ run_suite() {
   return 1
 }
 
-# A ROUND WHOSE EVERY FAILURE IS THE SIMULATOR'S. When every failure message of every failed
-# case is an infrastructure signature (xcresult-tests.py INFRASTRUCTURE: a simulator system
-# process crashed, the app never got a process, XCTest could not terminate it) and the app
-# left no crash report, only those cases run once more on a rebooted device, and their result
-# is the round's. That uses the round's one recovery (recover_simulator). Any other failure
-# message, an assertion above all, keeps the whole round failed with no rerun of its result.
+# A ROUND WHOSE EVERY FAILURE IS THE SIMULATOR'S. When every issue of every failed case was
+# raised by XCTest's UI automation (the bundle's issue type, never an assertion's) with one of
+# xcresult-tests.py's INFRASTRUCTURE descriptions (a simulator system process crashed, the app
+# never got a process, XCTest could not terminate it) and the app left no crash report, only
+# those cases run once more on a rebooted device, and their result is the round's. That uses
+# the round's one recovery (recover_simulator). Any other issue, an assertion above all, even
+# one whose text reads like infrastructure, keeps the whole round failed with no rerun.
 # Run 42770272602's iPad shard failed iPadResize on "Critical process SpringBoard crashed"
 # (SpringBoard SIGBUS in NSXPCEncoder) and its follow-on "pid 0", and iPadGramColumn on an
 # app.launch() that got no process in 153 s; the diagnostic reruns of all three passed.
@@ -577,8 +578,7 @@ run_suite() {
 infra_rerun() {
   local label="$1" udid="$2" failed="$3" app="$4" setup="${5:-}" status=0 bundle_id part
   local kinds="TestReceipts/$label-failure-kinds.txt"
-  xcrun xcresulttool get test-results tests --path "TestReceipts/$label-first.xcresult" 2>/dev/null \
-    | python3 "$XCRESULT_TESTS" infra-only >"$kinds" 2>&1 || return 2
+  python3 "$XCRESULT_TESTS" infra-only "TestReceipts/$label-first.xcresult" >"$kinds" 2>&1 || return 2
   bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist") || return 2
   # Without the attachments there is no proof the app did not crash: no rerun then.
   xcrun xcresulttool export attachments --path "TestReceipts/$label-first.xcresult" \

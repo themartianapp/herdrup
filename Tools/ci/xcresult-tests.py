@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Reads `xcrun xcresulttool get test-results tests --path BUNDLE` JSON on stdin for
-Tools/ci/ui-shard.sh. A separate file, not `python3 -c '…'` inside the shell script: a single
+"""Reads result bundles for Tools/ci/ui-shard.sh: `xcrun xcresulttool get test-results tests
+--path BUNDLE` JSON on stdin, unless a command names its input. A separate file, not
+`python3 -c '…'` inside the shell script: a single
 quote inside such a snippet ends the shell string (PR #649's first head failed every shard's
 class check with "f-string: expecting a valid expression"), and Tools/ci/check.sh can compile
 and test a file.
@@ -21,11 +22,12 @@ and test a file.
       skipped a listed class shows a stale name; a round that never started, or ran out of
       its budget (ROUND_RESULT timeout), says so instead.
 
-  xcresult-tests.py infra-only
-      Exits 0 when the bundle has failed test cases and every failure message of every one
-      is a simulator/XCTest infrastructure signature (INFRASTRUCTURE below), printing each
-      message with its verdict; exits 1 when any failure is anything else, an assertion
-      above all.
+  xcresult-tests.py infra-only BUNDLE
+      Exits 0 when BUNDLE has failed test cases and every issue recorded against every one
+      of them was raised by XCTest's UI automation itself, with one of the INFRASTRUCTURE
+      descriptions, printing each issue with its verdict. Exits 1 when any issue is anything
+      else (an assertion above all), when a failed case has no issue, and when the bundle's
+      issue records cannot be read.
 
   xcresult-tests.py app-crashed ATTACHMENTS_DIR BUNDLE_ID
       Exits 0 when the exported attachments hold a crash report (.ips) of BUNDLE_ID.
@@ -34,12 +36,20 @@ import glob
 import json
 import os
 import re
+import sqlite3
 import sys
 
 CASE = re.compile(r"\w+/\w+")
 
-# Failures that say the simulator or XCTest could not run the app, not what the app did.
-# Each was followed by a passing diagnostic rerun of the same tests on the same commit:
+# Infrastructure is told by WHO raised the failure, not by what its text says. The result
+# bundle records each issue's type: XCTAssert*, XCTFail and crashes are "Assertion Failure"
+# (a test that fails "Critical process SpringBoard crashed" with XCTFail stays an assertion),
+# while "UI Automation Failure" is raised by XCTest's automation when it cannot drive the
+# app at all. That type is not in `xcresulttool get test-results` JSON, so it is read from the
+# bundle's database.sqlite3 (TestIssues.issueType; Xcode 27.1 bundles from runs 42770272602,
+# 42808627997 and 42815902188). Even then only these descriptions count: automation failures
+# like "Neither element nor any descendant has keyboard focus" can be the app's fault. Each
+# was followed by a passing rerun of the same tests on the same commit:
 #  - a simulator system process (never the app under test) crashed mid-test: "Critical
 #    process SpringBoard crashed" (run 42770272602 iPadResize: SpringBoard SIGBUS in
 #    NSXPCEncoder), "Critical process runningboardd crashed";
@@ -48,11 +58,14 @@ CASE = re.compile(r"\w+/\w+")
 #    app), and the follow-on "Failed to get background assertion for target app with pid 0";
 #  - XCTest could not kill the previous launch: "Failed to terminate com.jerryfane.herdr:N:
 #    Failed to terminate com.jerryfane.herdr:0" (42273527812 and seven more).
+AUTOMATION = "UI Automation Failure"
+# Issue types that never fail a test.
+NOT_FAILURES = {"Runtime Warning"}
 INFRASTRUCTURE = [
-    re.compile(r"Critical process \S+ crashed"),
-    re.compile(r"Application '[\w.]+' does not have a process ID"),
-    re.compile(r"Failed to get background assertion for target app with pid 0\b"),
-    re.compile(r"Failed to terminate [\w.]+:\d+: Failed to terminate [\w.]+:0\b"),
+    re.compile(r"^Critical process \S+ crashed"),
+    re.compile(r"^Application '[\w.]+' does not have a process ID"),
+    re.compile(r"^Failed to get background assertion for target app with pid 0\b"),
+    re.compile(r"^Failed to terminate [\w.]+:\d+: Failed to terminate [\w.]+:0\b"),
 ]
 
 
@@ -122,28 +135,35 @@ def check_classes(data, bundle, round_result, names):
     return 1 if missing else 0
 
 
-def infra_only(data):
-    failures = {}  # Class/method -> failure messages
-    def walk(node, case):
-        if node.get("nodeType") == "Test Case" and node.get("result") == "Failed":
-            case = identifier(node)
-            failures.setdefault(case, [])
-        elif node.get("nodeType") == "Failure Message" and case is not None:
-            failures[case].append(node.get("name", ""))
-        for child in node.get("children", []):
-            walk(child, case)
-    for node in (data or {}).get("testNodes", []):
-        walk(node, None)
+def infra_only(bundle):
+    """See the module doc. Reads the result bundle's own issue records."""
+    database = os.path.join(bundle, "database.sqlite3")
+    try:
+        connection = sqlite3.connect("file:%s?mode=ro" % database, uri=True)
+        rows = connection.execute(
+            "SELECT tc.identifier, ti.issueType, ti.compactDescription"
+            " FROM TestCaseRuns tcr JOIN TestCases tc ON tcr.testCase_fk = tc.rowid"
+            " LEFT JOIN TestIssues ti ON ti.testCaseRun_fk = tcr.rowid"
+            " WHERE tcr.result = 'Failure'").fetchall()
+    except sqlite3.Error as error:
+        print("TEST FAILURE: cannot read the issues of %s: %s" % (bundle, error))
+        return 1
+    failures = {}  # Class/method -> [(issue type, description)]
+    for case, issue_type, description in rows:
+        issues = failures.setdefault((case or "").removesuffix("()"), [])
+        if issue_type is not None and issue_type not in NOT_FAILURES:
+            issues.append((issue_type, description or ""))
     if not failures:
         return 1
     verdict = 0
-    for case, messages in sorted(failures.items()):
-        if not CASE.fullmatch(case) or not messages:
-            print("TEST FAILURE %s: not a Class/method failure with a message" % case)
+    for case, issues in sorted(failures.items()):
+        if not CASE.fullmatch(case) or not issues:
+            print("TEST FAILURE %s: not a Class/method failure with a recorded issue" % case)
             verdict = 1
-        for message in messages:
-            infra = any(pattern.search(message) for pattern in INFRASTRUCTURE)
-            print("%s %s: %s" % ("infrastructure" if infra else "TEST FAILURE", case, message[:300]))
+        for issue_type, description in issues:
+            infra = issue_type == AUTOMATION and any(p.search(description) for p in INFRASTRUCTURE)
+            print("%s %s: [%s] %s" % ("infrastructure" if infra else "TEST FAILURE", case, issue_type,
+                                      description.replace("\n", " ")[:300]))
             if not infra:
                 verdict = 1
     return verdict
@@ -170,8 +190,8 @@ if __name__ == "__main__":
         sys.exit(ran_none(load()))
     if command == "check-classes" and len(sys.argv) >= 5:
         sys.exit(check_classes(load(), sys.argv[2], sys.argv[3], sys.argv[4:]))
-    if command == "infra-only" and len(sys.argv) == 2:
-        sys.exit(infra_only(load()))
+    if command == "infra-only" and len(sys.argv) == 3:
+        sys.exit(infra_only(sys.argv[2]))
     if command == "app-crashed" and len(sys.argv) == 4:
         sys.exit(app_crashed(sys.argv[2], sys.argv[3]))
     print(__doc__, file=sys.stderr)

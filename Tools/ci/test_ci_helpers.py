@@ -4,6 +4,8 @@ Tools/ci/check.sh runs them in CI's Linux job, before any simulator shard spends
 import json
 import os
 import pathlib
+import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -60,22 +62,74 @@ class XcresultTests(unittest.TestCase):
                            json.dumps({"testNodes": []}))
         self.assertIn("r executed no test case", out)
 
-    def test_infra_only_never_covers_an_assertion(self):
-        spring = "Launch.swift:10: Critical process SpringBoard crashed in (null)"
-        no_pid = "Launch.swift:10: Application 'com.jerryfane.herdr' does not have a process ID"
+    def issues_bundle(self, cases):
+        """A result bundle whose database.sqlite3 holds the tables infra-only reads, in the
+        columns Xcode 27.1 writes (runs 42770272602, 42815902188): (class/method, result,
+        [(issue type, description)])."""
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory)
+        db = sqlite3.connect(os.path.join(directory, "database.sqlite3"))
+        db.executescript(
+            "CREATE TABLE TestCases (testSuite_fk INTEGER, identifier TEXT, identifierURL TEXT,"
+            " orderInTestSuite INTEGER, name TEXT, summary TEXT);"
+            "CREATE TABLE TestCaseRuns (testSuiteRun_fk INTEGER, skipNotice_fk INTEGER,"
+            " dynamicTestParameters_fk INTEGER, repetitionPolicy_fk INTEGER, orderInTestSuiteRun INTEGER,"
+            " testCase_fk INTEGER, duration REAL, identifierURL TEXT, result TEXT);"
+            "CREATE TABLE TestIssues (orderInOwner INTEGER, associatedError_fk INTEGER,"
+            " detailedDescription TEXT, expression_fk INTEGER, testSuiteRun_fk INTEGER,"
+            " sourceCodeContext_fk INTEGER, isTopLevel INTEGER, timestamp REAL, testCaseRun_fk INTEGER,"
+            " compactDescription TEXT, sanitizedDescription TEXT, issueType TEXT, uuid TEXT);")
+        for identifier, result, issues in cases:
+            case = db.execute("INSERT INTO TestCases (identifier) VALUES (?)", (identifier + "()",)).lastrowid
+            run_id = db.execute("INSERT INTO TestCaseRuns (testCase_fk, result) VALUES (?, ?)",
+                                (case, result)).lastrowid
+            for issue_type, description in issues:
+                db.execute("INSERT INTO TestIssues (testCaseRun_fk, issueType, compactDescription)"
+                           " VALUES (?, ?, ?)", (run_id, issue_type, description))
+        db.commit()
+        db.close()
+        return directory
+
+    def test_infra_only_goes_by_who_raised_the_failure(self):
+        auto, assertion = "UI Automation Failure", "Assertion Failure"
+        spring = "Critical process SpringBoard crashed in (null)"
+        no_pid = "Application 'com.jerryfane.herdr' does not have a process ID"
         pid0 = "Failed to get background assertion for target app with pid 0: No failure details provided"
-        infra = bundle([("A", "testOne", "Failed", [spring]), ("A", "testTwo", "Failed", [pid0]),
-                        ("B", "testThree", "Failed", [no_pid]), ("B", "testFour", "Passed", [])])
-        self.assertEqual(run("xcresult-tests.py", ["infra-only"], infra)[0], 0)
-        mixed = bundle([("A", "testOne", "Failed", [spring]),
-                        ("A", "testTwo", "Failed", ["XCTAssertTrue failed - the pane is in front"])])
-        code, out, _ = run("xcresult-tests.py", ["infra-only"], mixed)
-        self.assertEqual(code, 1)
-        self.assertIn("TEST FAILURE A/testTwo", out)
-        both = bundle([("A", "testOne", "Failed", [no_pid, "XCTAssertEqual failed"])])
-        self.assertEqual(run("xcresult-tests.py", ["infra-only"], both)[0], 1)
-        self.assertEqual(run("xcresult-tests.py", ["infra-only"], bundle([("A", "testOne", "Passed", [])]))[0], 1)
-        self.assertEqual(run("xcresult-tests.py", ["infra-only"], "")[0], 1)
+        # Run 42770272602's iPadResize and iPadGramColumn, as their bundles recorded them.
+        infra = self.issues_bundle([
+            ("DuoTransitionTests/testGramDraft", "Failure", [(auto, spring)]),
+            ("DuoTransitionTests/testGramSearch", "Failure", [(auto, pid0)]),
+            ("GramColumnTests/testDragging", "Failure", [(auto, no_pid)]),
+            ("DuoTransitionTests/testTerminalDraft", "Success",
+             [("Runtime Warning", "Modifying state during view update")])])
+        code, out, _ = run("xcresult-tests.py", ["infra-only", infra])
+        self.assertEqual(code, 0, out)
+        # An assertion whose text merely reads like infrastructure is the test's own failure
+        # (review of #649): XCTFail("Critical process SpringBoard crashed") must stay red.
+        for text in (spring, no_pid, "XCTAssertTrue failed - " + no_pid):
+            fake = self.issues_bundle([("A/testOne", "Failure", [(assertion, text)])])
+            code, out, _ = run("xcresult-tests.py", ["infra-only", fake])
+            self.assertEqual(code, 1, text)
+            self.assertIn("TEST FAILURE A/testOne: [Assertion Failure]", out)
+        # Any other issue on a failed case, an automation failure the app may cause included.
+        mixed = self.issues_bundle([("A/testOne", "Failure", [(auto, spring)]),
+                                    ("A/testTwo", "Failure", [(assertion, "XCTAssertTrue failed")])])
+        self.assertEqual(run("xcresult-tests.py", ["infra-only", mixed])[0], 1)
+        focus = self.issues_bundle([("A/testOne", "Failure", [(auto, "Failed to synthesize event: "
+                                                               "Neither element nor any descendant has keyboard focus.")])])
+        self.assertEqual(run("xcresult-tests.py", ["infra-only", focus])[0], 1)
+        # The runner crashing (run 42808627997) is recorded as an assertion: no rerun.
+        killed = self.issues_bundle([("A/testOne", "Failure", [(assertion, "Test crashed with signal kill.")])])
+        self.assertEqual(run("xcresult-tests.py", ["infra-only", killed])[0], 1)
+        # A signature that is not where the description starts is not that signature.
+        quoted = self.issues_bundle([("A/testOne", "Failure", [(auto, "Expected: " + spring)])])
+        self.assertEqual(run("xcresult-tests.py", ["infra-only", quoted])[0], 1)
+        # Nothing to judge: no failed case, a failed case without an issue, no database.
+        passed = self.issues_bundle([("A/testOne", "Success", [])])
+        self.assertEqual(run("xcresult-tests.py", ["infra-only", passed])[0], 1)
+        silent = self.issues_bundle([("A/testOne", "Failure", [])])
+        self.assertEqual(run("xcresult-tests.py", ["infra-only", silent])[0], 1)
+        self.assertEqual(run("xcresult-tests.py", ["infra-only", tempfile.gettempdir() + "/no-such.xcresult"])[0], 1)
 
     def test_app_crashed_finds_only_the_apps_report(self):
         with tempfile.TemporaryDirectory() as directory:
