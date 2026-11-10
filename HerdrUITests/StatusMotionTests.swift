@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 
 /// Status shapes that nobody can see must not move: a repeating SwiftUI animation drives the
@@ -24,33 +25,84 @@ final class StatusMotionTests: XCTestCase {
         return app
     }
 
-    /// Whether `shape` visibly moves on screen. The first photo is taken after a 0.25 s
-    /// settle (so a tab switch's own fade is over), then four more 0.25 s apart; it moves
-    /// when at least two of them differ from the first. A ring that turns once per 0.9 s, or a
-    /// dot that pulses every 0.8 s, never comes back to the same pixels; a stuck one stays put,
-    /// and a single late redraw cannot pass for motion. Counting the motion in the view tree
-    /// (`moving`) cannot see a motion that never starts.
+    /// Whether `shape` visibly moves on screen. Its frame is read once, after a 0.25 s settle
+    /// (so a tab switch's own fade is over); the first photo follows, then four more 0.25 s
+    /// apart; it moves when at least two of them differ from the first. A ring that turns once
+    /// per 0.9 s, or a dot that pulses every 0.8 s, never comes back to the same pixels; a
+    /// stuck one stays put, and a single late redraw cannot pass for motion. Counting the
+    /// motion in the view tree (`moving`) cannot see a motion that never starts.
+    ///
+    /// The photos are of the SCREEN, all cut to that one frame, not `shape.screenshot()`,
+    /// which looks the shape up again for every photo. Each lookup runs XCTest's automation
+    /// inside the app, which writes stderr lines for every accessibility attribute it fetches,
+    /// and xcodebuild drains that pty on its own main thread. The eleven lookups of one check
+    /// of the ring, the roster's last element, wrote ~40,000 lines in 5 s; once xcodebuild
+    /// fell behind, the app's main thread sat in that write inside XCTest's query past its
+    /// 30 s deadline, three times over: "Failed to get matching snapshots: Timed out while
+    /// evaluating UI query" (runs 41812896614 and 42376372751: both spindumps hold the main
+    /// thread in `writev` → `spec_write` under `-[XCTElementQuery _firstMatchingSnapshot…]`).
+    /// One cut still sees both motions: the ring's frame stays 24.5 pt while it turns, and the
+    /// dot's frame swells with its pulse (7.0–9.4 pt in run 42376372751) while its opacity
+    /// changes inside any of those frames. A stuck shape's pixels stay identical.
     private func moves(_ shape: XCUIElement) -> Bool {
         XCTAssertTrue(shape.waitForExistence(timeout: 10), "the status shape should be on screen")
         usleep(250_000)
-        let first = shape.screenshot()
+        let frame = shape.frame
+        let first = XCUIScreen.main.screenshot()
+        guard let firstPixels = pixels(of: frame, in: first) else {
+            XCTFail("the status shape's frame \(frame) is not on the screen")
+            return false
+        }
         var changed = 0
         for _ in 0..<4 {
             usleep(250_000)
-            if shape.screenshot().pngRepresentation != first.pngRepresentation { changed += 1 }
+            guard let photo = pixels(of: frame, in: XCUIScreen.main.screenshot()) else {
+                XCTFail("the status shape's frame \(frame) is not on the screen")
+                return false
+            }
+            if photo != firstPixels { changed += 1 }
         }
         if changed >= 2 { return true }
-        // Keep the photo of the stuck shape in the result bundle.
-        attach(first, "\(shape.identifier) held still (\(changed)/4 photos changed)")
+        // Keep the whole first photo in the result bundle: it also shows what was in front.
+        attach(first, "\(shape.identifier) at \(frame) held still (\(changed)/4 photos changed)")
         return false
     }
 
+    /// The pixels of `frame` (points) in `shot`, PNG-encoded; nil when none of it is there.
+    private func pixels(of frame: CGRect, in shot: XCUIScreenshot) -> Data? {
+        guard let image = shot.image.cgImage, shot.image.size.width > 0 else { return nil }
+        let scale = CGFloat(image.width) / shot.image.size.width
+        let rect = CGRect(x: frame.minX * scale, y: frame.minY * scale,
+                          width: frame.width * scale, height: frame.height * scale).integral
+        guard !rect.isEmpty, let crop = image.cropping(to: rect) else { return nil }
+        return UIImage(cgImage: crop).pngData()
+    }
+
+    /// A status shape by its identifier alone. A string subscript also compares label, value
+    /// and placeholder value, so every element before the shape had four attributes fetched
+    /// (and logged, see `moves`) instead of one.
+    private func shape(_ app: XCUIApplication, _ identifier: String) -> XCUIElement {
+        app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier == %@", identifier))
+            .firstMatch
+    }
+
     private func ring(_ app: XCUIApplication) -> XCUIElement {
-        app.descendants(matching: .any)["status-ring"].firstMatch
+        shape(app, "status-ring")
     }
 
     private func dot(_ app: XCUIApplication) -> XCUIElement {
-        app.descendants(matching: .any)["status-dot"].firstMatch
+        shape(app, "status-dot")
+    }
+
+    /// iPhone: whether the row just tapped brought its pane to the front. Existence cannot
+    /// tell: a kept-alive pane's terminal surface and dot stay in the accessibility tree behind
+    /// the roster. The tab bar can: it is in the tree exactly while no pane is fronted (every
+    /// full tree of run 42376372751). In run 40472854194 the re-tapped row left the roster on
+    /// screen, `terminalSurface` was found anyway, `moving` counted the roster's ring as the
+    /// pane's dot, and the dot photographed was the hidden pane's: background only.
+    private func paneInFront(_ app: XCUIApplication) -> Bool {
+        app.tabBars.firstMatch.waitForNonExistence(timeout: 10)
     }
 
     /// The owner's report (build 203): Agents → Gram → Agents left the working ring stuck.
@@ -87,8 +139,7 @@ final class StatusMotionTests: XCTestCase {
         app.buttons["Agents"].firstMatch.tap()
         if !pad {
             row.tap()
-            XCTAssertTrue(app.terminalSurface.waitForExistence(timeout: 10),
-                          "the kept-alive pane should come back to the front")
+            XCTAssertTrue(paneInFront(app), "the kept-alive pane should come back to the front")
         }
         XCTAssertTrue(moves(dot(app)), "back from Gram, the working pane's dot pulses again")
         app.terminate()
@@ -134,8 +185,7 @@ final class StatusMotionTests: XCTestCase {
         XCTAssertTrue(moves(ring(app)), "back on Agents, the ring turns on screen")
         if !pad {
             row.tap()
-            XCTAssertTrue(app.terminalSurface.waitForExistence(timeout: 10),
-                          "the kept-alive pane should come back to the front")
+            XCTAssertTrue(paneInFront(app), "the kept-alive pane should come back to the front")
             sleep(1)
             XCTAssertEqual(moving(app), 1, "the kept-alive pane's dot pulses again in front")
             XCTAssertTrue(moves(dot(app)), "the kept-alive pane's dot pulses on screen")
