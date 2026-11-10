@@ -528,9 +528,17 @@ run_suite() {
     return 1
   fi
   last_round_result=failed
-  echo "::error::$label first run failed; the failure stands. Rerunning only the failed tests for raw diagnostics"
-  local failed
+  local failed rerun
   failed=$(failed_tests "TestReceipts/$label-first.xcresult")
+  if [ -n "$failed" ]; then
+    rerun=0
+    infra_rerun "$label" "$udid" "$failed" || rerun=$?
+    if [ "$rerun" -ne 2 ]; then
+      [ "$rerun" -eq 0 ] && last_round_result=passed
+      return "$rerun"
+    fi
+  fi
+  echo "::error::$label first run failed; the failure stands. Rerunning only the failed tests for raw diagnostics"
   if [ -z "$failed" ]; then
     echo "::warning::$label: no failed test case recorded in the result bundle; no diagnostic rerun"
     return 1
@@ -547,6 +555,54 @@ run_suite() {
       -maximum-test-execution-time-allowance 600 \
       -resultBundlePath "TestReceipts/$label-diagnostic.xcresult" \
       $failed 2>&1 | tee "TestReceipts/$label-diagnostic.log" >/dev/null || true
+  return 1
+}
+
+# A ROUND WHOSE EVERY FAILURE IS THE SIMULATOR'S. When every failure message of every failed
+# case is an infrastructure signature (xcresult-tests.py INFRASTRUCTURE: a simulator system
+# process crashed, the app never got a process, XCTest could not terminate it) and the app
+# left no crash report, only those cases run once more on a rebooted device, and their result
+# is the round's. That uses the round's one recovery (recover_simulator). Any other failure
+# message, an assertion above all, keeps the whole round failed with no rerun of its result.
+# Run 42770272602's iPad shard failed iPadResize on "Critical process SpringBoard crashed"
+# (SpringBoard SIGBUS in NSXPCEncoder) and its follow-on "pid 0", and iPadGramColumn on an
+# app.launch() that got no process in 153 s; the diagnostic reruns of all three passed.
+# Returns 0 when the rerun passed, 1 when it ran and failed, 2 when the round does not qualify.
+infra_rerun() {
+  local label="$1" udid="$2" failed="$3" status=0 bundle_id part
+  local kinds="TestReceipts/$label-failure-kinds.txt"
+  xcrun xcresulttool get test-results tests --path "TestReceipts/$label-first.xcresult" 2>/dev/null \
+    | python3 "$XCRESULT_TESTS" infra-only >"$kinds" 2>&1 || return 2
+  bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$round_app/Info.plist") || return 2
+  # Without the attachments there is no proof the app did not crash: no rerun then.
+  xcrun xcresulttool export attachments --path "TestReceipts/$label-first.xcresult" \
+    --output-path "$SIM_TMP/$label-attachments" >/dev/null 2>&1 || return 2
+  if python3 "$XCRESULT_TESTS" app-crashed "$SIM_TMP/$label-attachments" "$bundle_id" >>"$kinds"; then
+    return 2
+  fi
+  case "$recovered_rounds" in *" $label "*) return 2 ;; esac
+  recovered_rounds="$recovered_rounds$label "
+  echo "::warning::infrastructure, not a test result: every failure of $label is the simulator's ($(paste -sd ';' "$kinds")). Rebooting $udid and running only those cases again once; their result stands. The first run is TestReceipts/$label-first.*, the rerun TestReceipts/$label-infra-rerun.*"
+  bounded 120 xcrun simctl shutdown "$udid" >"TestReceipts/$label-infra-shutdown.log" 2>&1 || true
+  ready_devices="${ready_devices/ $udid / }"
+  for part in boot.log install.log; do
+    mv "TestReceipts/$label-$part" "TestReceipts/$label-${part%%.*}-before-infra-rerun.${part#*.}" 2>/dev/null || true
+  done
+  reprepare_round "$label" "$udid" || return 1
+  # shellcheck disable=SC2086 # one -only-testing argument per line
+  "$TIMEOUT_BIN" --signal=INT 15m xcodebuild test-without-building "${PROJECT[@]}" \
+      -destination "platform=iOS Simulator,id=$udid" \
+      -parallel-testing-enabled NO \
+      -test-timeouts-enabled YES \
+      -default-test-execution-time-allowance 300 \
+      -maximum-test-execution-time-allowance 600 \
+      -resultBundlePath "TestReceipts/$label-infra-rerun.xcresult" \
+      $failed 2>&1 | tee "TestReceipts/$label-infra-rerun.log" | xcbeautify || status=$?
+  if [ "$status" -eq 0 ]; then
+    echo "$label: the rerun of its infrastructure failures passed"
+    return 0
+  fi
+  echo "::error::$label failed, and the rerun of its infrastructure failures failed too (xcodebuild exit $status); the failure stands; see TestReceipts/$label-infra-rerun.log"
   return 1
 }
 

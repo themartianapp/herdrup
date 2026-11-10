@@ -60,6 +60,32 @@ class XcresultTests(unittest.TestCase):
                            json.dumps({"testNodes": []}))
         self.assertIn("r executed no test case", out)
 
+    def test_infra_only_never_covers_an_assertion(self):
+        spring = "Launch.swift:10: Critical process SpringBoard crashed in (null)"
+        no_pid = "Launch.swift:10: Application 'com.jerryfane.herdr' does not have a process ID"
+        pid0 = "Failed to get background assertion for target app with pid 0: No failure details provided"
+        infra = bundle([("A", "testOne", "Failed", [spring]), ("A", "testTwo", "Failed", [pid0]),
+                        ("B", "testThree", "Failed", [no_pid]), ("B", "testFour", "Passed", [])])
+        self.assertEqual(run("xcresult-tests.py", ["infra-only"], infra)[0], 0)
+        mixed = bundle([("A", "testOne", "Failed", [spring]),
+                        ("A", "testTwo", "Failed", ["XCTAssertTrue failed - the pane is in front"])])
+        code, out, _ = run("xcresult-tests.py", ["infra-only"], mixed)
+        self.assertEqual(code, 1)
+        self.assertIn("TEST FAILURE A/testTwo", out)
+        both = bundle([("A", "testOne", "Failed", [no_pid, "XCTAssertEqual failed"])])
+        self.assertEqual(run("xcresult-tests.py", ["infra-only"], both)[0], 1)
+        self.assertEqual(run("xcresult-tests.py", ["infra-only"], bundle([("A", "testOne", "Passed", [])]))[0], 1)
+        self.assertEqual(run("xcresult-tests.py", ["infra-only"], "")[0], 1)
+
+    def test_app_crashed_finds_only_the_apps_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with open(os.path.join(directory, "a.ips"), "w") as report:
+                report.write(json.dumps({"bundleID": "com.apple.springboard"}) + "\n{}\n")
+            self.assertEqual(run("xcresult-tests.py", ["app-crashed", directory, "com.jerryfane.herdr"])[0], 1)
+            with open(os.path.join(directory, "b.ips"), "w") as report:
+                report.write(json.dumps({"bundleID": "com.jerryfane.herdr"}) + "\n{}\n")
+            self.assertEqual(run("xcresult-tests.py", ["app-crashed", directory, "com.jerryfane.herdr"])[0], 0)
+
 
 class SimStateTests(unittest.TestCase):
     def setUp(self):
