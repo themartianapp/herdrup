@@ -1081,36 +1081,61 @@ struct ChatView: View {
         followingLatest = false
         atBottom = false
         if index < drawnStart {
+            // Undrawn, the row reports nothing: what it reported before it left the window is stale.
+            promptTops.above[turnID] = nil
             drawWindow = windowStarting(at: index)
-            // Rows just drawn above the window are laid out before the scroll can find them.
-            try? await Task.sleep(nanoseconds: 30_000_000)
-            // Search may have opened meanwhile; it retires this jump.
-            guard promptTops.jumpGeneration == generation, promptTops.lastJump?.turnID == turnID else { return }
+            // Rows just drawn above the window are laid out before the scroll can find them: wait
+            // until the prompt's probe reports its row, which it does once the row is laid out
+            // (at most a second, then the scroll goes ahead regardless).
+            for _ in 0..<60 {
+                try? await Task.sleep(nanoseconds: 16_000_000)
+                // Search may have opened meanwhile; it retires this jump.
+                guard isCurrentJump(turnID, generation) else { return }
+                if promptTops.above[turnID] != nil { break }
+            }
         }
         if reduceMotion {
             proxy.scrollTo(rowID, anchor: .top)
         } else {
             withAnimation(.easeOut(duration: 0.3)) { proxy.scrollTo(rowID, anchor: .top) }
         }
-        Task { await recordJumpSettled(turnID, generation: generation) }
+        Task { await settleJump(turnID, generation: generation, proxy) }
     }
 
-    /// Records the offset the jump settled at; from then on any other move of the chat (search,
-    /// a drag, Jump to latest, an older page's anchor) retires it. Starts after the glide, so a
-    /// still offset before the scroll begins is not taken for the end of it.
-    private func recordJumpSettled(_ turnID: String, generation: Int) async {
+    /// Makes sure the jump arrived, then records the offset it settled at; from then on any
+    /// other move of the chat (search, a drag, Jump to latest, an older page's anchor) retires
+    /// it. Starts after the glide, so a still offset before the scroll begins is not taken for
+    /// the end of it.
+    ///
+    /// The glide can stop short. Issued just after an older page's turn was drawn above the
+    /// window, it moved the chat 54 pt in one frame and stopped there, on the CI question, with
+    /// question 37 still above the screen for all 8 s the UI test waited (CI 42599598427 job
+    /// 129153499382, first and diagnostic run, and 42632930170 job 129282362492: their screen
+    /// recordings). So while the prompt's top is still above the screen once the chat is still,
+    /// it is put at the top again, without a glide.
+    private func settleJump(_ turnID: String, generation: Int, _ proxy: ScrollViewProxy) async {
         try? await Task.sleep(nanoseconds: reduceMotion ? 50_000_000 : 350_000_000)
-        var previous: CGFloat?
-        for _ in 0..<20 {
-            guard promptTops.jumpGeneration == generation, promptTops.lastJump?.turnID == turnID else { return }
-            let now = scrollPosition.offset
-            if let now, let previous, abs(now - previous) < 0.5 { break }
-            previous = now
-            try? await Task.sleep(nanoseconds: 50_000_000)
+        for correction in 0...3 {
+            var previous: CGFloat?
+            for _ in 0..<20 {
+                guard isCurrentJump(turnID, generation) else { return }
+                let now = scrollPosition.offset
+                if let now, let previous, abs(now - previous) < 0.5 { break }
+                previous = now
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            guard isCurrentJump(turnID, generation) else { return }
+            guard correction < 3, promptTops.above[turnID] == true else { break }
+            proxy.scrollTo("prompt:" + turnID, anchor: .top)
         }
-        guard promptTops.jumpGeneration == generation, promptTops.lastJump?.turnID == turnID,
-              let now = scrollPosition.offset else { return }
+        guard isCurrentJump(turnID, generation), let now = scrollPosition.offset else { return }
         promptTops.lastJump?.offset = Double(now)
+    }
+
+    /// The up arrow's jump to `turnID` is the latest one, and nothing (search, a drag, Jump to
+    /// latest) has retired it since.
+    private func isCurrentJump(_ turnID: String, _ generation: Int) -> Bool {
+        promptTops.jumpGeneration == generation && promptTops.lastJump?.turnID == turnID
     }
 
     // MARK: - Top of the list
