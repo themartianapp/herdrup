@@ -1104,32 +1104,34 @@ struct ChatView: View {
 
     /// Makes sure the jump arrived, then records the offset it settled at; from then on any
     /// other move of the chat (search, a drag, Jump to latest, an older page's anchor) retires
-    /// it. Starts after the glide, so a still offset before the scroll begins is not taken for
-    /// the end of it.
-    ///
-    /// The glide can stop short. Issued just after an older page's turn was drawn above the
-    /// window, it moved the chat 54 pt in one frame and stopped there, on the CI question, with
-    /// question 37 still above the screen for all 8 s the UI test waited (CI 42599598427 job
-    /// 129153499382, first and diagnostic run, and 42632930170 job 129282362492: their screen
-    /// recordings). So while the prompt's top is still above the screen once the chat is still,
-    /// it is put at the top again, without a glide.
+    /// it. Starts once the glide's own 0.3 s are over (plus a frame or so of slack), so a still
+    /// offset before the scroll begins is not taken for the end of it, and the glide's motion
+    /// is not taken for the reader's. `TranscriptPreviousMine.Settle` decides, sample by sample,
+    /// whether to put a prompt that stopped short back at the top, and retires the jump when
+    /// anything else, a Mac wheel or trackpad included, moves the chat meanwhile.
     private func settleJump(_ turnID: String, generation: Int, _ proxy: ScrollViewProxy) async {
-        try? await Task.sleep(nanoseconds: reduceMotion ? 50_000_000 : 350_000_000)
-        for correction in 0...3 {
-            var previous: CGFloat?
-            for _ in 0..<20 {
-                guard isCurrentJump(turnID, generation) else { return }
-                let now = scrollPosition.offset
-                if let now, let previous, abs(now - previous) < 0.5 { break }
-                previous = now
-                try? await Task.sleep(nanoseconds: 50_000_000)
+        try? await Task.sleep(nanoseconds: reduceMotion ? 50_000_000 : 400_000_000)
+        var settle = TranscriptPreviousMine.Settle()
+        while isCurrentJump(turnID, generation) {
+            switch settle.sample(offset: scrollPosition.offset.map(Double.init),
+                                 contentHeight: scrollPosition.contentHeight.map(Double.init),
+                                 promptAbove: promptTops.above[turnID] == true) {
+            case .wait:
+                try? await Task.sleep(for: TranscriptPreviousMine.Settle.sampleInterval)
+            case .correct:
+                proxy.scrollTo("prompt:" + turnID, anchor: .top)
+                try? await Task.sleep(for: TranscriptPreviousMine.Settle.sampleInterval)
+            case .settled(let offset):
+                promptTops.lastJump?.offset = offset
+                return
+            case .retire:
+                // The reader moved the chat: the up arrow searches from where they are now.
+                promptTops.lastJump = nil
+                return
+            case .giveUp:
+                return
             }
-            guard isCurrentJump(turnID, generation) else { return }
-            guard correction < 3, promptTops.above[turnID] == true else { break }
-            proxy.scrollTo("prompt:" + turnID, anchor: .top)
         }
-        guard isCurrentJump(turnID, generation), let now = scrollPosition.offset else { return }
-        promptTops.lastJump?.offset = Double(now)
     }
 
     /// The up arrow's jump to `turnID` is the latest one, and nothing (search, a drag, Jump to

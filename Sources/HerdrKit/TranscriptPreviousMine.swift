@@ -62,6 +62,80 @@ public enum TranscriptPreviousMine {
         }
     }
 
+    /// Settling a jump once its own glide is over, one sample of the chat at a time: whether
+    /// the jump arrived, needs putting right, or was taken over by the reader.
+    ///
+    /// The glide can stop short. Issued just after an older page's turn was drawn above the
+    /// window, it moved the chat 54 pt in one frame and stopped there, with the prompt still
+    /// above the screen (CI 42599598427 job 129153499382, 42632930170 job 129282362492, their
+    /// screen recordings). So once the chat is still with the prompt's top above the screen,
+    /// the prompt is put at the top again (`correct`), at most `maxCorrections` times.
+    ///
+    /// Sampling starts once the glide's own time is over. From then on the jump moves the chat
+    /// only by a correction, which lands by the first or second sample after it. Any other
+    /// change of offset is someone else's and retires the jump: a finger (which the view also
+    /// sees as a drag), or a Mac wheel or trackpad, which moves the offset with no drag or
+    /// deceleration at all (review of #649, F1: the correction used to scroll a reader who
+    /// wheeled away right back). A change that comes with a change of content height is
+    /// layout (rows above settling their heights) and is waited out, not taken for the reader.
+    public struct Settle: Sendable {
+        public enum Action: Equatable, Sendable {
+            /// Sample again after `sampleInterval`.
+            case wait
+            /// Put the prompt at the top of the screen again, without a glide, then sample.
+            case correct
+            /// The jump is done: record this offset as where it left the chat.
+            case settled(offset: Double)
+            /// Something else moved the chat: stop, and forget the jump.
+            case retire
+            /// No scroll view to read: stop without recording anything.
+            case giveUp
+        }
+
+        public static let maxCorrections = 3
+        /// Samples in one wait for rest before the offset the chat has is recorded anyway.
+        public static let maxSamples = 20
+        /// Movement below this between two samples is rest, not motion.
+        public static let stillTolerance = 0.5
+        public static let sampleInterval: Duration = .milliseconds(50)
+
+        private var previous: (offset: Double, contentHeight: Double?)?
+        private var samples = 0
+        private var corrections = 0
+        /// A correction was issued and has not visibly landed: the next movement is its own,
+        /// unless an earlier sample already showed the prompt at the top.
+        private var correcting = false
+
+        public init() {}
+
+        /// `promptAbove`: the jump's prompt reports its top above the screen.
+        public mutating func sample(offset: Double?, contentHeight: Double?, promptAbove: Bool) -> Action {
+            guard let offset else { return .giveUp }
+            let last = previous
+            previous = (offset, contentHeight)
+            samples += 1
+            let ownMotion = correcting
+            // The prompt shows at the top: whatever the correction did has landed.
+            if !promptAbove { correcting = false }
+            if let last {
+                if abs(offset - last.offset) < Self.stillTolerance {
+                    guard promptAbove, corrections < Self.maxCorrections else { return .settled(offset: offset) }
+                    corrections += 1
+                    correcting = true
+                    previous = nil
+                    samples = 0
+                    return .correct
+                }
+                if ownMotion {
+                    correcting = false
+                } else if contentHeight == last.contentHeight {
+                    return .retire
+                }
+            }
+            return samples >= Self.maxSamples ? .settled(offset: offset) : .wait
+        }
+    }
+
     /// The `above` a tap passes to `step`: the oldest prompt on screen (`boundary`), or the last
     /// jump's turn when that is older and the chat has not moved since (its scroll may not have
     /// settled, so the screen does not show it yet). A jump the chat has moved away from is
