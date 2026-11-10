@@ -10,9 +10,10 @@ import Foundation
 /// - `HERDR_MOCK_CHAT_FORM_ANSWER=<code>`: `agent.answer_form` refuses with that code.
 ///   `ask_form_invalid` names the Other field ("form: …").
 /// - `HERDR_MOCK_CHAT_FORM_STATUS=timed_out|cancelled`: the form ended unanswered.
-/// - `HERDR_MOCK_CHAT_FORM_TEXTAREA=1`: a prefilled `<textarea>` comes last, so herdr marks
-///   the form `form_answerable: false` and `agent.answer_form` refuses it (`ask_unsupported`):
-///   the owner steps through it read-only and answers in the Terminal.
+/// - `HERDR_MOCK_CHAT_FORM_TEXTAREA=1`: a prefilled two-line `<textarea>` comes last. herdr
+///   (#394) drives it: left out of `values` it keeps the prefill, `{"text":…}` replaces it,
+///   and an answer longer than the editor's rows (the prefill's two) is refused with
+///   "notes: too long to edit from the app; answer in the terminal".
 enum ChatMockAskForm {
     static let enabled = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM"] == "1"
     static let advertised = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM_CAPABILITY"] != "0"
@@ -20,9 +21,8 @@ enum ChatMockAskForm {
     static let endedStatus = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM_STATUS"]
     static let hasTextarea = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM_TEXTAREA"] == "1"
 
-    /// What herdr reports as `form_answerable` for a viewer who may answer: never for a
-    /// form with a textarea.
-    static var answerable: Bool { advertised && !hasTextarea }
+    /// What herdr reports as `form_answerable` for a viewer who may answer.
+    static var answerable: Bool { advertised }
 
     /// The `ping` capabilities fragment: `,"ask_form":true` when advertised.
     static var capability: String { advertised ? #","ask_form":true"# : "" }
@@ -90,7 +90,9 @@ enum ChatMockAskForm {
         "min": NSNull(), "max": NSNull(), "minlength": NSNull(), "maxlength": NSNull(), "pattern": NSNull(),
     ]
 
-    static var form: [String: Any] { ["intro": intro, "fields": fields + (hasTextarea ? [notes] : [])] }
+    static var allFields: [[String: Any]] { fields + (hasTextarea ? [notes] : []) }
+
+    static var form: [String: Any] { ["intro": intro, "fields": allFields] }
 
     /// The `questions` herdr keeps for older apps: one per choice field.
     static var questions: [[String: Any]] {
@@ -108,11 +110,24 @@ enum ChatMockAskForm {
     /// `values` checked as herdr checks them, then omp's `details.answers`. A refusal is
     /// `(code, message)`.
     static func answers(for values: [String: Any]) -> Result<[[String: String]], MockRefusal> {
-        let names = Set(fields.compactMap { $0["name"] as? String })
+        let names = Set(allFields.compactMap { $0["name"] as? String })
         if let unknown = values.keys.first(where: { !names.contains($0) }) {
             return .failure(MockRefusal(code: "ask_form_invalid", message: "\(unknown): unknown field"))
         }
         var answers: [[String: String]] = []
+        if hasTextarea {
+            var text = textareaValue
+            if let value = values["notes"] as? [String: Any] {
+                text = value["text"] as? String ?? ""
+                // The editor shows the prefill's rows (2 to 10); herdr types no more.
+                let rows = min(max(textareaValue.split(separator: "\n", omittingEmptySubsequences: false).count, 2), 10)
+                if text.split(separator: "\n", omittingEmptySubsequences: false).count > rows {
+                    return .failure(MockRefusal(code: "ask_form_invalid",
+                                                message: "notes: too long to edit from the app; answer in the terminal"))
+                }
+            }
+            answers.append(["name": "notes", "question": "Anything else for the build", "answer": text])
+        }
         for field in fields {
             let name = field["name"] as? String ?? ""
             let title = field["title"] as? String ?? name
@@ -135,7 +150,7 @@ enum ChatMockAskForm {
             let labels = options.filter { chosen.contains($0["value"] as? String ?? "") }
                 .compactMap { $0["label"] as? String }
             let answer = (labels + (other.map { ["Other: \($0)"] } ?? [])).joined(separator: ", ")
-            answers.append(["name": name, "question": title, "answer": answer])
+            answers.insert(["name": name, "question": title, "answer": answer], at: answers.count - (hasTextarea ? 1 : 0))
         }
         return .success(answers)
     }

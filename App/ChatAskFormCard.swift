@@ -485,7 +485,7 @@ struct AskFormStepper: View {
                     .strokeBorder(focused ? Palette.textDim : Palette.hairline, lineWidth: 1))
                 .accessibilityIdentifier("chat-ask-form-text")
         } else {
-            // Read-only (a textarea's form is always): omp's prefilled value in full, else
+            // Read-only: omp's prefilled value in full (a textarea's every line), else
             // the placeholder, as the Terminal shows it.
             let value = state.text
             Text(value.isEmpty ? field.placeholder ?? "" : value)

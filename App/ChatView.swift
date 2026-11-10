@@ -226,7 +226,12 @@ final class ChatModel: ObservableObject {
                 // Answered elsewhere (the terminal, the lock screen): the refresh shows it.
                 break
             case .invalid(let field, let reason):
-                if !draft.reject(field: field, reason: reason) {
+                let onItsStep = draft.reject(field: field, reason: reason)
+                if error.asksForTerminalAnswer {
+                    // A value only the Terminal can enter: the step says why, and offers it.
+                    answerProblem = ChatAnswerProblem(askID: askID, message: "This answer can't be sent from the chat.",
+                                                      offersTerminal: true)
+                } else if !onItsStep {
                     answerProblem = ChatAnswerProblem(askID: askID, message: "Couldn't answer: \(reason)",
                                                       offersTerminal: false)
                 }

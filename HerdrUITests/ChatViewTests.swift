@@ -589,13 +589,13 @@ final class ChatViewTests: XCTestCase {
         XCTAssertTrue(app.buttons["chat-switch-terminal"].isSelected, "Answer in Terminal switches to it")
     }
 
-    /// herdr cannot fill a `<textarea>`: such a form is `form_answerable: false` for the owner
-    /// too. Every field reads on its own step, the textarea with omp's prefilled value, and
-    /// each step offers Answer in Terminal; there is no review and no Submit.
-    func testFormWithATextareaStepsReadOnlyToTheTerminal() {
-        let app = launchForm(["HERDR_MOCK_CHAT_FORM_TEXTAREA": "1"])
+    /// A read-only form (here a server without `ask_form`) steps through every field: the
+    /// textarea last with omp's prefilled value, Answer in Terminal on each step, and no
+    /// review or Submit.
+    func testReadOnlyFormStepsToItsTextareaAndTheTerminal() {
+        let app = launchForm(["HERDR_MOCK_CHAT_FORM_TEXTAREA": "1", "HERDR_MOCK_CHAT_FORM_CAPABILITY": "0"])
         let terminal = app.buttons["chat-ask-terminal"]
-        XCTAssertTrue(terminal.waitForExistence(timeout: 8), "a textarea's form answers in the Terminal")
+        XCTAssertTrue(terminal.waitForExistence(timeout: 8), "a read-only form answers in the Terminal")
         XCTAssertEqual(formStep(app), "1 OF 7")
         XCTAssertFalse(app.buttons["chat-ask-form-option-0"].isEnabled, "the options are read-only")
         for step in 2...7 {
@@ -615,6 +615,36 @@ final class ChatViewTests: XCTestCase {
         attach(app, "form-textarea")
         terminal.tap()
         XCTAssertTrue(app.buttons["chat-switch-terminal"].isSelected, "Answer in Terminal switches to it")
+    }
+
+    /// herdr (#394) types a textarea answer only while it fits omp's editor: a longer one is
+    /// refused on its step, which then offers the Terminal.
+    func testTextareaTooLongForTheAppOffersTheTerminal() {
+        let app = launchForm(["HERDR_MOCK_CHAT_FORM_TEXTAREA": "1"])
+        app.buttons["chat-ask-form-review-all"].tap()
+        waitForStep("REVIEW", in: app)
+        let notesRow = app.buttons["chat-ask-form-review-6"]
+        XCTAssertTrue(notesRow.waitForExistence(timeout: 5), "the review lists the textarea")
+        XCTAssertTrue(notesRow.label.contains("Keep the 1 Nov palette."), "the review shows the prefill: \(notesRow.label)")
+        notesRow.tap()
+        waitForStep("7 OF 7", in: app)
+        let text = app.textViews["chat-ask-form-text"].exists ? app.textViews["chat-ask-form-text"]
+            : app.textFields["chat-ask-form-text"]
+        XCTAssertTrue(text.waitForExistence(timeout: 5), "an answerable textarea is editable")
+        XCTAssertTrue((text.value as? String ?? "").contains("No stock photos"), "the editor holds the prefill")
+        text.tap()
+        text.typeText("\nNo new fonts either.")
+        app.buttons["chat-ask-form-next"].tap()
+        waitForStep("REVIEW", in: app, "the edited textarea returns to the review")
+        app.buttons["chat-ask-form-submit"].tap()
+        let error = app.staticTexts["chat-ask-form-error"]
+        XCTAssertTrue(error.waitForExistence(timeout: 8), "the refused textarea shows herdr's reason")
+        XCTAssertTrue(error.label.contains("answer in the terminal"), error.label)
+        XCTAssertEqual(formStep(app), "7 OF 7", "the refusal opens the textarea's step")
+        XCTAssertTrue(app.buttons["chat-ask-terminal"].waitForExistence(timeout: 5),
+                      "a value only the Terminal can enter offers it")
+        sleep(1)
+        attach(app, "form-textarea-too-long")
     }
 
     /// A form that timed out reads as one compact line.

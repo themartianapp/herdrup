@@ -829,11 +829,14 @@ public enum AgentAnswerFormError: Error, Sendable, Equatable {
         }
     }
 
-    /// The person can still answer by hand in the Terminal view.
+    /// The person can still answer by hand in the Terminal view: herdr cannot drive the form,
+    /// or refused a value only the Terminal can enter (a textarea answer too long for omp's
+    /// editor, a form whose first field is a textarea: "…; answer in the terminal").
     public var asksForTerminalAnswer: Bool {
         switch self {
         case .moved, .unsupported: return true
-        case .notPending, .invalid, .refused: return false
+        case .invalid(_, let reason): return reason.hasSuffix("answer in the terminal")
+        case .notPending, .refused: return false
         }
     }
 }

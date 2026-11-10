@@ -183,6 +183,8 @@ final class AskFormClientTests: XCTestCase {
             ("ask_unsupported", "unsupported control", .unsupported),
             ("ask_form_invalid", "form: Other needs text", .invalid(field: "form", reason: "Other needs text")),
             ("ask_form_invalid", "pick exactly one option", .invalid(field: nil, reason: "pick exactly one option")),
+            ("ask_form_invalid", "notes: too long to edit from the app; answer in the terminal",
+             .invalid(field: "notes", reason: "too long to edit from the app; answer in the terminal")),
             ("forbidden", "no", .refused(APIError(code: "forbidden", message: "no"))),
         ]
         for (code, message, expected) in cases {
@@ -199,6 +201,12 @@ final class AskFormClientTests: XCTestCase {
         XCTAssertTrue(AgentAnswerFormError.unsupported.asksForTerminalAnswer)
         XCTAssertFalse(AgentAnswerFormError.notPending.asksForTerminalAnswer)
         XCTAssertFalse(AgentAnswerFormError.invalid(field: "x", reason: "y").asksForTerminalAnswer)
+        // herdr #394: values only the Terminal can enter.
+        XCTAssertTrue(AgentAnswerFormError.invalid(
+            field: "notes", reason: "too long to edit from the app; answer in the terminal").asksForTerminalAnswer)
+        XCTAssertTrue(AgentAnswerFormError.invalid(
+            field: "notes", reason: "the form's first field cannot be edited from the app; answer in the terminal")
+            .asksForTerminalAnswer)
     }
 
     func testAdvertisesAskFormReadsThePing() async {

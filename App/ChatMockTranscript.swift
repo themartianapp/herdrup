@@ -239,9 +239,6 @@ final class ChatMockConversation: @unchecked Sendable {
                 let message = refusal == "ask_form_invalid" ? "form: that inbox is not an @lenscale.ai address" : "mock refusal"
                 return Self.error(id: id, code: refusal, message: message)
             }
-            if ChatMockAskForm.hasTextarea {
-                return Self.error(id: id, code: "ask_unsupported", message: "textarea fields: answer in the terminal")
-            }
             guard ChatMockAskForm.enabled, ask == askID, !settled else {
                 return Self.error(id: id, code: "ask_not_pending", message: "no pending question with that id")
             }
