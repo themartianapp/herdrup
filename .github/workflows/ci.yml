@@ -210,6 +210,11 @@ jobs:
             exit 1
           fi
 
+      - name: Wait for the simulator runtimes to mount
+        # actions/runner-images#14946: a Metal toolchain cryptex mount that races simdiskimaged's
+        # iOS runtime mount gets the runtime force-unmounted ~10 min later, mid-shard.
+        run: Tools/ci/ui-shard.sh wait-runtimes
+
       - name: Download the Metal toolchain
         # SwiftTerm >=1.12.0 bundles Apple/Metal/Shaders.metal unconditionally; Xcode 26
         # ships the Metal shader compiler as a separate component. Idempotent — a no-op
