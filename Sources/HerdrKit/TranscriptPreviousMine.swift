@@ -62,8 +62,8 @@ public enum TranscriptPreviousMine {
         }
     }
 
-    /// Settling a jump once its own glide is over, one sample of the chat at a time: whether
-    /// the jump arrived, needs putting right, or was taken over by the reader.
+    /// A jump from the moment it is issued until it settles: whether it arrived, needs putting
+    /// right, or was taken over by the reader. One is made per jump, before anything moves.
     ///
     /// The glide can stop short. Issued just after an older page's turn was drawn above the
     /// window, it moved the chat 54 pt in one frame and stopped there, with the prompt still
@@ -71,13 +71,17 @@ public enum TranscriptPreviousMine {
     /// screen recordings). So once the chat is still with the prompt's top above the screen,
     /// the prompt is put at the top again (`correct`), at most `maxCorrections` times.
     ///
-    /// Sampling starts once the glide's own time is over. From then on the jump moves the chat
-    /// only by a correction, which lands by the first or second sample after it. Any other
-    /// change of offset is someone else's and retires the jump: a finger (which the view also
-    /// sees as a drag), or a Mac wheel or trackpad, which moves the offset with no drag or
-    /// deceleration at all (review of #649, F1: the correction used to scroll a reader who
-    /// wheeled away right back). A change that comes with a change of content height is
-    /// layout (rows above settling their heights) and is waited out, not taken for the reader.
+    /// The reader's input is the authority on takeover: `readerInput()`, called for any drag
+    /// and any wheel or trackpad scroll from the moment the jump is issued, retires it, and no
+    /// correction follows. Before that, a takeover was inferred only from the offset, which a
+    /// wheel scroll that ended before sampling began left looking like a jump at rest, so the
+    /// correction scrolled the reader back (review of #649, F1, round 2: wheel input at 360 ms).
+    ///
+    /// The offset still counts too, once sampling starts after the glide's own time: the jump
+    /// moves the chat only by a correction, which lands by the first or second sample after it,
+    /// and any other change of offset is someone else's (an input the observer missed) and
+    /// retires the jump. A change that comes with a change of content height is layout (rows
+    /// above settling their heights) and is waited out, not taken for the reader.
     public struct Settle: Sendable {
         public enum Action: Equatable, Sendable {
             /// Sample again after `sampleInterval`.
@@ -105,11 +109,20 @@ public enum TranscriptPreviousMine {
         /// A correction was issued and has not visibly landed: the next movement is its own,
         /// unless an earlier sample already showed the prompt at the top.
         private var correcting = false
+        /// The reader scrolled, dragged or wheeled since the jump was issued.
+        public private(set) var takenOver = false
 
         public init() {}
 
+        /// The reader moved the chat themselves (a drag, a wheel or trackpad scroll), at any
+        /// time since the jump was issued: the jump is theirs no longer.
+        public mutating func readerInput() {
+            takenOver = true
+        }
+
         /// `promptAbove`: the jump's prompt reports its top above the screen.
         public mutating func sample(offset: Double?, contentHeight: Double?, promptAbove: Bool) -> Action {
+            if takenOver { return .retire }
             guard let offset else { return .giveUp }
             let last = previous
             previous = (offset, contentHeight)

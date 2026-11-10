@@ -428,10 +428,25 @@ private final class ChatPromptTops {
     var lastJump: TranscriptPreviousMine.LastJump?
     /// Bumped per jump, so a superseded jump's settle does not record its offset.
     var jumpGeneration = 0
+    /// The latest jump from the moment it was issued (`TranscriptPreviousMine.Settle`).
+    var settle = TranscriptPreviousMine.Settle()
+    /// A deceleration was already under way when the latest jump was issued: that one is the
+    /// momentum of a drag from before the tap, and only a deceleration that starts later is
+    /// the reader taking the jump over.
+    var deceleratingAtIssue = false
     /// Bumped when search opens or closes. An up-arrow search reads it after every wait (an
     /// older page, the top already fetching one): the view value it captured still has no
     /// search, so this is how it learns search took over and gives up (review 18e58fbbc4ef6e41).
     var navigation = 0
+
+    /// The reader moved the chat (a drag, a deceleration they started, a wheel or trackpad
+    /// scroll): the up arrow searches from where they are now, and a pending jump stops,
+    /// whatever moment of it this is (review of #649, F1).
+    func readerInput() {
+        guard lastJump != nil else { return }
+        settle.readerInput()
+        lastJump = nil
+    }
 }
 
 /// Reports whether a prompt row's top is above the chat's viewport (`space`), when the row is
@@ -830,7 +845,10 @@ struct ChatView: View {
                     if followingLatest { followingLatest = false }
                 }
                 // The reader moved the chat: the up arrow searches from where they are now.
-                if view.isDragging, promptTops.lastJump != nil { promptTops.lastJump = nil }
+                if !view.isDecelerating { promptTops.deceleratingAtIssue = false }
+                if view.isDragging || (view.isDecelerating && !promptTops.deceleratingAtIssue) {
+                    promptTops.readerInput()
+                }
                 if followingLatest, model.loaded, findRequest == nil,
                    !view.isTracking, !view.isDragging, !view.isDecelerating {
                     // Just after a send the tail springs with the new bubble; otherwise it jumps.
@@ -842,6 +860,9 @@ struct ChatView: View {
                 }
                 let bottom = scrollPosition.isAtBottom
                 if atBottom != bottom { atBottom = bottom }
+            }, onScrollInput: {
+                // A Mac wheel or trackpad: none of the flags above (see `onScrollInput`).
+                promptTops.readerInput()
             })
             .allowsHitTesting(false)
             .accessibilityHidden(true)
@@ -1078,6 +1099,9 @@ struct ChatView: View {
         promptTops.jumpGeneration += 1
         let generation = promptTops.jumpGeneration
         promptTops.lastJump = TranscriptPreviousMine.LastJump(turnID: turnID)
+        // From here on, reader input takes the jump over (`ChatPromptTops.readerInput`).
+        promptTops.settle = TranscriptPreviousMine.Settle()
+        promptTops.deceleratingAtIssue = scrollPosition.view?.isDecelerating == true
         followingLatest = false
         atBottom = false
         if index < drawnStart {
@@ -1094,6 +1118,8 @@ struct ChatView: View {
                 if promptTops.above[turnID] != nil { break }
             }
         }
+        // The reader may have scrolled while the rows above were drawn.
+        guard isCurrentJump(turnID, generation) else { return }
         if reduceMotion {
             proxy.scrollTo(rowID, anchor: .top)
         } else {
@@ -1104,18 +1130,18 @@ struct ChatView: View {
 
     /// Makes sure the jump arrived, then records the offset it settled at; from then on any
     /// other move of the chat (search, a drag, Jump to latest, an older page's anchor) retires
-    /// it. Starts once the glide's own 0.3 s are over (plus a frame or so of slack), so a still
+    /// it. Samples once the glide's own 0.3 s are over (plus a frame or so of slack), so a still
     /// offset before the scroll begins is not taken for the end of it, and the glide's motion
-    /// is not taken for the reader's. `TranscriptPreviousMine.Settle` decides, sample by sample,
-    /// whether to put a prompt that stopped short back at the top, and retires the jump when
-    /// anything else, a Mac wheel or trackpad included, moves the chat meanwhile.
+    /// is not taken for the reader's. The jump's `TranscriptPreviousMine.Settle`, made when it
+    /// was issued, decides sample by sample whether to put a prompt that stopped short back at
+    /// the top. Reader input (a drag, a wheel or trackpad scroll) at any moment since the jump
+    /// was issued has already retired it, and no correction follows.
     private func settleJump(_ turnID: String, generation: Int, _ proxy: ScrollViewProxy) async {
         try? await Task.sleep(nanoseconds: reduceMotion ? 50_000_000 : 400_000_000)
-        var settle = TranscriptPreviousMine.Settle()
         while isCurrentJump(turnID, generation) {
-            switch settle.sample(offset: scrollPosition.offset.map(Double.init),
-                                 contentHeight: scrollPosition.contentHeight.map(Double.init),
-                                 promptAbove: promptTops.above[turnID] == true) {
+            switch promptTops.settle.sample(offset: scrollPosition.offset.map(Double.init),
+                                            contentHeight: scrollPosition.contentHeight.map(Double.init),
+                                            promptAbove: promptTops.above[turnID] == true) {
             case .wait:
                 try? await Task.sleep(for: TranscriptPreviousMine.Settle.sampleInterval)
             case .correct:

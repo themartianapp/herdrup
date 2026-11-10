@@ -269,6 +269,34 @@ final class TranscriptPreviousMineTests: XCTestCase {
                                (420, 5000, true)]).last, .retire)
     }
 
+    /// Review of #649, F1, round 2: the reader wheels the prompt off the top and stops at
+    /// 360 ms, before the first settle sample (400 ms). The samples then see a chat at rest
+    /// with the prompt above the screen, which is exactly a glide that stopped short; only
+    /// the input itself tells them apart. On de84fe61 nothing delivered that input, and these
+    /// samples corrected (scrolled the reader back).
+    func testAWheelBeforeTheFirstSampleRetiresTheJump() {
+        enum Event { case wheel, sample(Double, Bool) }
+        // Milliseconds since the jump was issued.
+        let timeline: [(Int, Event)] = [(360, .wheel), (400, .sample(200, true)), (450, .sample(200, true)),
+                                        (500, .sample(200, true))]
+        func run(deliveringInput: Bool) -> [TranscriptPreviousMine.Settle.Action] {
+            var settle = TranscriptPreviousMine.Settle()   // made when the jump is issued, t = 0
+            var actions: [TranscriptPreviousMine.Settle.Action] = []
+            for (_, event) in timeline.sorted(by: { $0.0 < $1.0 }) {
+                switch event {
+                case .wheel: if deliveringInput { settle.readerInput() }
+                case .sample(let offset, let above):
+                    actions.append(settle.sample(offset: offset, contentHeight: 5000, promptAbove: above))
+                }
+            }
+            return actions
+        }
+        XCTAssertEqual(run(deliveringInput: true), [.retire, .retire, .retire],
+                       "the reader's wheel retires the jump: no correction scrolls them back")
+        XCTAssertTrue(run(deliveringInput: false).contains(.correct),
+                      "without the input, the samples alone cannot tell the reader from a short glide")
+    }
+
     func testLayoutThatMovesTheOffsetIsWaitedOut() {
         // Rows above settling their heights move the offset and the content height together.
         XCTAssertEqual(settle([(300, 5000, true), (360, 5060, true), (360, 5060, false)]),
