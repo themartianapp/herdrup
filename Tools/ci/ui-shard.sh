@@ -163,10 +163,11 @@ wait_for_simulator_service() {
 # the download; boot_simulator checks each round's runtime, and recover_simulator mounts a lost
 # one again.
 runtime_verdict=
-# check_device_runtime UDID LOG: 0 when the device's runtime is Ready and mounted, 1 when simctl
-# says it is not, 2 when simctl did not answer (readiness then waits for the service as before).
+# check_device_runtime UDID LOG: 0 when the device's runtime is Ready and mounted and the device
+# is available on it, 1 when simctl says otherwise, 2 when simctl did not answer (readiness then
+# waits for the service as before).
 check_device_runtime() {
-  local udid="$1" log="$2" status=0
+  local udid="$1" log="$2" status=0 device_status=0
   runtime_verdict="simctl did not answer"
   if ! bounded 60 xcrun simctl runtime list -j >"$SIM_TMP/runtimes.json" 2>>"$log" \
       || ! bounded 60 xcrun simctl list devices --json >"$SIM_TMP/devices.json" 2>>"$log"; then
@@ -177,6 +178,14 @@ check_device_runtime() {
     >"$SIM_TMP/runtime-verdict.txt" 2>&1 || status=1
   sed "s/^/$(date -u +%FT%TZ) runtime: /" "$SIM_TMP/runtime-verdict.txt" >>"$log"
   runtime_verdict=$(grep -v '(ignored)' "$SIM_TMP/runtime-verdict.txt" | paste -sd ';' -)
+  # A mounted runtime that CoreSimulator has not matched the device to is lost all the same:
+  # probe run 42766613734's device stayed "unavailable, runtime profile not found" after the
+  # runtime was mounted again.
+  python3 "$SIM_STATE" device "$SIM_TMP/devices.json" "$udid" >>"$log" 2>&1 || device_status=$?
+  if [ "$device_status" -eq 3 ]; then
+    status=1
+    runtime_verdict="$runtime_verdict; $udid is unavailable"
+  fi
   return "$status"
 }
 # wait_for_runtimes LOG BUDGET_SECONDS: waits until every simulator runtime that is not Unusable
@@ -213,20 +222,35 @@ wait_for_runtimes() {
     sleep 5
   done
 }
-# Mounts lost runtimes again. CoreSimulatorService is relaunched on demand by the next simctl
-# call and asks simdiskimaged for every runtime; if that is not enough, simdiskimaged itself is
-# restarted (launchd relaunches it). Every booted simulator goes down with the service.
+# Mounts lost runtimes again and makes CoreSimulator see them. Measured on a hosted runner
+# whose iOS runtime was force-unmounted on purpose (probe run 42766613734): restarting
+# CoreSimulatorService alone left it unmounted for 120 s; restarting simdiskimaged (launchd
+# relaunches it) mounted it again within 2 s, but the device stayed "unavailable, runtime
+# profile not found" because CoreSimulatorService had already started without it. So:
+# simdiskimaged first, then CoreSimulatorService once the runtimes are mounted, then wait for
+# the device to be available. Every booted simulator goes down with the service.
 remount_runtimes() {
-  local log="$1"
-  echo "$(date -u +%FT%TZ) shutting down every simulator and restarting CoreSimulatorService" | tee -a "$log"
+  local log="$1" udid="$2" start
+  echo "$(date -u +%FT%TZ) shutting down every simulator; restarting simdiskimaged" | tee -a "$log"
   bounded 120 xcrun simctl shutdown all >>"$log" 2>&1 || true
-  killall -9 com.apple.CoreSimulator.CoreSimulatorService >>"$log" 2>&1 || true
   ready_devices=" "
-  wait_for_runtimes "$log" 120 && return 0
-  echo "$(date -u +%FT%TZ) runtimes still not mounted; restarting simdiskimaged and CoreSimulatorService" | tee -a "$log"
   sudo -n killall -9 simdiskimaged >>"$log" 2>&1 || true
+  wait_for_runtimes "$log" 300 || return 1
+  echo "$(date -u +%FT%TZ) restarting CoreSimulatorService so it finds the mounted runtimes" | tee -a "$log"
   killall -9 com.apple.CoreSimulator.CoreSimulatorService >>"$log" 2>&1 || true
-  wait_for_runtimes "$log" 300
+  start=$(date +%s)
+  while :; do
+    if bounded 60 xcrun simctl list devices --json >"$SIM_TMP/devices.json" 2>>"$log" \
+        && python3 "$SIM_STATE" device "$SIM_TMP/devices.json" "$udid" >>"$log" 2>&1; then
+      echo "$(date -u +%FT%TZ) $udid is available again after $(( $(date +%s) - start )) s" | tee -a "$log"
+      return 0
+    fi
+    if [ $(( $(date +%s) - start )) -ge 180 ]; then
+      echo "::error::infrastructure: $udid is still unavailable 180 s after its runtime was mounted again; see $log"
+      return 1
+    fi
+    sleep 5
+  done
 }
 # The unified log of runtime mounts and unmounts: the evidence of what took a runtime away.
 save_runtime_log() {
@@ -373,7 +397,7 @@ recover_simulator() {
   if [ "$status" -ne 0 ]; then
     echo "$(date -u +%FT%TZ) the runtime of $udid is not confirmed Ready and mounted: $runtime_verdict" | tee -a "$log"
     save_runtime_log "TestReceipts/$label-recovery-runtime-events.log" 60
-    remount_runtimes "$log" || return 1
+    remount_runtimes "$log" "$udid" || return 1
   fi
   echo "$(date -u +%FT%TZ) simctl shutdown $udid" >>"$log"
   bounded 120 xcrun simctl shutdown "$udid" >>"$log" 2>&1 || true
