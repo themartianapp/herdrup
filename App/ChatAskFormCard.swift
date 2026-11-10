@@ -377,7 +377,7 @@ struct AskFormStepper: View {
                 .strokeBorder(readOnly ? Palette.hairlineQuiet : Color.clear, lineWidth: 1))
             .contentShape(RoundedRectangle(cornerRadius: 12))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(AskFormRowStyle())
         .disabled(!interactive || option.disabled)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("chat-ask-form-option-\(index)")
@@ -392,7 +392,9 @@ struct AskFormStepper: View {
                 TextField("", text: Binding(get: { other }, set: { text in
                     guard text.contains("\n") else { return draft.setOther(text, in: field) }
                     draft.setOther(text.replacingOccurrences(of: "\n", with: ""), in: field)
-                    if draft.isComplete(field) {
+                    // The field can deliver the newline more than once; only the first moves on,
+                    // and only while its own step is on screen.
+                    if draft.currentField?.name == field.name, draft.isComplete(field) {
                         focused = false
                         draft.advance()
                     }
@@ -428,7 +430,7 @@ struct AskFormStepper: View {
                         .strokeBorder(mode == .answer ? Palette.hairline : Palette.hairlineQuiet, lineWidth: 1))
                     .contentShape(RoundedRectangle(cornerRadius: 12))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(AskFormRowStyle())
             .disabled(!interactive)
             .accessibilityIdentifier("chat-ask-form-other")
         }
@@ -654,6 +656,15 @@ struct AskFormStepper: View {
 }
 
 // MARK: - Style
+
+/// An option row: a light press, and no fade when disabled. The plain style fades a
+/// disabled label, but a read-only form (a guest, an older server) is drawn in the design's
+/// own read-only colours, which the row sets itself.
+struct AskFormRowStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.opacity(configuration.isPressed ? 0.8 : 1)
+    }
+}
 
 enum AskFormStyle {
     /// A control that cannot be used right now (the first step's Back): the mockup's #3A3F66.

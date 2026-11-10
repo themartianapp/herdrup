@@ -509,8 +509,9 @@ case "$shard" in
     # 39128731625, 39132955146, 39137628334).
     # ChatViewTests (#485, ~3.5 min on a hosted runner) run here: in the app round they
     # pushed iPhoneApp to 29 min of tests against its 30 m budget, which run 39930335960
-    # exceeded. This shard had ~18 min of tests in that run against 40 m.
-    run_suite iPhoneChat "$IPHONE_UDID" 10m -only-testing:HerdrUITests/ChatViewTests || failed=1
+    # exceeded. This shard had ~18 min of tests in that run against 40 m. 18m since the
+    # form-ask stepper tests (#650) added eight walk-throughs of omp's HTML form.
+    run_suite iPhoneChat "$IPHONE_UDID" 18m -only-testing:HerdrUITests/ChatViewTests || failed=1
     check_classes_ran TestReceipts/iPhoneChat-first.xcresult ChatViewTests || failed=1
     # Chat UX owns a separate round so its keyboard/history checks cannot consume
     # the general app suite's existing 30-minute deadline. 20m, as on iPad: round 4 added
