@@ -281,3 +281,5 @@ The guard must therefore:
   silent no-op mutations this week made green runs look like working guards;
 - record the raw latency, not a pass/fail, so a regression that halves the
   benefit is visible rather than rounded away.
+
+Throwaway line to prove the CI scope docs-only path (#646).
