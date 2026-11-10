@@ -505,6 +505,9 @@ final class ChatViewTests: XCTestCase {
         XCTAssertFalse(app.buttons["chat-ask-form-option-2"].isSelected)
         app.buttons["chat-ask-form-next"].tap()
         waitForStep("REVIEW", in: app)
+        // A review taller than the chat opens at its top, not with its first answers under the header.
+        XCTAssertTrue(app.buttons["chat-ask-form-review-0"].waitForHittable(timeout: 3),
+                      "the review should open with its first answer on screen")
         let changed = (0..<6).filter { app.buttons["chat-ask-form-review-\($0)"].label.contains("Changed") }
         XCTAssertEqual(changed, [3, 4], "the review marks exactly the two changed answers")
         XCTAssertTrue(app.buttons["chat-ask-form-review-4"].label

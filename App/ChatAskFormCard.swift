@@ -101,6 +101,8 @@ struct ChatAskFormCard: View {
     let canAnswerHere: Bool
     let onSubmit: () -> Void
     let onOpenTerminal: () -> Void
+    /// The review opened: the card's frame in window coordinates, for the chat to show its top.
+    let onReviewOpened: (CGRect) -> Void
 
     @Environment(\.chatTextScale) private var textScale
 
@@ -116,7 +118,8 @@ struct ChatAskFormCard: View {
                 ended(status)
             } else if pending != nil, let draft {
                 AskFormStepper(draft: draft, mode: mode, answering: answering, problem: problem,
-                               onSubmit: onSubmit, onOpenTerminal: onOpenTerminal)
+                               onSubmit: onSubmit, onOpenTerminal: onOpenTerminal,
+                               onReviewOpened: onReviewOpened)
             } else {
                 ended(nil)
             }
@@ -245,6 +248,13 @@ struct ChatAskFormCard: View {
     }
 }
 
+/// The stepper's frame in window coordinates, kept by reference so following it through a
+/// scroll never redraws the card.
+@MainActor
+private final class AskFormCardFrame {
+    var rect = CGRect.zero
+}
+
 // MARK: - The stepper
 
 struct AskFormStepper: View {
@@ -264,9 +274,11 @@ struct AskFormStepper: View {
     let problem: ChatAnswerProblem?
     let onSubmit: () -> Void
     let onOpenTerminal: () -> Void
+    let onReviewOpened: (CGRect) -> Void
 
     @Environment(\.chatTextScale) private var textScale
     @FocusState private var focused: Bool
+    @State private var cardFrame = AskFormCardFrame()
 
     private var interactive: Bool { mode == .answer && !answering }
 
@@ -284,6 +296,19 @@ struct AskFormStepper: View {
         .padding(12)
         .background(AskFormStyle.card)
         .animation(.easeOut(duration: 0.15), value: draft.step)
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { cardFrame.rect = $0 }
+        .onChange(of: draft.isReviewing) { _, reviewing in
+            guard reviewing, mode == .answer else { return }
+            // Once the step's 0.15 s change and the chat's follow to its tail have landed; a
+            // second pass corrects a frame taken before the rows had settled.
+            Task {
+                for _ in 0..<2 {
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                    guard draft.isReviewing else { return }
+                    onReviewOpened(cardFrame.rect)
+                }
+            }
+        }
     }
 
     // MARK: Header

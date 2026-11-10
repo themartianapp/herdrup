@@ -1040,13 +1040,27 @@ struct ChatView: View {
             openNote: { note in openNote = note },
             openQuestion: { id in openQuestionID = id },
             answer: { id, option in Task { await model.answer(client: client, askID: id, option: option) } },
-            submitForm: { id, draft in Task { await model.answerForm(client: client, askID: id, draft: draft) } },
+            submitForm: { id, draft in
+                // The answer moves the conversation on: the chat follows it again.
+                followingLatest = findRequest == nil
+                Task { await model.answerForm(client: client, askID: id, draft: draft) }
+            },
+            revealFormTop: { frame in revealFormTop(frame) },
             canAnswer: model.store.subagent == nil,
             openTerminal: {
                 openQuestionID = nil
                 onOpenTerminal()
             },
             selectText: { text in selectingText = text })
+    }
+
+    /// A form's review just opened (`AskFormStepper`). A card taller than the chat, followed
+    /// to its tail, would hide its top ("Check your answers" and the first answers) under the
+    /// header: the chat shows the card from its top instead, and stops following until Submit.
+    private func revealFormTop(_ frame: CGRect) {
+        guard findRequest == nil,
+              scrollPosition.revealTop(frame, margin: 16, atTail: followingLatest) else { return }
+        followingLatest = false
     }
 
     private var questionSheet: some View {
@@ -1635,6 +1649,8 @@ private struct ChatRowActions {
     let openQuestion: (String) -> Void
     let answer: (_ askID: String, _ option: String) -> Void
     let submitForm: (_ askID: String, _ draft: AskFormDraft) -> Void
+    /// A form's review opened: bring its card's top (window coordinates) into view.
+    let revealFormTop: (CGRect) -> Void
     /// Questions can be answered from this chat (not a subagent's read-only transcript).
     let canAnswer: Bool
     let openTerminal: () -> Void
@@ -1746,7 +1762,8 @@ private struct ChatRowView: View, Equatable {
                                 problem: problem, answersRefused: answersRefused,
                                 canAnswerHere: actions.canAnswer,
                                 onSubmit: { if let formDraft { actions.submitForm(id, formDraft) } },
-                                onOpenTerminal: actions.openTerminal)
+                                onOpenTerminal: actions.openTerminal,
+                                onReviewOpened: actions.revealFormTop)
                     .frame(maxWidth: sizeClass == .regular ? 520 : .infinity, alignment: .leading)
             } else {
                 VStack(alignment: .leading, spacing: 6) {
