@@ -1,0 +1,163 @@
+{
+ "id": "smoke",
+ "result": {
+  "type": "agent_transcript",
+  "agent": "omp",
+  "pane_id": "w1:p1",
+  "session_id": "01a1c5be-0609-71d7-809a-6dcd9a48c489",
+  "entries": [
+   {
+    "kind": "user",
+    "id": "1bcfe334",
+    "ts_ms": 1794318933977,
+    "text": "This is an automated test of the ask tool. Do nothing else: immediately call the ask tool exactly once with this html argument, verbatim, then after it returns reply with the single word DONE.\n<form><p>Smoke test.</p><fieldset><legend>Colour</legend><label><input type=\"radio\" name=\"colour\" value=\"red\" checked> Red</label><label><input type=\"radio\" name=\"colour\" value=\"blue\"> Blue</label></fieldset><fieldset><legend>Extras</legend><label><input type=\"checkbox\" name=\"extras\" value=\"cheese\" checked> Cheese</label><label><input type=\"checkbox\" name=\"extras\" value=\"olives\"> Olives</label></fieldset></form>",
+    "author": "owner"
+   },
+   {
+    "kind": "thinking",
+    "id": "4784a554:thinking",
+    "ts_ms": 1794318934076,
+    "text": "The user is asking me to call the ask tool with a specific HTML form, verbatim. They want me to:\n1. Call the ask tool exactly once with the provided html argument\n2. Wait for it to return\n3. Reply with the single word \"DONE\"\n\nI need to use the _ask function with the exact html provided. The user said \"Do nothing else\" and to use it \"verbatim\", so I should pass the html exactly as given."
+   },
+   {
+    "kind": "ask",
+    "id": "toolu_018UPY6ZtXHpLYi9uza8Txna",
+    "ts_ms": 1794318934076,
+    "questions": [
+     {
+      "question": "Colour",
+      "options": [
+       "Red",
+       "Blue"
+      ],
+      "multi": false,
+      "recommended": 0
+     },
+     {
+      "question": "Extras",
+      "options": [
+       "Cheese",
+       "Olives"
+      ],
+      "multi": true,
+      "recommended": 0
+     }
+    ],
+    "answer": [
+     "Colour: Blue",
+     "Extras: Olives, Other: basil"
+    ],
+    "form": {
+     "intro": "Smoke test.",
+     "fields": [
+      {
+       "name": "colour",
+       "kind": "choice",
+       "title": "Colour",
+       "description": null,
+       "multi": false,
+       "select": false,
+       "other": true,
+       "required": false,
+       "options": [
+        {
+         "value": "red",
+         "label": "Red",
+         "checked": true,
+         "disabled": false
+        },
+        {
+         "value": "blue",
+         "label": "Blue",
+         "checked": false,
+         "disabled": false
+        }
+       ],
+       "input_type": null,
+       "placeholder": null,
+       "value": null,
+       "min": null,
+       "max": null,
+       "minlength": null,
+       "maxlength": null,
+       "pattern": null
+      },
+      {
+       "name": "extras",
+       "kind": "choice",
+       "title": "Extras",
+       "description": null,
+       "multi": true,
+       "select": false,
+       "other": true,
+       "required": false,
+       "options": [
+        {
+         "value": "cheese",
+         "label": "Cheese",
+         "checked": true,
+         "disabled": false
+        },
+        {
+         "value": "olives",
+         "label": "Olives",
+         "checked": false,
+         "disabled": false
+        }
+       ],
+       "input_type": null,
+       "placeholder": null,
+       "value": null,
+       "min": null,
+       "max": null,
+       "minlength": null,
+       "maxlength": null,
+       "pattern": null
+      }
+     ]
+    },
+    "form_answer": [
+     {
+      "name": "colour",
+      "question": "Colour",
+      "answer": "Blue"
+     },
+     {
+      "name": "extras",
+      "question": "Extras",
+      "answer": "Olives, Other: basil"
+     }
+    ],
+    "form_status": "answered"
+   },
+   {
+    "kind": "thinking",
+    "id": "112b5d4b:thinking",
+    "ts_ms": 1794318986640,
+    "text": "The ask tool returned successfully with the user's form submission. The form was filled out with:\n- colour: \"blue\"\n- extras: [\"olives\", \"basil\"]\n\nNow I need to reply with the single word \"DONE\" as instructed."
+   },
+   {
+    "kind": "reply",
+    "id": "112b5d4b:reply",
+    "ts_ms": 1794318986640,
+    "text": "DONE",
+    "final": true
+   },
+   {
+    "kind": "turn_end",
+    "id": "112b5d4b:end",
+    "ts_ms": 1794318988192,
+    "status": "done"
+   }
+  ],
+  "before": null,
+  "after": "MQphCjAxYTFjNWJlLTA2MDktNzFkNy04MDlhLTZkY2Q5YTQ4YzQ4OQoxMgoxMSAxMTJiNWQ0YgoxNDFjZmM5ODQyYzRiMGUz",
+  "pending_ask": null,
+  "working": null,
+  "model": {
+   "provider": "anthropic",
+   "id": "claude-haiku-4-5",
+   "thinking_level": "high"
+  }
+ }
+}

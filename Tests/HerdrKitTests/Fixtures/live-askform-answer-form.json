@@ -1,0 +1,19 @@
+{
+ "id": "smoke",
+ "result": {
+  "type": "ask_form_answered",
+  "status": "answered",
+  "answers": [
+   {
+    "name": "colour",
+    "question": "Colour",
+    "answer": "Blue"
+   },
+   {
+    "name": "extras",
+    "question": "Extras",
+    "answer": "Olives, Other: basil"
+   }
+  ]
+ }
+}

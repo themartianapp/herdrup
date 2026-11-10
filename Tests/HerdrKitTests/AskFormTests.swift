@@ -385,3 +385,71 @@ final class AskFormStoreTests: XCTestCase {
         XCTAssertEqual(ask.form?.fields.count, 4)
     }
 }
+
+/// Replays herdr's replies captured from a scratch server driving a REAL omp 18.18.6 form
+/// ask (herdr feat/ask-form caa0c14a): the pending page, `agent.answer_form`, and the page
+/// once omp recorded the answer. The live wire shape, not hand-written JSON.
+@MainActor
+final class AskFormLiveCaptureTests: XCTestCase {
+    private func fixture(_ name: String) throws -> String {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/live-askform-\(name).json")
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    func testCapturedFormAskDecodesAnswersAndSettles() async throws {
+        let pendingPage = try fixture("transcript-pending")
+        let answeredPage = try fixture("transcript-answered")
+        let answerReply = try fixture("answer-form")
+        var answered = false
+        let transport = RecordingTransport { method, _ in
+            if method == "agent.answer_form" {
+                answered = true
+                return answerReply
+            }
+            return answered ? answeredPage : pendingPage
+        }
+        let client = HerdrClient(transport: transport)
+        let store = TranscriptStore(target: "w1:p1")
+        await store.refresh(client: client)
+
+        let pending = try XCTUnwrap(store.pendingAsk)
+        let form = try XCTUnwrap(pending.form)
+        XCTAssertTrue(pending.formAnswerable)
+        XCTAssertFalse(pending.answerable)
+        XCTAssertEqual(form.intro, "Smoke test.")
+        XCTAssertEqual(form.fields.map(\.name), ["colour", "extras"])
+        XCTAssertEqual(form.fields.map(\.multi), [false, true])
+        XCTAssertTrue(form.isFillable)
+        guard case .ask(_, _, let open)? = store.turns.flatMap(\.items).last(where: {
+            if case .ask = $0 { return true } else { return false }
+        }) else { return XCTFail("no ask card") }
+        XCTAssertEqual(open?.id, pending.id, "the card carries the pending form")
+
+        var selections = AskFormSelections(form: form)
+        selections.choose("blue", in: form.fields[0])
+        selections.choose("cheese", in: form.fields[1])
+        selections.choose("olives", in: form.fields[1])
+        selections.chooseOther(in: form.fields[1])
+        selections.setOther("basil", in: form.fields[1])
+        let result = try await client.agentAnswerForm(target: "w1:p1", askID: pending.id, values: selections.values)
+        XCTAssertEqual(result.status, .answered)
+        XCTAssertEqual(result.answers.map(\.answer), selections.answers.map(\.answer),
+                       "the app's own reading of the answers matches omp's")
+        let sent = try XCTUnwrap(try transport.last().params["values"] as? [String: [String: Any]])
+        XCTAssertEqual(sent["colour"]?["options"] as? [String], ["blue"])
+        XCTAssertEqual(sent["extras"]?["options"] as? [String], ["olives"])
+        XCTAssertEqual(sent["extras"]?["other"] as? String, "basil")
+
+        store.noteFormAnswered(askID: pending.id, answers: result.answers)
+        await store.refresh(client: client)
+        XCTAssertNil(store.pendingAsk)
+        guard case .ask(_, let ask, let after)? = store.turns.flatMap(\.items).last(where: {
+            if case .ask = $0 { return true } else { return false }
+        }) else { return XCTFail("no ask card") }
+        XCTAssertNil(after)
+        XCTAssertEqual(ask.formStatus, .answered)
+        XCTAssertEqual(ask.formAnswer?.map(\.answer), ["Blue", "Olives, Other: basil"])
+        XCTAssertEqual(ask.answer, ["Colour: Blue", "Extras: Olives, Other: basil"])
+    }
+}
