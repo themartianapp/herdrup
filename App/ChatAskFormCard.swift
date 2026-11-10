@@ -106,7 +106,9 @@ struct ChatAskFormCard: View {
 
     var body: some View {
         Group {
-            if ask.formAnswer != nil || ask.formStatus == .answered || ask.answer != nil {
+            if ask.formStatus == .timedOut || ask.formStatus == .cancelled {
+                ended(ask.formStatus)
+            } else if ask.formAnswer != nil || ask.formStatus == .answered || ask.answer != nil {
                 answered
             } else if let sent = ask.sentFormAnswer {
                 sentState(sent)
@@ -232,7 +234,8 @@ struct ChatAskFormCard: View {
                 Text(heading).font(Typography.app(14 * textScale, .medium)).foregroundStyle(Palette.textDim)
                     .lineLimit(2)
             }
-            Text(status == .timedOut ? "Timed out · not answered" : status == .cancelled ? "Cancelled" : "Not answered")
+            // herdr's schema: on a timeout omp submitted the defaults.
+            Text(status == .timedOut ? "Timed out · recommendations used" : status == .cancelled ? "Cancelled" : "Not answered")
                 .font(Typography.app(13 * textScale)).foregroundStyle(Palette.textFaint)
                 .accessibilityIdentifier("chat-ask-form-ended")
         }

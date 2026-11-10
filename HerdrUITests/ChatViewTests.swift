@@ -589,7 +589,7 @@ final class ChatViewTests: XCTestCase {
         openAgent("herdr-app", in: app)
         let ended = app.staticTexts["chat-ask-form-ended"]
         XCTAssertTrue(ended.waitForExistence(timeout: 10))
-        XCTAssertEqual(ended.label, "Timed out · not answered")
+        XCTAssertEqual(ended.label, "Timed out · recommendations used")
         XCTAssertFalse(app.buttons["chat-ask-form-option-0"].exists)
         attach(app, "form-timed-out")
     }
