@@ -232,11 +232,11 @@ them through the normal roster polling path. The offscreen-arrival regression
 checks its scroll position and absence of the pill before releasing the agents,
 so slow simulator interactions cannot race a fixed startup delay.
 
-The Mermaid viewer test holds the DEBUG chat fixture with `HERDR_CHAT_UX_STATIC=1`
-while checking rendering, code toggles and disk-cache relaunch. Normal fixture
+The presentation-only chat tests (Mermaid and SVG rendering, thought ink, copy and Select
+Text) hold the DEBUG chat fixture with `HERDR_CHAT_UX_STATIC=1`. Normal fixture
 refreshes still append incoming messages; the dedicated refresh and streaming tests
-keep that behavior. Background fixture updates must not move a toggle during a
-presentation-only test's synthesized tap.
+keep that behavior. Background fixture updates must not move a toggle or a message
+under a presentation-only test's synthesized tap, press or measurement.
 
 The four simulator jobs run in parallel. Gram shares the optimized Settings job; the other
 iPhone app job runs font, status-motion, agent-list and server-update tests in their own rounds
