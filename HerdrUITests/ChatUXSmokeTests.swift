@@ -345,6 +345,43 @@ final class ChatUXSmokeTests: XCTestCase {
         XCTAssertFalse(app.buttons["chat-svg-image"].exists)
     }
 
+    /// A drawn image refits when the chat narrows (owner, 2026-11-11: on iPhone Duo the whole
+    /// transcript sat shifted left, every line cut off). Fitted to the landscape column, the
+    /// image used to hold its block at that width after the turn back to portrait, so the
+    /// block never saw the narrower width and never refitted; the too-wide row widened the
+    /// transcript's stack, which the column centres, so every row started off the left edge.
+    func testDrawnImageRefitsWhenTheChatNarrows() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone,
+                          "turning the phone narrows the chat; the iPad column is the reader's width")
+        XCUIDevice.shared.orientation = .portrait
+        let app = launch(svg: true, environment: ["HERDR_CHAT_UX_STATIC": "1"])
+        waitForDiagramToSettle(app, "chat-svg")
+        let image = app.buttons["chat-svg-image"].firstMatch
+        XCTAssertTrue(image.waitForExistence(timeout: 5),
+                      "The SVG must finish rendering offscreen \(renderFailure(app, "chat-svg")): \(app.debugDescription)")
+        let chat = element(app, "chat-view")
+        let narrow = image.frame.width
+        XCTAssertLessThanOrEqual(image.frame.maxX, chat.frame.maxX, "portrait: \(image.frame) in \(chat.frame)")
+
+        rotated = true
+        XCUIDevice.shared.orientation = .landscapeLeft
+        // The landscape column is wider: the image is drawn again to fit it.
+        let wide = settle(within: 60, { image.frame.width }, until: { $0 > narrow + 40 })
+        XCTAssertGreaterThan(wide, narrow + 40, "landscape draws the image wider: \(image.frame)")
+        record(app, "Image fitted to the landscape column")
+
+        XCUIDevice.shared.orientation = .portrait
+        let refit = settle(within: 30, { image.frame.width }, until: { abs($0 - narrow) < 1 })
+        record(app, "Back in portrait")
+        XCTAssertEqual(refit, narrow, accuracy: 1, "the image refits to the portrait column: \(image.frame)")
+        XCTAssertGreaterThanOrEqual(image.frame.minX, chat.frame.minX, "image \(image.frame) in \(chat.frame)")
+        XCTAssertLessThanOrEqual(image.frame.maxX, chat.frame.maxX, "image \(image.frame) in \(chat.frame)")
+        let reply = app.staticTexts["The discovery board:"].firstMatch
+        XCTAssertTrue(reply.exists, app.debugDescription)
+        XCTAssertGreaterThanOrEqual(reply.frame.minX, chat.frame.minX,
+                                    "the reply's text starts on screen: \(reply.frame) in \(chat.frame)")
+    }
+
     /// An expanded thought reads as an aside (round 4): its text, list items and inline code in
     /// the secondary ink, a step smaller than the reply. Measured on the screen's pixels: the
     /// brightest pixel of a thought line is the secondary ink, a reply line's is the primary.
