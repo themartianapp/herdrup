@@ -20,19 +20,38 @@ public struct AskFormSelections: Sendable, Equatable {
     }
 
     public let form: AskForm
-    private var states: [String: FieldState]
+    /// Only what the person changed, by the field's place in the form: an untouched field reads
+    /// its own default, also where two fields share a name (such a form is read-only, but each
+    /// field shows its own value).
+    private var edits: [Int: FieldState] = [:]
 
     public init(form: AskForm) {
         self.form = form
-        states = Dictionary(form.fields.map { ($0.name, Self.defaultState($0)) },
-                            uniquingKeysWith: { first, _ in first })
     }
 
     public static func defaultState(_ field: AskFormField) -> FieldState {
         FieldState(options: field.defaultValues, other: nil, text: field.value ?? "")
     }
 
-    public func state(_ field: AskFormField) -> FieldState { states[field.name] ?? Self.defaultState(field) }
+    /// The field's place in the form. Two identical fields share the first's, which is no
+    /// loss: they have the same default, and a form with duplicate names is not answerable.
+    private func index(_ field: AskFormField) -> Int? { form.fields.firstIndex(of: field) }
+
+    public func state(_ field: AskFormField) -> FieldState {
+        index(field).flatMap { edits[$0] } ?? Self.defaultState(field)
+    }
+
+    private mutating func update(_ field: AskFormField, _ change: (inout FieldState) -> Void) {
+        guard let index = index(field) else { return }
+        var state = state(field)
+        change(&state)
+        edits[index] = state
+    }
+
+    /// A radio that may be left without an answer: optional, and omp checked none of it.
+    private static func mayBeUnanswered(_ field: AskFormField) -> Bool {
+        !field.multi && !field.required && field.defaultValues.isEmpty
+    }
 
     /// The value as it would be sent: an Other left empty counts as not chosen.
     private func settled(_ field: AskFormField) -> FieldState {
@@ -45,58 +64,61 @@ public struct AskFormSelections: Sendable, Equatable {
 
     /// Picks `value`: a radio's only choice (Other closes), a checkbox toggled.
     public mutating func choose(_ value: String, in field: AskFormField) {
-        var state = state(field)
-        if field.multi {
-            if state.options.contains(value) {
-                state.options.removeAll { $0 == value }
+        update(field) { state in
+            if field.multi {
+                if state.options.contains(value) {
+                    state.options.removeAll { $0 == value }
+                } else {
+                    let chosen = Set(state.options + [value])
+                    state.options = field.options.map(\.value).filter(chosen.contains)
+                }
             } else {
-                let chosen = Set(state.options + [value])
-                state.options = field.options.map(\.value).filter(chosen.contains)
+                state.options = [value]
+                state.other = nil
             }
-        } else {
-            state.options = [value]
-            state.other = nil
         }
-        states[field.name] = state
     }
 
     /// Opens Other's text (a radio drops its option); on a checkbox group Other toggles.
     public mutating func chooseOther(in field: AskFormField) {
-        var state = state(field)
-        if field.multi {
-            state.other = state.other == nil ? "" : nil
-        } else {
-            state.options = []
-            if state.other == nil { state.other = "" }
+        update(field) { state in
+            if field.multi {
+                state.other = state.other == nil ? "" : nil
+            } else {
+                state.options = []
+                if state.other == nil { state.other = "" }
+            }
         }
-        states[field.name] = state
     }
 
     public mutating func setOther(_ text: String, in field: AskFormField) {
-        states[field.name, default: Self.defaultState(field)].other = text
+        update(field) { $0.other = text }
     }
 
     public mutating func setText(_ text: String, in field: AskFormField) {
-        states[field.name, default: Self.defaultState(field)].text = text
+        update(field) { $0.text = text }
     }
 
-    /// A checkbox group's Other left empty is dropped when the step is left.
+    /// An Other left empty closes when its step is left: a checkbox group's, and an optional
+    /// radio's without a default, which is unanswered again. Any other radio's stays open:
+    /// its step cannot be left until it has text or an option.
     public mutating func dropEmptyOther(in field: AskFormField) {
-        guard field.multi, let other = state(field).other,
+        guard field.multi || Self.mayBeUnanswered(field), let other = state(field).other,
               other.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        states[field.name, default: Self.defaultState(field)].other = nil
+        update(field) { $0.other = nil }
     }
 
-    /// Whether the field can be left forward: a radio needs an option or Other's text, a
-    /// radio's Other needs its text, and a required field a value.
+    /// Whether the field can be left forward: a radio needs an option or Other's text unless
+    /// it may be left unanswered, and a required field a value.
     public func isComplete(_ field: AskFormField) -> Bool {
         let raw = state(field)
         let state = settled(field)
         switch field.kind {
         case .choice:
             if !field.multi {
+                if Self.mayBeUnanswered(field) { return true }
                 if raw.other != nil { return state.other != nil }
-                return !state.options.isEmpty || !field.required && field.defaultValues.isEmpty
+                return !state.options.isEmpty
             }
             return !field.required || !state.options.isEmpty || state.other != nil
         case .text:
@@ -115,7 +137,11 @@ public struct AskFormSelections: Sendable, Equatable {
         for field in form.fields where isChanged(field) {
             let state = settled(field)
             switch field.kind {
-            case .choice: values[field.name] = .choice(options: state.options, other: state.other)
+            case .choice:
+                // herdr refuses a disabled option in `values` and keeps its state itself.
+                let disabled = Set(field.options.filter(\.disabled).map(\.value))
+                values[field.name] = .choice(options: state.options.filter { !disabled.contains($0) },
+                                             other: state.other)
             case .text: values[field.name] = .text(state.text)
             case .unknown: break
             }
@@ -152,5 +178,20 @@ public struct AskFormSelections: Sendable, Equatable {
             }
             return AskFormAnswer(name: field.name, question: field.title ?? field.name, answer: answer)
         }
+    }
+}
+
+extension AskForm {
+    /// One answer as the card's answered and sent summaries show it. omp records a choice
+    /// field's Other as "Other: <text>", which shows as the text, as the review showed it.
+    /// Anything else shows as recorded: a text field's answer, an option labelled "Other: …",
+    /// or an answer whose field this form does not have.
+    public func summaryLine(_ answer: AskFormAnswer) -> String {
+        let prefix = "Other: "
+        guard answer.answer.hasPrefix(prefix),
+              let field = fields.first(where: { $0.name == answer.name }),
+              field.kind == .choice, field.other,
+              !field.options.contains(where: { $0.label == answer.answer }) else { return answer.answer }
+        return String(answer.answer.dropFirst(prefix.count))
     }
 }

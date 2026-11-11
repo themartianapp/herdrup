@@ -62,6 +62,7 @@ final class AskFormDraft: ObservableObject {
     }
 
     func back() {
+        if let field = currentField { selections.dropEmptyOther(in: field) }
         editingFromReview = false
         step = max(step - 1, 0)
     }
@@ -103,6 +104,9 @@ struct ChatAskFormCard: View {
     let onOpenTerminal: () -> Void
     /// The review opened: the card's frame in window coordinates, for the chat to show its top.
     let onReviewOpened: (CGRect) -> Void
+    /// The open review laid out again (its frame, as above): the chat keeps its top in view
+    /// until the reader moves it.
+    let onReviewLaidOut: (CGRect) -> Void
 
     @Environment(\.chatTextScale) private var textScale
 
@@ -119,7 +123,7 @@ struct ChatAskFormCard: View {
             } else if pending != nil, let draft {
                 AskFormStepper(draft: draft, mode: mode, answering: answering, problem: problem,
                                onSubmit: onSubmit, onOpenTerminal: onOpenTerminal,
-                               onReviewOpened: onReviewOpened)
+                               onReviewOpened: onReviewOpened, onReviewLaidOut: onReviewLaidOut)
             } else {
                 ended(nil)
             }
@@ -148,17 +152,7 @@ struct ChatAskFormCard: View {
 
     /// One line per field, from omp's `details.answers` (else herdr's "<title>: <answer>").
     private var answerLines: [String] {
-        if let answers = ask.formAnswer {
-            return answers.map { answer in
-                // omp writes "Other: <text>"; the summary shows the text, as the review did.
-                let field = form.fields.first { $0.name == answer.name }
-                if answer.answer.hasPrefix("Other: "),
-                   field?.options.contains(where: { $0.label == answer.answer }) != true {
-                    return String(answer.answer.dropFirst("Other: ".count))
-                }
-                return answer.answer
-            }
-        }
+        if let answers = ask.formAnswer { return answers.map(form.summaryLine) }
         return ask.answer ?? []
     }
 
@@ -218,7 +212,7 @@ struct ChatAskFormCard: View {
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
                     Text("\(index + 1)").font(Typography.machine(12 * textScale)).foregroundStyle(Palette.textFaint)
                         .frame(width: 8 * textScale, alignment: .leading)
-                    Text(answer.answer.hasPrefix("Other: ") ? String(answer.answer.dropFirst(7)) : answer.answer)
+                    Text(form.summaryLine(answer))
                         .font(Typography.app(14.5 * textScale, .medium)).foregroundStyle(Palette.textDim)
                         .lineLimit(1)
                 }
@@ -275,6 +269,7 @@ struct AskFormStepper: View {
     let onSubmit: () -> Void
     let onOpenTerminal: () -> Void
     let onReviewOpened: (CGRect) -> Void
+    let onReviewLaidOut: (CGRect) -> Void
 
     @Environment(\.chatTextScale) private var textScale
     @FocusState private var focused: Bool
@@ -296,18 +291,16 @@ struct AskFormStepper: View {
         .padding(12)
         .background(AskFormStyle.card)
         .animation(.easeOut(duration: 0.15), value: draft.step)
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { cardFrame.rect = $0 }
+        // Layout drives the review's reveal: each frame the open review is laid out at (the
+        // step's change, the chat's follow to its tail) goes to the chat, which keeps the
+        // card's top in view until the reader moves it (`ChatFormReveal`).
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { rect in
+            cardFrame.rect = rect
+            if draft.isReviewing, mode == .answer { onReviewLaidOut(rect) }
+        }
         .onChange(of: draft.isReviewing) { _, reviewing in
             guard reviewing, mode == .answer else { return }
-            // Once the step's 0.15 s change and the chat's follow to its tail have landed; a
-            // second pass corrects a frame taken before the rows had settled.
-            Task {
-                for _ in 0..<2 {
-                    try? await Task.sleep(nanoseconds: 200_000_000)
-                    guard draft.isReviewing else { return }
-                    onReviewOpened(cardFrame.rect)
-                }
-            }
+            onReviewOpened(cardFrame.rect)
         }
     }
 

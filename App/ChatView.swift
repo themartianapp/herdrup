@@ -232,7 +232,9 @@ final class ChatModel: ObservableObject {
                     answerProblem = ChatAnswerProblem(askID: askID, message: "This answer can't be sent from the chat.",
                                                       offersTerminal: true)
                 } else if !onItsStep {
-                    answerProblem = ChatAnswerProblem(askID: askID, message: "Couldn't answer: \(reason)",
+                    // The text before ": " named no field of this form: herdr's whole message.
+                    let message = field.map { "\($0): \(reason)" } ?? reason
+                    answerProblem = ChatAnswerProblem(askID: askID, message: "Couldn't answer: \(message)",
                                                       offersTerminal: false)
                 }
             case .moved:
@@ -529,6 +531,14 @@ private final class ChatPromptTops {
     }
 }
 
+/// A form's review asked to be shown from its top (`AskFormStepper`). Each layout of the card
+/// while the review is open puts its top back in view if it went above the screen, until the
+/// reader moves the chat (a drag, a deceleration, a wheel or trackpad scroll) or navigates it
+/// (search, Jump to latest, the up arrow, Submit). Kept by reference: setting it redraws nothing.
+private final class ChatFormReveal {
+    var pending = false
+}
+
 /// Reports whether a prompt row's top is above the chat's viewport (`space`), when the row is
 /// a prompt the up arrow may need; any other row is left as it is. Reports only crossings,
 /// like the top sentinel, so scrolling does not redraw the chat.
@@ -620,6 +630,8 @@ struct ChatView: View {
     @State private var openSubagent: TranscriptSubagent?
     /// Which drawn prompts sit above the viewport, as their rows report it (the up arrow).
     @State private var promptTops = ChatPromptTops()
+    /// A form's review waiting to be shown from its top (`revealFormTop`).
+    @State private var formReveal = ChatFormReveal()
     /// The oldest drawn prompt on screen or below it: the up arrow searches above this turn.
     /// Nil while every drawn prompt is above the screen.
     @State private var mineBoundary: String?
@@ -774,6 +786,7 @@ struct ChatView: View {
         .onChange(of: findRequest != nil) { _, _ in
             promptTops.lastJump = nil
             promptTops.navigation += 1
+            formReveal.pending = false
         }
         .sheet(item: Binding(get: { openNote.map(IdentifiedNote.init) }, set: { openNote = $0?.note })) { item in
             ChatNoteSheet(note: item.note)
@@ -817,6 +830,7 @@ struct ChatView: View {
             if landed, findRequest == nil, !atBottom {
                 JumpToLatestButton(label: "Jump to latest message", identifier: "chat-jump-latest") {
                     promptTops.lastJump = nil
+                    formReveal.pending = false
                     scrollPosition.animateToLatest()
                     followingLatest = true
                 }
@@ -928,8 +942,10 @@ struct ChatView: View {
                     if !userScrolling { userScrolling = true }
                     if followingLatest { followingLatest = false }
                 }
-                // The reader moved the chat: the up arrow searches from where they are now.
+                // The reader moved the chat: the up arrow searches from where they are now,
+                // and a form's review stays where they put it.
                 if !view.isDecelerating { promptTops.deceleratingAtIssue = false }
+                if view.isDragging || view.isDecelerating { formReveal.pending = false }
                 if view.isDragging || (view.isDecelerating && !promptTops.deceleratingAtIssue) {
                     promptTops.readerInput()
                 }
@@ -947,6 +963,7 @@ struct ChatView: View {
             }, onScrollInput: {
                 // A Mac wheel or trackpad: none of the flags above (see `onScrollInput`).
                 promptTops.readerInput()
+                formReveal.pending = false
             })
             .allowsHitTesting(false)
             .accessibilityHidden(true)
@@ -1069,7 +1086,9 @@ struct ChatView: View {
             submitForm: { id, draft in
                 // The answer moves the conversation on: the chat follows it again. Like Jump to
                 // latest, that retires an up-arrow jump, whose settle would otherwise read the
-                // move as one that stopped short and scroll back to its prompt.
+                // move as one that stopped short and scroll back to its prompt, and the review's
+                // reveal, which would hold the card's top on screen against the follow.
+                formReveal.pending = false
                 if findRequest == nil {
                     promptTops.lastJump = nil
                     followingLatest = true
@@ -1078,7 +1097,11 @@ struct ChatView: View {
                 }
                 Task { await model.answerForm(client: client, askID: id, draft: draft) }
             },
-            revealFormTop: { frame in revealFormTop(frame) },
+            formReviewOpened: { frame in
+                formReveal.pending = true
+                revealFormTop(frame)
+            },
+            formReviewLaidOut: { frame in revealFormTop(frame) },
             canAnswer: model.store.subagent == nil,
             openTerminal: {
                 openQuestionID = nil
@@ -1087,15 +1110,22 @@ struct ChatView: View {
             selectText: { text in selectingText = text })
     }
 
-    /// A form's review just opened (`AskFormStepper`). A card taller than the chat, followed
-    /// to its tail, would hide its top ("Check your answers" and the first answers) under the
-    /// header: the chat shows the card from its top instead, and stops following until Submit.
+    /// A form's review is open and asked to be shown from its top (`ChatFormReveal`). A card
+    /// taller than the chat, followed to its tail, would hide its top ("Check your answers"
+    /// and the first answers) under the header: the chat shows the card from its top instead,
+    /// and stops following until Submit. Called with each layout of the card, so the reveal
+    /// lands once the step's change and the follow to the tail have; reader input ends it.
     /// The move is the app's, not reader input (`ChatPromptTops.readerInput`), but it retires
     /// an up-arrow jump still settling, so the jump's correction does not scroll back to its
     /// prompt; the up arrow then searches from the form.
     private func revealFormTop(_ frame: CGRect) {
-        guard findRequest == nil,
-              scrollPosition.revealTop(frame, margin: 16, atTail: followingLatest) else { return }
+        guard formReveal.pending, findRequest == nil else { return }
+        // A drag that has begun but not been sampled yet already has the chat.
+        if let view = scrollPosition.view, view.isDragging || view.isDecelerating {
+            formReveal.pending = false
+            return
+        }
+        guard scrollPosition.revealTop(frame, margin: 16, atTail: followingLatest) else { return }
         promptTops.lastJump = nil
         followingLatest = false
     }
@@ -1218,6 +1248,7 @@ struct ChatView: View {
         promptTops.lastJump = TranscriptPreviousMine.LastJump(turnID: turnID)
         // From here on, reader input takes the jump over (`ChatPromptTops.readerInput`).
         promptTops.settle = TranscriptPreviousMine.Settle()
+        formReveal.pending = false
         promptTops.deceleratingAtIssue = scrollPosition.view?.isDecelerating == true
         followingLatest = false
         atBottom = false
@@ -1718,8 +1749,11 @@ private struct ChatRowActions {
     let openQuestion: (String) -> Void
     let answer: (_ askID: String, _ option: String) -> Void
     let submitForm: (_ askID: String, _ draft: AskFormDraft) -> Void
-    /// A form's review opened: bring its card's top (window coordinates) into view.
-    let revealFormTop: (CGRect) -> Void
+    /// A form's review opened: from now on, bring its card's top (window coordinates) into
+    /// view as it lays out, until the reader moves the chat (`ChatFormReveal`).
+    let formReviewOpened: (CGRect) -> Void
+    /// The open review's card laid out again.
+    let formReviewLaidOut: (CGRect) -> Void
     /// Questions can be answered from this chat (not a subagent's read-only transcript).
     let canAnswer: Bool
     let openTerminal: () -> Void
@@ -1832,7 +1866,8 @@ private struct ChatRowView: View, Equatable {
                                 canAnswerHere: actions.canAnswer,
                                 onSubmit: { if let formDraft { actions.submitForm(id, formDraft) } },
                                 onOpenTerminal: actions.openTerminal,
-                                onReviewOpened: actions.revealFormTop)
+                                onReviewOpened: actions.formReviewOpened,
+                                onReviewLaidOut: actions.formReviewLaidOut)
                     .frame(maxWidth: sizeClass == .regular ? 520 : .infinity, alignment: .leading)
             } else {
                 VStack(alignment: .leading, spacing: 6) {

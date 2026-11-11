@@ -552,6 +552,40 @@ final class ChatViewTests: XCTestCase {
         XCTAssertTrue(app.buttons["chat-ask-form-option-1"].isSelected, "the change is kept")
     }
 
+    /// An optional radio omp checked nothing of may be left unanswered: Other opened there
+    /// and left empty is no answer, so Next still moves on (review of #650, F3).
+    func testEmptyOtherOnAnOptionalRadioCanBeLeftUnanswered() {
+        let app = launchForm(["HERDR_MOCK_CHAT_FORM_OPTIONAL": "1"])
+        app.buttons["chat-ask-form-review-all"].tap()
+        waitForStep("REVIEW", in: app)
+        // The review opens at its top; its last row may be below the screen (a drag ends the
+        // reveal, so the chat stays where it is put).
+        let card = app.descendants(matching: .any)["chat-ask-form"]
+        let toneRow = app.buttons["chat-ask-form-review-6"]
+        XCTAssertTrue(toneRow.waitForExistence(timeout: 5), "the review lists the optional radio")
+        for _ in 0..<4 where !toneRow.isHittable { card.swipeUp(velocity: .slow) }
+        XCTAssertTrue(toneRow.isHittable, "the optional radio's review row should come on screen")
+        XCTAssertTrue(toneRow.label.contains("No answer"), toneRow.label)
+        toneRow.tap()
+        waitForStep("7 OF 7", in: app)
+        app.buttons["chat-ask-form-other"].tap()
+        let other = app.textViews["chat-ask-form-other-field"].exists
+            ? app.textViews["chat-ask-form-other-field"] : app.textFields["chat-ask-form-other-field"]
+        XCTAssertTrue(other.waitForExistence(timeout: 5), "Other opens its text field")
+        other.typeText("x")
+        other.typeText(XCUIKeyboardKey.delete.rawValue)
+        XCTAssertTrue(app.buttons["chat-ask-form-next"].isEnabled, "an emptied Other leaves the field unanswered")
+        app.buttons["chat-ask-form-next"].tap()
+        waitForStep("REVIEW", in: app, "Next moves on from the emptied Other")
+        XCTAssertTrue(app.buttons["chat-ask-form-review-6"].label.contains("No answer"),
+                      app.buttons["chat-ask-form-review-6"].label)
+        let submit = app.buttons["chat-ask-form-submit"]
+        for _ in 0..<4 where !submit.isHittable { card.swipeUp(velocity: .slow) }
+        submit.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-form-answered"].waitForExistence(timeout: 10),
+                      "the form submits with the field left out")
+    }
+
     /// herdr cannot drive the terminal form any more (someone is answering it there): the
     /// card offers the Terminal.
     func testFormMovedInTheTerminalOffersTheTerminal() {

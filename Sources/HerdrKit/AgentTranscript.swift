@@ -788,8 +788,9 @@ public struct AgentAnswerFormResult: Decodable, Sendable, Equatable {
 public enum AgentAnswerFormError: Error, Sendable, Equatable {
     /// Already answered, timed out or cancelled (`ask_not_pending`).
     case notPending
-    /// herdr refused a value (`ask_form_invalid`): `field` names it when the server's
-    /// message starts with "<field>: ".
+    /// herdr refused a value (`ask_form_invalid`): `field` is the text before the message's
+    /// first ": ", which names a field when the form has one by that name
+    /// (`AskFormDraft.reject`); field names are any text, spaces included.
     case invalid(field: String?, reason: String)
     /// omp's terminal form is no longer in its starting state, e.g. someone is answering it
     /// in the Terminal (`ask_form_moved`).
@@ -806,12 +807,10 @@ public enum AgentAnswerFormError: Error, Sendable, Equatable {
         case "ask_unsupported": self = .unsupported
         case "ask_form_invalid":
             // herdr's message is "<field name>: <reason>".
-            if let colon = error.message.range(of: ": ") {
-                let field = String(error.message[..<colon.lowerBound])
-                if !field.isEmpty, !field.contains(" ") {
-                    self = .invalid(field: field, reason: String(error.message[colon.upperBound...]))
-                    return
-                }
+            if let colon = error.message.range(of: ": "), colon.lowerBound > error.message.startIndex {
+                self = .invalid(field: String(error.message[..<colon.lowerBound]),
+                                reason: String(error.message[colon.upperBound...]))
+                return
             }
             self = .invalid(field: nil, reason: error.message)
         default: self = .refused(error)

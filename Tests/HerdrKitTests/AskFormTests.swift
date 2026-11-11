@@ -185,6 +185,11 @@ final class AskFormClientTests: XCTestCase {
             ("ask_form_invalid", "pick exactly one option", .invalid(field: nil, reason: "pick exactly one option")),
             ("ask_form_invalid", "notes: too long to edit from the app; answer in the terminal",
              .invalid(field: "notes", reason: "too long to edit from the app; answer in the terminal")),
+            // A field name with spaces is a field name: AskFormDraft.reject decides whether
+            // the form has it (review of #650, F5).
+            ("ask_form_invalid", "contact email: not an email address",
+             .invalid(field: "contact email", reason: "not an email address")),
+            ("ask_form_invalid", ": no field", .invalid(field: nil, reason: ": no field")),
             ("forbidden", "no", .refused(APIError(code: "forbidden", message: "no"))),
         ]
         for (code, message, expected) in cases {
@@ -299,6 +304,89 @@ final class AskFormSelectionsTests: XCTestCase {
         selections.choose("b", in: field)
         XCTAssertTrue(selections.isComplete)
         XCTAssertEqual(selections.values, ["env": .choice(options: ["b"])])
+    }
+
+    /// herdr refuses a disabled option in `values` and keeps its state itself: a checked,
+    /// disabled option stays ticked on the card but is never sent (review of #650, F1).
+    func testDisabledOptionsAreNotSent() {
+        let field = AskFormField(name: "deps", kind: .choice, title: "Deps", multi: true,
+                                 options: [AskFormOption(value: "fixed", label: "Fixed", checked: true, disabled: true),
+                                           AskFormOption(value: "new", label: "New")])
+        var selections = AskFormSelections(form: AskForm(fields: [field]))
+        selections.choose("new", in: field)
+        XCTAssertEqual(selections.state(field).options, ["fixed", "new"], "the card still shows the disabled tick")
+        XCTAssertEqual(selections.values, ["deps": .choice(options: ["new"])])
+        XCTAssertEqual(selections.answerText(field), "Fixed, New")
+    }
+
+    /// Duplicate names leave a form read-only (`form_answerable: false`), but each field still
+    /// shows its own default (review of #650, F2).
+    func testDuplicateNamedFieldsKeepTheirOwnDefaults() {
+        let primary = AskFormField(name: "endpoint", kind: .text, title: "Primary", value: "https://primary.example")
+        let backup = AskFormField(name: "endpoint", kind: .text, title: "Backup", value: "https://backup.example")
+        let first = AskFormField(name: "env", kind: .choice, title: "Env",
+                                 options: [AskFormOption(value: "a", label: "A", checked: true), AskFormOption(value: "b", label: "B")])
+        let second = AskFormField(name: "env", kind: .choice, title: "Env again",
+                                  options: [AskFormOption(value: "a", label: "A"), AskFormOption(value: "b", label: "B", checked: true)])
+        var selections = AskFormSelections(form: AskForm(fields: [primary, backup, first, second]))
+        XCTAssertEqual(selections.state(primary).text, "https://primary.example")
+        XCTAssertEqual(selections.state(backup).text, "https://backup.example")
+        XCTAssertEqual(selections.state(first).options, ["a"])
+        XCTAssertEqual(selections.state(second).options, ["b"])
+        selections.setText("https://edited.example", in: primary)
+        XCTAssertEqual(selections.state(backup).text, "https://backup.example", "an edit stays on its own field")
+        XCTAssertEqual(selections.answers.map(\.answer),
+                       ["https://edited.example", "https://backup.example", "A", "B"])
+    }
+
+    /// An optional radio without a default may be left unanswered: an Other opened there and
+    /// left empty is no answer, so the step can be left and Other closes (review of #650, F3).
+    func testEmptyOtherOnAnOptionalRadioWithoutADefaultIsCancellable() {
+        let field = AskFormField(name: "tone", kind: .choice, title: "Tone", other: true,
+                                 options: [AskFormOption(value: "calm", label: "Calm"), AskFormOption(value: "bold", label: "Bold")])
+        var selections = AskFormSelections(form: AskForm(fields: [field]))
+        XCTAssertTrue(selections.isComplete(field))
+        selections.chooseOther(in: field)
+        selections.setOther("x", in: field)
+        selections.setOther("", in: field)
+        XCTAssertTrue(selections.isComplete(field), "an empty Other leaves the field unanswered, which it may be")
+        XCTAssertFalse(selections.isChanged(field))
+        XCTAssertEqual(selections.values, [:])
+        selections.dropEmptyOther(in: field)
+        XCTAssertNil(selections.state(field).other, "leaving the step closes the empty Other")
+        XCTAssertEqual(selections.answerText(field), "No answer")
+
+        // A required radio still needs an answer, and a radio with a default its text (its
+        // options are there to go back to).
+        let required = AskFormField(name: "env", kind: .choice, title: "Env", other: true, required: true,
+                                    options: [AskFormOption(value: "a", label: "A")])
+        let recommended = AskFormField(name: "via", kind: .choice, title: "Via", other: true,
+                                       options: [AskFormOption(value: "a", label: "A", checked: true)])
+        var others = AskFormSelections(form: AskForm(fields: [required, recommended]))
+        others.chooseOther(in: required)
+        others.chooseOther(in: recommended)
+        XCTAssertFalse(others.isComplete(required))
+        XCTAssertFalse(others.isComplete(recommended))
+    }
+
+    /// The answered summary shows a choice field's Other as its text, and a text field's
+    /// answer as written, whatever it starts with (review of #650, F4).
+    func testSummaryStripsOtherOnlyFromChoiceFieldsThatOfferIt() {
+        let form = AskForm(fields: [
+            AskFormField(name: "via", kind: .choice, title: "Via", other: true,
+                         options: [AskFormOption(value: "o", label: "Other: the usual"), AskFormOption(value: "a", label: "A")]),
+            AskFormField(name: "plain", kind: .choice, title: "Plain",
+                         options: [AskFormOption(value: "a", label: "A")]),
+            AskFormField(name: "notes", kind: .text, title: "Notes", inputType: "textarea"),
+        ])
+        func line(_ name: String, _ answer: String) -> String {
+            form.summaryLine(AskFormAnswer(name: name, question: name, answer: answer))
+        }
+        XCTAssertEqual(line("via", "Other: by email"), "by email")
+        XCTAssertEqual(line("via", "Other: the usual"), "Other: the usual", "an option's own label")
+        XCTAssertEqual(line("plain", "Other: something"), "Other: something", "no Other on this field")
+        XCTAssertEqual(line("notes", "Other: keep the existing deployment"), "Other: keep the existing deployment")
+        XCTAssertEqual(line("gone", "Other: x"), "Other: x", "a field the form does not have")
     }
 }
 

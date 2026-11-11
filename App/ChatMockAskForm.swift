@@ -14,12 +14,15 @@ import Foundation
 ///   (#394) drives it: left out of `values` it keeps the prefill, `{"text":…}` replaces it,
 ///   and an answer longer than the editor's rows (the prefill's two) is refused with
 ///   "notes: too long to edit from the app; answer in the terminal".
+/// - `HERDR_MOCK_CHAT_FORM_OPTIONAL=1`: an optional radio with Other and no default comes
+///   after the checkbox group; left out of `values`, omp records it unanswered.
 enum ChatMockAskForm {
     static let enabled = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM"] == "1"
     static let advertised = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM_CAPABILITY"] != "0"
     static let refusal = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM_ANSWER"]
     static let endedStatus = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM_STATUS"]
     static let hasTextarea = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM_TEXTAREA"] == "1"
+    static let hasOptionalRadio = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM_OPTIONAL"] == "1"
 
     /// What herdr reports as `form_answerable` for a viewer who may answer.
     static var answerable: Bool { advertised }
@@ -49,7 +52,7 @@ enum ChatMockAskForm {
 
     static let intro = "Before enyo-ui starts building from iteration 5, five choices. My recommendation is preselected."
 
-    static let fields: [[String: Any]] = [
+    private static let baseFields: [[String: Any]] = [
         radio("where", "Where to build",
               "lenscale.ai is public today (the 1 Nov landing). preview.lenscale.ai already sits behind Cloudflare Zero Trust with Jerry, Nicola and @lenscale.ai allowed.",
               [("preview", "preview.lenscale.ai: already hidden, no Cloudflare change; lenscale.ai keeps the current landing until you say launch"),
@@ -79,6 +82,13 @@ enum ChatMockAskForm {
                         ("evening", "A summary every evening")],
               checked: ["gram", "preview"]),
     ]
+
+    /// An optional radio omp checked nothing of: it may be left unanswered.
+    private static let tone = field("tone", "Tone of the landing copy", "Optional.", multi: false,
+                                    options: [("calm", "Calm and plain"), ("bold", "Bold and short")], checked: [])
+
+    /// The choice fields.
+    static var fields: [[String: Any]] { baseFields + (hasOptionalRadio ? [tone] : []) }
 
     static let textareaValue = "Keep the 1 Nov palette.\nNo stock photos on the landing."
 
