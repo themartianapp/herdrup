@@ -69,7 +69,13 @@ struct ChatMermaidView: View {
                 card
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // Exactly the width the row is given (`minWidth: 0`), whatever the image inside, so
+        // `width` is the column's and never the block's own. Measured from the block, an image
+        // fitted to a wider column (before a turn to portrait, a fold to the cover screen or a
+        // narrower split) held the block at that width: the width it reported never changed,
+        // so the image never refitted, and the too-wide row widened the transcript's stack,
+        // which the column centres, cutting every row off on the left (owner, 2026-11-11).
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .task(id: request) {
             guard let request else { return }
