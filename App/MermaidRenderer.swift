@@ -206,7 +206,8 @@ final class MermaidRenderer: NSObject {
                 throw error
             }
         }
-        let timeout = pageHasDrawn ? Self.renderTimeout : Self.firstRenderTimeout
+        let firstDraw = !pageHasDrawn
+        let timeout = firstDraw ? Self.firstRenderTimeout : Self.renderTimeout
         return try await queue.run(timeout: timeout, { @MainActor () async throws -> Rendered in
             if let hit = self.memory.object(forKey: key as NSString) { return hit }
             if self.failed.contains(key) { throw Failure.invalid }
@@ -223,21 +224,21 @@ final class MermaidRenderer: NSObject {
                 if job == self.job {
                     self.note(key, (error as? Failure) == .invalid ? "mermaid rejected it" : "the page broke while \(self.phase)",
                               since: start)
-                    self.settle(key, failure: (error as? Failure) == .invalid ? .diagram : .page)
+                    self.settle(key, failure: (error as? Failure) == .invalid ? .diagram : .page, firstDraw: firstDraw)
                 }
                 throw error
             }
         }, onTimeout: { @MainActor () async in
-            self.note(key, "timed out (\(Int(timeout)) s) while \(self.phase)", since: start)
-            self.settle(key, failure: .timedOut)
+            self.note(key, "timed out (\(Int(timeout)) s) while \(self.phase)\(firstDraw ? ", first draw" : "")", since: start)
+            self.settle(key, failure: .timedOut, firstDraw: firstDraw)
         })
     }
 
     /// Books a failed render: only a failure that is the diagram's own is remembered for the
     /// session (`MermaidDiagram.failureIsTheDiagrams`). Anything but a clean mermaid error
     /// replaces the page, so a stuck script or a broken page cannot hold up the next render.
-    private func settle(_ key: String, failure: MermaidDiagram.RenderFailure) {
-        if MermaidDiagram.failureIsTheDiagrams(failure, phase: phase) { failed.insert(key) }
+    private func settle(_ key: String, failure: MermaidDiagram.RenderFailure, firstDraw: Bool) {
+        if MermaidDiagram.failureIsTheDiagrams(failure, phase: phase, firstDraw: firstDraw) { failed.insert(key) }
         if failure != .diagram { recyclePage() }
     }
 

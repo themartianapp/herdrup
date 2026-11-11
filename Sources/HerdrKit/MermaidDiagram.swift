@@ -124,12 +124,18 @@ extension MermaidDiagram {
 
     /// Whether a failure is the diagram's own, so it is shown as code for the rest of the
     /// session instead of being tried again. A broken page, or a timeout before mermaid had
-    /// the diagram, says nothing about the diagram: it gets another try on a fresh page.
-    public static func failureIsTheDiagrams(_ failure: RenderFailure, phase: RenderPhase) -> Bool {
+    /// the diagram, says nothing about the diagram: it gets another try on a fresh page. Nor
+    /// does a timeout of a page's FIRST draw (`firstDraw`), which pays mermaid's cold start:
+    /// on loaded hosted simulators that ran past its limit for the valid fixture diagram,
+    /// which the session then showed as "Diagram couldn't render" for good (run 42917457759,
+    /// iPad, both attempts; 42319983254, 41169998628). Only a timeout on a page that has
+    /// already drawn, warm, is the diagram's.
+    public static func failureIsTheDiagrams(_ failure: RenderFailure, phase: RenderPhase,
+                                            firstDraw: Bool) -> Bool {
         switch failure {
         case .diagram: return true
         case .page: return false
-        case .timedOut: return phase == .drawing
+        case .timedOut: return phase == .drawing && !firstDraw
         }
     }
 }
