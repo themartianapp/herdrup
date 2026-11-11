@@ -118,6 +118,11 @@ jobs:
             exit 1
           fi
 
+      # The simulator shards' scripts and their Python helpers, checked in seconds here
+      # rather than an hour into every macOS shard (#649's first head broke an f-string).
+      - name: Check the simulator shard tooling
+        run: Tools/ci/check.sh
+
   # The guest relay Worker (GuestRelay): its tests in workerd, its typecheck, and the
   # browser guest it serves from public/web checked byte for byte against the manifest
   # herdrup-desktop's build wrote (npm test runs scripts/web-bundle.mjs first).
@@ -209,6 +214,11 @@ jobs:
             echo "::error::iOS simulator SDK '${SDK:-none}' is older than 27.1, which iPhone Duo needs."
             exit 1
           fi
+
+      - name: Wait for the simulator runtimes to mount
+        # actions/runner-images#14946: a Metal toolchain cryptex mount that races simdiskimaged's
+        # iOS runtime mount gets the runtime force-unmounted ~10 min later, mid-shard.
+        run: Tools/ci/ui-shard.sh wait-runtimes
 
       - name: Download the Metal toolchain
         # SwiftTerm >=1.12.0 bundles Apple/Metal/Shaders.metal unconditionally; Xcode 26

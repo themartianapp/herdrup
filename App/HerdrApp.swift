@@ -1631,6 +1631,9 @@ struct ScrollActivityObserver: UIViewRepresentable {
     let isEnabled: Bool
     let onChange: (Bool) -> Void
     var onSample: ((UIScrollView) -> Void)? = nil
+    /// Called when a wheel or trackpad scrolls the scroll view, which sets none of the
+    /// tracking/dragging/deceleration flags `onSample` sees (see `Coordinator.scrollInput`).
+    var onScrollInput: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(isEnabled: isEnabled, onChange: onChange)
@@ -1646,6 +1649,7 @@ struct ScrollActivityObserver: UIViewRepresentable {
     func updateUIView(_ uiView: ProbeView, context: Context) {
         context.coordinator.onChange = onChange
         context.coordinator.onSample = onSample
+        context.coordinator.onScrollInput = onScrollInput
         context.coordinator.setEnabled(isEnabled)
         context.coordinator.attach(from: uiView)
     }
@@ -1655,9 +1659,21 @@ struct ScrollActivityObserver: UIViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject {
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var onChange: (Bool) -> Void
         var onSample: ((UIScrollView) -> Void)?
+        var onScrollInput: (() -> Void)? {
+            didSet { scrollInput?.isEnabled = onScrollInput != nil }
+        }
+        /// Sees wheel and trackpad scrolling, and nothing else. A Mac wheel or trackpad moves the
+        /// offset without `isTracking`/`isDragging`/`isDecelerating` (LiveTerminalView's history
+        /// paging found the same), so no flag sampled on the display link tells the reader is
+        /// scrolling. A pan recognizer receives those scroll events only when it opts in
+        /// (`allowedScrollTypesMask`, as LiveTerminalView's agent-scroll pan does on the Mac),
+        /// and with `maximumNumberOfTouches` 0 it takes no touch at all, so a finger stays the
+        /// scroll view's alone. It recognizes alongside every other recognizer and cancels
+        /// nothing, so the scroll view scrolls exactly as before.
+        private(set) var scrollInput: UIPanGestureRecognizer?
         private weak var scrollView: UIScrollView?
         private var displayLink: CADisplayLink?
         private var isEnabled: Bool
@@ -1686,6 +1702,16 @@ struct ScrollActivityObserver: UIViewRepresentable {
             while let view = ancestor {
                 if let scrollView = view as? UIScrollView {
                     self.scrollView = scrollView
+                    let pan = UIPanGestureRecognizer(target: self, action: #selector(scrolled(_:)))
+                    pan.allowedScrollTypesMask = .all
+                    pan.maximumNumberOfTouches = 0
+                    pan.cancelsTouchesInView = false
+                    pan.delaysTouchesBegan = false
+                    pan.delaysTouchesEnded = false
+                    pan.delegate = self
+                    pan.isEnabled = onScrollInput != nil
+                    scrollView.addGestureRecognizer(pan)
+                    scrollInput = pan
                     let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
                     link.isPaused = !isEnabled
                     link.add(to: .main, forMode: .common)
@@ -1700,6 +1726,16 @@ struct ScrollActivityObserver: UIViewRepresentable {
                 guard let self, let probe else { return }
                 self.attach(from: probe)
             }
+        }
+
+        @objc func scrolled(_ pan: UIPanGestureRecognizer) {
+            guard pan.state == .began || pan.state == .changed else { return }
+            onScrollInput?()
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            true
         }
 
         @objc private func tick(_ link: CADisplayLink) {
@@ -1731,6 +1767,10 @@ struct ScrollActivityObserver: UIViewRepresentable {
         func stop() {
             displayLink?.invalidate()
             displayLink = nil
+            if let scrollInput {
+                scrollInput.view?.removeGestureRecognizer(scrollInput)
+                self.scrollInput = nil
+            }
             scrollView = nil
             if isActive {
                 isActive = false

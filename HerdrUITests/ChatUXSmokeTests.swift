@@ -204,17 +204,40 @@ final class ChatUXSmokeTests: XCTestCase {
         XCTAssertEqual(rows.map(\.exists), [true, true, true])
     }
 
+    /// Waits until the renderer has settled `tag`'s first block (`chat-mermaid` or `chat-svg`):
+    /// its placeholder gone, an image or the code fallback in its place. A fresh launch builds
+    /// the renderer's page (the 3.6 MB mermaid bundle in a new WebContent process) before the
+    /// first draw, and the renderer itself allows that page 30 s and the first draw 20 s
+    /// (`MermaidRenderer.pageTimeout`, `firstRenderTimeout`). A fixed 30 s wait gave up while
+    /// the placeholder was still spinning on loaded hosted simulators (run 41441790156 job
+    /// 125265193229 at 32 s, run 41354286757 job 124990913337 at 31 s); 7 to 20 s is usual.
+    /// A block whose render failed through no fault of the diagram's asks once more on a fresh
+    /// page (`MermaidRenderer.attempts`, 2), so its outcome can take 2 × (30 + 20) s; plus 5 s.
+    /// Identifier queries keep each poll cheap for the app.
+    private func waitForDiagramToSettle(_ app: XCUIApplication, _ tag: String) {
+        let block = app.descendants(matching: .any).matching(identifier: tag).firstMatch
+        XCTAssertTrue(block.waitForExistence(timeout: 12), app.debugDescription)
+        let placeholder = app.descendants(matching: .any).matching(identifier: "\(tag)-placeholder").firstMatch
+        _ = placeholder.waitForNonExistence(timeout: 2 * (30 + 20) + 5)
+    }
+
+    /// Why `tag`'s block shows its code instead (the error caption's DEBUG value,
+    /// `MermaidRenderer.failureNote`), or "" when it does not.
+    private func renderFailure(_ app: XCUIApplication, _ tag: String) -> String {
+        let error = app.staticTexts.matching(identifier: "\(tag)-error").firstMatch
+        return error.exists ? "couldn't render: \(error.value as? String ?? "")" : ""
+    }
+
     /// #523 item 1: a closed ```mermaid fence is drawn as a diagram (not its code), rasterised
     /// sharp for this screen; tapping it opens the zoomable viewer, "Show code" swaps in the
     /// source, search still finds words that are only in the diagram source, and after a
     /// relaunch the diagram comes back from the disk cache at the same size.
     func testMermaidReplyRendersADiagramThatOpensTheViewer() {
         let app = launch(mermaid: true, environment: ["HERDR_CHAT_UX_STATIC": "1"])
-        let block = app.descendants(matching: .any)["chat-mermaid"].firstMatch
-        XCTAssertTrue(block.waitForExistence(timeout: 12), app.debugDescription)
+        waitForDiagramToSettle(app, "chat-mermaid")
         let image = app.buttons["chat-mermaid-image"].firstMatch
-        XCTAssertTrue(image.waitForExistence(timeout: 30),
-                      "The diagram must finish rendering offscreen: \(app.debugDescription)")
+        XCTAssertTrue(image.waitForExistence(timeout: 5),
+                      "The diagram must finish rendering offscreen \(renderFailure(app, "chat-mermaid")): \(app.debugDescription)")
         XCTAssertFalse(app.staticTexts["chat-mermaid-error"].exists, "The fixture diagram is valid mermaid")
         XCTAssertGreaterThan(image.frame.width, 40, "\(image.frame)")
         XCTAssertGreaterThan(image.frame.height, 40, "\(image.frame)")
@@ -274,10 +297,19 @@ final class ChatUXSmokeTests: XCTestCase {
     /// The owner's ```svg block (round 4) is drawn as an image in the app's colours, opens full
     /// screen, and shows its code on request; a broken SVG stays a code block.
     func testSVGReplyRendersAnImageAndABrokenOneStaysCode() {
-        let app = launch(svg: true)
+        // Presentation only, so the fixture is held (`HERDR_CHAT_UX_STATIC`, as the Mermaid
+        // test). Its second transcript poll lands about 33 s after the chat opens and appends
+        // two replies; the chat follows its tail, so the reply moves up under a tap already
+        // aimed. On run 42755948429 (job 129630244571) it landed 0.2 s before the "Show code"
+        // tap: the tap hit the image, the viewer opened, and the source never showed. The
+        // viewer's web view exposes the SVG's own text ("Clinic system (cloud)" in that run's
+        // hierarchy), so the same misdirected tap can also pass the source wait and fail the
+        // image check after it instead (bare "XCTAssertFalse failed", iPad run 41354286757).
+        let app = launch(svg: true, environment: ["HERDR_CHAT_UX_STATIC": "1"])
+        waitForDiagramToSettle(app, "chat-svg")
         let image = app.buttons["chat-svg-image"].firstMatch
-        XCTAssertTrue(image.waitForExistence(timeout: 30),
-                      "The SVG must finish rendering offscreen: \(app.debugDescription)")
+        XCTAssertTrue(image.waitForExistence(timeout: 5),
+                      "The SVG must finish rendering offscreen \(renderFailure(app, "chat-svg")): \(app.debugDescription)")
         XCTAssertGreaterThan(image.frame.width, 100, "\(image.frame)")
         // 900 × 360 drawn to the column: the aspect is the SVG's own.
         XCTAssertEqual(image.frame.width / image.frame.height, 2.5, accuracy: 0.05, "\(image.frame)")
@@ -317,7 +349,12 @@ final class ChatUXSmokeTests: XCTestCase {
     /// the secondary ink, a step smaller than the reply. Measured on the screen's pixels: the
     /// brightest pixel of a thought line is the secondary ink, a reply line's is the primary.
     func testExpandedThoughtIsDimmerAndSmallerThanTheReply() {
-        let app = launch()
+        // Presentation only, so the fixture is held (`HERDR_CHAT_UX_STATIC`): its second
+        // transcript poll lands about 33 s after the chat opens and appends two replies, and
+        // while the chat follows its tail that moves every line up between a frame read and
+        // the screenshot (iPad run 41642629325 job 126092602640: chat open at 17.6 s, the
+        // line read as bare background, 0.068, at 50.6 s).
+        let app = launch(environment: ["HERDR_CHAT_UX_STATIC": "1"])
         let header = app.buttons.matching(NSPredicate(format: "identifier == %@ AND label CONTAINS %@",
                                                       "chat-thought", "Check the table")).firstMatch
         XCTAssertTrue(header.waitForExistence(timeout: 10), app.debugDescription)
@@ -351,15 +388,17 @@ final class ChatUXSmokeTests: XCTestCase {
         // The chat's top edge fades content out under the bar (26 pt), the composer card
         // covers its bottom, and the jump-to-latest button floats just above the composer.
         // The top is the chat's own, or the Chat/Terminal switch's bottom if lower; the bottom
-        // is the composer card's top, or the jump button's top while it shows (its white arrow
-        // over a line read as 0.948 white on CI, #631 run 42035642472).
+        // is the composer card's top, or the top of a floating button while it shows: the
+        // jump button (its white arrow over a line read as 0.948 white on CI, #631 run
+        // 42035642472) and the up arrow (it sat over "Use wrapped cells and literal code."
+        // when it was centred in the column, 0.948 on runs 42364233460 and 42369140769).
         let mode = app.buttons["Terminal"].firstMatch
         let top = max(chat.frame.minY, mode.exists ? mode.frame.maxY : 0)
         let composer = app.descendants(matching: .any)["composer-card"].firstMatch
-        let jump = app.buttons["chat-jump-latest"].firstMatch
+        let floating = [app.buttons["chat-jump-latest"].firstMatch, app.buttons["chat-jump-previous-mine"].firstMatch]
         func bottom() -> CGFloat {
             let card = composer.exists ? composer.frame.minY : chat.frame.maxY
-            return jump.exists ? min(card, jump.frame.minY - 8) : card
+            return floating.filter(\.exists).reduce(card) { min($0, $1.frame.minY - 8) }
         }
         record(app, "Expanded thought box")
 
@@ -376,8 +415,14 @@ final class ChatUXSmokeTests: XCTestCase {
             let target = (top + 40 + bottom()) / 2
             let offset = target - element.frame.midY
             if element.frame.minY < top + 40 || element.frame.maxY > bottom() {
+                // A short touch, then a hold at the end: the drag moves the chat exactly
+                // `offset` with no fling after it. A 0.2 s press first let the long-press menu
+                // of the reply under the finger begin (run 42632930170 job 129213557250: the
+                // reply drew lifted, the chat never moved, the lead stayed at y 135.3), and
+                // letting go mid-drag flung the chat ~150 pt past the target (run 42364233460).
                 let start = chat.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-                start.press(forDuration: 0.2, thenDragTo: start.withOffset(CGVector(dx: 0, dy: offset)))
+                start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: offset)),
+                            withVelocity: .default, thenHoldForDuration: 0.3)
             }
             XCTAssertTrue(poll(3, every: 0.2) {
                 element.isHittable && element.frame.minY >= top + 40 && element.frame.maxY <= bottom()
@@ -509,6 +554,39 @@ final class ChatUXSmokeTests: XCTestCase {
         XCTAssertFalse(app.staticTexts["chat-search-result"].exists)
     }
 
+    /// Waits for the search counter to read `label`, failing with the last label read.
+    ///
+    /// NOT `expectation(for:evaluatedWith:)`. On a loaded runner one accessibility snapshot of
+    /// the chat takes seconds; that expectation follows every failed check with an element
+    /// debug description (three more snapshots) and drops the read still in flight at its
+    /// deadline, so the counter was judged once or twice per window while it already matched:
+    /// - run 41432810441 (job 125235298176, iPhone, testSearchPaging…): after Load older
+    ///   (event at t = 31.45 s) the screen recording shows "21/23" from 34.5 s to the end (the
+    ///   mock answers every transcript request after the first in 3 s, `ChatUXSmoke.reply`); the
+    ///   failed check at 33.02 s was followed by an 8.6 s debug description, whose own query
+    ///   already returned "21/23", and the second check (41.99 s) was in flight at the deadline.
+    /// - run 41402649405 (job 125137622424, iPad, testSearchPaging…): one check in 10 s
+    ///   (41.55 s); the debug description it triggered, still running at the deadline, lists
+    ///   "21/23".
+    /// - run 41402663682 (job 125137668689, iPad, testOneLetterSearch…): after Previous (event
+    ///   at 46.05 s) the recording shows "1/500+" from 46.5 s; the only check started at
+    ///   47.72 s and had not returned when the 5 s ran out.
+    /// The shared `poll` reads the label every 0.3 s and judges one more read after the deadline.
+    /// The lookup is an `identifier ==` predicate on static texts, not a string subscript, which
+    /// fetches label, value, placeholder and identifier for every element walked and so adds to
+    /// the per-query cost that caused these misses.
+    private func waitForSearchCount(_ app: XCUIApplication, _ label: String, timeout: TimeInterval,
+                                    file: StaticString = #filePath, line: UInt = #line) {
+        let counter = app.staticTexts.matching(NSPredicate(format: "identifier == %@", "terminal-find-count")).firstMatch
+        var last = "(absent)"
+        let met = poll(timeout, every: 0.3) {
+            guard counter.exists else { return false }
+            last = counter.label
+            return last == label
+        }
+        if !met { XCTFail("the search counter should read \(label), last read \(last)", file: file, line: line) }
+    }
+
     /// The newest page is five turns (three synthetic prompts and the mockup's two); each
     /// Load older adds a twenty-turn page, the second reaching the start of the session.
     func testSearchPagingPreservesSelectedMatchAndLoadedScope() {
@@ -519,15 +597,12 @@ final class ChatUXSmokeTests: XCTestCase {
         field.tap()
         field.typeText("Synthetic question")
         let count = app.staticTexts["terminal-find-count"]
-        expectation(for: NSPredicate(format: "label == %@", "1/3"), evaluatedWith: count)
-        waitForExpectations(timeout: 5)
+        waitForSearchCount(app, "1/3", timeout: 5)
         XCTAssertTrue(app.staticTexts["Searching loaded history"].isHittable)
         app.buttons["Load older"].tap()
-        expectation(for: NSPredicate(format: "label == %@", "21/23"), evaluatedWith: count)
-        waitForExpectations(timeout: 10)
+        waitForSearchCount(app, "21/23", timeout: 10)
         app.buttons["Load older"].tap()
-        expectation(for: NSPredicate(format: "label == %@", "38/40"), evaluatedWith: count)
-        waitForExpectations(timeout: 10)
+        waitForSearchCount(app, "38/40", timeout: 10)
         XCTAssertFalse(app.buttons["Load older"].exists)
         app.buttons["terminal-refresh"].tap()
         XCTAssertTrue(app.staticTexts["Up to date"].waitForExistence(timeout: 15))
@@ -687,33 +762,26 @@ final class ChatUXSmokeTests: XCTestCase {
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         field.tap()
         field.typeText("e")
-        let count = app.staticTexts["terminal-find-count"]
-        let capped = { (index: Int) in NSPredicate(format: "label == %@", "Match \(index) of 500 or more matches") }
-        expectation(for: capped(1), evaluatedWith: count)
-        waitForExpectations(timeout: 10)
+        let capped = { (index: Int) in "Match \(index) of 500 or more matches" }
+        waitForSearchCount(app, capped(1), timeout: 10)
         XCTAssertEqual(app.state, .runningForeground)
         let results = app.staticTexts.matching(identifier: "chat-search-result")
         XCTAssertGreaterThan(results.count, 0)
         XCTAssertLessThanOrEqual(results.count, 23, "Only the selected match's neighbourhood is drawn, not every match")
 
         app.buttons["terminal-find-next"].tap()
-        expectation(for: capped(2), evaluatedWith: count)
-        waitForExpectations(timeout: 5)
+        waitForSearchCount(app, capped(2), timeout: 5)
         app.buttons["terminal-find-previous"].tap()
-        expectation(for: capped(1), evaluatedWith: count)
-        waitForExpectations(timeout: 5)
+        waitForSearchCount(app, capped(1), timeout: 5)
         app.buttons["terminal-find-previous"].tap()
-        expectation(for: capped(500), evaluatedWith: count)
-        waitForExpectations(timeout: 5)
+        waitForSearchCount(app, capped(500), timeout: 5)
         XCTAssertEqual(app.state, .runningForeground)
         record(app, "One-letter search on a long chat caps at 500+ and wraps to the last match")
 
         for letter in "xample" { field.typeText(String(letter)) }
-        expectation(for: NSPredicate(format: "label == %@", "1/480"), evaluatedWith: count)
-        waitForExpectations(timeout: 10)
+        waitForSearchCount(app, "1/480", timeout: 10)
         app.buttons["terminal-find-next"].tap()
-        expectation(for: NSPredicate(format: "label == %@", "2/480"), evaluatedWith: count)
-        waitForExpectations(timeout: 5)
+        waitForSearchCount(app, "2/480", timeout: 5)
         XCTAssertEqual(app.state, .runningForeground)
     }
 
@@ -793,7 +861,12 @@ final class ChatUXSmokeTests: XCTestCase {
     /// menu copies it without markdown syntax, or as markdown; Select Text opens the message
     /// in a selectable text view; a fenced code block has its own Copy.
     func testMessagesCopyAndSelectText() {
-        let app = launch(copyFixture: true)
+        // Presentation only, so the fixture is held (`HERDR_CHAT_UX_STATIC`): each transcript
+        // poll (about every 33 s) appends replies, and a chat following its tail moves the
+        // pressed message up under the finger. On iPad run 41402663682 (job 125137668689) the
+        // third poll landed 1.8 s before the long press on the prompt bubble; the press hit the
+        // thought header below it and expanded the thought, so no menu opened.
+        let app = launch(copyFixture: true, environment: ["HERDR_CHAT_UX_STATIC": "1"])
         let paragraph = app.staticTexts["Copy this reply, then paste it."].firstMatch
         XCTAssertTrue(paragraph.waitForExistence(timeout: 12), app.debugDescription)
         bringIntoView(paragraph, in: app, "the reply")
