@@ -16,7 +16,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/themartianapp/herdrup?color=4CC38A" alt="License: Apache-2.0"></a>
   <a href="https://github.com/themartianapp/herdrup/actions/workflows/ci.yml"><img src="https://github.com/themartianapp/herdrup/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <a href="https://github.com/themartianapp/herdrup/stargazers"><img src="https://img.shields.io/github/stars/themartianapp/herdrup?style=flat&logo=github&color=B8C1F0" alt="GitHub stars"></a>
-  <a href="https://discord.gg/pq7qj4dDqt"><img src="https://img.shields.io/discord/1515991923184242779?label=Discord&logo=discord&logoColor=white&color=5865F2" alt="Discord"></a>
+  <a href="https://discord.gg/pq7qj4dDqt"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
 <p align="center">
