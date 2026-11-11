@@ -1,4 +1,4 @@
-"""Tests for ci_scope.py. Run: python3 -m unittest discover -s Tools/ci -p 'test_*.py'"""
+"""Tests for ci_scope.py. Tools/ci/check.sh runs them, in CI's Linux job and locally."""
 from __future__ import annotations
 
 import os

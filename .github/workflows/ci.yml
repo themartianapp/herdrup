@@ -150,10 +150,12 @@ jobs:
             exit 1
           fi
 
-      # Tools/ci/ci_scope.py decides whether a PR skips the simulator matrix, so a bug in
-      # it would skip the device gate silently. Its tests run on every PR.
-      - name: Test the CI scope classifier
-        run: python3 -m unittest discover -s Tools/ci -p 'test_*.py' -v
+      # The simulator shards' scripts and their Python helpers, checked in seconds here
+      # rather than an hour into every macOS shard (#649's first head broke an f-string).
+      # check.sh also runs Tools/ci/test_ci_scope.py: ci_scope.py decides whether a PR
+      # skips the simulator matrix, so a bug in it would skip the device gate silently.
+      - name: Check the CI tooling (shard scripts and scope classifier)
+        run: Tools/ci/check.sh
 
   # The guest relay Worker (GuestRelay): its tests in workerd, its typecheck, and the
   # browser guest it serves from public/web checked byte for byte against the manifest
@@ -249,6 +251,11 @@ jobs:
             echo "::error::iOS simulator SDK '${SDK:-none}' is older than 27.1, which iPhone Duo needs."
             exit 1
           fi
+
+      - name: Wait for the simulator runtimes to mount
+        # actions/runner-images#14946: a Metal toolchain cryptex mount that races simdiskimaged's
+        # iOS runtime mount gets the runtime force-unmounted ~10 min later, mid-shard.
+        run: Tools/ci/ui-shard.sh wait-runtimes
 
       - name: Download the Metal toolchain
         # SwiftTerm >=1.12.0 bundles Apple/Metal/Shaders.metal unconditionally; Xcode 26

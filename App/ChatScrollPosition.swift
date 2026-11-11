@@ -21,6 +21,10 @@ final class ChatScrollPosition {
     /// compares it with where its last jump settled (`TranscriptPreviousMine.LastJump`).
     var offset: CGFloat? { view?.contentOffset.y }
 
+    /// The height of everything the chat has drawn, or nil before the scroll view is known. An
+    /// offset that moves with it moved for layout, not for the reader (`TranscriptPreviousMine.Settle`).
+    var contentHeight: CGFloat? { view?.contentSize.height }
+
     func jumpToLatest() {
         guard let view, let bottomOffset, abs(view.contentOffset.y - bottomOffset) > 0.5 else { return }
         view.setContentOffset(CGPoint(x: view.contentOffset.x, y: bottomOffset), animated: false)

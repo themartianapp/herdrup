@@ -229,6 +229,85 @@ final class TranscriptPreviousMineTests: XCTestCase {
         XCTAssertFalse(settled.holds(at: 505), "moved past the tolerance")
         XCTAssertFalse(settled.holds(at: nil))
     }
+
+    /// Feeds `Settle` one sample per (offset, content height, prompt above) and returns its actions.
+    private func settle(_ samples: [(Double?, Double?, Bool)]) -> [TranscriptPreviousMine.Settle.Action] {
+        var settle = TranscriptPreviousMine.Settle()
+        return samples.map { settle.sample(offset: $0.0, contentHeight: $0.1, promptAbove: $0.2) }
+    }
+
+    func testAJumpThatArrivedSettlesWhereItRests() {
+        XCTAssertEqual(settle([(300, 5000, false), (300, 5000, false)]), [.wait, .settled(offset: 300)])
+    }
+
+    func testAGlideThatStoppedShortIsPutRightOnce() {
+        // CI 42599598427: the glide stopped with the prompt still above the screen.
+        XCTAssertEqual(settle([(354, 5000, true), (354, 5000, true),
+                               (300, 5000, false), (300, 5000, false)]),
+                       [.wait, .correct, .wait, .settled(offset: 300)])
+        // A correction that lands one sample late is still the jump's own motion.
+        XCTAssertEqual(settle([(354, 5000, true), (354, 5000, true),
+                               (354, 5000, true), (300, 5000, false), (300, 5000, false)]),
+                       [.wait, .correct, .wait, .wait, .settled(offset: 300)])
+    }
+
+    func testCorrectionsStopAfterTheirLimit() {
+        let stuck = Array(repeating: (Double?(354), Double?(5000), true), count: 2 * 4)
+        let actions = settle(stuck)
+        XCTAssertEqual(actions.filter { $0 == .correct }.count, TranscriptPreviousMine.Settle.maxCorrections)
+        XCTAssertEqual(actions.last, .settled(offset: 354))
+    }
+
+    /// Review of #649, F1: a Mac wheel or trackpad moves the chat with no drag. The reader who
+    /// wheels the prompt off the top while the jump settles keeps their place: no correction.
+    func testAWheelWhileSettlingRetiresTheJumpInsteadOfScrollingBack() {
+        XCTAssertEqual(settle([(100, 5000, false), (200, 5000, true)]), [.wait, .retire])
+        // Also after a correction has landed and the chat rested.
+        XCTAssertEqual(settle([(354, 5000, true), (354, 5000, true), (300, 5000, false),
+                               (300, 5000, false)]).last, .settled(offset: 300))
+        XCTAssertEqual(settle([(354, 5000, true), (354, 5000, true), (300, 5000, false),
+                               (420, 5000, true)]).last, .retire)
+    }
+
+    /// Review of #649, F1, round 2: the reader wheels the prompt off the top and stops at
+    /// 360 ms, before the first settle sample (400 ms). The samples then see a chat at rest
+    /// with the prompt above the screen, which is exactly a glide that stopped short; only
+    /// the input itself tells them apart. On de84fe61 nothing delivered that input, and these
+    /// samples corrected (scrolled the reader back).
+    func testAWheelBeforeTheFirstSampleRetiresTheJump() {
+        enum Event { case wheel, sample(Double, Bool) }
+        // Milliseconds since the jump was issued.
+        let timeline: [(Int, Event)] = [(360, .wheel), (400, .sample(200, true)), (450, .sample(200, true)),
+                                        (500, .sample(200, true))]
+        func run(deliveringInput: Bool) -> [TranscriptPreviousMine.Settle.Action] {
+            var settle = TranscriptPreviousMine.Settle()   // made when the jump is issued, t = 0
+            var actions: [TranscriptPreviousMine.Settle.Action] = []
+            for (_, event) in timeline.sorted(by: { $0.0 < $1.0 }) {
+                switch event {
+                case .wheel: if deliveringInput { settle.readerInput() }
+                case .sample(let offset, let above):
+                    actions.append(settle.sample(offset: offset, contentHeight: 5000, promptAbove: above))
+                }
+            }
+            return actions
+        }
+        XCTAssertEqual(run(deliveringInput: true), [.retire, .retire, .retire],
+                       "the reader's wheel retires the jump: no correction scrolls them back")
+        XCTAssertTrue(run(deliveringInput: false).contains(.correct),
+                      "without the input, the samples alone cannot tell the reader from a short glide")
+    }
+
+    func testLayoutThatMovesTheOffsetIsWaitedOut() {
+        // Rows above settling their heights move the offset and the content height together.
+        XCTAssertEqual(settle([(300, 5000, true), (360, 5060, true), (360, 5060, false)]),
+                       [.wait, .wait, .settled(offset: 360)])
+    }
+
+    func testNoScrollViewGivesUpAndARestlessChatIsRecordedAnyway() {
+        XCTAssertEqual(settle([(nil, nil, false)]), [.giveUp])
+        let restless = (0..<TranscriptPreviousMine.Settle.maxSamples).map { (Double?(Double($0) * 10), Double?(5000 + Double($0)), false) }
+        XCTAssertEqual(settle(restless).last, .settled(offset: Double(TranscriptPreviousMine.Settle.maxSamples - 1) * 10))
+    }
 }
 
 /// The up arrow against a real `TranscriptStore`: when no owner turn is loaded above, it asks
