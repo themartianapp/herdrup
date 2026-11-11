@@ -211,13 +211,21 @@ final class ChatUXSmokeTests: XCTestCase {
     /// (`MermaidRenderer.pageTimeout`, `firstRenderTimeout`). A fixed 30 s wait gave up while
     /// the placeholder was still spinning on loaded hosted simulators (run 41441790156 job
     /// 125265193229 at 32 s, run 41354286757 job 124990913337 at 31 s); 7 to 20 s is usual.
-    /// So wait for the renderer's own outcome, bounded by its own limits, then the caller
-    /// asserts which outcome it was. Identifier queries keep each poll cheap for the app.
+    /// A block whose render failed through no fault of the diagram's asks once more on a fresh
+    /// page (`MermaidRenderer.attempts`, 2), so its outcome can take 2 × (30 + 20) s; plus 5 s.
+    /// Identifier queries keep each poll cheap for the app.
     private func waitForDiagramToSettle(_ app: XCUIApplication, _ tag: String) {
         let block = app.descendants(matching: .any).matching(identifier: tag).firstMatch
         XCTAssertTrue(block.waitForExistence(timeout: 12), app.debugDescription)
         let placeholder = app.descendants(matching: .any).matching(identifier: "\(tag)-placeholder").firstMatch
-        _ = placeholder.waitForNonExistence(timeout: 30 + 20 + 5)
+        _ = placeholder.waitForNonExistence(timeout: 2 * (30 + 20) + 5)
+    }
+
+    /// Why `tag`'s block shows its code instead (the error caption's DEBUG value,
+    /// `MermaidRenderer.failureNote`), or "" when it does not.
+    private func renderFailure(_ app: XCUIApplication, _ tag: String) -> String {
+        let error = app.staticTexts.matching(identifier: "\(tag)-error").firstMatch
+        return error.exists ? "couldn't render: \(error.value as? String ?? "")" : ""
     }
 
     /// #523 item 1: a closed ```mermaid fence is drawn as a diagram (not its code), rasterised
@@ -229,7 +237,7 @@ final class ChatUXSmokeTests: XCTestCase {
         waitForDiagramToSettle(app, "chat-mermaid")
         let image = app.buttons["chat-mermaid-image"].firstMatch
         XCTAssertTrue(image.waitForExistence(timeout: 5),
-                      "The diagram must finish rendering offscreen: \(app.debugDescription)")
+                      "The diagram must finish rendering offscreen \(renderFailure(app, "chat-mermaid")): \(app.debugDescription)")
         XCTAssertFalse(app.staticTexts["chat-mermaid-error"].exists, "The fixture diagram is valid mermaid")
         XCTAssertGreaterThan(image.frame.width, 40, "\(image.frame)")
         XCTAssertGreaterThan(image.frame.height, 40, "\(image.frame)")
@@ -301,7 +309,7 @@ final class ChatUXSmokeTests: XCTestCase {
         waitForDiagramToSettle(app, "chat-svg")
         let image = app.buttons["chat-svg-image"].firstMatch
         XCTAssertTrue(image.waitForExistence(timeout: 5),
-                      "The SVG must finish rendering offscreen: \(app.debugDescription)")
+                      "The SVG must finish rendering offscreen \(renderFailure(app, "chat-svg")): \(app.debugDescription)")
         XCTAssertGreaterThan(image.frame.width, 100, "\(image.frame)")
         // 900 × 360 drawn to the column: the aspect is the SVG's own.
         XCTAssertEqual(image.frame.width / image.frame.height, 2.5, accuracy: 0.05, "\(image.frame)")
