@@ -318,6 +318,16 @@ boot_simulator() {
     echo "::error::simulator $udid is not confirmed Booted after boot; see $log"
     return 1
   fi
+  # iOS shows a "Speed up your typing by sliding your finger…" tip over the first software
+  # keyboard a device brings up. On run 42845538567 (job 129935052849) it covered the
+  # keyboard in TerminalSelectionTests, and its blue Continue button counted as selection
+  # colour. The device's own preference marks the tip as seen; an erase (recover_simulator)
+  # clears it, and every boot sets it again. Set in both domains iOS versions have read it
+  # from. Best effort: a device that refuses still runs the round, as it did before.
+  for domain in com.apple.keyboard.preferences com.apple.Preferences; do
+    bounded 30 xcrun simctl spawn "$udid" defaults write "$domain" DidShowContinuousPathIntroduction -bool true \
+      >>"$log" 2>&1 || echo "$(date -u +%FT%TZ) could not mark the keyboard tip as seen in $domain" >>"$log"
+  done
   ready_devices="$ready_devices$udid "
 }
 
