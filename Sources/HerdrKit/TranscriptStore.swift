@@ -152,7 +152,7 @@ public enum TranscriptGrouping {
                 // One card per question: its own entry, answered or open. An answer in the
                 // entry wins over a `pending_ask` that has not caught up with it yet.
                 if pendingAsk?.id == entry.id { pendingSeen = true }
-                let pending = ask.answer == nil && pendingAsk?.id == entry.id ? pendingAsk : nil
+                let pending = !ask.isSettled && pendingAsk?.id == entry.id ? pendingAsk : nil
                 append(.ask(id: entry.id, ask, pending: pending), entry)
             case .turnEnd(let status, let error):
                 if status == .done {
@@ -179,7 +179,8 @@ public enum TranscriptGrouping {
         // not loaded (it always is on the newest page, but a server may trim differently).
         if let pendingAsk, !pendingSeen {
             let item = TranscriptItem.ask(id: pendingAsk.id,
-                                          TranscriptAsk(questions: pendingAsk.questions, answer: nil),
+                                          TranscriptAsk(questions: pendingAsk.questions, answer: nil,
+                                                        form: pendingAsk.form),
                                           pending: pendingAsk)
             if turns.isEmpty {
                 turns.append(TranscriptTurn(id: pendingAsk.id, prompt: nil, items: [item], startMs: 0))
@@ -253,7 +254,27 @@ public final class TranscriptStore {
     private var hasSnapshot = false
     /// Answers sent from this device that the server has not reported yet, so the card
     /// does not flash its buttons back between the tap and the next refresh.
-    private var localAnswers: [String: [String]] = [:]
+    private var localAnswers: [String: LocalAnswer] = [:]
+
+    private enum LocalAnswer {
+        case options([String])
+        case form([AskFormAnswer])
+        /// Sent, not confirmed (`sent_unconfirmed`): no answer to show as omp's yet.
+        case formSent([AskFormAnswer])
+
+        func applied(to ask: TranscriptAsk) -> TranscriptAsk {
+            switch self {
+            case .options(let options):
+                return TranscriptAsk(questions: ask.questions, answer: options, form: ask.form)
+            case .form(let answers):
+                return TranscriptAsk(questions: ask.questions,
+                                     answer: answers.map { "\($0.question): \($0.answer)" },
+                                     form: ask.form, formAnswer: answers, formStatus: .answered)
+            case .formSent(let answers):
+                return TranscriptAsk(questions: ask.questions, form: ask.form, sentFormAnswer: answers)
+            }
+        }
+    }
     private let pageTurns: UInt32
     private let newestPageTurns: UInt32
     /// The clock that ages unmatched sends (`TranscriptOutbox.demoteUnseen`); tests inject one.
@@ -379,7 +400,16 @@ public final class TranscriptStore {
 
     /// Shows an answer the reader just sent before the server reports it.
     public func noteAnswered(askID: String, option: String) {
-        localAnswers[askID] = [option]
+        localAnswers[askID] = .options([option])
+        if pendingAsk?.id == askID { pendingAsk = nil }
+        regroup()
+    }
+
+    /// Shows a form answer the reader just sent before the server reports it. `confirmed`
+    /// false (`sent_unconfirmed`): the card says it was sent, and the transcript's own
+    /// `form_answer` fills in the summary.
+    public func noteFormAnswered(askID: String, answers: [AskFormAnswer], confirmed: Bool = true) {
+        localAnswers[askID] = confirmed ? .form(answers) : .formSent(answers)
         if pendingAsk?.id == askID { pendingAsk = nil }
         regroup()
     }
@@ -504,12 +534,11 @@ public final class TranscriptStore {
     private func regroup() {
         // A server-reported answer (or a newer pending question) supersedes the local one.
         for entry in entries {
-            if case .ask(let ask) = entry.kind, ask.answer != nil { localAnswers[entry.id] = nil }
+            if case .ask(let ask) = entry.kind, ask.isSettled { localAnswers[entry.id] = nil }
         }
         let shown = entries.map { entry -> TranscriptEntry in
-            guard let answer = localAnswers[entry.id], case .ask(let ask) = entry.kind else { return entry }
-            return TranscriptEntry(id: entry.id, tsMs: entry.tsMs,
-                                   kind: .ask(TranscriptAsk(questions: ask.questions, answer: answer)))
+            guard let local = localAnswers[entry.id], case .ask(let ask) = entry.kind else { return entry }
+            return TranscriptEntry(id: entry.id, tsMs: entry.tsMs, kind: .ask(local.applied(to: ask)))
         }
         let pending = pendingAsk.flatMap { localAnswers[$0.id] == nil ? $0 : nil }
         turns = TranscriptGrouping.turns(shown, pendingAsk: pending, working: working != nil)

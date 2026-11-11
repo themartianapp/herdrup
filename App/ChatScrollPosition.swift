@@ -60,6 +60,20 @@ final class ChatScrollPosition {
         return true
     }
 
+    /// Scrolls up until the top of `rect` (window coordinates) sits `margin` below the top of
+    /// the visible part, when it would otherwise be above it: now, or once the chat is at its
+    /// tail when `atTail` (a chat following its latest row is about to go there). True when
+    /// it moved the chat.
+    @discardableResult
+    func revealTop(_ rect: CGRect, margin: CGFloat, atTail: Bool) -> Bool {
+        guard let view, view.window != nil, let bottomOffset else { return false }
+        let inset = view.adjustedContentInset
+        let wanted = max(view.convert(rect, from: nil).minY - inset.top - margin, -inset.top)
+        guard wanted < (atTail ? bottomOffset : view.contentOffset.y) - 0.5 else { return false }
+        view.setContentOffset(CGPoint(x: view.contentOffset.x, y: wanted), animated: false)
+        return true
+    }
+
     /// The jump button's glide to the tail. From more than two screens away it first snaps to
     /// one screen above the tail, so the glide is always one screen long. The model offset is
     /// final at once, so `isAtBottom` holds immediately and the per-tick `jumpToLatest` finds

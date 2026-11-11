@@ -1175,6 +1175,9 @@ public struct ServerCapabilities: Decodable, Equatable, Sendable {
     /// pushes honour `notify_finishes_mine_only`, and `agent.transcript` marks prompts that
     /// were not the owner's with `origin: "other"` (owner decision 2026-11-06).
     public let turnOrigin: Bool
+    /// herdr parses omp's HTML-form `ask` (omp ≥ 18.18.3) into `form`, reports its answer, and
+    /// answers it with `agent.answer_form`. False: a form shows read-only with "Answer in Terminal".
+    public let askForm: Bool
 
     enum CodingKeys: String, CodingKey {
         case liveHandoff = "live_handoff"
@@ -1192,6 +1195,7 @@ public struct ServerCapabilities: Decodable, Equatable, Sendable {
         case agentGroups = "agent_groups"
         case serverUpdate = "server_update"
         case turnOrigin = "turn_origin"
+        case askForm = "ask_form"
     }
 
     public init(from decoder: Decoder) throws {
@@ -1214,6 +1218,7 @@ public struct ServerCapabilities: Decodable, Equatable, Sendable {
         agentGroups = try c.decodeIfPresent(Bool.self, forKey: .agentGroups) ?? false
         serverUpdate = try c.decodeIfPresent(Bool.self, forKey: .serverUpdate) ?? false
         turnOrigin = try c.decodeIfPresent(Bool.self, forKey: .turnOrigin) ?? false
+        askForm = try c.decodeIfPresent(Bool.self, forKey: .askForm) ?? false
     }
 }
 

@@ -264,3 +264,63 @@ final class AskAnswerOutcomeTests: XCTestCase {
         XCTAssertEqual(AskAnswerOutcome.unreachable.message(for: ask, option: "Yes").title, "Couldn't reach builder")
     }
 }
+
+// MARK: - Form pushes (omp's HTML-form ask)
+
+/// A form push as herdr sends it: `options` empty, `form` with its count, intro and whether
+/// every required field has a default. Synthetic.
+private func formPush(acceptDefaults: Any = true, count: Any = 6) -> [AnyHashable: Any] {
+    [
+        "aps": ["alert": ["title": "enyo-ui asks", "body": "6 choices · recommended preselected"],
+                "category": "herdr.ask_form", "mutable-content": 1],
+        "pane_id": "w1:p3", "workspace_id": "w1",
+        "herdr_ask": [
+            "agent": "enyo-ui", "pane_id": "w1:p3", "machine_id": "machine_abc", "ask_id": "call_form",
+            "question": "Before enyo-ui starts building, five choices.", "options": [] as [String],
+            "form": ["count": count, "intro": "Before enyo-ui starts building, five choices.",
+                     "accept_defaults": acceptDefaults] as [String: Any],
+        ] as [String: Any],
+    ]
+}
+
+final class AskFormPushTests: XCTestCase {
+    func testFormPushDecodesWithItsForm() throws {
+        let ask = try XCTUnwrap(AskPush(userInfo: formPush()))
+        XCTAssertEqual(ask.askID, "call_form")
+        XCTAssertEqual(ask.paneID, "w1:p3")
+        XCTAssertEqual(ask.options, [])
+        XCTAssertEqual(ask.form, AskPush.Form(count: 6, intro: "Before enyo-ui starts building, five choices."))
+    }
+
+    func testFormWithoutDefaultsForEveryRequiredFieldGetsNoButton() {
+        XCTAssertNil(AskPush(userInfo: formPush(acceptDefaults: false)))
+        XCTAssertNil(AskPush(userInfo: formPush(acceptDefaults: "yes")))
+        XCTAssertNil(AskPush(userInfo: formPush(count: 0)))
+        var guest = formPush()
+        guest["herdr_guest"] = ["host_id": "h1"]
+        XCTAssertNil(AskPush(userInfo: guest), "a guest never answers from the lock screen")
+    }
+
+    func testFormCategoryHasTheOneAcceptAction() throws {
+        let ask = try XCTUnwrap(AskPush(userInfo: formPush()))
+        let category = AskCategory(ask, registeredAt: Date(timeIntervalSince1970: 1_000))
+        XCTAssertEqual(category.identifier, "herdr.ask.1000.call_form")
+        XCTAssertEqual(category.actions, [AskCategory.Action(identifier: "accept_defaults", title: "Accept recommendations")])
+    }
+
+    func testAcceptActionRoutesToTheFormAndOptionActionsDoNot() throws {
+        let ask = try XCTUnwrap(AskPush(userInfo: formPush()))
+        XCTAssertEqual(AskActionRoute(actionIdentifier: "accept_defaults", userInfo: formPush()), .acceptRecommendations(ask))
+        XCTAssertEqual(AskActionRoute(actionIdentifier: "herdr.ask.option.0", userInfo: formPush()), .other)
+        XCTAssertEqual(AskActionRoute(actionIdentifier: "accept_defaults", userInfo: questionPush()), .other,
+                       "a single question has no accept action")
+    }
+
+    func testFormFollowUpMessages() throws {
+        let ask = try XCTUnwrap(AskPush(userInfo: formPush()))
+        XCTAssertEqual(AskAnswerOutcome.answered.message(for: ask, option: nil).body, "You accepted the recommendations.")
+        XCTAssertEqual(AskAnswerOutcome.alreadyAnswered.message(for: ask, option: nil).body, "This form was already answered.")
+        XCTAssertEqual(AskAnswerOutcome.needsApp.message(for: ask, option: nil).body,
+                       "Open herdrup to answer: Before enyo-ui starts building, five choices.")
+    }
+}

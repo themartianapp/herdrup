@@ -767,7 +767,10 @@ case "$shard" in
     # exceeded. This shard had ~18 min of tests in that run against 40 m.
     # 15m: p95 9.5 min, slowest pass 9.8 (n=20 since ChatViewTests grew on 2026-11-06);
     # 10m cut 42632930170, 41996536208, 41402657305 and 41209406682 short.
-    run_suite iPhoneChat "$IPHONE_UDID" 15m -only-testing:HerdrUITests/ChatViewTests || failed=1
+    # 20m since the form-ask stepper tests (#650) added nine walk-throughs of omp's HTML
+    # form: its two passing hosted rounds took 14.3 and 10.7 min (runs 42880218168 and
+    # 42907183978), so slowest pass + 2 min = 16.3 and 1.3 x 14.3 = 18.5 round up to 20m.
+    run_suite iPhoneChat "$IPHONE_UDID" 20m -only-testing:HerdrUITests/ChatViewTests || failed=1
     check_classes_ran TestReceipts/iPhoneChat-first.xcresult ChatViewTests || failed=1
     # Chat UX owns a separate round so its keyboard/history checks cannot consume
     # the general app suite's deadline. 25m: p95 15.8 min, slowest pass 17.4 (n=142).

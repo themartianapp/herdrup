@@ -308,6 +308,18 @@ final class TranscriptGroupingTests: XCTestCase {
         }
     }
 
+    /// A form ask's compatibility `questions` look like one single-select question, but a
+    /// form is answered with `agent.answer_form`: `answerable` false there says nothing about
+    /// whether the host keeps answers for the owner.
+    func testPendingFormAskIsNeverWithheldFromTheCaller() throws {
+        let pending = try JSONDecoder().decode(TranscriptPendingAsk.self, from: Data(#"""
+        {"id":"a1","questions":[{"question":"Where to build","options":["Preview","Apex"],"multi":false,"recommended":0}],
+         "answerable":false,"form":{"intro":null,"fields":[]},"form_answerable":true}
+        """#.utf8))
+        XCTAssertFalse(pending.isWithheldFromCaller)
+        XCTAssertFalse(pending.hasAnswerableShape)
+    }
+
     func testAnsweredAskStaysAnsweredAndPendingAskIsMarked() {
         let question = [TranscriptQuestion(question: "Merge?", options: ["Yes", "Not yet"])]
         let pending = TranscriptPendingAsk(id: "a2", questions: question, answerable: true)
@@ -834,6 +846,22 @@ final class TranscriptStoreTests: XCTestCase {
         guard case .ask(_, let kept, let again)? = store.turns.last?.items.last else { return XCTFail() }
         XCTAssertNil(again)
         XCTAssertEqual(kept.answer, ["Yes"])
+    }
+
+    /// omp's HTML-form ask (herdr `form_status`): a form that timed out or was cancelled is
+    /// over even though herdr gives it no `answer`, so a `pending_ask` one refresh behind
+    /// must not bring its controls back.
+    func testEndedFormAskIsNotPendingWhenPendingAskLags() async {
+        let compat = #""questions":[{"question":"Where to build","options":["Preview","Apex"],"multi":false,"recommended":0}]"#
+        for status in ["timed_out", "cancelled"] {
+            let ask = Self.entry("a1", "ask", extra: compat + #","form":{"intro":null,"fields":[]},"form_status":"\#(status)""#)
+            let pending = #"{"id":"a1",\#(compat),"answerable":false,"form":{"intro":null,"fields":[]},"form_answerable":true}"#
+            let (client, _) = scripted { _ in Self.page([ask], pendingAsk: pending) }
+            let store = TranscriptStore(target: "w1:p1")
+            await store.refresh(client: client)
+            guard case .ask(_, _, let open)? = store.turns.last?.items.last else { return XCTFail("no ask") }
+            XCTAssertNil(open, "a \(status) form offers nothing to answer")
+        }
     }
 
     func testFailedRefreshKeepsTheConversationAndRecordsTheError() async {

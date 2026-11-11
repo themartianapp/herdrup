@@ -22,9 +22,10 @@ enum AskPushAnswer {
         UserDefaults.standard.set(data, forKey: routesKey)
     }
 
-    /// Answer `ask` with `option` and post the follow-up notification. Returns once both are
-    /// done, so the notification delegate holds the background launch open until then.
-    static func answer(_ ask: AskPush, option: String) async {
+    /// Answer `ask` with `option` (nil: a form's "Accept recommendations", `agent.answer_form`
+    /// with no values) and post the follow-up notification. Returns once both are done, so the
+    /// notification delegate holds the background launch open until then.
+    static func answer(_ ask: AskPush, option: String?) async {
         let background = UIApplication.shared.beginBackgroundTask(withName: "herdr.ask.answer")
         defer { if background != .invalid { UIApplication.shared.endBackgroundTask(background) } }
 
@@ -39,15 +40,22 @@ enum AskPushAnswer {
         await post(outcome, for: ask, option: option)
     }
 
-    private static func attempt(_ ask: AskPush, option: String, through endpoint: AskAnswerEndpoint) async -> AskAnswerAttempt {
+    private static func attempt(_ ask: AskPush, option: String?, through endpoint: AskAnswerEndpoint) async -> AskAnswerAttempt {
         guard let credentials = credentials(for: endpoint) else { return .unreachable }
         let transport = CitadelTransport(credentials: credentials, hostKeyPolicy: KeychainHostKeyPolicy.shared)
+        let client = HerdrClient(transport: transport)
         let result: AskAnswerAttempt
         do {
-            let status = try await HerdrClient(transport: transport)
-                .agentAnswer(target: ask.paneID, askID: ask.askID, option: option)
+            let status: AgentAnswerStatus
+            if let option {
+                status = try await client.agentAnswer(target: ask.paneID, askID: ask.askID, option: option)
+            } else {
+                status = try await client.agentAnswerForm(target: ask.paneID, askID: ask.askID, values: [:]).status
+            }
             result = .status(status.rawValue)
         } catch let error as APIError {
+            result = .refused(code: error.code)
+        } catch let error as AgentAnswerFormError {
             result = .refused(code: error.code)
         } catch {
             result = .unreachable
@@ -101,7 +109,7 @@ enum AskPushAnswer {
 
     /// The follow-up carries the pane id, so tapping it opens the agent like the question
     /// push would have, and no `herdr_ask`, so it never grows buttons of its own.
-    private static func post(_ outcome: AskAnswerOutcome, for ask: AskPush, option: String) async {
+    private static func post(_ outcome: AskAnswerOutcome, for ask: AskPush, option: String?) async {
         let message = outcome.message(for: ask, option: option)
         let content = UNMutableNotificationContent()
         content.title = message.title

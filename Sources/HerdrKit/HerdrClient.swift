@@ -184,6 +184,12 @@ public actor HerdrClient {
         await supports(\.turnOrigin)
     }
 
+    /// herdr reads omp's HTML-form asks and answers them (`ask_form`). From the per-client
+    /// capability cache.
+    public func advertisesAskForm() async -> Bool {
+        await supports(\.askForm)
+    }
+
     struct AccountsCreateParams: Encodable {
         let kind: String
         let label: String
@@ -1995,6 +2001,20 @@ public actor HerdrClient {
         try await call("agent.answer",
                        AgentAnswerParams(target: target, askID: askID, option: option),
                        as: AgentAnswerResult.self).status
+    }
+
+    /// Answer omp's pending form ask (`agent.answer_form`). `values` holds only the fields to
+    /// change; every other field keeps omp's default, so `[:]` accepts its recommendations.
+    /// Server refusals arrive as `AgentAnswerFormError`; a transport failure as itself.
+    public func agentAnswerForm(target: String, askID: String,
+                                values: [String: AskFormValue]) async throws -> AgentAnswerFormResult {
+        do {
+            return try await call("agent.answer_form",
+                                  AgentAnswerFormParams(target: target, askID: askID, values: values),
+                                  as: AgentAnswerFormResult.self)
+        } catch let error as APIError {
+            throw AgentAnswerFormError(error)
+        }
     }
 
     // MARK: - Guest access (owner)

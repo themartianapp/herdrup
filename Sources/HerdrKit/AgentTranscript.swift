@@ -40,6 +40,38 @@ struct AgentAnswerParams: Encodable, Sendable {
     }
 }
 
+/// One field's answer for `agent.answer_form`. A field left out of `values` keeps omp's default.
+public enum AskFormValue: Encodable, Sendable, Equatable {
+    /// A choice field: the chosen option values (radio: exactly one), plus Other's text.
+    case choice(options: [String], other: String? = nil)
+    /// A text field.
+    case text(String)
+
+    enum CodingKeys: String, CodingKey { case options, other, text }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .choice(let options, let other):
+            try c.encode(options, forKey: .options)
+            try c.encodeIfPresent(other, forKey: .other)
+        case .text(let text):
+            try c.encode(text, forKey: .text)
+        }
+    }
+}
+
+struct AgentAnswerFormParams: Encodable, Sendable {
+    let target: String
+    let askID: String
+    let values: [String: AskFormValue]
+
+    enum CodingKeys: String, CodingKey {
+        case target, values
+        case askID = "ask_id"
+    }
+}
+
 // MARK: - Entries
 
 /// Who wrote a user turn. A guest prompt arrives as `<name> (via HerdrUp): <text>`; the
@@ -222,15 +254,200 @@ public struct TranscriptQuestion: Decodable, Sendable, Equatable {
     }
 }
 
-public struct TranscriptAsk: Sendable, Equatable {
-    public let questions: [TranscriptQuestion]
-    /// The options picked (`selectedOptions`); nil while unanswered.
-    public let answer: [String]?
+/// omp's `ask` (≥ 18.18.3) is one HTML form; herdr parses it into this (the contract's
+/// `form`). Each field is one step of the chat's stepper.
+public struct AskForm: Decodable, Sendable, Equatable {
+    /// Plain text of the context before the first section or field; paragraphs split by "\n\n".
+    public let intro: String?
+    public let fields: [AskFormField]
 
-    public init(questions: [TranscriptQuestion], answer: [String]? = nil) {
-        self.questions = questions
+    public init(intro: String? = nil, fields: [AskFormField]) {
+        self.intro = intro
+        self.fields = fields
+    }
+
+    enum CodingKeys: String, CodingKey { case intro, fields }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        intro = try c.decodeIfPresent(String.self, forKey: .intro)
+        fields = try c.decodeIfPresent([AskFormField].self, forKey: .fields) ?? []
+    }
+
+    /// Every field the app knows how to fill: a form with any other kind is shown read-only.
+    public var isFillable: Bool { !fields.isEmpty && fields.allSatisfy { $0.kind != .unknown } }
+}
+
+public enum AskFormFieldKind: String, Sendable, Equatable {
+    case choice, text
+    /// A kind this app does not know (a newer server).
+    case unknown
+}
+
+public struct AskFormOption: Decodable, Sendable, Equatable {
+    /// What `agent.answer_form` sends back.
+    public let value: String
+    public let label: String
+    /// omp's recommendation and the default.
+    public let checked: Bool
+    public let disabled: Bool
+
+    public init(value: String, label: String, checked: Bool = false, disabled: Bool = false) {
+        self.value = value
+        self.label = label
+        self.checked = checked
+        self.disabled = disabled
+    }
+
+    enum CodingKeys: String, CodingKey { case value, label, checked, disabled }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        value = try c.decode(String.self, forKey: .value)
+        label = try c.decodeIfPresent(String.self, forKey: .label) ?? value
+        checked = try c.decodeIfPresent(Bool.self, forKey: .checked) ?? false
+        disabled = try c.decodeIfPresent(Bool.self, forKey: .disabled) ?? false
+    }
+}
+
+public struct AskFormField: Decodable, Sendable, Equatable, Identifiable {
+    public let name: String
+    public let kind: AskFormFieldKind
+    /// The section's `<legend>` when the field is alone in it (or has no label of its own),
+    /// else the field's own label, else nil.
+    public let title: String?
+    /// Plain text of the context in this field's section before it.
+    public let description: String?
+    /// A checkbox group or `<select multiple>`.
+    public let multi: Bool
+    /// Drawn from a `<select>`: no Other.
+    public let select: Bool
+    /// omp adds "Other: type your own" to this field.
+    public let other: Bool
+    public let required: Bool
+    public let options: [AskFormOption]
+    /// Text fields only.
+    public let inputType: String?
+    public let placeholder: String?
+    public let value: String?
+    /// Text fields: numeric `min` / `max` (herdr sends numbers only).
+    public let min: Double?
+    public let max: Double?
+    public let minLength: Int?
+    public let maxLength: Int?
+    public let pattern: String?
+
+    public var id: String { name }
+
+    public init(name: String, kind: AskFormFieldKind, title: String? = nil, description: String? = nil,
+                multi: Bool = false, select: Bool = false, other: Bool = false, required: Bool = false,
+                options: [AskFormOption] = [], inputType: String? = nil, placeholder: String? = nil,
+                value: String? = nil, min: Double? = nil, max: Double? = nil, minLength: Int? = nil,
+                maxLength: Int? = nil, pattern: String? = nil) {
+        self.name = name
+        self.kind = kind
+        self.title = title
+        self.description = description
+        self.multi = multi
+        self.select = select
+        self.other = other
+        self.required = required
+        self.options = options
+        self.inputType = inputType
+        self.placeholder = placeholder
+        self.value = value
+        self.min = min
+        self.max = max
+        self.minLength = minLength
+        self.maxLength = maxLength
+        self.pattern = pattern
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case name, kind, title, description, multi, select, other, required, options, placeholder, value
+        case min, max, pattern
+        case inputType = "input_type"
+        case minLength = "minlength"
+        case maxLength = "maxlength"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            name: try c.decode(String.self, forKey: .name),
+            kind: (try c.decodeIfPresent(String.self, forKey: .kind)).flatMap(AskFormFieldKind.init(rawValue:))
+                ?? .unknown,
+            title: try c.decodeIfPresent(String.self, forKey: .title),
+            description: try c.decodeIfPresent(String.self, forKey: .description),
+            multi: try c.decodeIfPresent(Bool.self, forKey: .multi) ?? false,
+            select: try c.decodeIfPresent(Bool.self, forKey: .select) ?? false,
+            other: try c.decodeIfPresent(Bool.self, forKey: .other) ?? false,
+            required: try c.decodeIfPresent(Bool.self, forKey: .required) ?? false,
+            options: try c.decodeIfPresent([AskFormOption].self, forKey: .options) ?? [],
+            inputType: try c.decodeIfPresent(String.self, forKey: .inputType),
+            placeholder: try c.decodeIfPresent(String.self, forKey: .placeholder),
+            value: try c.decodeIfPresent(String.self, forKey: .value),
+            // Constraints the app does not enforce (herdr validates): one it cannot read
+            // must not cost the form.
+            min: (try? c.decodeIfPresent(Double.self, forKey: .min)) ?? nil,
+            max: (try? c.decodeIfPresent(Double.self, forKey: .max)) ?? nil,
+            minLength: (try? c.decodeIfPresent(Int.self, forKey: .minLength)) ?? nil,
+            maxLength: (try? c.decodeIfPresent(Int.self, forKey: .maxLength)) ?? nil,
+            pattern: try c.decodeIfPresent(String.self, forKey: .pattern))
+    }
+
+    /// The options omp preselected (its recommendation).
+    public var defaultValues: [String] { options.filter(\.checked).map(\.value) }
+}
+
+/// One answered field, from omp's `details.answers` (`form_answer`).
+public struct AskFormAnswer: Codable, Sendable, Equatable {
+    public let name: String
+    public let question: String
+    /// The option label, `Other: <text>`, or comma-joined labels.
+    public let answer: String
+
+    public init(name: String, question: String, answer: String) {
+        self.name = name
+        self.question = question
         self.answer = answer
     }
+}
+
+/// How a form ask ended (`form_status`).
+public enum AskFormStatus: String, Sendable, Equatable {
+    case answered
+    case timedOut = "timed_out"
+    case cancelled
+}
+
+public struct TranscriptAsk: Sendable, Equatable {
+    public let questions: [TranscriptQuestion]
+    /// The options picked (`selectedOptions`); nil while unanswered. For a form: one
+    /// "<title>: <answer>" line per field.
+    public let answer: [String]?
+    /// omp's HTML form; nil for an older `questions[]` ask.
+    public let form: AskForm?
+    /// The form's answers once omp recorded them.
+    public let formAnswer: [AskFormAnswer]?
+    public let formStatus: AskFormStatus?
+    /// Local only, never on the wire: this device sent these answers and herdr could not
+    /// confirm them yet (`sent_unconfirmed`). omp's own `form_answer` replaces them.
+    public let sentFormAnswer: [AskFormAnswer]?
+
+    public init(questions: [TranscriptQuestion], answer: [String]? = nil, form: AskForm? = nil,
+                formAnswer: [AskFormAnswer]? = nil, formStatus: AskFormStatus? = nil,
+                sentFormAnswer: [AskFormAnswer]? = nil) {
+        self.questions = questions
+        self.answer = answer
+        self.form = form
+        self.formAnswer = formAnswer
+        self.formStatus = formStatus
+        self.sentFormAnswer = sentFormAnswer
+    }
+
+    /// Answered, timed out or cancelled: nothing is waiting on it any more.
+    public var isSettled: Bool { answer != nil || formStatus != nil }
 }
 
 public struct TranscriptEntry: Decodable, Sendable, Equatable, Identifiable {
@@ -263,9 +480,11 @@ public struct TranscriptEntry: Decodable, Sendable, Equatable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id, kind, text, author, final, tool, intent, status, detail, source, title, from, body
-        case items, questions, answer, error, origin
+        case items, questions, answer, error, origin, form
         case tsMs = "ts_ms"
         case authorName = "author_name"
+        case formAnswer = "form_answer"
+        case formStatus = "form_status"
     }
 
     public init(from decoder: Decoder) throws {
@@ -308,9 +527,15 @@ public struct TranscriptEntry: Decodable, Sendable, Equatable, Identifiable {
         case "plan":
             kind = .plan(try c.decodeIfPresent([TranscriptPlanItem].self, forKey: .items) ?? [])
         case "ask":
+            // A form this app cannot read falls back to the `questions` herdr keeps for
+            // older apps, rather than failing the page.
             kind = .ask(TranscriptAsk(
                 questions: try c.decodeIfPresent([TranscriptQuestion].self, forKey: .questions) ?? [],
-                answer: try c.decodeIfPresent([String].self, forKey: .answer)))
+                answer: try c.decodeIfPresent([String].self, forKey: .answer),
+                form: (try? c.decodeIfPresent(AskForm.self, forKey: .form)) ?? nil,
+                formAnswer: (try? c.decodeIfPresent([AskFormAnswer].self, forKey: .formAnswer)) ?? nil,
+                formStatus: (try c.decodeIfPresent(String.self, forKey: .formStatus))
+                    .flatMap(AskFormStatus.init(rawValue:))))
         case "turn_end":
             let status = (try c.decodeIfPresent(String.self, forKey: .status))
                 .flatMap(TranscriptTurnEndStatus.init(rawValue:)) ?? .done
@@ -329,13 +554,17 @@ public struct TranscriptPendingAsk: Decodable, Sendable, Equatable {
     public let questions: [TranscriptQuestion]
     /// Single question, single-select, at least one option, and this caller may answer
     /// (false for guests of a host older than guest answers): only then can the chat's
-    /// buttons answer it.
+    /// buttons answer it. Always false for a form (`formAnswerable` instead).
     public let answerable: Bool
+    /// omp's HTML form; nil for an older `questions[]` ask.
+    public let form: AskForm?
+    /// herdr can drive this form's terminal dialog for this caller (`agent.answer_form`).
+    public let formAnswerable: Bool
 
     /// Whether the chat's buttons could answer this question's shape: one single-select
     /// question with options, exactly the server's rule for `answerable`.
     public var hasAnswerableShape: Bool {
-        guard questions.count == 1, let only = questions.first else { return false }
+        guard form == nil, questions.count == 1, let only = questions.first else { return false }
         return !only.multi && !only.options.isEmpty
     }
 
@@ -343,19 +572,27 @@ public struct TranscriptPendingAsk: Decodable, Sendable, Equatable {
     /// it: a host that keeps answers for the owner.
     public var isWithheldFromCaller: Bool { hasAnswerableShape && !answerable }
 
-    public init(id: String, questions: [TranscriptQuestion], answerable: Bool) {
+    public init(id: String, questions: [TranscriptQuestion], answerable: Bool, form: AskForm? = nil,
+                formAnswerable: Bool = false) {
         self.id = id
         self.questions = questions
         self.answerable = answerable
+        self.form = form
+        self.formAnswerable = formAnswerable
     }
 
-    enum CodingKeys: String, CodingKey { case id, questions, answerable }
+    enum CodingKeys: String, CodingKey {
+        case id, questions, answerable, form
+        case formAnswerable = "form_answerable"
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
         questions = try c.decodeIfPresent([TranscriptQuestion].self, forKey: .questions) ?? []
         answerable = try c.decodeIfPresent(Bool.self, forKey: .answerable) ?? false
+        form = (try? c.decodeIfPresent(AskForm.self, forKey: .form)) ?? nil
+        formAnswerable = try c.decodeIfPresent(Bool.self, forKey: .formAnswerable) ?? false
     }
 }
 
@@ -522,6 +759,85 @@ public enum AgentAnswerStatus: String, Decodable, Sendable, Equatable {
 
 struct AgentAnswerResult: Decodable {
     let status: AgentAnswerStatus
+}
+
+/// Result of `agent.answer_form` (`type: "ask_form_answered"`): what omp recorded.
+public struct AgentAnswerFormResult: Decodable, Sendable, Equatable {
+    /// `answered`: omp's result matched what herdr typed. `sentUnconfirmed`: the keys went in
+    /// but the result did not show in time, or differs; the next refresh tells.
+    public let status: AgentAnswerStatus
+    /// omp's `details.answers` (empty when the result has not arrived).
+    public let answers: [AskFormAnswer]
+
+    public init(status: AgentAnswerStatus, answers: [AskFormAnswer]) {
+        self.status = status
+        self.answers = answers
+    }
+
+    enum CodingKeys: String, CodingKey { case status, answers }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        status = (try c.decodeIfPresent(String.self, forKey: .status)).flatMap(AgentAnswerStatus.init(rawValue:))
+            ?? .answered
+        answers = try c.decodeIfPresent([AskFormAnswer].self, forKey: .answers) ?? []
+    }
+}
+
+/// Why `agent.answer_form` did not answer.
+public enum AgentAnswerFormError: Error, Sendable, Equatable {
+    /// Already answered, timed out or cancelled (`ask_not_pending`).
+    case notPending
+    /// herdr refused a value (`ask_form_invalid`): `field` is the text before the message's
+    /// first ": ", which names a field when the form has one by that name
+    /// (`AskFormDraft.reject`); field names are any text, spaces included.
+    case invalid(field: String?, reason: String)
+    /// omp's terminal form is no longer in its starting state, e.g. someone is answering it
+    /// in the Terminal (`ask_form_moved`).
+    case moved
+    /// The form has controls herdr cannot drive (`ask_unsupported`).
+    case unsupported
+    /// Any other refusal (`forbidden`, `guest_forbidden`, an unknown agent…).
+    case refused(APIError)
+
+    init(_ error: APIError) {
+        switch error.code {
+        case "ask_not_pending": self = .notPending
+        case "ask_form_moved": self = .moved
+        case "ask_unsupported": self = .unsupported
+        case "ask_form_invalid":
+            // herdr's message is "<field name>: <reason>".
+            if let colon = error.message.range(of: ": "), colon.lowerBound > error.message.startIndex {
+                self = .invalid(field: String(error.message[..<colon.lowerBound]),
+                                reason: String(error.message[colon.upperBound...]))
+                return
+            }
+            self = .invalid(field: nil, reason: error.message)
+        default: self = .refused(error)
+        }
+    }
+
+    /// The server's error code.
+    public var code: String {
+        switch self {
+        case .notPending: return "ask_not_pending"
+        case .invalid: return "ask_form_invalid"
+        case .moved: return "ask_form_moved"
+        case .unsupported: return "ask_unsupported"
+        case .refused(let error): return error.code
+        }
+    }
+
+    /// The person can still answer by hand in the Terminal view: herdr cannot drive the form,
+    /// or refused a value only the Terminal can enter (a textarea answer too long for omp's
+    /// editor, a form whose first field is a textarea: "…; answer in the terminal").
+    public var asksForTerminalAnswer: Bool {
+        switch self {
+        case .moved, .unsupported: return true
+        case .invalid(_, let reason): return reason.hasSuffix("answer in the terminal")
+        case .notPending, .refused: return false
+        }
+    }
 }
 
 extension APIError {

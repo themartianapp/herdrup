@@ -64,6 +64,11 @@ final class ChatModel: ObservableObject {
     /// withheld `answerable` from a question the buttons could answer, or refused a guest's
     /// answer or menu key (`guest_forbidden`). Questions wait for the owner for the session.
     @Published private(set) var answersRefused = false
+    /// The server reads and answers omp's HTML-form asks (`ask_form`); nil until its ping answered.
+    @Published private(set) var formsSupported: Bool?
+    /// The pending forms' answers in progress, by ask id: in memory, for as long as the ask is
+    /// pending, so scrolling and reloading the view keep them.
+    private var formDrafts: [String: AskFormDraft] = [:]
     /// The server cannot give this agent a transcript (not omp, no session file, an older
     /// server or peer): the page shows the terminal only. Not final: an omp agent answers
     /// `transcript_unsupported` for its first seconds, until its integration reports a
@@ -174,6 +179,77 @@ final class ChatModel: ObservableObject {
                         ? "This question can't be answered from the chat."
                         : "Couldn't answer: \(error.message)",
                     offersTerminal: error.asksForTerminalAnswer)
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            answerProblem = ChatAnswerProblem(askID: askID, message: "Couldn't reach the agent. Try again.",
+                                              offersTerminal: false)
+        }
+        await store.refresh(client: client)
+    }
+
+    /// The draft for a pending form ask, made on first use.
+    func formDraft(askID: String, form: AskForm) -> AskFormDraft {
+        if let draft = formDrafts[askID], draft.form == form { return draft }
+        let draft = AskFormDraft(form: form)
+        formDrafts[askID] = draft
+        return draft
+    }
+
+    func probeFormSupport(client: HerdrClient) async {
+        let supported = await client.advertisesAskForm()
+        if formsSupported != supported { formsSupported = supported }
+    }
+
+    /// Answers omp's pending form with the fields the person changed (`agent.answer_form`).
+    /// The card shows the answers at once; a refusal keeps the draft, on the refused field's
+    /// step when herdr names one.
+    func answerForm(client: HerdrClient, askID: String, draft: AskFormDraft) async {
+        guard answeringAskID == nil, store.subagent == nil else { return }
+        answeringAskID = askID
+        answerProblem = nil
+        draft.errors = [:]
+        defer { answeringAskID = nil }
+        do {
+            let result = try await client.agentAnswerForm(target: target, askID: askID, values: draft.values)
+            switch result.status {
+            case .answered:
+                store.noteFormAnswered(askID: askID, answers: result.answers.isEmpty ? draft.localAnswers : result.answers)
+            case .sentUnconfirmed:
+                store.noteFormAnswered(askID: askID, answers: draft.localAnswers, confirmed: false)
+            }
+            formDrafts[askID] = nil
+        } catch let error as AgentAnswerFormError {
+            switch error {
+            case .notPending:
+                // Answered elsewhere (the terminal, the lock screen): the refresh shows it.
+                break
+            case .invalid(let field, let reason):
+                let onItsStep = draft.reject(field: field, reason: reason)
+                if error.asksForTerminalAnswer {
+                    // A value only the Terminal can enter: the step says why, and offers it.
+                    answerProblem = ChatAnswerProblem(askID: askID, message: "This answer can't be sent from the chat.",
+                                                      offersTerminal: true)
+                } else if !onItsStep {
+                    // The text before ": " named no field of this form: herdr's whole message.
+                    let message = field.map { "\($0): \(reason)" } ?? reason
+                    answerProblem = ChatAnswerProblem(askID: askID, message: "Couldn't answer: \(message)",
+                                                      offersTerminal: false)
+                }
+            case .moved:
+                answerProblem = ChatAnswerProblem(
+                    askID: askID, message: "The form changed in the Terminal. Finish it there.", offersTerminal: true)
+            case .unsupported:
+                answerProblem = ChatAnswerProblem(
+                    askID: askID, message: "This form can't be answered from the chat.", offersTerminal: true)
+            case .refused(let refusal):
+                if refusal.code == "guest_forbidden" {
+                    answersRefused = true
+                } else {
+                    answerProblem = ChatAnswerProblem(askID: askID, message: "Couldn't answer: \(refusal.message)",
+                                                      offersTerminal: false)
+                }
             }
         } catch is CancellationError {
             return
@@ -384,7 +460,13 @@ private enum ChatRow: Identifiable, Equatable {
             case .plan(_, let items):
                 return items.map { [$0.phase, $0.text].compactMap { $0 }.joined(separator: "\n") }.joined(separator: "\n")
             case .ask(_, let ask, _):
-                return (ask.questions.flatMap { [$0.question] + $0.options } + (ask.answer ?? [])).joined(separator: "\n")
+                var lines = ask.questions.flatMap { [$0.question] + $0.options } + (ask.answer ?? [])
+                if let form = ask.form {
+                    lines = [form.intro].compactMap { $0 } + form.fields.flatMap { field in
+                        [field.title, field.description].compactMap { $0 } + field.options.map(\.label)
+                    } + (ask.formAnswer?.map(\.answer) ?? [])
+                }
+                return lines.joined(separator: "\n")
             case .turnFailed(_, _, let error): return error ?? ""
             }
         }
@@ -447,6 +529,14 @@ private final class ChatPromptTops {
         settle.readerInput()
         lastJump = nil
     }
+}
+
+/// A form's review asked to be shown from its top (`AskFormStepper`). Each layout of the card
+/// while the review is open puts its top back in view if it went above the screen, until the
+/// reader moves the chat (a drag, a deceleration, a wheel or trackpad scroll) or navigates it
+/// (search, Jump to latest, the up arrow, Submit). Kept by reference: setting it redraws nothing.
+private final class ChatFormReveal {
+    var pending = false
 }
 
 /// Reports whether a prompt row's top is above the chat's viewport (`space`), when the row is
@@ -540,6 +630,8 @@ struct ChatView: View {
     @State private var openSubagent: TranscriptSubagent?
     /// Which drawn prompts sit above the viewport, as their rows report it (the up arrow).
     @State private var promptTops = ChatPromptTops()
+    /// A form's review waiting to be shown from its top (`revealFormTop`).
+    @State private var formReveal = ChatFormReveal()
     /// The oldest drawn prompt on screen or below it: the up arrow searches above this turn.
     /// Nil while every drawn prompt is above the screen.
     @State private var mineBoundary: String?
@@ -685,11 +777,16 @@ struct ChatView: View {
             guard offersPreviousMine else { return }
             honoursTurnOrigin = await client.advertisesTurnOrigin()
         }
+        .task(id: isActive) {
+            guard isActive else { return }
+            await model.probeFormSupport(client: client)
+        }
         // Search moves the chat on its own: the up arrow then starts from what is on screen.
         // (The offset check retires a settled jump anyway; this also covers one still gliding.)
         .onChange(of: findRequest != nil) { _, _ in
             promptTops.lastJump = nil
             promptTops.navigation += 1
+            formReveal.pending = false
         }
         .sheet(item: Binding(get: { openNote.map(IdentifiedNote.init) }, set: { openNote = $0?.note })) { item in
             ChatNoteSheet(note: item.note)
@@ -733,6 +830,7 @@ struct ChatView: View {
             if landed, findRequest == nil, !atBottom {
                 JumpToLatestButton(label: "Jump to latest message", identifier: "chat-jump-latest") {
                     promptTops.lastJump = nil
+                    formReveal.pending = false
                     scrollPosition.animateToLatest()
                     followingLatest = true
                 }
@@ -844,8 +942,10 @@ struct ChatView: View {
                     if !userScrolling { userScrolling = true }
                     if followingLatest { followingLatest = false }
                 }
-                // The reader moved the chat: the up arrow searches from where they are now.
+                // The reader moved the chat: the up arrow searches from where they are now,
+                // and a form's review stays where they put it.
                 if !view.isDecelerating { promptTops.deceleratingAtIssue = false }
+                if view.isDragging || view.isDecelerating { formReveal.pending = false }
                 if view.isDragging || (view.isDecelerating && !promptTops.deceleratingAtIssue) {
                     promptTops.readerInput()
                 }
@@ -863,6 +963,7 @@ struct ChatView: View {
             }, onScrollInput: {
                 // A Mac wheel or trackpad: none of the flags above (see `onScrollInput`).
                 promptTops.readerInput()
+                formReveal.pending = false
             })
             .allowsHitTesting(false)
             .accessibilityHidden(true)
@@ -960,11 +1061,17 @@ struct ChatView: View {
         var recorded = false
         if case .prompt(let prompt) = row { recorded = model.store.outbox.recordedPromptIDs.contains(prompt.id) }
         let askID = row.askID
+        var formDraft: AskFormDraft?
+        if case .item(.ask(let id, let ask, let pending?)) = row, let form = pending.form ?? ask.form,
+           !form.fields.isEmpty {
+            formDraft = model.formDraft(askID: id, form: form)
+        }
         return ChatRowView(
             row: row, viewer: viewer, client: client, expanded: keys, recorded: recorded,
             answering: askID != nil && model.answeringAskID == askID,
             problem: askID != nil && model.answerProblem?.askID == askID ? model.answerProblem : nil,
             answersRefused: model.answersRefused,
+            formsSupported: model.formsSupported, formDraft: formDraft,
             hits: hits, query: hits.isEmpty ? "" : searchKey.query,
             selectedHitID: hits.isEmpty ? nil : selectedSearchHit,
             actions: actions)
@@ -976,11 +1083,51 @@ struct ChatView: View {
             openNote: { note in openNote = note },
             openQuestion: { id in openQuestionID = id },
             answer: { id, option in Task { await model.answer(client: client, askID: id, option: option) } },
+            submitForm: { id, draft in
+                // The answer moves the conversation on: the chat follows it again. Like Jump to
+                // latest, that retires an up-arrow jump, whose settle would otherwise read the
+                // move as one that stopped short and scroll back to its prompt, and the review's
+                // reveal, which would hold the card's top on screen against the follow.
+                formReveal.pending = false
+                if findRequest == nil {
+                    promptTops.lastJump = nil
+                    followingLatest = true
+                } else {
+                    followingLatest = false
+                }
+                Task { await model.answerForm(client: client, askID: id, draft: draft) }
+            },
+            formReviewOpened: { frame in
+                formReveal.pending = true
+                revealFormTop(frame)
+            },
+            formReviewLaidOut: { frame in revealFormTop(frame) },
+            canAnswer: model.store.subagent == nil,
             openTerminal: {
                 openQuestionID = nil
                 onOpenTerminal()
             },
             selectText: { text in selectingText = text })
+    }
+
+    /// A form's review is open and asked to be shown from its top (`ChatFormReveal`). A card
+    /// taller than the chat, followed to its tail, would hide its top ("Check your answers"
+    /// and the first answers) under the header: the chat shows the card from its top instead,
+    /// and stops following until Submit. Called with each layout of the card, so the reveal
+    /// lands once the step's change and the follow to the tail have; reader input ends it.
+    /// The move is the app's, not reader input (`ChatPromptTops.readerInput`), but it retires
+    /// an up-arrow jump still settling, so the jump's correction does not scroll back to its
+    /// prompt; the up arrow then searches from the form.
+    private func revealFormTop(_ frame: CGRect) {
+        guard formReveal.pending, findRequest == nil else { return }
+        // A drag that has begun but not been sampled yet already has the chat.
+        if let view = scrollPosition.view, view.isDragging || view.isDecelerating {
+            formReveal.pending = false
+            return
+        }
+        guard scrollPosition.revealTop(frame, margin: 16, atTail: followingLatest) else { return }
+        promptTops.lastJump = nil
+        followingLatest = false
     }
 
     private var questionSheet: some View {
@@ -1101,6 +1248,7 @@ struct ChatView: View {
         promptTops.lastJump = TranscriptPreviousMine.LastJump(turnID: turnID)
         // From here on, reader input takes the jump over (`ChatPromptTops.readerInput`).
         promptTops.settle = TranscriptPreviousMine.Settle()
+        formReveal.pending = false
         promptTops.deceleratingAtIssue = scrollPosition.view?.isDecelerating == true
         followingLatest = false
         atBottom = false
@@ -1600,6 +1748,14 @@ private struct ChatRowActions {
     let openNote: (TranscriptNote) -> Void
     let openQuestion: (String) -> Void
     let answer: (_ askID: String, _ option: String) -> Void
+    let submitForm: (_ askID: String, _ draft: AskFormDraft) -> Void
+    /// A form's review opened: from now on, bring its card's top (window coordinates) into
+    /// view as it lays out, until the reader moves the chat (`ChatFormReveal`).
+    let formReviewOpened: (CGRect) -> Void
+    /// The open review's card laid out again.
+    let formReviewLaidOut: (CGRect) -> Void
+    /// Questions can be answered from this chat (not a subagent's read-only transcript).
+    let canAnswer: Bool
     let openTerminal: () -> Void
     let selectText: (ChatSelectableText) -> Void
 }
@@ -1621,6 +1777,9 @@ private struct ChatRowView: View, Equatable {
     let problem: ChatAnswerProblem?
     /// The guest's host refused guest answers: the question waits for the owner.
     let answersRefused: Bool
+    /// The server's `ask_form` (nil until known), and a pending form's draft.
+    let formsSupported: Bool?
+    let formDraft: AskFormDraft?
     /// The search's excerpts under the row. Without a hit the query and selection are left
     /// out too, so a search touches only the rows it finds.
     let hits: [TranscriptSearchHit]
@@ -1642,6 +1801,8 @@ private struct ChatRowView: View, Equatable {
             && lhs.answering == rhs.answering
             && lhs.problem == rhs.problem
             && lhs.answersRefused == rhs.answersRefused
+            && lhs.formsSupported == rhs.formsSupported
+            && lhs.formDraft === rhs.formDraft
             && lhs.hits == rhs.hits
             && lhs.query == rhs.query
             && lhs.selectedHitID == rhs.selectedHitID
@@ -1697,13 +1858,26 @@ private struct ChatRowView: View, Equatable {
         case .plan:
             EmptyView() // The current snapshot stays visible once at the conversation's end.
         case .ask(let id, let ask, let pending):
-            VStack(alignment: .leading, spacing: 6) {
-                askCard(id: id, ask: ask, pending: pending)
-                Button("Open question") { actions.openQuestion(id) }
-                    .font(Typography.app(13 * textScale))
-                    .accessibilityIdentifier("chat-question-open")
+            if let form = ask.form ?? pending?.form, !form.fields.isEmpty {
+                // A form's stepper is the whole question: no "Open question" sheet.
+                ChatAskFormCard(ask: ask, form: form, pending: pending, viewer: viewer,
+                                formsSupported: formsSupported, draft: formDraft, answering: answering,
+                                problem: problem, answersRefused: answersRefused,
+                                canAnswerHere: actions.canAnswer,
+                                onSubmit: { if let formDraft { actions.submitForm(id, formDraft) } },
+                                onOpenTerminal: actions.openTerminal,
+                                onReviewOpened: actions.formReviewOpened,
+                                onReviewLaidOut: actions.formReviewLaidOut)
+                    .frame(maxWidth: sizeClass == .regular ? 520 : .infinity, alignment: .leading)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    askCard(id: id, ask: ask, pending: pending)
+                    Button("Open question") { actions.openQuestion(id) }
+                        .font(Typography.app(13 * textScale))
+                        .accessibilityIdentifier("chat-question-open")
+                }
+                .frame(maxWidth: sizeClass == .regular ? 520 : .infinity, alignment: .leading)
             }
-            .frame(maxWidth: sizeClass == .regular ? 520 : .infinity, alignment: .leading)
         case .turnFailed(_, let status, let error):
             HStack(alignment: .firstTextBaseline, spacing: 7) {
                 Image(systemName: status == .aborted ? "stop.circle" : "exclamationmark.circle")

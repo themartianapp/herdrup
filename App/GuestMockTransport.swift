@@ -128,7 +128,7 @@ struct GuestMockTransport: HerdrTransport {
     ]
 
     /// Allowed only on a host that lets guests answer.
-    static let answerMethods: Set<String> = ["agent.answer", "pane.send_keys"]
+    static let answerMethods: Set<String> = ["agent.answer", "agent.answer_form", "pane.send_keys"]
 
     /// Allowed only where the host advertises the feature (herdrup#338).
     static let gramMethods: Set<String> = ["gram.list", "gram.get_file_chunk", "gram.mark_read"]
@@ -205,7 +205,7 @@ struct GuestMockTransport: HerdrTransport {
         switch method {
         case "ping":
             if Self.chat {
-                return #"{"id":"\#(id)","result":{"type":"pong","version":"0.9.4","protocol":22,"capabilities":{"agent_transcript":true}}}"#
+                return #"{"id":"\#(id)","result":{"type":"pong","version":"0.9.4","protocol":22,"capabilities":{"agent_transcript":true\#(ChatMockAskForm.capability)}}}"#
             }
             return #"{"id":"\#(id)","result":{"type":"pong"}}"#
         case "agent.transcript":
@@ -222,6 +222,13 @@ struct GuestMockTransport: HerdrTransport {
             }
             Self.hostRecorder.append("agent.answer:\(params["option"] as? String ?? "")")
             return ChatMockConversation.guest.answer(id: id, params: params)
+        case "agent.answer_form":
+            guard params["target"] as? String == Self.access.agentTarget else {
+                Self.recorder.append(method)
+                return Self.errorLine(id: id, code: "guest_forbidden", message: "not your agent")
+            }
+            Self.hostRecorder.append("agent.answer_form:\((params["values"] as? [String: Any])?.keys.sorted() ?? [])")
+            return ChatMockConversation.guest.answerForm(id: id, params: params)
         case "pane.send_keys":
             // The shared agent's pane, only while it waits on a menu, and only menu keys:
             // a guest never types into the pane.

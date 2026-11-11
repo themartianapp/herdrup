@@ -48,6 +48,8 @@ final class ChatMockConversation: @unchecked Sendable {
     let audience: Audience
     private let lock = NSLock()
     private var answered: String?
+    /// omp's `details.answers` once the form (`ChatMockAskForm`) was answered.
+    private var formAnswers: [[String: String]]?
     /// Prompts sent through `agent.prompt`, as the agent records them: trimmed.
     private var prompted: [(text: String, ms: UInt64)] = []
 
@@ -64,7 +66,12 @@ final class ChatMockConversation: @unchecked Sendable {
         audience == .owner ? ["Yes, merge and deploy", "Not yet"] : ["Yes, post them", "No, keep them here"]
     }
 
-    var isAnswered: Bool { lock.withLock { answered != nil } }
+    var isAnswered: Bool { lock.withLock { settled } }
+
+    /// The question no longer blocks omp: answered, or (a form) ended unanswered. Under `lock`.
+    private var settled: Bool {
+        answered != nil || formAnswers != nil || (ChatMockAskForm.enabled && ChatMockAskForm.endedStatus != nil)
+    }
 
     // MARK: Requests
 
@@ -113,10 +120,19 @@ final class ChatMockConversation: @unchecked Sendable {
             "working": NSNull(),
             "pending_ask": NSNull(),
         ]
-        if lock.withLock({ answered != nil }) {
+        if lock.withLock({ settled }) {
             result["working"] = ["intent": audience == .owner ? "Merging #305" : "Posting to the bench sheet",
                                  "tool": "bash",
                                  "since_ms": Self.today(16, 52)]
+        } else if ChatMockAskForm.enabled {
+            result["pending_ask"] = [
+                "id": askID,
+                "questions": ChatMockAskForm.questions,
+                "answerable": false,
+                "form": ChatMockAskForm.form,
+                "form_answerable": ChatMockAskForm.answerable
+                    && (audience == .owner || !GuestMockTransport.ownerOnlyAnswers),
+            ]
         } else {
             result["pending_ask"] = [
                 "id": askID,
@@ -211,6 +227,49 @@ final class ChatMockConversation: @unchecked Sendable {
             answered = option
             return Self.encode(id: id, result: ["type": "agent_answer", "status": "answered"])
         }
+    }
+
+    /// `agent.answer_form`: checks the values as herdr does and records omp's answers; the
+    /// next page shows them.
+    func answerForm(id: String, params: [String: Any]) -> String {
+        let ask = params["ask_id"] as? String ?? ""
+        let values = params["values"] as? [String: Any] ?? [:]
+        return lock.withLock {
+            if let refusal = ChatMockAskForm.refusal {
+                let message = refusal == "ask_form_invalid" ? "form: that inbox is not an @lenscale.ai address" : "mock refusal"
+                return Self.error(id: id, code: refusal, message: message)
+            }
+            guard ChatMockAskForm.enabled, ask == askID, !settled else {
+                return Self.error(id: id, code: "ask_not_pending", message: "no pending question with that id")
+            }
+            switch ChatMockAskForm.answers(for: values) {
+            case .failure(let refusal):
+                return Self.error(id: id, code: refusal.code, message: refusal.message)
+            case .success(let answers):
+                formAnswers = answers
+                return Self.encode(id: id, result: ["type": "ask_form_answered", "status": "answered", "answers": answers])
+            }
+        }
+    }
+
+    /// The ask entry: omp's old single question, or (`ChatMockAskForm`) its HTML form.
+    private func askEntry() -> [String: Any] {
+        guard ChatMockAskForm.enabled else {
+            var ask: [String: Any] = ["kind": "ask", "questions": [[
+                "question": question, "options": options, "multi": false, "recommended": 0,
+            ]]]
+            if let answered { ask["answer"] = [answered] }
+            return ask
+        }
+        var ask: [String: Any] = ["kind": "ask", "questions": ChatMockAskForm.questions, "form": ChatMockAskForm.form]
+        if let formAnswers {
+            ask["form_answer"] = formAnswers
+            ask["form_status"] = "answered"
+            ask["answer"] = formAnswers.map { "\($0["question"] ?? ""): \($0["answer"] ?? "")" }
+        } else if let status = ChatMockAskForm.endedStatus {
+            ask["form_status"] = status
+        }
+        return ask
     }
 
     /// `agent.prompt` (owner): the agent submits the prompt and records it trimmed, as pi
@@ -332,13 +391,8 @@ final class ChatMockConversation: @unchecked Sendable {
             "kind": "reply", "final": false,
             "text": "Done. Scrolling up now keeps loading older output, **500 lines at a time**, back to the very start.\n\n- Tested on a real server: 3,661 older lines, no gaps, with live output arriving between pages.\n- The app part is in `#477`; the server part is `#305`.",
         ]))
-        var ask: [String: Any] = ["kind": "ask", "questions": [[
-            "question": question, "options": options, "multi": false, "recommended": 0,
-        ]]]
-        let answer = answered
-        if let answer { ask["answer"] = [answer] }
-        second.append(Self.entry(askID, noteAt + 3_000, ask))
-        if answer != nil {
+        second.append(Self.entry(askID, noteAt + 3_000, askEntry()))
+        if answered != nil || formAnswers != nil {
             second.append(Self.entry("o2after", noteAt + 9_000, [
                 "kind": "reply", "final": false, "text": "Merging #305 and updating the servers.",
             ]))
@@ -382,13 +436,8 @@ final class ChatMockConversation: @unchecked Sendable {
             "kind": "reply", "final": false,
             "text": "Here are the Q5 numbers against the last baseline:\n\n| Metric | Q5 | Change |\n|---|---|---|\n| Decode | 41.2 tok/s | +36% |\n| Prefill | 1,180 tok/s | +4% |\n\nFull results are in `results/tensorfold-q5.md`.",
         ]))
-        var ask: [String: Any] = ["kind": "ask", "questions": [[
-            "question": question, "options": options, "multi": false, "recommended": 0,
-        ]]]
-        let answer = answered
-        if let answer { ask["answer"] = [answer] }
-        second.append(Self.entry(askID, bench + 363_000, ask))
-        if answer != nil {
+        second.append(Self.entry(askID, bench + 363_000, askEntry()))
+        if answered != nil || formAnswers != nil {
             second.append(Self.entry("g2post", bench + 370_000, [
                 "kind": "step", "tool": "bash", "intent": "Posting to the bench sheet", "status": "running",
             ]))
@@ -472,7 +521,7 @@ struct ChatMockTransport: HerdrTransport {
         case "ping":
             // A host that keeps turn origins whenever the conversation carries them.
             let turnOrigin = ChatMockConversation.origins == nil ? "" : #","turn_origin":true"#
-            return #"{"id":"\#(id)","result":{"type":"pong","version":"0.9.4","protocol":22,"capabilities":{"agent_transcript":true,"agent_answer":true,"agent_avatar":true\#(turnOrigin)}}}"#
+            return #"{"id":"\#(id)","result":{"type":"pong","version":"0.9.4","protocol":22,"capabilities":{"agent_transcript":true,"agent_answer":true,"agent_avatar":true\#(turnOrigin)\#(ChatMockAskForm.capability)}}}"#
         case "agent.list":
             return AgentAvatarMockServer.overlay(#"{"id":"\#(id)","result":{"type":"agent_list","agents":[\#(Self.agentsJSON)]}}"#)
         case "agent.transcript":
@@ -489,6 +538,8 @@ struct ChatMockTransport: HerdrTransport {
             return ChatMockConversation.owner.transcript(id: id, params: params)
         case "agent.answer":
             return ChatMockConversation.owner.answer(id: id, params: params)
+        case "agent.answer_form":
+            return ChatMockConversation.owner.answerForm(id: id, params: params)
         case "agent.prompt":
             return ChatMockConversation.owner.prompt(id: id, params: params)
         default:
