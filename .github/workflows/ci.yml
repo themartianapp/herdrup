@@ -10,12 +10,11 @@ on:
   # is limited. Avoid duplicate runs and cancel superseded PR heads below.
   # Protected main requires the aggregate device gate plus the Linux/font checks.
   # workflow_dispatch remains available for deliberate full or focused runs.
+  #
+  # NO paths-ignore: a workflow skipped by a path filter never reports its required
+  # checks, so a docs-only PR waited on them forever. Every PR runs this workflow; the
+  # `scope` job below decides whether it needs the simulator matrix.
   pull_request:
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - ".github/ISSUE_TEMPLATE/**"
-      - "LICENSE"
   # A FOCUSED DISPATCH MODE, so one suite can be iterated without paying for the full
   # matrix: `only_suite` runs just that class on the iPhone destination and skips the
   # iPad rounds and the package regressions. A PR run is unaffected — the automatic
@@ -36,6 +35,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # WHETHER THIS PR NEEDS THE SIMULATOR MATRIX. A PR that changes only docs, or only the
+  # MARKETING_VERSION / CURRENT_PROJECT_VERSION values in project.yml, cannot change what
+  # the device shards test, and the matrix costs over an hour of macOS runners (#645 was
+  # a 4-line version bump). Tools/ci/ci_scope.py reads the diff hunks and says `ui=true`
+  # for anything else, including itself and this file, and for a range it cannot
+  # resolve. A manual dispatch always runs the matrix it asked for.
+  scope:
+    name: Scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      ui: ${{ steps.scope.outputs.ui }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decide scope
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            python3 Tools/ci/ci_scope.py "$BASE" "$HEAD" >> "$GITHUB_OUTPUT"
+          else
+            echo "ui=true" >> "$GITHUB_OUTPUT"
+            echo "UI matrix needed: $EVENT always runs it" >&2
+          fi
+
   # THE 369 HerdrKit TESTS, WHICH UNTIL NOW RAN NOWHERE (herdrup#189).
   #
   # ci.yml built the app and ran the XCUITest and never invoked `swift test`, so every
@@ -85,8 +116,9 @@ jobs:
   # container carries no python3, so as a step there it exited 127 and turned the Linux
   # job red on this PR. Nothing here needs Swift, and nothing in Swift needs this.
   #
-  # The design-token check rides on this job for the same reason: it needs python3 and
-  # git, not Swift, and this is the cheapest job that has them.
+  # The design-token check and the CI scope classifier's tests ride on this job for the
+  # same reason: they need python3 and git, not Swift, and this is the cheapest job that
+  # has them.
   symbol-font-subset:
     name: Symbol font is the upstream subset
     runs-on: ubuntu-latest
@@ -120,7 +152,9 @@ jobs:
 
       # The simulator shards' scripts and their Python helpers, checked in seconds here
       # rather than an hour into every macOS shard (#649's first head broke an f-string).
-      - name: Check the simulator shard tooling
+      # check.sh also runs Tools/ci/test_ci_scope.py: ci_scope.py decides whether a PR
+      # skips the simulator matrix, so a bug in it would skip the device gate silently.
+      - name: Check the CI tooling (shard scripts and scope classifier)
         run: Tools/ci/check.sh
 
   # The guest relay Worker (GuestRelay): its tests in workerd, its typecheck, and the
@@ -159,7 +193,10 @@ jobs:
   # Tools/ci/ui-shard.sh defines what each shard runs. The settings-gram shard builds
   # its own optimized Distribution app instead (herdrup#416). Four macOS jobs stay under
   # the account's limit of five concurrent macOS jobs, which other repos share.
+  # The `scope` job skips this matrix for a PR that changes only docs or version numbers.
   uitest:
+    needs: scope
+    if: needs.scope.outputs.ui == 'true'
     name: ui (${{ matrix.shard }})
     # The Xcode 27 image: an app built with the iOS 26 SDK or older is letterboxed on
     # iPhone Duo (no full screen, no vertical bars). Duo support needs the 27.1 SDK.
@@ -386,16 +423,30 @@ jobs:
           if-no-files-found: ignore
 
   # The required status check on main. It keeps the name the branch protection rule
-  # already requires, and passes only if every device shard passed.
+  # already requires, so it always runs: it passes when every device shard passed, or
+  # when `scope` decided this PR needs no device shards, and fails otherwise (a failed,
+  # cancelled or unexpectedly skipped shard, or a scope job that never decided).
   build-and-uitest:
-    needs: uitest
+    needs: [scope, uitest]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Require every device shard to pass
+        env:
+          SCOPE: ${{ needs.scope.result }}
+          UI: ${{ needs.scope.outputs.ui }}
+          SHARDS: ${{ needs.uitest.result }}
         run: |
-          if [ "${{ needs.uitest.result }}" != success ]; then
-            echo "::error::device shards: ${{ needs.uitest.result }}"
+          if [ "$SCOPE" != success ]; then
+            echo "::error::scope job: $SCOPE"
+            exit 1
+          fi
+          if [ "$UI" = false ] && [ "$SHARDS" = skipped ]; then
+            echo "device shards skipped: this PR changes only docs or version numbers"
+            exit 0
+          fi
+          if [ "$SHARDS" != success ]; then
+            echo "::error::device shards: $SHARDS"
             exit 1
           fi
           echo "all device shards passed"
