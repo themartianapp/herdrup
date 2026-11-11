@@ -71,14 +71,20 @@ final class MermaidDiagramTests: XCTestCase {
         XCTAssertNil(MermaidDiagram.StoredRender(svg: "", width: 0, height: 0).scale(pixelWidth: 960))
     }
 
-    /// Only the diagram's own failures keep it on its code for the session; a broken page, or
-    /// a timeout before mermaid had the diagram, leaves it free to try again.
+    /// Only the diagram's own failures keep it on its code for the session; a broken page, a
+    /// timeout before mermaid had the diagram, or a timeout of a cold page's first draw leaves
+    /// it free to try again.
     func testOnlyTheDiagramsOwnFailuresAreRemembered() {
-        XCTAssertTrue(MermaidDiagram.failureIsTheDiagrams(.diagram, phase: .drawing))
-        XCTAssertTrue(MermaidDiagram.failureIsTheDiagrams(.timedOut, phase: .drawing))
-        XCTAssertFalse(MermaidDiagram.failureIsTheDiagrams(.timedOut, phase: .settingUp))
-        XCTAssertFalse(MermaidDiagram.failureIsTheDiagrams(.page, phase: .drawing))
-        XCTAssertFalse(MermaidDiagram.failureIsTheDiagrams(.page, phase: .settingUp))
+        for firstDraw in [false, true] {
+            XCTAssertTrue(MermaidDiagram.failureIsTheDiagrams(.diagram, phase: .drawing, firstDraw: firstDraw))
+            XCTAssertFalse(MermaidDiagram.failureIsTheDiagrams(.timedOut, phase: .settingUp, firstDraw: firstDraw))
+            XCTAssertFalse(MermaidDiagram.failureIsTheDiagrams(.page, phase: .drawing, firstDraw: firstDraw))
+            XCTAssertFalse(MermaidDiagram.failureIsTheDiagrams(.page, phase: .settingUp, firstDraw: firstDraw))
+        }
+        XCTAssertTrue(MermaidDiagram.failureIsTheDiagrams(.timedOut, phase: .drawing, firstDraw: false),
+                      "a warm page ran out of time on this diagram")
+        XCTAssertFalse(MermaidDiagram.failureIsTheDiagrams(.timedOut, phase: .drawing, firstDraw: true),
+                       "a cold page's first draw ran out of time: run 42917457759's valid fixture diagram")
     }
 }
 

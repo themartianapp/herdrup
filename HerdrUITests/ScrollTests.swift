@@ -1,6 +1,5 @@
 import XCTest
 import UIKit
-import Vision
 
 /// The automated SCROLL RECEIPT (JARVIS standing-rule 47874: no scroll change ships on
 /// static review alone — a real drag must be exercised). Launches the app into a REAL
@@ -178,8 +177,34 @@ final class ScrollTests: XCTestCase {
         let app = XCUIApplication.launched(mock: "keyframehistory")
         let viewport = app.terminalSurface
         XCTAssertTrue(viewport.waitForExistence(timeout: 10))
-        // Launch + the dropped stream + the reconnect's 0.3–0.5 s backoff + its keyframe.
-        Thread.sleep(forTimeInterval: 4.0)
+        // The rows are read from the emulator, not off screenshots. Vision OCR was the oracle
+        // here and it flaked on screenshots that plainly show the history: run 41616977089
+        // (job 125925583153) and run 41352546958 (job 124985668107, first run and diagnostic
+        // rerun) show "history 126"…"history 161" after the swipe, the macserve iPad terminal
+        // shard (2026-11-09) "history 27"…"history 55", yet Vision returned them as upside-down
+        // glyphs ("KIOZSIY") in both orientations it was asked for, so no row was found. The
+        // diagnostic rerun of 41616977089 read a near-identical screenshot (rows 135…169) and
+        // passed. `terminal-history-probe` is "oldest=<row> top=<row>": the oldest row the
+        // emulator holds, and the row drawn at the top of the viewport (`publishHistoryProbe`).
+        let probe = app.descendants(matching: .any).matching(identifier: "terminal-history-probe").firstMatch
+        var reading = "PROBE ABSENT"
+        func rows() -> (oldest: String, top: String) {
+            reading = probe.exists ? probe.label : "PROBE ABSENT"
+            let parts = reading.components(separatedBy: " top=")
+            guard parts.count == 2, parts[0].hasPrefix("oldest=") else { return ("", "") }
+            return (String(parts[0].dropFirst("oldest=".count)), parts[1])
+        }
+        /// N for a fixture history row ("history N <word> ===="), nil for any other row.
+        func historyRow(_ row: String) -> Int? {
+            let words = row.split(separator: " ")
+            guard words.count >= 2, words[0] == "history" else { return nil }
+            return Int(words[1])
+        }
+        // Wait for the reconnect itself rather than a fixed 4 s (launch + the dropped stream +
+        // the 0.5 s backoff + its keyframe): only the reconnect's keyframe carries history, and
+        // it replaces the scrollback, so its first row becomes the oldest one held.
+        XCTAssertTrue(poll(15, every: 0.25) { historyRow(rows().oldest) == 1 },
+            "The reconnect's keyframe history never reached SwiftTerm's scrollback (probe: \(reading)).")
 
         let before = viewport.screenshot()
         Thread.sleep(forTimeInterval: 1.0)
@@ -188,6 +213,7 @@ final class ScrollTests: XCTestCase {
         attach(before, "kh-01-before")
         XCTAssertLessThan(idleDiff, 0.02,
             "Mock not static when untouched (diff=\(idleDiff)); would invalidate the scroll check.")
+        let beforeTop = rows().top
 
         let high = viewport.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15))
         let low  = viewport.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85))
@@ -195,76 +221,20 @@ final class ScrollTests: XCTestCase {
             high.press(forDuration: 0.05, thenDragTo: low)
             Thread.sleep(forTimeInterval: 0.2)
         }
-        Thread.sleep(forTimeInterval: 1.0)
-
-        let after = viewport.screenshot()
-        attach(after, "kh-02-after-swipe")
-        // Vision reads the terminal's columns separately (#592): the "history" labels come
-        // back as one block of observations and their row numbers as another, so a regex
-        // over one observation never sees "history 127". Pair them by position instead: a
-        // number is a history row only when a "history" label sits on the same line to its
-        // left. That keeps the live rows ("row 1"…"row 8") out. Vision has also read the
-        // live screenshot as if upside down, so read the image in both orientations.
-        // What Vision saw is attached so a real failure explains itself.
-        let label = try NSRegularExpression(pattern: #"^\s*histor[yv]\s*$"#, options: .caseInsensitive)
-        let labelled = try NSRegularExpression(pattern: #"histor[yv]\s*([0-9]{1,3})"#, options: .caseInsensitive)
-        let leading = try NSRegularExpression(pattern: #"^\s*([0-9]{1,3})\b"#)
-        func first(_ regex: NSRegularExpression, in text: String) -> Int? {
-            regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text))
-                .flatMap { $0.numberOfRanges > 1 ? Range($0.range(at: 1), in: text) : nil }
-                .flatMap { Int(text[$0]) }
+        // The fixture has rows 1...300. A viewport no taller than the grid opens on the live
+        // screen, where any history row is earlier; a taller one already shows the newest
+        // history rows, and the swipe must reveal older ones. Waits out the deceleration.
+        let earliestBefore = historyRow(beforeTop) ?? 301
+        var afterTop = rows().top
+        _ = poll(5, every: 0.25) {
+            afterTop = rows().top
+            return (historyRow(afterTop) ?? 301) < earliestBefore
         }
-        func observations(in image: CGImage, _ orientation: CGImagePropertyOrientation)
-            throws -> [(text: String, box: CGRect)] {
-            let request = VNRecognizeTextRequest()
-            request.recognitionLevel = .accurate
-            request.usesLanguageCorrection = false
-            request.recognitionLanguages = ["en-US"]
-            try VNImageRequestHandler(cgImage: image, orientation: orientation).perform([request])
-            return (request.results ?? []).compactMap { observation in
-                observation.topCandidates(1).first.map { ($0.string, observation.boundingBox) }
-            }
-        }
-        func historyRows(in seen: [(text: String, box: CGRect)]) -> [Int] {
-            let labels = seen.filter {
-                label.firstMatch(in: $0.text, range: NSRange($0.text.startIndex..., in: $0.text)) != nil
-            }.map(\.box)
-            return seen.compactMap { item in
-                if let row = first(labelled, in: item.text) { return row }
-                guard let row = first(leading, in: item.text) else { return nil }
-                let sameLineToTheLeft = labels.contains {
-                    abs($0.midY - item.box.midY) < max($0.height, item.box.height) / 2
-                        && $0.maxX <= item.box.minX + item.box.width
-                }
-                return sameLineToTheLeft ? row : nil
-            }
-        }
-        func visibleHistoryRows(in screenshot: XCUIScreenshot, _ name: String) throws -> [Int] {
-            let image = try XCTUnwrap(screenshot.image.cgImage)
-            var transcript: [String] = []
-            var rows: [Int] = []
-            for orientation in [CGImagePropertyOrientation.up, .down] {
-                let seen = try observations(in: image, orientation)
-                transcript += ["-- \(orientation.rawValue)"] + seen.map {
-                    String(format: "%@  [x %.3f y %.3f]", $0.text, $0.box.minX, $0.box.midY)
-                }
-                rows = historyRows(in: seen)
-                if !rows.isEmpty { break }
-            }
-            let text = XCTAttachment(string: transcript.joined(separator: "\n"))
-            text.name = "\(name)-ocr"
-            text.lifetime = .keepAlways
-            add(text)
-            return rows
-        }
-        let beforeRows = try visibleHistoryRows(in: before, "kh-01-before")
-        let afterRows = try visibleHistoryRows(in: after, "kh-02-after-swipe")
-        let earliestAfter = try XCTUnwrap(afterRows.min(),
-            "No numbered history visible after swiping the reconnected terminal (see kh-02-after-swipe-ocr).")
-        // The fixture has rows 1...300. If none were visible at the live screen,
-        // any historical row is earlier; otherwise the swipe must reveal older rows.
-        XCTAssertLessThan(earliestAfter, beforeRows.min() ?? 301,
-            "Swipe did not reveal earlier history: before=\(beforeRows), after=\(afterRows)")
+        attach(viewport.screenshot(), "kh-02-after-swipe")
+        let earliestAfter = try XCTUnwrap(historyRow(afterTop),
+            "No numbered history at the top after swiping the reconnected terminal (top=\(afterTop), see kh-02-after-swipe).")
+        XCTAssertLessThan(earliestAfter, earliestBefore,
+            "Swipe did not reveal earlier history: before=\(beforeTop), after=\(afterTop)")
     }
 
     /// The REDUNDANT-HISTORY-READ receipt (#459). On a current server (herdr#301) every keyframe

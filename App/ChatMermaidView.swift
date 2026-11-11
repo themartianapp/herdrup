@@ -28,6 +28,8 @@ struct ChatMermaidView: View {
     @State private var showCode = false
     @State private var viewing = false
     @State private var width: CGFloat = 0
+    /// DEBUG: why the render failed (`MermaidRenderer.failureNote`), on the error caption.
+    @State private var failureNote = ""
 
     private static let shape = RoundedRectangle(cornerRadius: 12)
     private static let inset: CGFloat = 10
@@ -75,11 +77,24 @@ struct ChatMermaidView: View {
                 rendered = hit
                 return
             }
-            do {
-                rendered = try await MermaidRenderer.shared.render(request)
-                failed = false
-            } catch {
-                failed = true
+            // A failure that is not the diagram's own (a page that timed out or broke) is
+            // asked again, on the fresh page the renderer replaced it with
+            // (`MermaidRenderer.attempts`); only then, or for the diagram's own, its code.
+            for attempt in 1...MermaidRenderer.attempts {
+                do {
+                    rendered = try await MermaidRenderer.shared.render(request)
+                    failed = false
+                    return
+                } catch {
+                    if Task.isCancelled { return }
+                    guard attempt < MermaidRenderer.attempts, MermaidRenderer.shared.mayRetry(request) else {
+                        #if DEBUG
+                        failureNote = MermaidRenderer.shared.failureNote(request) + " (attempt \(attempt))"
+                        #endif
+                        failed = true
+                        return
+                    }
+                }
             }
         }
         .fullScreenCover(isPresented: $viewing) { viewer }
@@ -192,6 +207,7 @@ struct ChatMermaidView: View {
                 .font(Typography.app(12 * textScale))
                 .foregroundStyle(Palette.textFaint)
                 .accessibilityIdentifier("\(tag)-error")
+                .accessibilityValue(failureNote)
         }
     }
 

@@ -155,6 +155,35 @@ final class MermaidRenderer: NSObject {
         memory.object(forKey: request.key as NSString)
     }
 
+    /// How many times a block asks for its diagram before it shows its code. A render that
+    /// failed through no fault of the diagram's (its page timed out or broke) leaves the page
+    /// replaced, and the next ask gets a fresh one: hosted CI showed a valid diagram as
+    /// "Diagram couldn't render" for good after one slow page (run 42917457759, iPad, both
+    /// attempts; also 42319983254, 41642629325, 41169998628), because the block never asked
+    /// again.
+    static let attempts = 2
+
+    /// Whether a block whose render just failed should ask again: only when the failure was
+    /// not the diagram's own (`MermaidDiagram.failureIsTheDiagrams`), which is booked for the
+    /// session.
+    func mayRetry(_ request: Request) -> Bool {
+        !failed.contains(request.key)
+    }
+
+    #if DEBUG
+    /// Why each key's last render failed, for UI tests (`ChatMermaidView`'s error caption
+    /// carries it as its accessibility value): which step, and after how long.
+    private var failureNotes: [String: String] = [:]
+    func failureNote(_ request: Request) -> String { failureNotes[request.key] ?? "" }
+    #endif
+    private func note(_ key: String, _ text: String, since start: ContinuousClock.Instant) {
+        #if DEBUG
+        let elapsed = (ContinuousClock.now - start).components
+        let seconds = Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18
+        failureNotes[key] = String(format: "%@ after %.1f s", text, seconds)
+        #endif
+    }
+
     func render(_ request: Request) async throws -> Rendered {
         let key = request.key
         if let hit = memory.object(forKey: key as NSString) { return hit }
@@ -163,14 +192,22 @@ final class MermaidRenderer: NSObject {
             remember(stored)
             return stored
         }
+        let start = ContinuousClock.now
         if slot.page == nil {
-            try await queue.run(timeout: Self.pageTimeout, { @MainActor () async throws -> Void in
-                _ = try await self.page()
-            }, onTimeout: { @MainActor () async in
-                self.recyclePage()
-            })
+            do {
+                try await queue.run(timeout: Self.pageTimeout, { @MainActor () async throws -> Void in
+                    _ = try await self.page()
+                }, onTimeout: { @MainActor () async in
+                    self.recyclePage()
+                })
+            } catch {
+                note(key, error is DeadlineExceeded ? "page setup timed out (\(Int(Self.pageTimeout)) s)"
+                                                    : "page setup failed", since: start)
+                throw error
+            }
         }
-        let timeout = pageHasDrawn ? Self.renderTimeout : Self.firstRenderTimeout
+        let firstDraw = !pageHasDrawn
+        let timeout = firstDraw ? Self.firstRenderTimeout : Self.renderTimeout
         return try await queue.run(timeout: timeout, { @MainActor () async throws -> Rendered in
             if let hit = self.memory.object(forKey: key as NSString) { return hit }
             if self.failed.contains(key) { throw Failure.invalid }
@@ -185,20 +222,23 @@ final class MermaidRenderer: NSObject {
                 return rendered
             } catch {
                 if job == self.job {
-                    self.settle(key, failure: (error as? Failure) == .invalid ? .diagram : .page)
+                    self.note(key, (error as? Failure) == .invalid ? "mermaid rejected it" : "the page broke while \(self.phase)",
+                              since: start)
+                    self.settle(key, failure: (error as? Failure) == .invalid ? .diagram : .page, firstDraw: firstDraw)
                 }
                 throw error
             }
         }, onTimeout: { @MainActor () async in
-            self.settle(key, failure: .timedOut)
+            self.note(key, "timed out (\(Int(timeout)) s) while \(self.phase)\(firstDraw ? ", first draw" : "")", since: start)
+            self.settle(key, failure: .timedOut, firstDraw: firstDraw)
         })
     }
 
     /// Books a failed render: only a failure that is the diagram's own is remembered for the
     /// session (`MermaidDiagram.failureIsTheDiagrams`). Anything but a clean mermaid error
     /// replaces the page, so a stuck script or a broken page cannot hold up the next render.
-    private func settle(_ key: String, failure: MermaidDiagram.RenderFailure) {
-        if MermaidDiagram.failureIsTheDiagrams(failure, phase: phase) { failed.insert(key) }
+    private func settle(_ key: String, failure: MermaidDiagram.RenderFailure, firstDraw: Bool) {
+        if MermaidDiagram.failureIsTheDiagrams(failure, phase: phase, firstDraw: firstDraw) { failed.insert(key) }
         if failure != .diagram { recyclePage() }
     }
 
