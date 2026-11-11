@@ -132,25 +132,23 @@ iPhone Duo, the cover screen shows your herd; unfold it and the board and an age
 
 ```mermaid
 flowchart LR
-    subgraph pocket["Your iPhone, iPad or Mac"]
-        app["herdrup"]
+    app(["<b>herdrup</b><br/>iPhone · iPad · Mac"])
+    guest(["<b>a guest</b><br/>app or browser"])
+    subgraph relays["herdrup relays"]
+        direction TB
+        push["push relay"]
+        relay["guest relay"]
     end
     subgraph machine["Your computer"]
-        herdr["herdr server"]
-        a1["Claude Code"]
-        a2["Codex"]
-        a3["omp"]
-        herdr --- a1
-        herdr --- a2
-        herdr --- a3
+        direction TB
+        herdr{{"herdr server"}}
+        a1["Claude Code"] & a2["Codex"] & a3["omp · …"]
     end
-    other["Other machines<br/>(herdr federation)"]
-    app <-->|"SSH, pure Swift<br/>over Tailscale or LAN"| herdr
-    herdr <-->|"SSH"| other
-    herdr -.->|"push"| push["push.herdrup.app"]
-    push -.->|"APNs"| app
-    guest["Guest<br/>(app or browser)"] <-->|"end-to-end encrypted"| relay["guest relay"]
-    relay <--> herdr
+    app <== "SSH · Tailscale or LAN" ==> herdr
+    guest <-- "end-to-end encrypted" --> relay <--> herdr
+    app <-. "notifications" .-> push <-.-> herdr
+    herdr --- a1 & a2 & a3
+    herdr <-- "SSH" --> other["other machines<br/>(federation)"]
 ```
 
 - **Your machine runs [herdr](https://github.com/jerryfane/herdr)**, a terminal workspace that
