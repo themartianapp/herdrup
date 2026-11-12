@@ -22,7 +22,9 @@
 #
 # Each case is a fresh launch (the mock starts from the default width, Wide), then one
 # 120 pt drag of one handle inwards. A working handle narrows the column by twice the drag,
-# down to the minimum; a case passes when the column narrowed by at least 60 pt.
+# down to the minimum; a case passes when the column narrowed by at least 60 pt. A
+# conversation under 600 pt (ConversationColumnWidth.isResizable) passes with no handles and
+# its column at the whole width; with handles that do not move it, it fails.
 
 set -uo pipefail
 
@@ -89,11 +91,15 @@ t 900 xcrun simctl bootstatus "$UDID" -b >/dev/null || { echo "bootstatus failed
 t 300 xcrun simctl install "$UDID" "$APP" || { echo "install failed"; exit 1; }
 t 300 duoctl state || t 300 duoctl state || { echo "duoctl state failed"; exit 1; }
 
-# Launches the app on a mock; extra arguments go to the app (the argument domain).
+# Launches the app on a mock; extra arguments go to the app (the argument domain). The
+# chatview mock opens herdr-app's chat (pane w9:p1) as a notification tap would, so the chat
+# shows beside the agent list (or the rail) without a tap on the list.
 launch() { # <mock> [app arguments...]
-  local mock=$1; shift
+  local mock=$1 tap=; shift
+  [ "$mock" = chatview ] && tap='{"pane_id":"w9:p1"}'
   t 60 xcrun simctl terminate "$UDID" "$BUNDLE_ID" 2>/dev/null || true
   SIMCTL_CHILD_HERDR_SCREENSHOT_MOCK=$mock SIMCTL_CHILD_HERDR_COLUMN_WIDTH_READOUT_HOLD=8 \
+    SIMCTL_CHILD_HERDR_MOCK_PUSH_TAP=$tap SIMCTL_CHILD_HERDR_MOCK_STILL=1 \
     t 60 xcrun simctl launch "$UDID" "$BUNDLE_ID" ${1+"$@"} || return 1
   sleep "$SETTLE"
 }
@@ -161,6 +167,17 @@ for name, mock, args, edge in cases:
     sh("duoctl", "screenshot", os.path.join(out, f"{case}-before.png"))
     record = {"pose": pose, "case": case, "before": before, "elements_before": els}
     handle = before[f"width-handle-{edge}"]
+    area = before["width-area"]
+    if not handle and area and area["width"] < 600:
+        # Too narrow to resize (ConversationColumnWidth.isResizable): no handles, shown whole.
+        whole = before["column"] and abs(before["column"]["width"] - area["width"]) < 1
+        verdict = "no handles, shown whole" if whole else "NO HANDLES, NOT WHOLE"
+        if not whole:
+            failure(f"{pose}/{case}: no handles on a {area['width']:g} pt {surface}, column {before['column']}")
+        json.dump(record, open(os.path.join(out, case + ".json"), "w"), indent=1)
+        rows.append((pose, case, before, None, verdict))
+        print(pose, case, verdict, flush=True)
+        continue
     if not handle or not before["column"]:
         record["error"] = "handle or column probe not in the accessibility tree"
         json.dump(record, open(os.path.join(out, case + ".json"), "w"), indent=1)
