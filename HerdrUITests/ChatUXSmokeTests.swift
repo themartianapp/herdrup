@@ -1146,10 +1146,11 @@ final class ChatUXSmokeTests: XCTestCase {
     }
 
     /// A chat narrower than 760 pt, too narrow for the 560 pt minimum to leave 200 pt to drag
-    /// (a portrait iPad's beside the sidebar; iPhone Duo's inner display), still narrows by
-    /// 200 pt from either edge, and widens back to Full. Owner, 2026-11-12: the handles did
-    /// nothing on iPhone Duo, whose chat beside the sidebar was too narrow for 560 to leave
-    /// room. Tools/ci/duo-column.sh drags them on the Duo itself (macserve).
+    /// (a portrait iPad's beside the sidebar), still narrows by 200 pt from either edge, and
+    /// widens back to Full. Owner, 2026-11-12: the handles did nothing on iPhone Duo, whose
+    /// chat held wide is 547 pt beside the sidebar, under the 560 pt minimum. That case is
+    /// dragged on the Duo itself by Tools/ci/duo-column.sh (macserve shard duo-column), since
+    /// XCUITest cannot unfold the simulator.
     func testANarrowChatStillNarrowsBy200Points() throws {
         try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .pad, "the chat width is resizable on regular width only")
         let app = launch(environment: ["HERDR_COLUMN_WIDTH_READOUT_HOLD": "8"])
@@ -1160,8 +1161,8 @@ final class ChatUXSmokeTests: XCTestCase {
         XCTAssertTrue(right.waitForExistence(timeout: 10), app.debugDescription)
         XCTAssertTrue(left.exists, app.debugDescription)
         let available = chat.frame.width
-        XCTAssertTrue((600..<760).contains(available),
-                      "a portrait iPad's chat beside the sidebar is between 600 and 760 pt wide: \(available)")
+        XCTAssertTrue((520..<760).contains(available),
+                      "a portrait iPad's chat beside the sidebar is between 520 and 760 pt wide: \(available)")
         let full = settle({ column.frame.width }, until: { abs($0 - available) < 0.5 })
         XCTAssertEqual(full, available, accuracy: 0.5, "Wide shows as Full: the whole chat")
         record(app, "Narrow chat at Full (\(Int(available)) pt) before the drag")

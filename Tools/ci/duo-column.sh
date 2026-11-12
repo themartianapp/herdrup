@@ -23,7 +23,7 @@
 # Each case is a fresh launch (the mock starts from the default width, Wide), then one
 # 120 pt drag of one handle inwards. A working handle narrows the column by twice the drag,
 # down to the minimum; a case passes when the column narrowed by at least 60 pt. A
-# conversation under 600 pt (ConversationColumnWidth.isResizable) passes with no handles and
+# conversation under 520 pt (ConversationColumnWidth.isResizable) passes with no handles and
 # its column at the whole width; with handles that do not move it, it fails.
 
 set -uo pipefail
@@ -168,7 +168,7 @@ for name, mock, args, edge in cases:
     record = {"pose": pose, "case": case, "before": before, "elements_before": els}
     handle = before[f"width-handle-{edge}"]
     area = before["width-area"]
-    if not handle and area and area["width"] < 600:
+    if not handle and area and area["width"] < 520:
         # Too narrow to resize (ConversationColumnWidth.isResizable): no handles, shown whole.
         whole = before["column"] and abs(before["column"]["width"] - area["width"]) < 1
         verdict = "no handles, shown whole" if whole else "NO HANDLES, NOT WHOLE"

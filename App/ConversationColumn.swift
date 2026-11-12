@@ -49,8 +49,9 @@ extension View {
     }
 
     /// Lays the conversation column's resizer (`ConversationColumnResizer`) over this view on
-    /// regular width, with this view's width as the most the column can take. `readoutTop`
-    /// keeps the readout clear of chrome floating over the view's top.
+    /// regular width, with this view's width as the most the column can take, when that is
+    /// wide enough to resize (`ConversationColumnWidth.isResizable`). `readoutTop` keeps the
+    /// readout clear of chrome floating over the view's top.
     func conversationColumnResizer(_ surface: ConversationSurface, readoutTop: CGFloat = 0) -> some View {
         modifier(ConversationColumnResizing(surface: surface, readoutTop: readoutTop))
     }
@@ -107,7 +108,9 @@ private struct ConversationColumnResizing: ViewModifier {
             // The width the column can take, for the UI tests (`gram-width-area`).
             .background(alignment: .top) { widthProbe("\(surface.rawValue)-width-area") }
             .overlay {
-                if sizeClass == .regular, available > 0 {
+                // No handles where the column has no room to narrow (iPhone Duo's inner
+                // display held tall beside the sidebar): there a drag could not move it.
+                if sizeClass == .regular, ConversationColumnWidth.isResizable(available: Double(available)) {
                     ConversationColumnResizer(surface: surface, available: available, readoutTop: readoutTop)
                 }
             }
@@ -121,7 +124,8 @@ private struct ConversationColumnResizing: ViewModifier {
 /// the one stored width, so resizing either resizes both.
 ///
 /// Dragging either edge resizes around the centre (each point of drag is two of width) between
-/// 560 pt and the conversation's whole width, snapping to Readable, Wide and Full. A double tap
+/// `ConversationColumnWidth.minimum(available:)` (560 pt, less on a narrower conversation) and
+/// the conversation's whole width, snapping to Readable, Wide and Full. A double tap
 /// (double click on the Mac) resets to Wide. On the Mac nothing is drawn at rest; a hover shows
 /// the edge's hairline and grip, as it does on an iPad with a pointer. On touch the grip shows
 /// faintly at rest so it can be found.
