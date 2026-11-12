@@ -6,10 +6,9 @@
       unavailable (its runtime is gone, actions/runner-images#14946) and 1 when it is
       missing, listed twice or in any other state.
 
-  sim-state.py runtimes RUNTIMES_JSON [DEVICES_JSON UDID]
-      Prints one line per runtime. Without a device, exits 0 when every runtime that is not
-      Unusable is Ready and mounted, 2 when only non-iOS runtimes are not, and 1 when an iOS
-      runtime is not. With a device, judges only the runtime that device runs on (exit 0 or 1).
+  sim-state.py runtimes RUNTIMES_JSON DEVICES_JSON UDID
+      Prints the line of the runtime that device runs on (or of every iOS runtime when the
+      lists name it differently). Exits 0 when it is Ready and mounted, else 1.
 
 DEVICES_JSON is `simctl list devices --json`; RUNTIMES_JSON is `simctl runtime list -j`.
 """
@@ -59,12 +58,12 @@ def mounted(path):
     return os.path.ismount(real) or os.path.isdir(os.path.join(real, "Library/Developer/CoreSimulator/Profiles/Runtimes"))
 
 
-def runtimes(runtimes_path, devices_path=None, udid=None):
+def runtimes(runtimes_path, devices_path, udid):
     try:
         listed = load(runtimes_path)
         if not isinstance(listed, dict):
             raise ValueError("runtime list is not an object")
-        target = find_device(load(devices_path), udid)[0] if udid else None
+        target = find_device(load(devices_path), udid)[0]
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         print("unreadable runtime list: %s" % error)
         return 1
@@ -80,27 +79,21 @@ def runtimes(runtimes_path, devices_path=None, udid=None):
         ready = state == "Ready" and (path is None or mounted(path))
         where = "mount not reported" if path is None else ("mounted at " if mounted(path) else "NOT MOUNTED at ") + path
         judged.append((identifier, "iOS" in identifier, ready, "%s: %s, %s" % (name, state, where)))
-    if target is not None:
-        own = [entry for entry in judged if entry[0] == target]
-        if not own:
-            # The runtime list names runtimes differently from the device list: judge every
-            # iOS runtime rather than none.
-            print("no runtime listed as %s; judging every iOS runtime" % target)
-            own = [entry for entry in judged if entry[1]]
-        for _, _, _, line in own:
-            print(line)
-        return 0 if own and all(ready for _, _, ready, _ in own) else 1
-    for _, _, _, line in judged:
+    own = [entry for entry in judged if entry[0] == target]
+    if not own:
+        # The runtime list names runtimes differently from the device list: judge every
+        # iOS runtime rather than none.
+        print("no runtime listed as %s; judging every iOS runtime" % target)
+        own = [entry for entry in judged if entry[1]]
+    for _, _, _, line in own:
         print(line)
-    if any(is_ios and not ready for _, is_ios, ready, _ in judged):
-        return 1
-    return 0 if all(ready for _, _, ready, _ in judged) else 2
+    return 0 if own and all(ready for _, _, ready, _ in own) else 1
 
 
 if __name__ == "__main__":
     if len(sys.argv) == 4 and sys.argv[1] == "device":
         sys.exit(device(sys.argv[2], sys.argv[3]))
-    if len(sys.argv) in (3, 5) and sys.argv[1] == "runtimes":
+    if len(sys.argv) == 5 and sys.argv[1] == "runtimes":
         sys.exit(runtimes(*sys.argv[2:]))
     print(__doc__, file=sys.stderr)
     sys.exit(64)

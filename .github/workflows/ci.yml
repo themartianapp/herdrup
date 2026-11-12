@@ -1,34 +1,20 @@
-# Simulator compile-check, shared-terminal interaction receipts, and core tests.
-# PR/manual only: no signing secrets or release uploads.
+# The Linux checks: HerdrKit and vendored SwiftTerm tests, the symbol-font and design-token
+# checks, the CI tooling checks and the guest relay Worker. PR/manual only: no signing
+# secrets or release uploads.
+#
+# THE SIMULATOR UI MATRIX DOES NOT RUN HERE. It runs on macserve, the owner's Mac build
+# service: .macserve.json defines its shards (ui_test), and macserve posts one
+# `mac-evidence/org-ios-sim-uitest-v1/<shard>` check per shard on a ready PR. It moved off
+# GitHub Actions in November 2026: the matrix ran on the billed `xcode-27` larger runner
+# and took nearly all of the organization's macOS minutes. docs/DESIGN.md "CI" has the
+# shard table and how to run a shard.
 name: CI
 
 on:
-  # PULL REQUESTS, NOT EVERY PUSH.
-  #
-  # Full simulator CI runs for PRs, not every work-in-progress branch push.
-  # Standard hosted runners are free for this public repository, but macOS concurrency
-  # is limited. Avoid duplicate runs and cancel superseded PR heads below.
-  # Protected main requires the aggregate device gate plus the Linux/font checks.
-  # workflow_dispatch remains available for deliberate full or focused runs.
-  #
   # NO paths-ignore: a workflow skipped by a path filter never reports its required
-  # checks, so a docs-only PR waited on them forever. Every PR runs this workflow; the
-  # `scope` job below decides whether it needs the simulator matrix.
+  # checks, so a docs-only PR waited on them forever. Every PR runs this workflow.
   pull_request:
-  # A FOCUSED DISPATCH MODE, so one suite can be iterated without paying for the full
-  # matrix: `only_suite` runs just that class on the iPhone destination and skips the
-  # iPad rounds and the package regressions. A PR run is unaffected — the automatic
-  # trigger carries no inputs, so the full matrix remains the gate.
   workflow_dispatch:
-    inputs:
-      only_suite:
-        description: "HerdrUITests class, DesktopReferenceShots (all references), or DesktopGramAndSettingsReferences. Empty runs the full matrix."
-        required: false
-        default: ""
-      only_device:
-        description: "Destination: iphone or ipad. Reference groups use ipad for both sizes; ipad-pro-13 replaces only that device."
-        required: false
-        default: "iphone"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -37,10 +23,10 @@ concurrency:
 jobs:
   # WHETHER THIS PR NEEDS THE SIMULATOR MATRIX. A PR that changes only docs, or only the
   # MARKETING_VERSION / CURRENT_PROJECT_VERSION values in project.yml, cannot change what
-  # the device shards test, and the matrix costs over an hour of macOS runners (#645 was
-  # a 4-line version bump). Tools/ci/ci_scope.py reads the diff hunks and says `ui=true`
-  # for anything else, including itself and this file, and for a range it cannot
-  # resolve. A manual dispatch always runs the matrix it asked for.
+  # the device shards test (#645 was a 4-line version bump). Tools/ci/ci_scope.py reads the
+  # diff hunks and says `ui=true` for anything else, including itself and this file, and
+  # for a range it cannot resolve. The matrix itself runs on macserve, which does not read
+  # this yet; the job records the decision on every PR so the skip stays available to it.
   scope:
     name: Scope
     runs-on: ubuntu-latest
@@ -150,10 +136,10 @@ jobs:
             exit 1
           fi
 
-      # The simulator shards' scripts and their Python helpers, checked in seconds here
-      # rather than an hour into every macOS shard (#649's first head broke an f-string).
+      # The simulator shard scripts and their Python helpers, checked in seconds here
+      # rather than an hour into a Mac shard run (#649's first head broke an f-string).
       # check.sh also runs Tools/ci/test_ci_scope.py: ci_scope.py decides whether a PR
-      # skips the simulator matrix, so a bug in it would skip the device gate silently.
+      # needs the simulator matrix, so a bug in it would skip the device gate silently.
       - name: Check the CI tooling (shard scripts and scope classifier)
         run: Tools/ci/check.sh
 
@@ -183,270 +169,3 @@ jobs:
 
       - name: Typecheck
         run: npm run typecheck
-
-  # THE DEVICE SUITE, AS PARALLEL SIMULATOR JOBS. It used to be one serial job: the
-  # iPhone suite (~45 min of tests), then the iPad rounds (~25 min) waiting behind it,
-  # ~90 min per green run and 2-3 h whenever a failure triggered a whole-suite rerun.
-  # Each shard builds for itself, which is cheaper than shipping DerivedData between
-  # jobs. Booting the simulator during the build was measured to slow both on the
-  # 3-CPU runner (build 11-14 min against 3 min), so the boot waits for the build.
-  # Tools/ci/ui-shard.sh defines what each shard runs. The settings-gram shard builds
-  # its own optimized Distribution app instead (herdrup#416). Four macOS jobs stay under
-  # the account's limit of five concurrent macOS jobs, which other repos share.
-  # The `scope` job skips this matrix for a PR that changes only docs or version numbers.
-  uitest:
-    needs: scope
-    if: needs.scope.outputs.ui == 'true'
-    name: ui (${{ matrix.shard }})
-    # The Xcode 27 image: an app built with the iOS 26 SDK or older is letterboxed on
-    # iPhone Duo (no full screen, no vertical bars). Duo support needs the 27.1 SDK.
-    runs-on: xcode-27
-    strategy:
-      # Every shard reports its own evidence even when another shard fails.
-      fail-fast: false
-      matrix:
-        shard: ${{ fromJSON(github.event.inputs.only_suite == '' && '["iphone-terminal","iphone-app","ipad","settings-gram"]' || '["focused"]') }}
-    # The iPad shard is the longest. Its first-run round budgets add up to 205m (ten
-    # run_suite rounds 120m incl. Chat UX 30m, four 15m desktop-reference rounds,
-    # SwiftTerm build 10 + test 15), plus a 10m diagnostic rerun for each round that fails
-    # and the boot checks. Green iPad jobs take 90-105 min (runs 41647821103-41801268261).
-    # A round that ran no test case is retried once with a fresh copy of its budget
-    # (ui-shard.sh run_suite); each such retry adds up to that budget, a 2m-bounded
-    # shutdown and one more 5m boot check.
-    # So 255m does not cover every round failing at once; it is a failure ceiling that a
-    # badly broken run hits, not the expected green-run duration.
-    timeout-minutes: 255
-    env:
-      SHARD: ${{ matrix.shard }}
-      ONLY_SUITE: ${{ github.event.inputs.only_suite }}
-      ONLY_DEVICE: ${{ github.event.inputs.only_device }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Record native runner capacity
-        run: |
-          printf 'Runner: %s; environment: %s; OS: %s\n' "${RUNNER_NAME:-unknown}" "${RUNNER_ENVIRONMENT:-unknown}" "${RUNNER_OS:-unknown}"
-          df -Pk "$GITHUB_WORKSPACE"
-
-      # SwiftTerm is vendored; cache any remaining resolved remote packages.
-      # xcodebuild re-resolves against the generated project's package settings.
-      - name: Cache Swift packages
-        uses: actions/cache@v4
-        with:
-          path: SourcePackages
-          key: spm-${{ runner.os }}-${{ hashFiles('project.yml') }}
-          restore-keys: |
-            spm-${{ runner.os }}-
-
-      - name: Select Xcode and assert the iOS SDK
-        # The image's default Xcode (/Applications/Xcode.app), not the newest path: the
-        # newest is a release candidate (Xcode_27.2.app links to it). Assert the SDK
-        # instead of a filename: iPhone Duo full screen needs iOS 27.1 or newer.
-        run: |
-          echo "Xcodes present:"; ls -d /Applications/Xcode*.app || true
-          sudo xcode-select -s /Applications/Xcode.app; xcodebuild -version
-          SDK=$(xcodebuild -showsdks | grep -oE 'iphonesimulator[0-9.]+' | sed 's/iphonesimulator//' | sort -V | tail -1)
-          echo "newest iOS simulator SDK: ${SDK:-<none>}"
-          if [ -z "$SDK" ] || [ "$(printf '%s\n27.1\n' "$SDK" | sort -V | head -1)" != "27.1" ]; then
-            echo "::error::iOS simulator SDK '${SDK:-none}' is older than 27.1, which iPhone Duo needs."
-            exit 1
-          fi
-
-      - name: Wait for the simulator runtimes to mount
-        # actions/runner-images#14946: a Metal toolchain cryptex mount that races simdiskimaged's
-        # iOS runtime mount gets the runtime force-unmounted ~10 min later, mid-shard.
-        run: Tools/ci/ui-shard.sh wait-runtimes
-
-      - name: Download the Metal toolchain
-        # SwiftTerm >=1.12.0 bundles Apple/Metal/Shaders.metal unconditionally; Xcode 26
-        # ships the Metal shader compiler as a separate component. Idempotent — a no-op
-        # if already present. Without it `CompileMetalFile` fails.
-        run: |
-          xcodebuild -downloadComponent MetalToolchain 2>&1 | tail -20 || \
-            echo "::warning::-downloadComponent MetalToolchain returned nonzero (may already be present); continuing"
-
-      - name: Install XcodeGen
-        # Skip Homebrew's auto-update (it re-indexes every formula on a cold runner,
-        # a minute-plus of pure overhead) — we only need the already-bottled xcodegen.
-        # coreutils supplies `gtimeout`, which bounds each test invocation below;
-        # macOS ships no `timeout` of its own.
-        run: HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen coreutils
-
-      - name: Generate project
-        run: xcodegen generate
-
-      - name: Select required iPhone and iPad simulators
-        id: simulators
-        run: |
-          xcrun simctl list devices available --json > SimulatorDevices.json
-          python3 - <<'PY'
-          import json, os, re
-          with open("SimulatorDevices.json") as source:
-              devices = json.load(source)["devices"]
-          # The newest runtime with BOTH an iPhone and an iPad. On the Xcode 27 image the
-          # newest (iOS 27.1) holds only iPhone Duo, so it alone cannot host the suite.
-          runtimes = [
-              (tuple(map(int, match.group(1).split("-"))), name)
-              for name in devices
-              if (match := re.fullmatch(r"com\.apple\.CoreSimulator\.SimRuntime\.iOS-(\d+(?:-\d+)*)", name))
-          ]
-          def usable(name):
-              available = [device for device in devices[name] if device.get("isAvailable", True)]
-              phones = [device for device in available if device["name"].startswith("iPhone")
-                        and "Duo" not in device["name"]]
-              pads = [device for device in available if device["name"].startswith("iPad")]
-              return phones, pads
-          candidates = [(version, name) for version, name in runtimes if all(usable(name))]
-          if not candidates:
-              raise SystemExit("::error::no iOS runtime has both an iPhone and an iPad; no substitute or skip")
-          _, runtime = max(candidates)
-          phones, pads = usable(runtime)
-          ipad = next(
-              (device for device in pads if "iPad Pro" in device["name"] and "13-inch" in device["name"]),
-              pads[0],
-          )
-          # Herdrup Desktop's second reference size (DesktopReferenceShots): an 1180x820 pt
-          # iPad at @2x. The iPad Air 11-inch is that size, and so is the base iPad (A16);
-          # the iPad Pro 11-inch is not (1210x834).
-          ipad11 = next(
-              (device for device in pads if device["name"].startswith("iPad Air 11-inch")),
-              next((device for device in pads if device["name"].startswith("iPad (A16)")), None),
-          )
-          if ipad11 is None:
-              raise SystemExit(f"::error::{runtime} has no 1180x820 iPad (iPad Air 11-inch or iPad (A16)); no substitute or skip")
-          with open(os.environ["GITHUB_ENV"], "a") as output:
-              for key, device in [("IPHONE_UDID", phones[0]), ("IPAD_UDID", ipad), ("IPAD11_UDID", ipad11)]:
-                  output.write(f"{key}={device['udid']}\n")
-                  print(f"{runtime}: {key}={device['udid']} ({device['name']})")
-          PY
-
-      # Reuse only a successful optimized BUILD on a rerun of this exact run/head.
-      # No restore prefix and no test-result caching: the regression and crash guard
-      # always execute. Products include the .xctestrun and test-host bundles.
-      - name: Identify the optimized build toolchain
-        if: matrix.shard == 'settings-gram'
-        id: settings_toolchain
-        run: |
-          XCODE=$(xcodebuild -version)
-          SDK=$(xcrun --sdk iphonesimulator --show-sdk-build-version)
-          OS=$(sw_vers -buildVersion)
-          KEY=$(printf '%s\n' "$XCODE" "$SDK" "$OS" "$RUNNER_ARCH" "$GITHUB_WORKSPACE" | shasum -a 256 | cut -d ' ' -f 1)
-          echo "key=$KEY" >> "$GITHUB_OUTPUT"
-
-      - name: Restore this run's optimized build products
-        if: matrix.shard == 'settings-gram'
-        id: settings_products
-        uses: actions/cache/restore@v4
-        with:
-          path: .build-dd-settings-stack/Build/Products
-          key: settings-products-v1-${{ github.run_id }}-${{ github.sha }}-${{ steps.settings_toolchain.outputs.key }}
-
-      - name: Build optimized app and tests for simulator
-        if: matrix.shard == 'settings-gram' && steps.settings_products.outputs.cache-hit != 'true'
-        run: Tools/ci/ui-shard.sh settings-build
-
-      # Save before testing: a failing test must not discard a valid build, but a
-      # failed build must never be published. Reruns still test the complete shard.
-      - name: Save optimized build products for this run's reruns
-        if: matrix.shard == 'settings-gram' && steps.settings_products.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: .build-dd-settings-stack/Build/Products
-          key: ${{ steps.settings_products.outputs.cache-primary-key }}
-
-      # Every shard needs the Debug app: settings-gram runs GramTests on it after its
-      # optimized Settings regression.
-      - name: Build app and tests for simulator (SwiftTerm 1.15.0 + Metal)
-        run: |
-          set -o pipefail
-          xcodebuild build-for-testing \
-            -project Herdr.xcodeproj -scheme Herdr \
-            -destination "platform=iOS Simulator,id=${IPHONE_UDID}" \
-            -derivedDataPath .build-dd \
-            -clonedSourcePackagesDirPath SourcePackages \
-            CODE_SIGNING_ALLOWED=NO | xcbeautify || xcodebuild build-for-testing \
-            -project Herdr.xcodeproj -scheme Herdr \
-            -destination "platform=iOS Simulator,id=${IPHONE_UDID}" \
-            -derivedDataPath .build-dd \
-            -clonedSourcePackagesDirPath SourcePackages \
-            CODE_SIGNING_ALLOWED=NO
-
-      - name: Check the built bundle version
-        # READS THE BUILT PRODUCT, not the generated source plist. That distinction is
-        # the whole point: xcodegen writes the literal "$(MARKETING_VERSION)" into
-        # App/Info.plist and Xcode substitutes it during the build, so a source-plist
-        # check reports an unsubstituted variable and proves nothing about what ships.
-        # An earlier version of this step made exactly that mistake.
-        #
-        # The bug this exists for was invisible for months: nothing set
-        # CFBundleShortVersionString, so xcodegen wrote its own default "1.0" while
-        # project.yml said MARKETING_VERSION 0.1, and it surfaced only when Apple closed
-        # the 1.0 train (altool 90186) and every upload started failing. Comparing the
-        # BUILT value against project.yml proves the setting actually reaches the bundle.
-        run: |
-          # build-for-testing also produces a runner .app, whose version is unrelated.
-          APP=.build-dd/Build/Products/Debug-iphonesimulator/Herdr.app
-          if [ ! -d "$APP" ]; then echo "::error::main app missing at $APP"; exit 1; fi
-          echo "built app: $APP"
-          BUILT=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
-          EXPECTED=$(grep -m1 'MARKETING_VERSION:' project.yml | sed 's/.*MARKETING_VERSION:[[:space:]]*//' | tr -d '" ')
-          echo "built CFBundleShortVersionString=$BUILT  project.yml MARKETING_VERSION=$EXPECTED"
-          if [ -z "$BUILT" ]; then echo "::error::built app has no CFBundleShortVersionString"; exit 1; fi
-          case "$BUILT" in
-            *'$('*) echo "::error::CFBundleShortVersionString did not substitute: $BUILT"; exit 1 ;;
-          esac
-          if [ "$BUILT" != "$EXPECTED" ]; then
-            echo "::error::built version ($BUILT) does not match project.yml MARKETING_VERSION ($EXPECTED) — the setting is not reaching the bundle"
-            exit 1
-          fi
-
-      - name: Run the ${{ matrix.shard }} device shard
-        run: Tools/ci/ui-shard.sh "$SHARD"
-
-      - name: Export simulator screenshots
-        if: always()
-        run: |
-          for bundle in TestReceipts/*.xcresult; do
-            [ -d "$bundle" ] || continue
-            xcrun xcresulttool export attachments --path "$bundle" \
-              --output-path "${bundle%.xcresult}-attachments"
-          done
-
-      - name: Upload terminal receipts and first-failure diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: terminal-test-results-${{ matrix.shard }}
-          path: |
-            TestReceipts/
-            SimulatorDevices.json
-          if-no-files-found: ignore
-
-  # The required status check on main. It keeps the name the branch protection rule
-  # already requires, so it always runs: it passes when every device shard passed, or
-  # when `scope` decided this PR needs no device shards, and fails otherwise (a failed,
-  # cancelled or unexpectedly skipped shard, or a scope job that never decided).
-  build-and-uitest:
-    needs: [scope, uitest]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require every device shard to pass
-        env:
-          SCOPE: ${{ needs.scope.result }}
-          UI: ${{ needs.scope.outputs.ui }}
-          SHARDS: ${{ needs.uitest.result }}
-        run: |
-          if [ "$SCOPE" != success ]; then
-            echo "::error::scope job: $SCOPE"
-            exit 1
-          fi
-          if [ "$UI" = false ] && [ "$SHARDS" = skipped ]; then
-            echo "device shards skipped: this PR changes only docs or version numbers"
-            exit 0
-          fi
-          if [ "$SHARDS" != success ]; then
-            echo "::error::device shards: $SHARDS"
-            exit 1
-          fi
-          echo "all device shards passed"

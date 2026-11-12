@@ -216,8 +216,9 @@ swift test --package-path Vendor/SwiftTerm
 
 `HerdrKit` (in `Sources/HerdrKit`) contains no UIKit or SwiftUI, so it builds on Linux and runs its
 tests against a real herdr server; the iOS app uses it unchanged. The minimums are iOS 17 and
-macOS 14 (Citadel needs macOS 14). CI runs the core tests on Linux and UI regressions on iPhone and
-iPad simulators.
+macOS 14 (Citadel needs macOS 14). GitHub Actions runs only the Linux checks (HerdrKit, SwiftTerm,
+the font and token checks, the guest relay). The UI regressions run on iPhone, iPad and iPhone Duo
+simulators on macserve, from the shards in [`.macserve.json`](.macserve.json).
 
 The full feature reference, the transport's measured protocol facts, the architecture, the
 test and CI setup, and the design system are in **[docs/DESIGN.md](docs/DESIGN.md)**.

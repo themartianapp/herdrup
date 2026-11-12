@@ -28,28 +28,28 @@ These are pixel-exact screenshots of herdrup's Agents home on iPad, in landscape
 
 ## Regenerating
 
-1. Run the focused CI round on the branch or PR head (needs `gh` with access to the fork):
+1. Run the focused round on a Mac at the branch or PR head, after the build in docs/DESIGN.md "CI" (`pick-simulators.py` exports both reference iPads):
 
    ```sh
-   gh workflow run ci.yml -R themartianapp/herdrup --ref <branch> \
-     -f only_suite=DesktopReferenceShots -f only_device=ipad
+   ONLY_SUITE=DesktopReferenceShots ONLY_DEVICE=ipad Tools/ci/ui-shard.sh focused
    ```
 
-   With `only_device=ipad`, the focused shard runs the agent-list, Gram and Settings reference classes on both reference iPads (`desktop_reference_round` in `Tools/ci/ui-shard.sh`). Each class keeps its own bounded round and class-presence check. A full PR run produces the same pictures: the 13-inch rounds run in the `ipad` shard and the 11-inch rounds in the `iphone-app` shard.
+   With `ONLY_DEVICE=ipad`, the focused shard runs the agent-list, Gram and Settings reference classes on both reference iPads (`desktop_reference_round` in `Tools/ci/ui-shard.sh`). Each class keeps its own bounded round and class-presence check. A pull request's macserve `ipad-script` shard produces the same pictures on both iPads.
 
-   When only Gram/Settings capture actions change, `only_suite=DesktopGramAndSettingsReferences` captures those two classes on both devices without repeating accepted agent-list captures. Preserve each image's actual source head and CI run; every image in a delivered set must still use the same runtime and capture conditions. Settings uses the synthetic connected host `reference-hub`, not a live connection.
+   When only Gram/Settings capture actions change, `ONLY_SUITE=DesktopGramAndSettingsReferences` captures those two classes on both devices without repeating accepted agent-list captures. Preserve each image's actual source head and run; every image in a delivered set must still use the same runtime and capture conditions. Settings uses the synthetic connected host `reference-hub`, not a live connection.
 
-   Bare `DesktopGramReferenceShots` and `DesktopSettingsReferenceShots` selectors capture only that class with the same clean install, status-bar override and execution check. Either class also accepts a method selector, for example `only_suite=DesktopGramReferenceShots/testGramSavedReference`. With `only_device=ipad`, both pinned devices run; receipt names replace the method selector's slash with a hyphen. Reference selectors reject iPhone rather than producing skipped captures.
-   Use `only_device=ipad-pro-13` to replace only a failed 13-inch capture while retaining an already accepted 11-inch image. The default `ipad` still runs both; neither mode retries a failed round or hides its result.
+   Bare `DesktopGramReferenceShots` and `DesktopSettingsReferenceShots` selectors capture only that class with the same clean install, status-bar override and execution check. Either class also accepts a method selector, for example `ONLY_SUITE=DesktopGramReferenceShots/testGramSavedReference`. With `ONLY_DEVICE=ipad`, both pinned devices run; receipt names replace the method selector's slash with a hyphen. Reference selectors reject iPhone rather than producing skipped captures.
+   Use `ONLY_DEVICE=ipad-pro-13` to replace only a failed 13-inch capture while retaining an already accepted 11-inch image. The default `ipad` still runs both; neither mode retries a failed round or hides its result.
 
-2. Download the attachments:
+2. Export the attachments:
 
    ```sh
-   gh run download <run-id> -R themartianapp/herdrup -n terminal-test-results-focused \
-     -D "$HOME/.local/state/herdr/reference-receipts/<run-id>"
+   for bundle in TestReceipts/*.xcresult; do
+     xcrun xcresulttool export attachments --path "$bundle" --output-path "${bundle%.xcresult}-attachments"
+   done
    ```
 
-   Within that download, PNGs and their `.json` conditions are in `TestReceipts/iPadDesktopReference-<class>-first-attachments/` and `TestReceipts/iPad11DesktopReference-<class>-first-attachments/`. Each folder's `manifest.json` (written by `xcresulttool`) maps an exported file to its attachment name, `ref-<device>-<state>.png` or `.json`. The status-bar override is in `TestReceipts/iPad*DesktopReference-status-bar.txt`.
+   PNGs and their `.json` conditions are then in `TestReceipts/iPadDesktopReference-<class>-first-attachments/` and `TestReceipts/iPad11DesktopReference-<class>-first-attachments/` (a macserve `ipad-script` job's `output.tar.gz` holds the same `TestReceipts/`, with the result bundles to export). Each folder's `manifest.json` (written by `xcresulttool`) maps an exported file to its attachment name, `ref-<device>-<state>.png` or `.json`. The status-bar override is in `TestReceipts/iPad*DesktopReference-status-bar.txt`.
 
 3. Copy each `ref-*.png` to its reference set under its attachment name. Lossless recompression is optional; verify identical decoded pixels if used. Rebuild `manifest.json` from the `.json` conditions, status-bar receipts and each PNG's SHA-256, and set each image's `herdrupCommit` and `ciRun` to the source that actually produced it. Look at every picture before committing the complete set.
 

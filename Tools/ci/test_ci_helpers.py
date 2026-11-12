@@ -172,7 +172,6 @@ class SimStateTests(unittest.TestCase):
         self.assertEqual(run("sim-state.py", ["device", self.devices, "U9"])[0], 1)
 
     def test_runtime_mounted_or_not(self):
-        self.assertEqual(run("sim-state.py", ["runtimes", self.runtimes(self.mounted)])[0], 0)
         self.assertEqual(run("sim-state.py", ["runtimes", self.runtimes(self.mounted), self.devices, "U1"])[0], 0)
         gone = self.runtimes(os.path.join(self.dir.name, "gone"))
         code, out, _ = run("sim-state.py", ["runtimes", gone, self.devices, "U1"])
