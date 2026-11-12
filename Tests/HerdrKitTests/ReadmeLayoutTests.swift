@@ -45,12 +45,14 @@ final class ReadmeLayoutTests: XCTestCase {
     /// true, and useful: A NAME IN THE DOCS POINTS AT SOMETHING REAL. That is
     /// what actually rots — files get renamed and the prose does not follow.
     func testEveryFileTheReadmeNamesExists() throws {
+        // The layout block moved from README.md to docs/DESIGN.md with the README
+        // redesign (#657); the README itself only names `Sources/HerdrKit` in prose.
         let root = repoRoot()
         let readme = try String(
-            contentsOf: root.appendingPathComponent("README.md"), encoding: .utf8)
+            contentsOf: root.appendingPathComponent("docs/DESIGN.md"), encoding: .utf8)
         guard let open = readme.range(of: "Sources/"),
               let close = readme.range(of: "```", range: open.lowerBound..<readme.endIndex)
-        else { return XCTFail("no layout block found in README.md") }
+        else { return XCTFail("no layout block found in docs/DESIGN.md") }
         let block = String(readme[open.lowerBound..<close.lowerBound])
 
         // A STRICT GRAMMAR, AND NO NORMALISATION AT ALL.
