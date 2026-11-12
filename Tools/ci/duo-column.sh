@@ -12,12 +12,13 @@
 #   duo-column/FAILURES.txt                           every case that did not resize
 #   duo-column/run.log                                this script's output
 #
-# WHY NOT XCUITest. XCUITest (like AXe and idb) injects touches through the simulator's
-# legacy HID path, which always lands on the Duo's cover touchscreen: on the unfolded Duo a
-# test's drag reports success and the inner display never sees it. duoctl (pinned, as in
-# duo-screenshots.sh) dispatches through the active display's own touchscreen. Frames are
-# read from the accessibility tree with AXe (pinned below); the DEBUG mock's width probes
-# (`chat-column`, `chat-width-area`, ...) are accessibility elements for exactly this.
+# WHY duoctl, not XCUITest. XCUITest cannot fold the simulator, and tools that inject
+# touches through the simulator's legacy HID path land them on the cover touchscreen
+# (duoctl's README, "Touches"; duo-screenshots.sh never taps for the same reason). duoctl
+# (pinned, as in duo-screenshots.sh) unfolds the device and dispatches through the active
+# display's own touchscreen. Frames are read from the accessibility tree with AXe (pinned
+# below); the DEBUG mock's width probes (`chat-column`, `chat-width-area`, ...) are
+# accessibility elements for exactly this.
 #
 # Each case is a fresh launch (the mock starts from the default width, Wide), then one
 # 120 pt drag of one handle inwards. A working handle narrows the column by twice the drag,
