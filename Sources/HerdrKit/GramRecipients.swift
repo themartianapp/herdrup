@@ -55,13 +55,18 @@ public enum GramRecipients {
     }
 
     /// The `to` that reaches `info` through `gram.post`, or nil when the daemon would refuse
-    /// it (herdr `is_live_agent_name`): an archived or unnamed agent has no live name, and a
-    /// federated agent is addressable only while its peer is reachable. Degraded counts as
-    /// not reachable there, so it is left out here too. (The daemon's relay policy can still
-    /// refuse a peer; the send then reports the daemon's error.)
+    /// it (herdr `is_live_agent_name`): an archived or unnamed agent has no live name. A
+    /// federated agent goes by its `<alias>/<name>`: when the daemon reports `gram_reachable`
+    /// (herdr #403; it reports it on every remote row once it has the capability), that
+    /// decides; an older daemon gives only reachability, so the agent is listed while its
+    /// peer is `reachable` (degraded is refused there too), and a relay policy that disallows
+    /// the peer surfaces as the daemon's error on send.
     static func routingName(of info: AgentInfo) -> String? {
         guard !info.isArchived, let name = info.name, !name.isEmpty else { return nil }
-        if info.machineID != nil, info.reachability != "reachable" { return nil }
+        if info.machineID != nil {
+            if let gramReachable = info.gramReachable { return gramReachable ? name : nil }
+            if info.reachability != "reachable" { return nil }
+        }
         return name
     }
 }

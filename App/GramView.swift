@@ -2080,7 +2080,7 @@ struct GramView: View {
                 pendingPosts.removeAll { $0.id == posted.id }
                 pendingPosts.insert(posted, at: 0)
             } catch let error as APIError {
-                sendError = error.message
+                sendError = Self.postErrorText(error.message, to: to)
             } catch {
                 sendError = "Couldn't send. Try again."
             }
@@ -2127,12 +2127,24 @@ struct GramView: View {
                 // meaningless to the owner.
                 reason = error.code == "upload_in_progress"
                     ? "Still finishing the last upload. Tap Send again."
-                    : error.message
+                    : Self.postErrorText(error.message, to: to)
             } else {
                 reason = "Couldn't send. Try again."
             }
             sendError = failure.note(reason)
         }
+    }
+
+    /// The daemon refuses a `to` it cannot deliver to with "no live agent named '…'; omit
+    /// --to …" (herdr gram.post). The list offers every reachable agent, but a peer the Gram
+    /// relay does not allow, or an agent that just stopped, still lands here: say so plainly
+    /// rather than echo the CLI's hint. Anything else is shown as the daemon put it.
+    static func postErrorText(_ message: String, to: String?) -> String {
+        guard let to, message.hasPrefix("no live agent named") else { return message }
+        let name = GramMessage.agentName(from: to)
+        return to.contains("/")
+            ? "Couldn't send to \(name): its machine isn't reachable for Gram from here (check the Gram relay settings)."
+            : "Couldn't send to \(name): it's no longer running."
     }
 
     /// Open a message's file, downloading it only the FIRST time.

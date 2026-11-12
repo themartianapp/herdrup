@@ -7,13 +7,14 @@ final class GramRecipientsTests: XCTestCase {
 
     private func agent(_ name: String?, pane: String, machineID: String? = nil,
                        machineLabel: String? = nil, reachability: String? = nil,
-                       archived: Bool = false) throws -> AgentInfo {
+                       archived: Bool = false, gramReachable: Bool? = nil) throws -> AgentInfo {
         var obj: [String: Any] = ["pane_id": pane]
         if let name { obj["name"] = name }
         if let machineID { obj["machine_id"] = machineID }
         if let machineLabel { obj["machine_label"] = machineLabel }
         if let reachability { obj["reachability"] = reachability }
         if archived { obj["archived"] = ["at": "2026-11-01T00:00:00Z"] }
+        if let gramReachable { obj["gram_reachable"] = gramReachable }
         let data = try JSONSerialization.data(withJSONObject: obj)
         return try JSONDecoder().decode(AgentInfo.self, from: data)
     }
@@ -82,5 +83,23 @@ final class GramRecipientsTests: XCTestCase {
         ]
         let list = GramRecipients.build(messages: [], roster: roster, localMachine: "")
         XCTAssertEqual(list, [GramRecipient(from: "ok", name: "ok", machine: nil)])
+    }
+
+    /// A daemon with `gram_reachable` (herdr #403) decides per remote agent, relay policy
+    /// included, whatever the peer's reachability says.
+    func testGramReachableDecidesWhenTheDaemonReportsIt() throws {
+        let roster = try [
+            agent("a/allowed", pane: "a/w1:p1", machineID: "a", reachability: "reachable", gramReachable: true),
+            agent("b/blocked", pane: "b/w1:p1", machineID: "b", reachability: "reachable", gramReachable: false),
+        ]
+        let list = GramRecipients.build(messages: [], roster: roster, localMachine: "")
+        XCTAssertEqual(list.map(\.from), ["a/allowed"])
+    }
+
+    /// Without the field (an older daemon), a remote agent is listed while its peer is reachable.
+    func testWithoutGramReachableAReachablePeerIsListed() throws {
+        let roster = [try agent("a/scout", pane: "a/w1:p1", machineID: "a", reachability: "reachable")]
+        let list = GramRecipients.build(messages: [], roster: roster, localMachine: "")
+        XCTAssertEqual(list.map(\.from), ["a/scout"])
     }
 }

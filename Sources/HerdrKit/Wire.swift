@@ -337,6 +337,10 @@ public struct AgentInfo: Decodable, Equatable, Sendable, Identifiable {
     public let machineLabel: String?
     public let reachability: String?
     public let lastKnownStatus: String?
+    /// Remote agents only (herdr #403, capability `gram_reachable`): whether this home's
+    /// `gram.post` would deliver to the agent, i.e. its peer is reachable AND the Gram relay
+    /// policy allows it. Absent on local agents and on daemons predating the field.
+    public let gramReachable: Bool?
     /// Present only for an archived agent (issue #173). Its presence is the
     /// load-bearing "is archived" signal; absent means active. Decoded leniently,
     /// so an older/non-archiving server is unaffected.
@@ -457,6 +461,7 @@ public struct AgentInfo: Decodable, Equatable, Sendable, Identifiable {
         case accountConfigDir = "account_config_dir"
         case accountUnresolved = "account_unresolved"
         case sessionTransfer = "session_transfer"
+        case gramReachable = "gram_reachable"
         case guestRunning = "guest_running"
     }
 }
