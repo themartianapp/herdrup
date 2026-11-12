@@ -43,6 +43,12 @@ struct HerdrApp: App {
         WindowGroup {
             RootView()
                 .onOpenURL { url in
+                    // A pairing link (herdrup://pair#…) opens its confirmation; nothing
+                    // connects before the person taps Connect.
+                    if PairingRouter.isPairingLink(url) {
+                        PairingRouter.shared.open(url.absoluteString)
+                        return
+                    }
                     // A guest invite (herdrup://guest-invite#…, or the relay's https /i/… page)
                     // opens the Accept screen; everything else is the agent deep link.
                     if GuestInviteRouter.isInviteLink(url) {
@@ -109,6 +115,8 @@ struct RootView: View {
     /// over the owner session, which stays connected underneath).
     @ObservedObject private var sharedMachines = SharedMachinesStore.shared
     @ObservedObject private var invites = GuestInviteRouter.shared
+    /// Pairing a machine (#126): the scanner, or the confirmation for a pasted or linked code.
+    @ObservedObject private var pairing = PairingRouter.shared
     @State private var openGuest: GuestAccess?
     /// Whether launch already decided to open the only shared machine.
     @State private var didAutoOpenGuest = false
@@ -165,6 +173,20 @@ struct RootView: View {
         } message: {
             Text(invites.failure ?? "")
         }
+        .sheet(item: $pairing.pending) { pending in
+            PairingSheet(store: SavedHostsStore.shared, initialPayload: pending.payload,
+                         activeConnection: activeConnectionLabel) { nickname in
+                openPairedMachine(nickname)
+            }
+        }
+        .alert("Can't use this pairing code", isPresented: Binding(
+            get: { pairing.failure != nil },
+            set: { if !$0 { pairing.failure = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(pairing.failure ?? "")
+        }
         .onAppear { autoOpenSharedMachine() }
         // A tapped push for an agent shared with this phone opens that share (its home picks
         // the Gram tab or the terminal), in place of whatever screen is showing. A share the
@@ -208,7 +230,7 @@ struct RootView: View {
         if let openGuest {
             SharedMachineHomeView(
                 access: openGuest,
-                onBack: guestCanGoBack ? { self.openGuest = nil } : nil,
+                onBack: { self.openGuest = nil },
                 onLeave: { self.openGuest = nil })
             .id(openGuest.id)
         } else if let client, let credentials, homeShown {
@@ -251,9 +273,20 @@ struct RootView: View {
         }
     }
 
-    /// A guest-only phone with one shared host opens its combined agent list.
-    private var guestCanGoBack: Bool {
-        client != nil || !SavedHostsStore.shared.hosts.isEmpty || sharedMachines.groups.count > 1
+    /// The machine this phone is connected to, named as the confirmation shows it, so pairing
+    /// another asks before replacing it (as a scanned code always has).
+    private var activeConnectionLabel: String? {
+        guard client != nil, let credentials else { return nil }
+        return Self.hostLabel(for: credentials)
+    }
+
+    /// The person chose to open a machine they just paired: close what is showing (the
+    /// session, a shared machine's home — the share stays in the list) and let the machine
+    /// list connect to it.
+    private func openPairedMachine(_ nickname: String) {
+        if client != nil { disconnect() }
+        openGuest = nil
+        pairing.openPaired = nickname
     }
 
     private func autoOpenSharedMachine() {
@@ -811,9 +844,6 @@ struct ConnectView: View {
     /// The add/edit sheet target; nil = closed.
     @State private var editorTarget: HostEditorTarget?
     @State private var showingOwnerSetup = false
-    /// The scan-to-connect sheet (#126) — the path that needs no key, no host address and
-    /// no knowledge of what a daemon is.
-    @State private var showingPairing = false
 
     var body: some View {
         ZStack {
@@ -857,13 +887,13 @@ struct ConnectView: View {
                 onConnect(creds)
             }
         }
-        .sheet(isPresented: $showingPairing) {
-            PairingSheet(store: savedHosts) { nickname in
-                // Connect straight into what was just paired: the point of scanning is
-                // that nothing else is asked for.
-                if let paired = savedHosts.hosts.first(where: { $0.nickname == nickname }) {
-                    tapSavedHost(paired)
-                }
+        // A machine just paired (scanned, pasted or linked; RootView owns that sheet):
+        // connect straight into it, since the point of pairing is that nothing else is asked.
+        .onReceive(PairingRouter.shared.$openPaired) { nickname in
+            guard let nickname else { return }
+            PairingRouter.shared.openPaired = nil
+            if let paired = savedHosts.hosts.first(where: { $0.nickname == nickname }) {
+                tapSavedHost(paired)
             }
         }
         .sheet(isPresented: $showingInviteScan, onDismiss: {
@@ -988,7 +1018,7 @@ struct ConnectView: View {
     }
 
     private var scanButton: some View {
-        Button { showingPairing = true } label: {
+        Button { PairingRouter.shared.scan() } label: {
             HStack(spacing: 8) {
                 Image(systemName: "qrcode.viewfinder").font(.system(size: 16, weight: .semibold))
                 Text("Scan pairing code").font(connectFont(16, .semibold))

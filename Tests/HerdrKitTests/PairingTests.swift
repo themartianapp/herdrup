@@ -60,6 +60,63 @@ final class PairingTests: XCTestCase {
         }
     }
 
+    // MARK: - A pasted code or an app link
+
+    private func link(_ json: String, prefix: String = "herdrup://pair#", padded: Bool = false) -> String {
+        var encoded = Base64URL.encode(Data(json.utf8))
+        if padded { while encoded.count % 4 != 0 { encoded += "=" } }
+        return prefix + encoded
+    }
+
+    func testAPastedCodeAcceptsTheRawJSON() throws {
+        let payload = try Pairing.parse(code: "  \(sampleJSON(v: 3, sshPort: 22220))\n")
+        XCTAssertEqual(payload.host, "100.64.1.2")
+        XCTAssertEqual(payload.user, "root")
+        XCTAssertEqual(payload.sshPort, 22220)
+    }
+
+    func testTheAppLinkCarriesTheSamePayloadPaddedOrNot() throws {
+        let samples = [sampleJSON(), sampleJSON(v: 2, sshPort: 443), sampleJSON(v: 3, sshPort: 22220)]
+        // At least one sample's length must need padding, or the padded case proves nothing.
+        XCTAssertTrue(samples.contains { Data($0.utf8).count % 3 != 0 })
+        for json in samples {
+            let expected = try Pairing.parse(qrText: json)
+            for text in [link(json), link(json, padded: true),
+                         link(json, prefix: "herdrup://pair/#"),
+                         link(json, prefix: "herdrup://pair/#", padded: true)] {
+                XCTAssertTrue(Pairing.isPairingLink(text), text)
+                XCTAssertEqual(try Pairing.parse(link: text), expected, text)
+                XCTAssertEqual(try Pairing.parse(code: text), expected, text)
+            }
+        }
+    }
+
+    func testABadLinkIsNotAPairingCode() {
+        let oversized = link(sampleJSON()) + String(repeating: "A", count: Pairing.maxCodeLength)
+        for bad in [
+            "herdrup://pair#",
+            "herdrup://pair#***not-base64***",
+            "herdrup://pair#A",                         // a length base64 can't have
+            "herdrup://pair#=" + Base64URL.encode(Data(sampleJSON().utf8)),
+            link("not json"),
+            link("{\"v\":1}"),
+            oversized,
+            String(repeating: " ", count: 10) + "{" + String(repeating: " ", count: 5000) + "}",
+            "herdrup://guest-invite#" + Base64URL.encode(Data(sampleJSON().utf8)),
+        ] {
+            XCTAssertThrowsError(try Pairing.parse(code: bad), String(bad.prefix(60))) { error in
+                XCTAssertEqual(error as? Pairing.Error, .notAPairingCode)
+            }
+        }
+        XCTAssertFalse(Pairing.isPairingLink("herdrup://guest-invite#abc"))
+    }
+
+    func testALinkFromAFutureVersionIsReportedAsAVersionProblem() {
+        XCTAssertThrowsError(try Pairing.parse(link: link(sampleJSON(v: 4, sshPort: 2222)))) { error in
+            XCTAssertEqual(error as? Pairing.Error, .unsupportedVersion(4))
+        }
+    }
+
     /// Versions 2 and 3 (Deimos Forge) carry the SSH port; version 1 never does. A
     /// version-2 or -3 code without a usable port, or a version-1 code with one, is not a
     /// real code.
