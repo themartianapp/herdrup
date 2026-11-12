@@ -51,6 +51,9 @@ struct GramView: View {
     /// tab bar, the iPad section bar): the shown feed, the inbox or Saved, goes to its newest
     /// message at the bottom, not the system's scroll-to-top (see `WindowedBottomFeed`).
     var newestToken: Int = 0
+    /// The board's agents (live, local and federated), so the "@" list and the sheet offer
+    /// every agent Gram can write to, not only those that wrote in the loaded messages.
+    var roster: [AgentInfo] = []
 
     /// The last server snapshot (newest first) and the owner's just-posted messages
     /// not yet reflected in a snapshot. `messages` composes them so a background poll
@@ -72,7 +75,7 @@ struct GramView: View {
     /// ID: it addresses the draft while the draft's addressing mention still names it, so a
     /// name two agents share (a local and a relayed clientloop) goes to the one picked.
     /// Dropped when that mention is edited away.
-    @State private var pickedAgent: GramAgent?
+    @State private var pickedAgent: GramRecipient?
     /// The field's caret as a UTF-16 distance from the end of the draft. The field keeps that
     /// distance when the draft is replaced from here (an @ completion), so it stays right
     /// without a report from the field. 0 = the end.
@@ -811,25 +814,9 @@ struct GramView: View {
         .accessibilityIdentifier("gram-header-pill")
     }
 
-    /// An agent seen in Gram, for the pill's sheet.
-    private struct GramAgent: Identifiable {
-        /// The raw `from`, which is also the address a reply goes to.
-        let from: String
-        let name: String
-        let machine: String?
-        var id: String { from }
-    }
-
-    /// The agents seen in Gram, most recent first.
-    private var gramAgents: [GramAgent] {
-        var seen = Set<String>()
-        var result: [GramAgent] = []
-        for message in messages where message.isFromAgent {
-            guard seen.insert(message.from).inserted else { continue }
-            result.append(GramAgent(from: message.from, name: message.senderAgentName,
-                                    machine: message.senderMachine ?? (localMachine.isEmpty ? nil : localMachine)))
-        }
-        return result
+    /// Who Gram can write to: recent senders first, then the rest of the roster.
+    private var gramAgents: [GramRecipient] {
+        GramRecipients.build(messages: messages, roster: roster, localMachine: localMachine)
     }
 
     /// The pill's sheet: Read all (and Refresh), then who to write to — an agent seen in
@@ -1479,7 +1466,7 @@ struct GramView: View {
 
     /// Mock D's list: "Send to one agent", the agents matching the "@" being typed (avatar,
     /// name, machine), and the reminder that no "@" means the shared queue.
-    private func mentionList(_ agents: [GramAgent]) -> some View {
+    private func mentionList(_ agents: [GramRecipient]) -> some View {
         let shared = sharedNames
         return VStack(alignment: .leading, spacing: 0) {
             Text("Send to one agent")
@@ -1550,13 +1537,13 @@ struct GramView: View {
 
     /// An agent's row title: its name, with its machine when another agent has the same name
     /// ("clientloop · hetzner-1").
-    private func agentTitle(_ agent: GramAgent, shared: Set<String>) -> String {
+    private func agentTitle(_ agent: GramRecipient, shared: Set<String>) -> String {
         guard shared.contains(agent.name.lowercased()) else { return agent.name }
         return "\(agent.name) · \(agent.machine ?? "this device")"
     }
 
     /// A row's identifier suffix: the bare name, or the full sender ID when the name is shared.
-    private func agentKey(_ agent: GramAgent, shared: Set<String>) -> String {
+    private func agentKey(_ agent: GramRecipient, shared: Set<String>) -> String {
         shared.contains(agent.name.lowercased()) ? agent.from : agent.name
     }
 
@@ -1571,7 +1558,7 @@ struct GramView: View {
 
     /// Every agent matching the "@" being typed at the caret, names starting with the query
     /// first; empty when no "@" is being typed there (or nothing matches).
-    private var mentionMatches: [GramAgent] {
+    private var mentionMatches: [GramRecipient] {
         guard let active = GramMention.activeQuery(in: draft, cursor: draftCaret) else { return [] }
         let query = active.query.lowercased()
         guard !query.isEmpty else { return gramAgents }
@@ -1585,7 +1572,7 @@ struct GramView: View {
     /// Replaces the "@" being typed at the caret with the picked agent's "@name ", and binds
     /// the mention to that exact agent. The field keeps the caret's distance from the end, so
     /// it lands after the inserted name.
-    private func pickMention(_ agent: GramAgent) {
+    private func pickMention(_ agent: GramRecipient) {
         guard let active = GramMention.activeQuery(in: draft, cursor: draftCaret) else { return }
         draft = GramMention.complete(draft, replacing: active.range, with: agent.name)
         pickedAgent = agent
@@ -1596,7 +1583,7 @@ struct GramView: View {
         /// No mention: the shared queue.
         case queue
         /// One agent, by its exact sender ID.
-        case agent(GramAgent)
+        case agent(GramRecipient)
         /// A typed name several agents share and none was picked for.
         case ambiguous(String)
         /// A leading "@token" that names no agent in Gram ("" for a bare "@").
@@ -1652,7 +1639,7 @@ struct GramView: View {
     }
 
     /// Whether the draft goes to `agent` (by sender ID), or with nil to the shared queue.
-    private func isAddressed(_ agent: GramAgent?) -> Bool {
+    private func isAddressed(_ agent: GramRecipient?) -> Bool {
         switch draftAddress.route {
         case .queue: return agent == nil
         case .agent(let addressed): return addressed.from == agent?.from
@@ -1662,7 +1649,7 @@ struct GramView: View {
 
     /// The pill sheet's "Write to" an agent: that exact agent addresses the draft, as "@name "
     /// at the start in place of a leading mention (or a leading "@token" naming no one).
-    private func address(_ agent: GramAgent) {
+    private func address(_ agent: GramRecipient) {
         draft = GramMention.addressing(draft, to: agent.name, knownNames: mentionNames)
         pickedAgent = agent
     }

@@ -2615,7 +2615,8 @@ struct TerminalHomeView: View {
                              refreshToken: gramRefreshToken,
                              readAllToken: gramReadAllToken,
                              searchText: $gramSearch,
-                             newestToken: gramNewestToken)
+                             newestToken: gramNewestToken,
+                             roster: orderedSiblings)
                         .tag(HomeTab.gram)
                         .tabItem { Label(HomeTab.gram.label, systemImage: HomeTab.gram.icon) }
                         .modifier(GramUnreadBadge(unread: gramUnread))
