@@ -19,9 +19,9 @@
 # directory the job exports.
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
-: "${MACSERVE_SIMULATOR_ID:?run by macserve's script template, which sets MACSERVE_SIMULATOR_ID}"
-: "${MACSERVE_APP_DIR:?run by macserve's script template, which sets MACSERVE_APP_DIR}"
-: "${MACSERVE_OUTPUT:?run by macserve's script template, which sets MACSERVE_OUTPUT}"
+: "${MACSERVE_SIMULATOR_ID:?run by the macserve script template, which sets MACSERVE_SIMULATOR_ID}"
+: "${MACSERVE_APP_DIR:?run by the macserve script template, which sets MACSERVE_APP_DIR}"
+: "${MACSERVE_OUTPUT:?run by the macserve script template, which sets MACSERVE_OUTPUT}"
 
 TYPES=com.apple.CoreSimulator.SimDeviceType
 RUNTIMES=(com.apple.CoreSimulator.SimRuntime.iOS-27-0 com.apple.CoreSimulator.SimRuntime.iOS-27-1)
@@ -65,6 +65,7 @@ IPAD11_UDID=$(create ipad11 iPad-Air-11-inch-M4 iPad-Air-11-inch-M3 iPad-Air-11-
 created+=("$IPAD11_UDID")
 export IPHONE_UDID="$MACSERVE_SIMULATOR_ID" IPAD_UDID IPAD11_UDID
 
+mkdir -p "$DERIVED_DATA/SourcePackages" || exit 1
 ln -sfn "$DERIVED_DATA" .build-dd || exit 1
 ln -sfn "$DERIVED_DATA/SourcePackages" SourcePackages || exit 1
 if ! "$TIMEOUT_BIN" --signal=INT --kill-after=15s 30m \
