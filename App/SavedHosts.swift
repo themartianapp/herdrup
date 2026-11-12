@@ -201,6 +201,11 @@ final class SavedHostsStore: ObservableObject {
     }
 
     private func persist() {
+        #if DEBUG && !HERDR_SHARE_EXTENSION
+        // Mock runs never write the saved list: a launch-argument list stays as seeded, and
+        // a host added in one UI test does not show up in the next.
+        if ScreenshotMock.mode != nil { return }
+        #endif
         guard let data = try? JSONEncoder().encode(hosts) else { return }
         ShareStorage.defaults.set(data, forKey: defaultsKey)
     }
@@ -218,6 +223,9 @@ struct KeychainCredentialStore {
 
     @discardableResult
     func save(account: String, secret: String) -> Bool {
+        #if DEBUG && !HERDR_SHARE_EXTENSION
+        if ScreenshotMock.mode != nil { MockSecrets.shared.set(secret, service: service, account: account); return true }
+        #endif
         let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -236,6 +244,9 @@ struct KeychainCredentialStore {
     }
 
     func load(account: String) -> String? {
+        #if DEBUG && !HERDR_SHARE_EXTENSION
+        if ScreenshotMock.mode != nil { return MockSecrets.shared.get(service: service, account: account) }
+        #endif
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -256,6 +267,9 @@ struct KeychainCredentialStore {
     /// host record while the key still lives here.
     @discardableResult
     func delete(account: String) -> Bool {
+        #if DEBUG && !HERDR_SHARE_EXTENSION
+        if ScreenshotMock.mode != nil { MockSecrets.shared.set(nil, service: service, account: account); return true }
+        #endif
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -265,3 +279,23 @@ struct KeychainCredentialStore {
         return status == errSecSuccess || status == errSecItemNotFound
     }
 }
+
+#if DEBUG && !HERDR_SHARE_EXTENSION
+/// Saved-host secrets in screenshot mocks and UI tests: in memory, because an unsigned
+/// simulator build cannot write the Keychain and a mock run must leave nothing behind.
+private final class MockSecrets: @unchecked Sendable {
+    static let shared = MockSecrets()
+    private let lock = NSLock()
+    private var secrets: [String: String] = [:]
+
+    func get(service: String, account: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return secrets["\(service)/\(account)"]
+    }
+
+    func set(_ secret: String?, service: String, account: String) {
+        lock.lock(); defer { lock.unlock() }
+        secrets["\(service)/\(account)"] = secret
+    }
+}
+#endif
