@@ -110,7 +110,8 @@ extension Pairing {
     /// user sees is "that is not a herdr pairing code" instead of a socket error later.
     public static func parse(qrText: String) throws -> Payload {
         let trimmed = qrText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let data = trimmed.data(using: .utf8),
+        guard trimmed.utf8.count <= maxCodeLength,
+              let data = trimmed.data(using: .utf8),
               let payload = try? JSONDecoder().decode(Payload.self, from: data)
         else { throw Error.notAPairingCode }
 
@@ -135,6 +136,45 @@ extension Pairing {
                 || payload.hostKeyFingerprint != nil
         else { throw Error.notAPairingCode }
         return payload
+    }
+
+    /// The app link a page shows next to its pairing QR: `herdrup://pair#<payload>`, where
+    /// the payload is the same JSON as the QR, base64url (RFC 4648 §5). Padding is optional.
+    public static let linkPrefix = "herdrup://pair#"
+    /// The same link with a slash before the fragment, which some link builders add.
+    static let slashLinkPrefix = "herdrup://pair/#"
+    /// A pairing payload is a few hundred bytes; anything far larger is not one, and is not
+    /// worth decoding.
+    public static let maxCodeLength = 4096
+
+    /// Whether `text` is a pairing app link in either form (it may still fail to parse).
+    public static func isPairingLink(_ text: String) -> Bool {
+        let lowered = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return lowered.hasPrefix(linkPrefix) || lowered.hasPrefix(slashLinkPrefix)
+    }
+
+    /// Parse a `herdrup://pair#…` link into the same validated payload as a scanned QR.
+    public static func parse(link: String) throws -> Payload {
+        let trimmed = link.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.utf8.count <= maxCodeLength else { throw Error.notAPairingCode }
+        let lowered = trimmed.lowercased()
+        let prefix: String
+        if lowered.hasPrefix(linkPrefix) { prefix = linkPrefix }
+        else if lowered.hasPrefix(slashLinkPrefix) { prefix = slashLinkPrefix }
+        else { throw Error.notAPairingCode }
+        var encoded = String(trimmed.dropFirst(prefix.count))
+        // Padding is allowed, but only at the end.
+        while encoded.hasSuffix("=") { encoded.removeLast() }
+        guard !encoded.isEmpty, let data = Base64URL.decode(encoded),
+              let json = String(data: data, encoding: .utf8)
+        else { throw Error.notAPairingCode }
+        return try parse(qrText: json)
+    }
+
+    /// Parse a pasted code: either the raw JSON a QR carries or the app link.
+    public static func parse(code: String) throws -> Payload {
+        let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        return isPairingLink(trimmed) ? try parse(link: trimmed) : try parse(qrText: trimmed)
     }
 }
 

@@ -1,4 +1,5 @@
 import Foundation
+import HerdrKit
 import Security
 
 /// Which credential a saved host authenticates with.
@@ -145,6 +146,46 @@ final class SavedHostsStore: ObservableObject {
     /// The password for a saved host, from the Keychain. Nil if missing/unreadable.
     func password(for host: SavedHost) -> String? { passwordKeychain.load(account: host.id.uuidString) }
 
+    /// The host's secret from this phone's Keychain, or nil when it is not here (the host
+    /// list came from another phone, or the secret was deleted). A key is trimmed; a
+    /// password is not, since its leading/trailing spaces can be significant.
+    func secret(for saved: SavedHost) -> HostSecret? {
+        switch saved.auth {
+        case .key:
+            guard let key = key(for: saved)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !key.isEmpty else { return nil }
+            return .key(key)
+        case .password:
+            guard let password = password(for: saved), !password.isEmpty else { return nil }
+            return .password(password)
+        }
+    }
+
+    /// What connecting to a saved host takes: its credentials, or why there are none.
+    enum Connection {
+        case ready(SSHCredentials)
+        /// The saved address does not parse; the editor fixes it.
+        case unparseableHost
+        /// The secret is not on this phone; the editor asks for it.
+        case missingSecret
+    }
+
+    /// The one conversion from a saved host to connection credentials, for a tapped row
+    /// and for a machine just paired alike.
+    func connection(for saved: SavedHost) -> Connection {
+        guard let ep = HostEndpoint.parse(saved.host) else { return .unparseableHost }
+        switch secret(for: saved) {
+        case nil:
+            return .missingSecret
+        case .key(let key):
+            return .ready(SSHCredentials(host: ep.host, port: ep.port, username: saved.username,
+                                         privateKeyPEM: key, remoteSocketPath: ""))
+        case .password(let password):
+            return .ready(SSHCredentials(host: ep.host, port: ep.port, username: saved.username,
+                                         password: password, remoteSocketPath: ""))
+        }
+    }
+
     /// Removes a saved host. Deletes the secret from BOTH stores first and drops the
     /// host record ONLY if both confirm it is gone — a failed Keychain delete must not
     /// leave a secret orphaned while the host vanishes from the UI. Each delete returns
@@ -160,6 +201,11 @@ final class SavedHostsStore: ObservableObject {
     }
 
     private func persist() {
+        #if DEBUG && !HERDR_SHARE_EXTENSION
+        // Mock runs never write the saved list: a launch-argument list stays as seeded, and
+        // a host added in one UI test does not show up in the next.
+        if ScreenshotMock.mode != nil { return }
+        #endif
         guard let data = try? JSONEncoder().encode(hosts) else { return }
         ShareStorage.defaults.set(data, forKey: defaultsKey)
     }
@@ -177,6 +223,9 @@ struct KeychainCredentialStore {
 
     @discardableResult
     func save(account: String, secret: String) -> Bool {
+        #if DEBUG && !HERDR_SHARE_EXTENSION
+        if ScreenshotMock.mode != nil { MockSecrets.shared.set(secret, service: service, account: account); return true }
+        #endif
         let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -195,6 +244,9 @@ struct KeychainCredentialStore {
     }
 
     func load(account: String) -> String? {
+        #if DEBUG && !HERDR_SHARE_EXTENSION
+        if ScreenshotMock.mode != nil { return MockSecrets.shared.get(service: service, account: account) }
+        #endif
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -215,6 +267,9 @@ struct KeychainCredentialStore {
     /// host record while the key still lives here.
     @discardableResult
     func delete(account: String) -> Bool {
+        #if DEBUG && !HERDR_SHARE_EXTENSION
+        if ScreenshotMock.mode != nil { MockSecrets.shared.set(nil, service: service, account: account); return true }
+        #endif
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -224,3 +279,23 @@ struct KeychainCredentialStore {
         return status == errSecSuccess || status == errSecItemNotFound
     }
 }
+
+#if DEBUG && !HERDR_SHARE_EXTENSION
+/// Saved-host secrets in screenshot mocks and UI tests: in memory, because an unsigned
+/// simulator build cannot write the Keychain and a mock run must leave nothing behind.
+private final class MockSecrets: @unchecked Sendable {
+    static let shared = MockSecrets()
+    private let lock = NSLock()
+    private var secrets: [String: String] = [:]
+
+    func get(service: String, account: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return secrets["\(service)/\(account)"]
+    }
+
+    func set(_ secret: String?, service: String, account: String) {
+        lock.lock(); defer { lock.unlock() }
+        secrets["\(service)/\(account)"] = secret
+    }
+}
+#endif

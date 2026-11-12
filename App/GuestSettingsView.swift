@@ -61,6 +61,34 @@ struct GuestSettingsView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 30).padding(.top, 8)
 
+                        // A guest-only phone opens straight into its share, so this is where
+                        // it adds a machine of its own. The share stays in the machine list.
+                        GuestShellStyle.section("Connect your own machine").padding(.top, 26).padding(.bottom, 8)
+                        VStack(spacing: 10) {
+                            Button { PairingRouter.shared.scan() } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "qrcode.viewfinder").font(.system(size: 15, weight: .semibold))
+                                    Text("Scan pairing code").font(Typography.app(15, .semibold))
+                                }
+                                .foregroundStyle(Palette.text)
+                                .frame(maxWidth: .infinity, minHeight: 46)
+                                .background(Palette.surface, in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("guest-settings-scan-pairing")
+                            PasteButton(payloadType: String.self) { items in
+                                Task { @MainActor in
+                                    if let text = items.first { PairingRouter.shared.open(text) }
+                                }
+                            }
+                            .labelStyle(.titleAndIcon)
+                            .tint(Palette.surfaceRaised)
+                            .buttonBorderShape(.capsule)
+                            .accessibilityLabel("Paste pairing code")
+                            .accessibilityIdentifier("guest-settings-paste-pairing")
+                        }
+                        .padding(.horizontal, 16)
+
                         Button { confirmingLeave = true } label: {
                             Text("Leave share")
                                 .font(Typography.app(15, .semibold)).foregroundStyle(Palette.died)
