@@ -280,13 +280,27 @@ struct RootView: View {
         return Self.hostLabel(for: credentials)
     }
 
-    /// The person chose to open a machine they just paired: close what is showing (the
-    /// session, a shared machine's home — the share stays in the list) and let the machine
-    /// list connect to it.
+    /// The person tapped "Open it" on a machine they just paired: close what is showing (the
+    /// session, a shared machine's home — the share stays in the list) and connect to it,
+    /// here and now. Nothing is handed to the machine list to act on later, so returning to
+    /// that list never connects by itself.
     private func openPairedMachine(_ nickname: String) {
-        if client != nil { disconnect() }
+        let store = SavedHostsStore.shared
         openGuest = nil
-        pairing.openPaired = nickname
+        if client != nil { disconnect() }
+        // Just saved with its key, so this is ready. If not, the machine list shows the new
+        // row, and tapping it explains what is missing.
+        guard let saved = store.hosts.first(where: { $0.nickname == nickname }),
+              case .ready(let creds) = store.connection(for: saved)
+        else { return }
+        #if DEBUG
+        // The mock list (`list`) stands in for a connection with its own flag.
+        if ScreenshotMock.mode != nil {
+            mockDisconnected = false
+            return
+        }
+        #endif
+        connect(creds)
     }
 
     private func autoOpenSharedMachine() {
@@ -887,15 +901,6 @@ struct ConnectView: View {
                 onConnect(creds)
             }
         }
-        // A machine just paired (scanned, pasted or linked; RootView owns that sheet):
-        // connect straight into it, since the point of pairing is that nothing else is asked.
-        .onReceive(PairingRouter.shared.$openPaired) { nickname in
-            guard let nickname else { return }
-            PairingRouter.shared.openPaired = nil
-            if let paired = savedHosts.hosts.first(where: { $0.nickname == nickname }) {
-                tapSavedHost(paired)
-            }
-        }
         .sheet(isPresented: $showingInviteScan, onDismiss: {
             guard let invite = scannedInvite else { return }
             scannedInvite = nil
@@ -1167,7 +1172,7 @@ struct ConnectView: View {
         // rebuilt while open (see StableContextMenu.swift).
         .stableContextMenu {
             StableMenuItem("Edit", systemImage: "pencil") {
-                editorTarget = storedSecret(saved) == nil ? .missingSecret(saved) : .edit(saved)
+                editorTarget = savedHosts.secret(for: saved) == nil ? .missingSecret(saved) : .edit(saved)
             }
             StableMenuItem("Remove", systemImage: "trash", role: .destructive) { savedHosts.delete(saved) }
         }
@@ -1180,41 +1185,14 @@ struct ConnectView: View {
         return hasNickname ? "\(saved.username)@\(saved.host)" : saved.username
     }
 
-    /// The host's secret from this phone's Keychain, or nil when it is not here (the host
-    /// list came from another phone, or the secret was deleted). A key is trimmed; a
-    /// password is not, since its leading/trailing spaces can be significant.
-    private func storedSecret(_ saved: SavedHost) -> HostSecret? {
-        switch saved.auth {
-        case .key:
-            guard let key = savedHosts.key(for: saved)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !key.isEmpty else { return nil }
-            return .key(key)
-        case .password:
-            guard let password = savedHosts.password(for: saved), !password.isEmpty else { return nil }
-            return .password(password)
-        }
-    }
-
     /// One-tap connect from a saved host. If the secret is not on this device, open the
     /// editor in reconnect mode, which says so and asks for it, rather than a silent dead tap.
     private func tapSavedHost(_ saved: SavedHost) {
-        guard let ep = HostEndpoint.parse(saved.host) else {
-            editorTarget = .edit(saved)
-            return
+        switch savedHosts.connection(for: saved) {
+        case .ready(let creds): onConnect(creds)
+        case .unparseableHost: editorTarget = .edit(saved)
+        case .missingSecret: editorTarget = .missingSecret(saved)
         }
-        let creds: SSHCredentials
-        switch storedSecret(saved) {
-        case nil:
-            editorTarget = .missingSecret(saved)
-            return
-        case .key(let key):
-            creds = SSHCredentials(host: ep.host, port: ep.port, username: saved.username,
-                                   privateKeyPEM: key, remoteSocketPath: "")
-        case .password(let password):
-            creds = SSHCredentials(host: ep.host, port: ep.port, username: saved.username,
-                                   password: password, remoteSocketPath: "")
-        }
-        onConnect(creds)
     }
 }
 

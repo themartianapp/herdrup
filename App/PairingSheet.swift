@@ -32,7 +32,8 @@ struct PendingPairing: Identifiable {
 
 /// Where every pairing enters the app (the scan button, a paste, a `herdrup://pair#` link).
 /// RootView presents the ONE pairing sheet from here, so a link opened while the scanner is
-/// up replaces it instead of failing to present over it.
+/// up replaces it instead of failing to present over it. It routes the presentation only:
+/// what happens after pairing is the sheet's `onPaired`, handled by RootView.
 @MainActor
 final class PairingRouter: ObservableObject {
     static let shared = PairingRouter()
@@ -40,8 +41,6 @@ final class PairingRouter: ObservableObject {
     @Published var pending: PendingPairing?
     /// Why the last link or paste could not be read, shown as an alert.
     @Published var failure: String?
-    /// A machine just paired whose saved host the machine list should connect to.
-    @Published var openPaired: String?
 
     /// Opens the scanner.
     func scan() { pending = PendingPairing(payload: nil) }

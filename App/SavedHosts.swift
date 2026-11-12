@@ -1,4 +1,5 @@
 import Foundation
+import HerdrKit
 import Security
 
 /// Which credential a saved host authenticates with.
@@ -144,6 +145,46 @@ final class SavedHostsStore: ObservableObject {
 
     /// The password for a saved host, from the Keychain. Nil if missing/unreadable.
     func password(for host: SavedHost) -> String? { passwordKeychain.load(account: host.id.uuidString) }
+
+    /// The host's secret from this phone's Keychain, or nil when it is not here (the host
+    /// list came from another phone, or the secret was deleted). A key is trimmed; a
+    /// password is not, since its leading/trailing spaces can be significant.
+    func secret(for saved: SavedHost) -> HostSecret? {
+        switch saved.auth {
+        case .key:
+            guard let key = key(for: saved)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !key.isEmpty else { return nil }
+            return .key(key)
+        case .password:
+            guard let password = password(for: saved), !password.isEmpty else { return nil }
+            return .password(password)
+        }
+    }
+
+    /// What connecting to a saved host takes: its credentials, or why there are none.
+    enum Connection {
+        case ready(SSHCredentials)
+        /// The saved address does not parse; the editor fixes it.
+        case unparseableHost
+        /// The secret is not on this phone; the editor asks for it.
+        case missingSecret
+    }
+
+    /// The one conversion from a saved host to connection credentials, for a tapped row
+    /// and for a machine just paired alike.
+    func connection(for saved: SavedHost) -> Connection {
+        guard let ep = HostEndpoint.parse(saved.host) else { return .unparseableHost }
+        switch secret(for: saved) {
+        case nil:
+            return .missingSecret
+        case .key(let key):
+            return .ready(SSHCredentials(host: ep.host, port: ep.port, username: saved.username,
+                                         privateKeyPEM: key, remoteSocketPath: ""))
+        case .password(let password):
+            return .ready(SSHCredentials(host: ep.host, port: ep.port, username: saved.username,
+                                         password: password, remoteSocketPath: ""))
+        }
+    }
 
     /// Removes a saved host. Deletes the secret from BOTH stores first and drops the
     /// host record ONLY if both confirm it is gone — a failed Keychain delete must not
