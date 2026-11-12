@@ -252,6 +252,15 @@ The same script runs on the macserve Mac Studio through its script template
 `MACSERVE_APP_DIR` and `MACSERVE_OUTPUT`, and it runs without Homebrew: when GNU
 `gtimeout` is missing, the bounds on simulator calls come from the script itself.
 
+The macserve script shard `duo-column` ([`Tools/ci/duo-column.sh`](../Tools/ci/duo-column.sh)) unfolds the iPhone Duo
+simulator and, held wide and held tall, drags the Chat and Gram column handles 120 pt
+inwards on the inner display. XCUITest cannot fold the simulator, so it uses duoctl for
+the hinge and touches, and AXe (pinned, checksum-verified) to read the frames. It
+passes when every handle narrows its column. A conversation under 520 pt is not
+resizable, so it must show no handles and the whole width instead; a chat narrowed held
+wide must show whole once turned to tall, and its narrowed width must return held wide again. It writes
+`RESULTS.md` and before/after screenshots per pose.
+
 The shared native composer reconciles external text edits after the SwiftUI layout pass,
 using the current binding rather than a captured layout value. This preserves newer
 keystrokes while still applying dictation, mention completion, restored drafts, and send clears.

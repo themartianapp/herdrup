@@ -9,5 +9,6 @@
   "duo":["HerdrUITests/DuoTransitionTests"]
  }},
  "script":{"shards":{
-  "duo-screenshots":{"run":"Tools/ci/duo-screenshots.sh"}
+  "duo-screenshots":{"run":"Tools/ci/duo-screenshots.sh"},
+  "duo-column":{"run":"Tools/ci/duo-column.sh"}
  }}}

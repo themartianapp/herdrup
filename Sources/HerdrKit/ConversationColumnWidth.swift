@@ -1,9 +1,10 @@
 import Foundation
 
-/// The conversation column's width on iPad and Mac, shared by Chat and Gram (#523 items 2 and
-/// 12, #541): the reader drags either edge of the column to resize it around its centre,
-/// between `minimum` and the whole width the conversation has (Full), with snap points at
-/// Readable, Wide and Full. The composer takes the same width.
+/// The conversation column's width on regular width (iPad, Mac, iPhone Duo's inner display),
+/// shared by Chat and Gram (#523 items 2 and 12, #541): the reader drags either edge of the
+/// column to resize it around its centre, between `minimum(available:)` and the whole width
+/// the conversation has (Full), with snap points at Readable, Wide and Full. The composer
+/// takes the same width.
 ///
 /// One width for both, remembered per device under `storageKey`: resizing Chat resizes Gram
 /// and the other way round. A window narrower than the stored width shows the window's width
@@ -25,7 +26,18 @@ public enum ConversationColumnWidth {
         defaults.removeObject(forKey: legacyChatStorageKey)
     }
 
+    /// The narrowest the column goes where the conversation has room for it (#523). A
+    /// narrower conversation can still be narrowed by `travel` (`minimum(available:)`).
     public static let minimum: Double = 560
+    /// How far a conversation too narrow for `minimum` can still be narrowed: 100 pt of drag
+    /// on each edge. iPhone Duo's inner display held wide shows the chat 547 pt wide beside the
+    /// sidebar, under 560, so its handles moved nothing until a narrow conversation had this.
+    public static let travel: Double = 200
+    /// The narrowest column there is: 320 pt, the sidebar's own minimum, and narrower than
+    /// any phone's chat. A conversation that cannot be narrowed by `travel` without going below
+    /// it is not resizable: it is shown whole, without handles, as on a phone. iPhone Duo's
+    /// inner display held tall shows the chat 349 pt wide beside the sidebar.
+    public static let narrowest: Double = 320
     public static let readable: Double = 720
     public static let wide: Double = 1000
     /// What Full stores: wider than any window, so it always shows as the whole width the
@@ -53,22 +65,39 @@ public enum ConversationColumnWidth {
     }
 
     /// A stored value made safe to lay out: an unusable one (not finite, not positive) is the
-    /// default; any other is held between `minimum` and `full`.
+    /// default; any other is held between `narrowest` and `full`.
     public static func sanitized(_ stored: Double) -> Double {
         guard stored.isFinite, stored > 0 else { return defaultWidth }
-        return min(full, max(minimum, stored))
+        return min(full, max(narrowest, stored))
     }
 
-    /// The width the column shows: the stored width, or all of `available` when that is
-    /// narrower. Never written back.
+    /// The narrowest the column goes in a conversation `available` wide: `minimum`, or, where
+    /// that would leave less than `travel` to narrow by (iPhone Duo's inner display, a portrait
+    /// iPad beside the sidebar), `available` less `travel`.
+    public static func minimum(available: Double) -> Double {
+        max(0, min(minimum, available - travel))
+    }
+
+    /// Whether a conversation `available` wide shows the resize handles: it can be narrowed by
+    /// `travel` and stay at least `narrowest`, so at least 520 pt wide. Narrower (iPhone Duo's
+    /// inner display held tall beside the sidebar) it is shown whole, as on a phone.
+    public static func isResizable(available: Double) -> Bool {
+        available >= narrowest + travel
+    }
+
+    /// The width the column shows: the stored width held to this conversation's minimum, or
+    /// all of `available` when that is narrower. A conversation too narrow to resize
+    /// (`isResizable`) has no handles, so it always shows whole: a width narrowed on a wider
+    /// screen (547 pt down to 347, then folded to 349) would otherwise stay with no handle to
+    /// widen it. Never written back: the stored width applies again where there is room.
     public static func displayed(stored: Double, available: Double) -> Double {
-        min(sanitized(stored), max(0, available))
+        guard isResizable(available: available) else { return max(0, available) }
+        return clamped(sanitized(stored), available: available)
     }
 
-    /// `width` held between `minimum` and `available`. A conversation narrower than the minimum
-    /// is shown whole.
+    /// `width` held between `minimum(available:)` and `available`.
     public static func clamped(_ width: Double, available: Double) -> Double {
-        min(max(0, available), max(minimum, width))
+        min(max(0, available), max(minimum(available: available), width))
     }
 
     /// The snap points that fit in `available`, in label order: Readable, Wide, then Full
@@ -91,7 +120,7 @@ public enum ConversationColumnWidth {
     /// The width after dragging `edge` by `translation` points (positive is rightwards) from a
     /// column `start` wide. Both edges move, so the column stays centred and its width changes
     /// by twice the drag: wider when an edge moves outwards. Rounded to whole points, held
-    /// between `minimum` and `available`, then snapped.
+    /// between `minimum(available:)` and `available`, then snapped.
     public static func dragged(from start: Double, translation: Double, edge: Edge, available: Double) -> Double {
         let outwards = edge == .trailing ? translation : -translation
         return snapped(clamped((start + 2 * outwards).rounded(), available: available), available: available)
@@ -139,7 +168,7 @@ public enum ConversationColumnWidth {
     }
 
     /// One accessibility decrement: `step` points narrower, stopping on a snap point on the
-    /// way, held to `minimum`.
+    /// way, held to `minimum(available:)`.
     public static func decremented(_ width: Double, available: Double) -> Double {
         let target = width - step
         let crossed = snapPoints(available: available).map(\.width)

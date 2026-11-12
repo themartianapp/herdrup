@@ -8,6 +8,8 @@ final class ConversationColumnWidthTests: XCTestCase {
         XCTAssertEqual(W.storageKey, "conversation.columnWidth")
         XCTAssertEqual(W.defaultWidth, 1000)
         XCTAssertEqual(W.minimum, 560)
+        XCTAssertEqual(W.travel, 200)
+        XCTAssertEqual(W.narrowest, 320)
         XCTAssertEqual(W.readable, 720)
         XCTAssertEqual(W.wide, 1000)
         XCTAssertEqual(W.snapDistance, 12)
@@ -65,6 +67,54 @@ final class ConversationColumnWidthTests: XCTestCase {
         XCTAssertEqual(W.clamped(1500, available: 1200), 1200)
         XCTAssertEqual(W.clamped(800, available: 1200), 800)
         XCTAssertEqual(W.clamped(800, available: 500), 500)
+    }
+
+    /// A conversation too narrow for 560 to leave 200 pt to narrow by goes down 200 pt
+    /// instead. iPhone Duo's inner display held wide shows the chat 547 pt wide beside the
+    /// sidebar: before, its handles moved the column by nothing.
+    func testANarrowConversationCanStillBeNarrowedBy200Points() {
+        XCTAssertEqual(W.minimum(available: 1400), 560)
+        XCTAssertEqual(W.minimum(available: 760), 560)
+        XCTAssertEqual(W.minimum(available: 700), 500)
+        XCTAssertEqual(W.minimum(available: 547), 347, "iPhone Duo held wide, beside the sidebar")
+        XCTAssertEqual(W.clamped(300, available: 700), 500)
+        XCTAssertEqual(W.dragged(from: 547, translation: -60, edge: .trailing, available: 547), 427,
+                       "a drag inwards narrows the Duo's Full column")
+        XCTAssertEqual(W.dragged(from: 547, translation: 60, edge: .leading, available: 547), 427)
+        XCTAssertEqual(W.dragged(from: 547, translation: -400, edge: .trailing, available: 547), 347, "its minimum")
+        XCTAssertEqual(W.dragged(from: 347, translation: 400, edge: .trailing, available: 547), 547, "and back to Full")
+        XCTAssertEqual(W.decremented(360, available: 547), 347)
+        XCTAssertEqual(W.displayed(stored: 450, available: 650), 450, "a width chosen there shows there")
+        XCTAssertEqual(W.displayed(stored: 450, available: 1200), 560, "and keeps to 560 where there is room")
+        XCTAssertEqual(W.displayed(stored: 300, available: 650), 450, "a stored width is held to the minimum")
+    }
+
+    /// A conversation that cannot lose 200 pt and stay 320 wide has no handles: it is shown
+    /// whole, as on a phone (iPhone Duo's inner display held tall beside the sidebar).
+    func testOnlyAConversationAtLeast520WideIsResizable() {
+        XCTAssertTrue(W.isResizable(available: 1366))
+        XCTAssertTrue(W.isResizable(available: 547))
+        XCTAssertTrue(W.isResizable(available: 520))
+        XCTAssertFalse(W.isResizable(available: 519))
+        XCTAssertFalse(W.isResizable(available: 349))
+        XCTAssertFalse(W.isResizable(available: 0))
+    }
+
+    /// A width narrowed where the conversation is resizable shows whole once it is not (no
+    /// handles to widen it), and comes back when there is room again: the stored width is
+    /// never rewritten. iPhone Duo: 547 pt held wide narrowed to 347, folded to tall (349).
+    func testANonResizableConversationShowsWholeAndKeepsTheStoredWidth() {
+        let narrowed = W.dragged(from: 547, translation: -100, edge: .trailing, available: 547)
+        XCTAssertEqual(narrowed, 347)
+        let stored = W.stored(for: narrowed, available: 547)
+        XCTAssertEqual(stored, 347)
+        XCTAssertEqual(W.displayed(stored: stored, available: 349), 349, "held tall: whole, not 347")
+        XCTAssertEqual(W.displayed(stored: stored, available: 500), 500, "500 pt: whole")
+        XCTAssertEqual(W.displayed(stored: stored, available: 519), 519)
+        XCTAssertEqual(W.displayed(stored: stored, available: 547), 347, "held wide again: the narrowed width")
+        XCTAssertEqual(W.displayed(stored: stored, available: 1400), 560, "room for 560: the minimum there")
+        XCTAssertEqual(W.displayed(stored: W.readable, available: 400), 400)
+        XCTAssertEqual(W.displayed(stored: W.readable, available: 1400), 720)
     }
 
     func testSnapsWithinTwelvePointsOfReadableWideAndFull() {

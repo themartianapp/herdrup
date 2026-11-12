@@ -1145,6 +1145,49 @@ final class ChatUXSmokeTests: XCTestCase {
         record(again, "Double tap resets the chat column to Wide")
     }
 
+    /// A chat narrower than 760 pt, too narrow for the 560 pt minimum to leave 200 pt to drag
+    /// (a portrait iPad's beside the sidebar), still narrows by 200 pt from either edge, and
+    /// widens back to Full. Owner, 2026-11-12: the handles did nothing on iPhone Duo, whose
+    /// chat held wide is 547 pt beside the sidebar, under the 560 pt minimum. That case is
+    /// dragged on the Duo itself by Tools/ci/duo-column.sh (macserve shard duo-column), since
+    /// XCUITest cannot unfold the simulator.
+    func testANarrowChatStillNarrowsBy200Points() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .pad, "the chat width is resizable on regular width only")
+        let app = launch(environment: ["HERDR_COLUMN_WIDTH_READOUT_HOLD": "8"])
+        let chat = element(app, "chat-width-area")
+        let column = element(app, "chat-column")
+        let left = element(app, "chat-width-handle-left")
+        let right = element(app, "chat-width-handle-right")
+        XCTAssertTrue(right.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(left.exists, app.debugDescription)
+        let available = chat.frame.width
+        XCTAssertTrue((520..<760).contains(available),
+                      "a portrait iPad's chat beside the sidebar is between 520 and 760 pt wide: \(available)")
+        let full = settle({ column.frame.width }, until: { abs($0 - available) < 0.5 })
+        XCTAssertEqual(full, available, accuracy: 0.5, "Wide shows as Full: the whole chat")
+        record(app, "Narrow chat at Full (\(Int(available)) pt) before the drag")
+
+        // 150 pt inwards would narrow it by 300: held to 200 below the whole width.
+        let narrowest = (available - 200).rounded()
+        let rightStart = app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: right.frame.midX - app.frame.minX, dy: right.frame.midY - app.frame.minY))
+        rightStart.press(forDuration: 0.2, thenDragTo: rightStart.withOffset(CGVector(dx: -150, dy: 0)))
+        let narrowed = settle({ column.frame.width }, until: { abs($0 - narrowest) < 1 })
+        XCTAssertEqual(narrowed, narrowest, accuracy: 1, "the right edge narrows the chat by 200 pt, past 560")
+        XCTAssertEqual(column.frame.midX, chat.frame.midX, accuracy: 1, "the column stays centred")
+        XCTAssertEqual(app.staticTexts["chat-width-readout"].label, "\(Int(narrowest)) pt")
+        assertComposerMatchesColumn(app, "Narrowed")
+        record(app, "Narrow chat narrowed by 200 pt from the right edge")
+
+        // The left edge outwards widens it back to the whole chat.
+        let leftStart = app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: left.frame.midX - app.frame.minX, dy: left.frame.midY - app.frame.minY))
+        leftStart.press(forDuration: 0.2, thenDragTo: leftStart.withOffset(CGVector(dx: -150, dy: 0)))
+        let widened = settle({ column.frame.width }, until: { abs($0 - available) < 0.5 })
+        XCTAssertEqual(widened, available, accuracy: 0.5, "the left edge widens it back to Full")
+        record(app, "Narrow chat back at Full from the left edge")
+    }
+
     /// Chat and Gram share one column width (#541): a width chosen in Chat is the width Gram
     /// shows, and a reset in Gram is Chat's too.
     func testChatAndGramShareTheColumnWidth() throws {
