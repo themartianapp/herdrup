@@ -257,7 +257,8 @@ simulator and, held wide and held tall, drags the Chat and Gram column handles 1
 inwards on the inner display. XCUITest cannot fold the simulator, so it uses duoctl for
 the hinge and touches, and AXe (pinned, checksum-verified) to read the frames. It
 passes when every handle narrows its column. A conversation under 520 pt is not
-resizable, so it must show no handles and the whole width instead. It writes
+resizable, so it must show no handles and the whole width instead; a chat narrowed held
+wide must show whole once turned to tall, and its narrowed width must return held wide again. It writes
 `RESULTS.md` and before/after screenshots per pose.
 
 The shared native composer reconciles external text edits after the SwiftUI layout pass,

@@ -100,6 +100,23 @@ final class ConversationColumnWidthTests: XCTestCase {
         XCTAssertFalse(W.isResizable(available: 0))
     }
 
+    /// A width narrowed where the conversation is resizable shows whole once it is not (no
+    /// handles to widen it), and comes back when there is room again: the stored width is
+    /// never rewritten. iPhone Duo: 547 pt held wide narrowed to 347, folded to tall (349).
+    func testANonResizableConversationShowsWholeAndKeepsTheStoredWidth() {
+        let narrowed = W.dragged(from: 547, translation: -100, edge: .trailing, available: 547)
+        XCTAssertEqual(narrowed, 347)
+        let stored = W.stored(for: narrowed, available: 547)
+        XCTAssertEqual(stored, 347)
+        XCTAssertEqual(W.displayed(stored: stored, available: 349), 349, "held tall: whole, not 347")
+        XCTAssertEqual(W.displayed(stored: stored, available: 500), 500, "500 pt: whole")
+        XCTAssertEqual(W.displayed(stored: stored, available: 519), 519)
+        XCTAssertEqual(W.displayed(stored: stored, available: 547), 347, "held wide again: the narrowed width")
+        XCTAssertEqual(W.displayed(stored: stored, available: 1400), 560, "room for 560: the minimum there")
+        XCTAssertEqual(W.displayed(stored: W.readable, available: 400), 400)
+        XCTAssertEqual(W.displayed(stored: W.readable, available: 1400), 720)
+    }
+
     func testSnapsWithinTwelvePointsOfReadableWideAndFull() {
         XCTAssertEqual(W.snapped(709, available: 1400), 720)
         XCTAssertEqual(W.snapped(733, available: 1400), 733, "outside the 12 pt zone")

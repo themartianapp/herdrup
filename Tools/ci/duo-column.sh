@@ -24,7 +24,10 @@
 # 120 pt drag of one handle inwards. A working handle narrows the column by twice the drag,
 # down to the minimum; a case passes when the column narrowed by at least 60 pt. A
 # conversation under 520 pt (ConversationColumnWidth.isResizable) passes with no handles and
-# its column at the whole width; with handles that do not move it, it fails.
+# its column at the whole width; with handles that do not move it, it fails, and so does a
+# case whose column cannot be read after the drag. The `fold` pose narrows the chat held
+# wide, turns to tall (the chat must show whole, with no handles) and back (the narrowed
+# width must return): one launch, so the stored width carries across.
 
 set -uo pipefail
 
@@ -110,7 +113,9 @@ export UDID BUNDLE_ID SETTLE
 launch chatview || { echo "launch failed"; exit 1; }
 t 300 duoctl open --duration 1.5 || { echo "duoctl open failed"; exit 1; }
 
-for pose in wide tall; do
+# wide and tall: each handle in each pose. fold: the chat narrowed held wide, then turned to
+# tall (too narrow to resize: it must show whole), then back (the narrowed width returns).
+for pose in wide tall fold; do
   dir=$OUT/$pose; mkdir -p "$dir"
   ui=landscape; [ "$pose" = tall ] && ui=portrait
   log "=== pose $pose (inner display, interface $ui)"
@@ -152,10 +157,66 @@ def failure(text):
     with open(os.path.join(os.path.dirname(out), "FAILURES.txt"), "a") as f:
         f.write(text + "\n")
 
-cases = [("chat", "chatview", [], "left"), ("chat", "chatview", [], "right"),
-         ("chat-rail", "chatview", ["-ui.sidebarMinimized", "YES"], "left"),
-         ("gram", "gram", [], "left"), ("gram", "gram", [], "right")]
+def column_width(state):
+    return state["column"]["width"] if state and state.get("column") else None
+
+def rotate(ui):
+    r = sh("duoctl", "rotate", ui)
+    time.sleep(2)
+    return r.returncode == 0
+
 rows = []
+if pose == "fold":
+    # One launch throughout: the narrowed width is the stored one, not a fresh default.
+    case = "chat-narrowed-then-tall"
+    r = sh("bash", "-c", 'launch "$@"', "launch", "chatview")
+    before = read(elements(), "chat")
+    sh("duoctl", "screenshot", os.path.join(out, "chat-wide-before.png"))
+    handle = before["width-handle-right"]
+    if r.returncode or not handle or column_width(before) is None:
+        failure(f"fold/{case}: no chat handle or column held wide: {before}")
+        rows.append((pose, case, before, None, "no handle"))
+    else:
+        x, y = handle["x"] + handle["width"] / 2, handle["y"] + handle["height"] / 2
+        sh("duoctl", "swipe", f"{x:.1f}", f"{y:.1f}", f"{x - DRAG:.1f}", f"{y:.1f}", "--duration", "0.8")
+        time.sleep(1.5)
+        narrowed = read(elements(), "chat")
+        sh("duoctl", "screenshot", os.path.join(out, "chat-wide-narrowed.png"))
+        w0, w1 = column_width(before), column_width(narrowed)
+        ok = w1 is not None and w1 <= w0 - 60
+        rows.append((pose, "chat-narrowed-held-wide", before, narrowed, "resized" if ok else "NOT RESIZED"))
+        if not ok:
+            failure(f"fold/{case}: held wide the column went {w0} -> {w1}")
+        if not rotate("portrait"):
+            failure(f"fold/{case}: duoctl rotate portrait failed")
+        tall = read(elements(), "chat")
+        sh("duoctl", "screenshot", os.path.join(out, "chat-tall.png"))
+        area = tall["width-area"]
+        whole = (column_width(tall) is not None and area is not None
+                 and abs(column_width(tall) - area["width"]) < 1)
+        handles = tall["width-handle-left"] or tall["width-handle-right"]
+        tall_ok = whole and (area["width"] >= 520 or not handles)
+        rows.append((pose, "then-held-tall", tall, tall, "shown whole" if tall_ok else "NOT WHOLE"))
+        if not tall_ok:
+            failure(f"fold/{case}: held tall after narrowing, column {tall['column']} in area {area}, "
+                    f"handles {bool(handles)}")
+        if not rotate("landscape"):
+            failure(f"fold/{case}: duoctl rotate landscape failed")
+        back = read(elements(), "chat")
+        sh("duoctl", "screenshot", os.path.join(out, "chat-wide-again.png"))
+        back_ok = w1 is not None and column_width(back) is not None and abs(column_width(back) - w1) < 1
+        rows.append((pose, "then-held-wide-again", back, back, "narrowed width back" if back_ok else "NOT BACK"))
+        if not back_ok:
+            failure(f"fold/{case}: held wide again the column is {column_width(back)}, was narrowed to {w1}")
+        json.dump({"before": before, "narrowed": narrowed, "tall": tall, "back": back},
+                  open(os.path.join(out, case + ".json"), "w"), indent=1)
+        print(pose, case, w0, "->", w1, "| tall", column_width(tall), "of", area and area["width"],
+              "| wide again", column_width(back), flush=True)
+    cases = []
+else:
+    cases = [("chat", "chatview", [], "left"), ("chat", "chatview", [], "right"),
+             ("chat-rail", "chatview", ["-ui.sidebarMinimized", "YES"], "left"),
+             ("gram", "gram", [], "left"), ("gram", "gram", [], "right")]
 for name, mock, args, edge in cases:
     surface = name.split("-")[0]
     case = f"{name}-{edge}"
@@ -195,11 +256,16 @@ for name, mock, args, edge in cases:
     sh("duoctl", "screenshot", os.path.join(out, f"{case}-after.png"))
     record |= {"after": after, "elements_after": els}
     json.dump(record, open(os.path.join(out, case + ".json"), "w"), indent=1)
-    w0, w1 = before["column"]["width"], (after["column"] or {}).get("width", -1)
-    verdict = "resized" if w1 <= w0 - 60 else "NOT RESIZED"
-    if verdict != "resized":
-        failure(f"{pose}/{case}: column {w0:g} -> {w1:g} pt after a {DRAG} pt drag "
-                f"(area {before['width-area'] and before['width-area']['width']})")
+    w0, w1 = column_width(before), column_width(after)
+    if w1 is None:
+        # No column read after the drag is no evidence it resized.
+        verdict = "NO COLUMN AFTER"
+        failure(f"{pose}/{case}: column probe missing after the drag (was {w0:g} pt)")
+    else:
+        verdict = "resized" if w1 <= w0 - 60 else "NOT RESIZED"
+        if verdict != "resized":
+            failure(f"{pose}/{case}: column {w0:g} -> {w1:g} pt after a {DRAG} pt drag "
+                    f"(area {before['width-area'] and before['width-area']['width']})")
     rows.append((pose, case, before, after, verdict))
     print(pose, case, w0, "->", w1, verdict, flush=True)
 
@@ -218,7 +284,7 @@ def x(f): return "-" if not f else f"{f['x']:g}..{f['x'] + f['width']:g}"
 lines = ["# Column handles on the iPhone Duo inner display", "",
          "| pose | case | area | column before | handles before (x) | column after | readout after | verdict |",
          "|---|---|---|---|---|---|---|---|"]
-for pose in ("wide", "tall"):
+for pose in ("wide", "tall", "fold"):
     try:
         rows = json.load(open(os.path.join(out, pose, "rows.json")))
     except Exception:

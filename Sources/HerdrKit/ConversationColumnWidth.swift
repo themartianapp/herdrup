@@ -86,9 +86,13 @@ public enum ConversationColumnWidth {
     }
 
     /// The width the column shows: the stored width held to this conversation's minimum, or
-    /// all of `available` when that is narrower. Never written back.
+    /// all of `available` when that is narrower. A conversation too narrow to resize
+    /// (`isResizable`) has no handles, so it always shows whole: a width narrowed on a wider
+    /// screen (547 pt down to 347, then folded to 349) would otherwise stay with no handle to
+    /// widen it. Never written back: the stored width applies again where there is room.
     public static func displayed(stored: Double, available: Double) -> Double {
-        clamped(sanitized(stored), available: available)
+        guard isResizable(available: available) else { return max(0, available) }
+        return clamped(sanitized(stored), available: available)
     }
 
     /// `width` held between `minimum(available:)` and `available`.
