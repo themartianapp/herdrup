@@ -804,6 +804,36 @@ final class GramTests: XCTestCase {
         _ = waitForPostCall(app, containing: "to=\(Self.relayedClientloop) text=Status please")
     }
 
+    /// Every live agent on the board can be written to, not only those that wrote in Gram:
+    /// jarvis is on the mock board but has never sent a gram. The archived huurjacht and the
+    /// federated agent of a degraded peer (which `gram.post` would refuse) stay off the list.
+    func testAnAgentThatNeverWroteCanBeAddressed() {
+        let app = launchGram()
+        XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 10))
+        let field = app.textViews["gram-composer-input"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap()
+        field.typeText("@")
+        let list = app.descendants(matching: .any)["gram-mention-list"]
+        XCTAssertTrue(list.waitForExistence(timeout: 3), "typing @ lists the agents")
+        let jarvis = app.buttons["gram-mention-jarvis"]
+        XCTAssertTrue(jarvis.waitForExistence(timeout: 5), "a board agent with no grams is offered")
+        XCTAssertFalse(app.buttons["gram-mention-huurjacht"].exists, "an archived agent is not offered")
+        XCTAssertFalse(app.buttons["gram-mention-mcb-air"].exists, "a degraded peer's agent is not offered")
+
+        field.typeText("ja")
+        XCTAssertTrue(jarvis.waitForExistence(timeout: 3))
+        jarvis.tap()
+        XCTAssertTrue(list.waitForNonExistence(timeout: 3), "picking an agent closes the list")
+        XCTAssertEqual(field.value as? String, "@jarvis ", "picking completes the mention")
+
+        field.typeText("Run the tests")
+        let send = app.buttons["gram-send-button"]
+        XCTAssertTrue(send.waitForExistence(timeout: 3) && send.isEnabled)
+        send.tap()
+        _ = waitForPostCall(app, containing: "to=jarvis text=Run the tests")
+    }
+
     /// A leading @name that names no agent in Gram is never sent to the shared queue: Send
     /// stays off and the composer says why.
     func testAnUnknownLeadingMentionBlocksSend() {
