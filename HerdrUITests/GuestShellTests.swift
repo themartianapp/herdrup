@@ -54,8 +54,13 @@ final class GuestShellTests: XCTestCase {
             settingsTab.tap()
             _ = poll(3, every: 0.25) { settingsTab.isSelected }
         }
+        // Leave lives on Shared with you, behind the share's card.
+        let card = app.buttons["guest-settings-agent-card"]
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "guest Settings should lead with the share's card")
+        card.tap()
         let leave = app.buttons["guest-leave"]
-        XCTAssertTrue(leave.waitForExistence(timeout: 10), "guest Settings should offer Leave share")
+        for _ in 0..<4 where leave.exists && !leave.isHittable { app.swipeUp() }
+        XCTAssertTrue(leave.waitForExistence(timeout: 10), "Shared with you should offer Leave share")
         XCTAssertTrue(app.staticTexts["guest-settings-fingerprint"].label.hasPrefix("SHA256:"),
                       "Settings should show this phone's key fingerprint")
         attach(app, "guest-settings")
@@ -71,6 +76,91 @@ final class GuestShellTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Scan pairing code"].waitForExistence(timeout: 5),
                       "with no machines left the phone should be back on onboarding")
         XCTAssertFalse(app.buttons["shared-machine-row"].exists, "the share should be gone")
+    }
+
+    // MARK: Settings (the real index minus what needs a machine of your own)
+
+    /// A guest-only phone's Settings is the app's own: the share's card where the machine card
+    /// sits, Your own machine, Preferences, Help and About, and nothing that needs a machine.
+    func testSettingsIsTheRealIndexWithoutOwnMachineSections() {
+        let app = openGuestSettings()
+        let card = app.buttons["guest-settings-agent-card"]
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "the share's card should lead Settings")
+        XCTAssertTrue(card.label.contains("llm-opt") && card.label.contains("Jerry"),
+                      "the card should name the agent and who shared it, got \(card.label)")
+        for label in ["YOUR OWN MACHINE", "PREFERENCES", "HELP"] {
+            XCTAssertTrue(app.staticTexts[label].exists, "Settings should show \(label)")
+        }
+        XCTAssertTrue(app.buttons["guest-settings-connect-own-machine"].exists)
+        XCTAssertTrue(app.buttons["settings-omp-opens-in"].exists || app.staticTexts["omp agents open in"].exists,
+                      "Preferences should keep its rows")
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS 'Report a bug'")).firstMatch.exists,
+                      "Help should keep Report a bug")
+        attach(app, "guest-settings-index")
+
+        for hidden in ["settings-machine-card", "settings-suggestion-update", "settings-suggestion-exhausted"] {
+            XCTAssertFalse(app.buttons[hidden].exists, "a guest's Settings must not show \(hidden)")
+        }
+        for hidden in ["YOUR HERD", "Accounts", "Shared access", "Notifications", "Typing latency"] {
+            XCTAssertFalse(app.staticTexts[hidden].exists, "a guest's Settings must not show \(hidden)")
+        }
+        XCTAssertFalse(app.buttons["guest-leave"].exists, "Leave sits behind the share's card")
+
+        let usage = app.buttons["settings-usage-count"]
+        for _ in 0..<5 where !usage.exists || !usage.isHittable { app.swipeUp() }
+        XCTAssertTrue(app.staticTexts["ABOUT"].exists, "Settings should end with About")
+        XCTAssertTrue(usage.exists, "About should keep the usage-count switch")
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS 'Privacy Policy'")).firstMatch.exists)
+        attach(app, "guest-settings-about")
+    }
+
+    /// The share's card opens Shared with you: the share, this phone's key and Leave.
+    func testShareCardOpensSharedWithYou() {
+        let app = openGuestSettings()
+        let card = app.buttons["guest-settings-agent-card"]
+        XCTAssertTrue(card.waitForExistence(timeout: 10))
+        card.tap()
+        XCTAssertTrue(app.staticTexts["Shared by Jerry"].waitForExistence(timeout: 10),
+                      "Shared with you should say who shared the agent")
+        XCTAssertTrue(app.staticTexts["guest-settings-fingerprint"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["guest-settings-fingerprint"].label.hasPrefix("SHA256:"))
+        XCTAssertTrue(app.staticTexts["You appear as"].exists)
+        XCTAssertTrue(app.buttons["guest-leave"].exists, "Shared with you should offer Leave share")
+        attach(app, "guest-settings-shared-with-you")
+
+        app.buttons["Back"].firstMatch.tap()
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "Back should return to the Settings index")
+    }
+
+    /// Connect your own machine closes the share onto the machine list with its own-machine
+    /// setup open, whose Scan reaches pairing (and its Paste).
+    func testConnectYourOwnMachineReachesPairing() {
+        let app = openGuestSettings()
+        let connect = app.buttons["guest-settings-connect-own-machine"]
+        XCTAssertTrue(connect.waitForExistence(timeout: 10))
+        connect.tap()
+
+        let scan = app.buttons["Scan pairing code"]
+        XCTAssertTrue(scan.waitForExistence(timeout: 10),
+                      "Connect your own machine should open the machine list's pairing setup")
+        XCTAssertTrue(app.buttons["shared-machine-row"].exists, "the share should stay in the list")
+        attach(app, "guest-settings-connect-own-machine")
+        scan.tap()
+        XCTAssertTrue(app.navigationBars["Scan to connect"].waitForExistence(timeout: 10),
+                      "Scan pairing code should open the pairing sheet")
+        XCTAssertTrue(app.buttons["pairing-paste-button"].waitForExistence(timeout: 5)
+                      || app.buttons["Paste"].firstMatch.exists, "pairing should offer Paste")
+    }
+
+    private func openGuestSettings() -> XCUIApplication {
+        let app = XCUIApplication.launched(mock: "guest")
+        XCTAssertTrue(app.buttons["guest-agent-row"].waitForExistence(timeout: 10))
+        let settingsTab = app.tabBars.firstMatch.buttons["Settings"]
+        for _ in 0..<3 where !settingsTab.isSelected {
+            settingsTab.tap()
+            _ = poll(3, every: 0.25) { settingsTab.isSelected }
+        }
+        return app
     }
 
     // MARK: Removing a share from its row (the `guestmachine` mock)

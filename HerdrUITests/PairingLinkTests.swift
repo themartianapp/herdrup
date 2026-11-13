@@ -54,8 +54,8 @@ final class PairingLinkTests: XCTestCase {
         assertConfirmation(app, "pairing-link-cold")
     }
 
-    /// A guest-only phone opens straight into its one share, with no way back to the machine
-    /// list; its Settings must still offer pairing a machine of its own.
+    /// A guest-only phone opens straight into its one share; its Settings › Connect your own
+    /// machine must still reach pairing a machine of its own, Scan and Paste.
     func testAGuestOnlyPhoneCanPairItsOwnMachineFromSettings() {
         let app = XCUIApplication.launched(mock: "guest")
         XCTAssertTrue(app.buttons["guest-agent-row"].waitForExistence(timeout: 10))
@@ -65,18 +65,19 @@ final class PairingLinkTests: XCTestCase {
             _ = poll(3, every: 0.25) { settingsTab.isSelected }
         }
 
-        let scan = app.buttons["guest-settings-scan-pairing"]
-        for _ in 0..<4 where !scan.isHittable { app.swipeUp() }
-        XCTAssertTrue(scan.waitForExistence(timeout: 10), "guest Settings should offer Scan pairing code")
+        let connect = app.buttons["guest-settings-connect-own-machine"]
+        XCTAssertTrue(connect.waitForExistence(timeout: 10), "guest Settings should offer Connect your own machine")
         attach(app, "pairing-guest-settings")
+        connect.tap()
+
+        let scan = app.buttons["Scan pairing code"]
+        XCTAssertTrue(scan.waitForExistence(timeout: 10), "the machine list should open its pairing setup")
         scan.tap()
         XCTAssertTrue(app.navigationBars["Scan to connect"].waitForExistence(timeout: 10),
                       "Scan pairing code should open the pairing sheet")
-        app.buttons["Cancel"].tap()
-        XCTAssertTrue(scan.waitForExistence(timeout: 10))
 
         UIPasteboard.general.string = Self.link
-        tapPaste(in: app, identifier: "guest-settings-paste-pairing")
+        tapPaste(in: app, identifier: "pairing-paste-button")
         assertConfirmation(app, "pairing-guest-paste-confirmation")
     }
 

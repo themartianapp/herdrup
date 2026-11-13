@@ -118,6 +118,13 @@ struct RootView: View {
     /// Pairing a machine (#126): the scanner, or the confirmation for a pasted or linked code.
     @ObservedObject private var pairing = PairingRouter.shared
     @State private var openGuest: GuestAccess?
+    /// A guest's Settings › Connect your own machine closed the share: the machine list
+    /// shows with its owner setup open.
+    @State private var ownerSetupRequested = false
+    #if DEBUG
+    /// The `guest` mock left its share for the machine list (Connect your own machine).
+    @State private var mockOnMachineList = false
+    #endif
     /// Whether launch already decided to open the only shared machine.
     @State private var didAutoOpenGuest = false
     /// The connection's Gram downloads (#574): here, above the tab view and the split view,
@@ -231,6 +238,7 @@ struct RootView: View {
             SharedMachineHomeView(
                 access: openGuest,
                 onBack: { self.openGuest = nil },
+                onConnectOwnMachine: { connectOwnMachine() },
                 onLeave: { self.openGuest = nil })
             .id(openGuest.id)
         } else if let client, let credentials, homeShown {
@@ -268,9 +276,17 @@ struct RootView: View {
             .transition(reduceMotion ? .opacity : .push(from: .trailing))
         } else {
             ConnectView(onConnect: { connect($0) }, onOpenShared: { openGuest = $0 },
-                        connecting: client == nil ? nil : credentials)
+                        connecting: client == nil ? nil : credentials,
+                        ownerSetupRequested: $ownerSetupRequested)
             .transition(reduceMotion ? .opacity : .push(from: .trailing))
         }
+    }
+
+    /// A guest's Settings › Connect your own machine: close the share (it stays in the list)
+    /// onto the machine list, its "Connect your own machine" setup open.
+    private func connectOwnMachine() {
+        ownerSetupRequested = true
+        openGuest = nil
     }
 
     /// The machine this phone is connected to, named as the confirmation shows it, so pairing
@@ -585,11 +601,13 @@ struct RootView: View {
                     onCancel: {})
             }
         case .guest:
-            // After Leave the in-memory store is empty and the phone is back on onboarding.
-            if let access = sharedMachines.machines.first {
+            // After Leave the in-memory store is empty and the phone is back on onboarding;
+            // after Settings › Connect your own machine it is on the machine list.
+            if let access = sharedMachines.machines.first, !ownerSetupRequested, !mockOnMachineList {
                 mockGuestHome(access)
             } else {
-                ConnectView { _ in }
+                ConnectView(onConnect: { _ in }, ownerSetupRequested: $ownerSetupRequested)
+                    .onAppear { mockOnMachineList = true }
             }
         case .guestMachine:
             // Three shares on one machine; the store empties as the test removes them.
@@ -617,6 +635,7 @@ struct RootView: View {
             access: access,
             connect: { try GuestMockTransport.connection(for: access) },
             onBack: nil,
+            onConnectOwnMachine: { connectOwnMachine() },
             onLeave: { openGuest = nil })
     }
     #endif
@@ -848,6 +867,9 @@ struct ConnectView: View {
     /// #377: the machine being connected to while the list is still on screen. Its row reads
     /// "Connecting…" with a spinner, and the other machine rows stop taking taps.
     var connecting: SSHCredentials? = nil
+    /// Set when a guest's Settings asked for "Connect your own machine": the list opens that
+    /// setup once and clears the request.
+    var ownerSetupRequested: Binding<Bool>? = nil
 
     @ObservedObject private var savedHosts = SavedHostsStore.shared
     @ObservedObject private var sharedMachines = SharedMachinesStore.shared
@@ -893,6 +915,11 @@ struct ConnectView: View {
                 // stretch edge to edge; inert on iPhone (narrower than the cap).
                 .readableColumn()
             }
+        }
+        .onAppear {
+            guard let ownerSetupRequested, ownerSetupRequested.wrappedValue else { return }
+            ownerSetupRequested.wrappedValue = false
+            showingOwnerSetup = true
         }
         // Add / edit a host. Save & Connect (add) hands credentials up via onConnect.
         .sheet(item: $editorTarget) { target in
@@ -7343,6 +7370,8 @@ struct TerminalPaneContent: View {
 /// Federation); Gestures and the outbound links are not pages.
 enum SettingsSection: Hashable, CaseIterable {
     case machines, accounts, notifications, sharedAccess, textSize, typingLatency, support
+    /// The guest variant's share card opens this page in place of Machines.
+    case sharedWithYou
 
     var label: String {
         switch self {
@@ -7353,6 +7382,7 @@ enum SettingsSection: Hashable, CaseIterable {
         case .textSize:      return "Text size"
         case .typingLatency: return "Typing latency"
         case .support:       return "Support the project"
+        case .sharedWithYou: return "Shared with you"
         }
     }
 
@@ -7366,6 +7396,7 @@ enum SettingsSection: Hashable, CaseIterable {
         case .textSize:      return "textformat.size"
         case .typingLatency: return "gauge.with.needle"
         case .support:       return "heart"
+        case .sharedWithYou: return "person.crop.circle"
         }
     }
 }
@@ -7465,7 +7496,8 @@ private struct SettingsIndexContent<Content: View>: View {
 }
 
 struct SettingsView: View {
-    let client: HerdrClient
+    /// The connected machine. Nil for the guest variant, which has no machine of its own.
+    let client: HerdrClient?
     /// Live agents, mirrored in from the home view exactly like GramView's — the
     /// Federation section derives its remote-machine (peer) list from these.
     let agents: [AgentInfo]
@@ -7491,6 +7523,11 @@ struct SettingsView: View {
     /// suggestions, groups, inline pickers). Its page rows write the selection the detail
     /// column renders, and the selected row is filled `surfaceRaised`.
     var sidebarSelection: Binding<SettingsSection?>? = nil
+    /// The guest variant (a phone that holds only shares): the real index minus what needs a
+    /// machine of your own. The share's card replaces the machine card and opens Shared with
+    /// you; Your own machine replaces Your herd; no suggestions and no Typing latency. Pass
+    /// a nil `client` with it.
+    var guest: GuestSettingsShare? = nil
 
     @AppStorage("notify.needsInput") private var notifyNeedsInput = true
     @AppStorage("notify.dies") private var notifyDies = true
@@ -7578,7 +7615,7 @@ struct SettingsView: View {
                     // Pages it does not show change what the list says (an account signed
                     // in on the Accounts page, say): read the accounts again on each pick.
                     .onChange(of: sidebarSelection?.wrappedValue) { _, _ in
-                        Task { accounts = (try? await client.accountsList()) ?? accounts }
+                        Task { accounts = (try? await client?.accountsList()) ?? accounts }
                     }
             } else {
                 // iPhone (and the screenshot mock): a NavigationStack whose root is the
@@ -7623,16 +7660,16 @@ struct SettingsView: View {
         // Fetch the credential accounts for the Accounts section when Settings opens.
         // `try?` so an older daemon without `accounts.list` (or a transient failure)
         // just leaves the section empty rather than surfacing an error here.
-        .task { accounts = (try? await client.accountsList()) ?? [] }
+        .task { accounts = (try? await client?.accountsList()) ?? [] }
         .task {
-            savedMachines = try? await client.machineStatuses()
+            savedMachines = try? await client?.machineStatuses()
             // A saved machine that runs no agents is only known from `machine.status`, and it
             // can still hold guests: read Shared access again once the profiles arrive.
             await loadGuestAccess()
         }
         // Fetch the daemon version. `try?` so an older daemon without `server.staged_update`
         // leaves it nil (the version line is simply absent).
-        .task { stagedUpdate = try? await client.stagedUpdate() }
+        .task { stagedUpdate = try? await client?.stagedUpdate() }
         // The Shared access row's summary; `try?`-style degrade lives in the model.
         .task { await loadGuestAccess() }
         // "How to set up accounts" — a step-by-step guide for adding another
@@ -7661,7 +7698,7 @@ struct SettingsView: View {
                     var lastError: String?
                     for info in targets {
                         do {
-                            try await client.restartAgent(target: info.paneID, account: accountID)
+                            try await client?.restartAgent(target: info.paneID, account: accountID)
                             moved += 1
                         } catch {
                             // Any failure (no_resumable_session OR anything else):
@@ -7679,7 +7716,7 @@ struct SettingsView: View {
                         bulkResult = "Moved \(moved) of \(total). \(failed) couldn't be moved"
                             + (lastError.map { ": \($0)" } ?? "") + "."
                     }
-                    accounts = (try? await client.accountsList()) ?? []
+                    accounts = (try? await client?.accountsList()) ?? []
                 }
             }
             Button("Cancel", role: .cancel) {}
@@ -7736,12 +7773,18 @@ struct SettingsView: View {
 
     /// Proposal B's root (#572): the machine card, the suggestions that wait, then Your herd,
     /// Preferences, Help and About as short groups over the version footer. The iPhone
-    /// NavigationStack root and the iPad sidebar are this same list.
+    /// NavigationStack root and the iPad sidebar are this same list. A guest gets the share's
+    /// card and Your own machine instead of the first three.
     private var rootList: some View {
         VStack(alignment: .leading, spacing: 0) {
-            machineCard
-            suggestionsGroup
-            herdGroup
+            if let guest {
+                guestShareCard(guest)
+                ownMachineGroup(guest)
+            } else {
+                machineCard
+                suggestionsGroup
+                herdGroup
+            }
             preferencesGroup
             helpGroup
             aboutGroup
@@ -7772,6 +7815,13 @@ struct SettingsView: View {
         case .textSize:      textSizeDetail(showBack: showBack)
         case .typingLatency: typingLatencyDetail(showBack: showBack)
         case .support:       supportDetail(showBack: showBack)
+        case .sharedWithYou:
+            if let guest {
+                detailScaffold(title: "Shared with you", subtitle: "Shared by \(guest.access.ownerName)",
+                               showBack: showBack) {
+                    SharedWithYouContent(share: guest)
+                }
+            }
         }
     }
 
@@ -7804,28 +7854,33 @@ struct SettingsView: View {
                        subtitleTint: accountsHeaderTint, showBack: showBack) {
             accountsSection
                 .sheet(item: $loginAccount) { account in
-                    AccountLoginSheet(client: client, account: account) {
-                        Task { accounts = (try? await client.accountsList()) ?? [] }
+                    // Accounts is an owner page: a client is always there.
+                    if let client {
+                        AccountLoginSheet(client: client, account: account) {
+                            Task { accounts = (try? await client.accountsList()) ?? [] }
+                        }
+                        // The chrome every other sheet in the app gets and this one did not:
+                        // full height with a grabber, so swipe-down closes it.
+                        .presentationDetents([.large])
+                        .presentationDragIndicator(.visible)
                     }
-                    // The chrome every other sheet in the app gets and this one did not:
-                    // full height with a grabber, so swipe-down closes it.
-                    .presentationDetents([.large])
-                    .presentationDragIndicator(.visible)
                 }
                 .sheet(isPresented: $showAddAccount) {
-                    AddAccountSheet(client: client) { refreshed, created in
-                        accounts = refreshed
-                        // Chain into sign-in for the new account once the add sheet
-                        // has dismissed (sequential sheets on the same anchor).
-                        if let created {
-                            Task {
-                                try? await Task.sleep(nanoseconds: 400_000_000)
-                                loginAccount = created
+                    if let client {
+                        AddAccountSheet(client: client) { refreshed, created in
+                            accounts = refreshed
+                            // Chain into sign-in for the new account once the add sheet
+                            // has dismissed (sequential sheets on the same anchor).
+                            if let created {
+                                Task {
+                                    try? await Task.sleep(nanoseconds: 400_000_000)
+                                    loginAccount = created
+                                }
                             }
                         }
+                        .presentationDetents([.large])
+                        .presentationDragIndicator(.visible)
                     }
-                    .presentationDetents([.large])
-                    .presentationDragIndicator(.visible)
                 }
                 .confirmationDialog(
                     logoutAccount.map { "Log out \($0.label)?" } ?? "",
@@ -7859,6 +7914,7 @@ struct SettingsView: View {
     /// Remove an account from the list (`accounts.remove`): the daemon drops it from
     /// config.toml and returns the refreshed list. Credentials are left in place.
     private func performRemove(_ account: CredentialAccount) async {
+        guard let client else { return }
         do {
             accounts = try await client.accountsRemove(id: account.id)
         } catch {
@@ -7869,7 +7925,7 @@ struct SettingsView: View {
     /// Log an account out by running claude's own `auth logout` in a short-lived pane
     /// pinned to the account's config-home (token cleared), then refresh the list.
     private func performLogout(_ account: CredentialAccount) async {
-        guard let configDir = account.configDir,
+        guard let client, let configDir = account.configDir,
               let cmd = claudeLogoutCommand(kind: account.kind, configDir: configDir)
         else { return }
         do {
@@ -7895,7 +7951,9 @@ struct SettingsView: View {
 
     private func sharedAccessDetail(showBack: Bool) -> some View {
         detailScaffold(title: "Shared access", subtitle: guestAccess.summary, showBack: showBack) {
-            GuestAccessSection(client: client, model: guestAccess) { await loadGuestAccess() }
+            if let client {
+                GuestAccessSection(client: client, model: guestAccess) { await loadGuestAccess() }
+            }
         }
         .task { await loadGuestAccess() }
         .refreshable { await loadGuestAccess() }
@@ -7904,6 +7962,7 @@ struct SettingsView: View {
     /// The connected machine plus every federated peer: each keeps its own guest store,
     /// which the coordinator reaches by the peer's alias.
     private func loadGuestAccess() async {
+        guard let client else { return }
         let machines = GuestMachine.directory(
             localLabel: guestMachineLabel.isEmpty ? host : guestMachineLabel,
             savedMachines: savedMachines ?? [], agentPeers: machinePeers)
@@ -8028,6 +8087,40 @@ struct SettingsView: View {
         .accessibilityLabel(Text("Machines, \(machineName), \(machineCardStatus)"))
         .accessibilityIdentifier("settings-machine-card")
         .padding(.horizontal, DesignTokens.Space.screenInset)
+    }
+
+    /// The guest variant's top card: the shared agent where the machine card sits, opening
+    /// Shared with you (the share's details, this phone's key and Leave).
+    private func guestShareCard(_ guest: GuestSettingsShare) -> some View {
+        let shape = RoundedRectangle(cornerRadius: DesignTokens.Radius.group)
+        let access = guest.access
+        return pageLink(.sharedWithYou) {
+            HStack(spacing: 14) {
+                GuestShareCardLabel(access: access)
+                Spacer(minLength: 8)
+                rowChevron
+            }
+            .padding(.horizontal, 16).padding(.vertical, 14)
+            .background(isSelected(.sharedWithYou) ? Palette.surfaceRaised : Palette.surface, in: shape)
+            .contentShape(shape)
+        }
+        .accessibilityLabel(Text("Shared with you, \(access.agentName), shared by \(access.ownerName), \(access.machineLabel)"))
+        .accessibilityIdentifier("guest-settings-agent-card")
+        .padding(.horizontal, DesignTokens.Space.screenInset)
+    }
+
+    /// The guest variant's Your own machine: one row back to the machine list, where this
+    /// phone pairs its computer or adds an SSH host. Accounts, Shared access and
+    /// Notifications need a machine of your own, so a guest has none of them.
+    @ViewBuilder
+    private func ownMachineGroup(_ guest: GuestSettingsShare) -> some View {
+        if let connect = guest.onConnectOwnMachine {
+            rootGroup("YOUR OWN MACHINE") {
+                actionGlyphRow("Connect your own machine", systemImage: "plus.circle",
+                               subtitle: "Pair your computer or add an SSH host", connect)
+                    .accessibilityIdentifier("guest-settings-connect-own-machine")
+            }
+        }
     }
 
     /// Apple-style suggestions under the card, only while something waits: the herdr update
@@ -8175,8 +8268,11 @@ struct SettingsView: View {
                 showGestures = true
             }
             glyphDivider
-            pageRow(.typingLatency)
-            glyphDivider
+            // Typing latency measures the owner's machines; a guest has none.
+            if guest == nil {
+                pageRow(.typingLatency)
+                glyphDivider
+            }
             linkGlyphRow("Report a bug or request a feature", systemImage: "exclamationmark.bubble",
                          url: URL(string: "https://github.com/themartianapp/herdrup/issues")!)
         }
@@ -8486,7 +8582,7 @@ struct SettingsView: View {
         // After a herdr update the hero names the new build. Here, not on the body's long
         // modifier chain, which is at the type checker's limit.
         .onChange(of: serverUpdate?.completedUpdates ?? 0) { _, _ in
-            Task { stagedUpdate = try? await client.stagedUpdate() }
+            Task { stagedUpdate = try? await client?.stagedUpdate() }
         }
     }
 
@@ -8546,6 +8642,7 @@ struct SettingsView: View {
     }
 
     private func changeFederation(_ machine: SavedMachineStatus, enabled: Bool) async {
+        guard let client else { return }
         federationBusyID = machine.profileID
         defer { federationBusyID = nil }
         do {
@@ -9112,6 +9209,7 @@ struct SettingsView: View {
     /// Ask the connected machine whether it can push. On appear and on foreground, so a config
     /// change or a fresh relay enrollment shows up without reconnecting.
     private func refreshPushAvailability() async {
+        guard let client else { return }
         pushAvailability = await client.pushAvailability()
         turnOriginSupported = await client.advertisesTurnOrigin()
     }

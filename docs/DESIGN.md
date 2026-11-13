@@ -21,7 +21,10 @@ herdr's JSON API exposes both, so panes and agents become real UI objects instea
 - **Settings** — the connected machine's profile card opens Machines, with its herdr update
   card, connection actions and federation. Pending updates and exhausted accounts appear as
   suggestions above the Your herd, Preferences, Help and About groups. iPad and Mac keep the
-  same index beside the selected detail page; guest Settings uses the shared agent as its header.
+  same index beside the selected detail page. A phone holding only shares gets the same index
+  without what needs a machine of its own: the shared agent's card (opening Shared with you,
+  with its device key and Leave) in place of the machine card, then Your own machine, whose
+  Connect your own machine row opens the machine list's pairing setup.
 - **Live terminal** — a full SwiftTerm terminal for any pane, one tap behind its card, with gestures
   to page between agents, tail the output, and scroll history.
   History keeps its original row layout, including plain text, so resizing does not rewrap old

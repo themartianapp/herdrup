@@ -1,9 +1,9 @@
 import SwiftUI
 import HerdrKit
 
-/// A guest's Settings tab: what was shared, by whom, the name the guest's messages
-/// carry, notifications, this phone's key, and leaving. Nothing about the owner's fleet.
-struct GuestSettingsView: View {
+/// What the guest variant of Settings needs about the share it shows: the share itself,
+/// this phone's key, the share's connection, and the two ways out of it.
+struct GuestSettingsShare {
     let access: GuestAccess
     /// This phone's key fingerprint; nil while unreadable.
     let fingerprint: String?
@@ -11,119 +11,98 @@ struct GuestSettingsView: View {
     let client: HerdrClient?
     /// Removes the share. The device key stays: it is this install's identity.
     let onLeave: () -> Void
+    /// Closes the share's home onto the machine list, where this phone pairs a machine or
+    /// adds an SSH host of its own. Nil where no machine list sits behind the share.
+    let onConnectOwnMachine: (() -> Void)?
+}
+
+/// Settings › Shared with you, the page the share card opens: what was shared, by whom, the
+/// name the guest's messages carry, notifications, this phone's key, and leaving. Nothing
+/// about the owner's fleet.
+struct SharedWithYouContent: View {
+    let share: GuestSettingsShare
 
     @State private var confirmingLeave = false
-    /// Observed so a Text size change re-renders at the new `Typography.scale`.
-    @AppStorage("ui.fontScale") private var uiFontScale: Double = 1.0
+
+    private var access: GuestAccess { share.access }
 
     var body: some View {
-        let _ = uiFontScale
-        ZStack {
-            Palette.ground.ignoresSafeArea()
-            VStack(spacing: 0) {
-                HStack {
-                    Text("Settings")
-                        .font(Typography.app(20, .semibold)).foregroundStyle(Palette.text)
-                    Spacer()
-                }
-                .padding(.horizontal, 16).padding(.vertical, 12)
-                ScrollView {
-                    VStack(spacing: 0) {
-                        sharedAgentCard.padding(.top, 14)
-                        GuestShellStyle.section("Shared with you").padding(.top, 20).padding(.bottom, 8)
-                        GuestShellStyle.card {
-                            GuestShellStyle.keyValue("Machine") { value(access.machineLabel) }
-                            GuestShellStyle.divider
-                            GuestShellStyle.keyValue("Shared by") { value(access.ownerName) }
-                            GuestShellStyle.divider
-                            GuestShellStyle.keyValue("Agent") { mono(access.agentName, Palette.text) }
-                            GuestShellStyle.divider
-                            GuestShellStyle.keyValue("You appear as") { mono(access.guestName, GuestShellStyle.label) }
-                        }
-
-                        GuestNotificationsControl(access: access, client: client)
-
-                        GuestShellStyle.section("This device").padding(.top, 26).padding(.bottom, 8)
-                        GuestShellStyle.card {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Device key")
-                                    .font(Typography.app(15)).foregroundStyle(Palette.textDim)
-                                Text(fingerprint ?? "Unavailable")
-                                    .font(Typography.machine(13.5, .medium)).foregroundStyle(Palette.text)
-                                    .textSelection(.enabled)
-                                    .accessibilityIdentifier("guest-settings-fingerprint")
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 16).padding(.vertical, 13)
-                        }
-                        Text("\(access.ownerName) sees the same key next to your name, so you can compare them.")
-                            .font(Typography.app(13)).foregroundStyle(Palette.textFaint)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 30).padding(.top, 8)
-
-                        // A guest-only phone opens straight into its share, so this is where
-                        // it adds a machine of its own. The share stays in the machine list.
-                        GuestShellStyle.section("Connect your own machine").padding(.top, 26).padding(.bottom, 8)
-                        VStack(spacing: 10) {
-                            Button { PairingRouter.shared.scan() } label: {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "qrcode.viewfinder").font(.system(size: 15, weight: .semibold))
-                                    Text("Scan pairing code").font(Typography.app(15, .semibold))
-                                }
-                                .foregroundStyle(Palette.text)
-                                .frame(maxWidth: .infinity, minHeight: 46)
-                                .background(Palette.surface, in: Capsule())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("guest-settings-scan-pairing")
-                            PasteButton(payloadType: String.self) { items in
-                                Task { @MainActor in
-                                    if let text = items.first { PairingRouter.shared.open(text) }
-                                }
-                            }
-                            .labelStyle(.titleAndIcon)
-                            .tint(Palette.surfaceRaised)
-                            .buttonBorderShape(.capsule)
-                            .accessibilityLabel("Paste pairing code")
-                            .accessibilityIdentifier("guest-settings-paste-pairing")
-                        }
-                        .padding(.horizontal, 16)
-
-                        Button { confirmingLeave = true } label: {
-                            Text("Leave share")
-                                .font(Typography.app(15, .semibold)).foregroundStyle(Palette.died)
-                                .frame(maxWidth: .infinity).frame(height: 46)
-                                .overlay(Capsule().stroke(Palette.died.opacity(0.45), lineWidth: 1))
-                                .contentShape(Capsule())
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.horizontal, 16).padding(.top, 30)
-                        .accessibilityIdentifier("guest-leave")
-                        Text("You stop seeing \(access.agentName). To come back, \(access.ownerName) has to send a new invite.")
-                            .font(Typography.app(13)).foregroundStyle(Palette.textFaint)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 30).padding(.top, 10)
-                    }
-                    .padding(.bottom, 24)
-                }
-                .scrollBounceBehavior(.basedOnSize)
+        VStack(spacing: 0) {
+            GuestShellStyle.section("Shared with you").padding(.top, 20).padding(.bottom, 8)
+            GuestShellStyle.card {
+                GuestShellStyle.keyValue("Machine") { value(access.machineLabel) }
+                GuestShellStyle.divider
+                GuestShellStyle.keyValue("Shared by") { value(access.ownerName) }
+                GuestShellStyle.divider
+                GuestShellStyle.keyValue("Agent") { mono(access.agentName, Palette.text) }
+                GuestShellStyle.divider
+                GuestShellStyle.keyValue("You appear as") { mono(access.guestName, GuestShellStyle.label) }
             }
+
+            GuestNotificationsControl(access: access, client: share.client)
+
+            GuestShellStyle.section("This device").padding(.top, 26).padding(.bottom, 8)
+            GuestShellStyle.card {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Device key")
+                        .font(Typography.app(15)).foregroundStyle(Palette.textDim)
+                    Text(share.fingerprint ?? "Unavailable")
+                        .font(Typography.machine(13.5, .medium)).foregroundStyle(Palette.text)
+                        .textSelection(.enabled)
+                        .accessibilityIdentifier("guest-settings-fingerprint")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16).padding(.vertical, 13)
+            }
+            Text("\(access.ownerName) sees the same key next to your name, so you can compare them.")
+                .font(Typography.app(13)).foregroundStyle(Palette.textFaint)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 30).padding(.top, 8)
+
+            Button { confirmingLeave = true } label: {
+                Text("Leave share")
+                    .font(Typography.app(15, .semibold)).foregroundStyle(Palette.died)
+                    .frame(maxWidth: .infinity).frame(height: 46)
+                    .overlay(Capsule().stroke(Palette.died.opacity(0.45), lineWidth: 1))
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 16).padding(.top, 30)
+            .accessibilityIdentifier("guest-leave")
+            Text("You stop seeing \(access.agentName). To come back, \(access.ownerName) has to send a new invite.")
+                .font(Typography.app(13)).foregroundStyle(Palette.textFaint)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 30).padding(.top, 10)
         }
+        .padding(.bottom, 8)
         .confirmationDialog("Leave \(access.machineLabel)?", isPresented: $confirmingLeave, titleVisibility: .visible) {
-            Button("Leave share", role: .destructive, action: onLeave)
+            Button("Leave share", role: .destructive, action: share.onLeave)
         } message: {
             Text("\(access.agentName) disappears from this phone.")
         }
     }
 
-    /// Proposal B's header card (#572), for the one thing a guest has: the shared agent. The
-    /// avatar disc look (`AgentIdentity`), its name (`text.machineCardTitle`), who shared it,
-    /// and the machine it runs on. The rows below keep every detail.
-    private var sharedAgentCard: some View {
+    private func value(_ text: String) -> some View {
+        Text(text).font(Typography.app(15)).foregroundStyle(Palette.text)
+    }
+
+    private func mono(_ text: String, _ color: Color) -> some View {
+        Text(text).font(Typography.machine(13.5, .medium)).foregroundStyle(color)
+    }
+}
+
+/// The guest Settings' top card (proposal B's machine card, #572), for the one thing a guest
+/// has: the shared agent. The avatar disc look (`AgentIdentity`), its name
+/// (`text.machineCardTitle`), who shared it, and the machine it runs on. Settings wraps it in
+/// the link to Shared with you and draws its background and chevron.
+struct GuestShareCardLabel: View {
+    let access: GuestAccess
+
+    var body: some View {
         let title = DesignTokens.Text.MachineCardTitle.self
         let size = DesignTokens.Size.machineCardAvatar
         let first = access.agentName.prefix(1).uppercased()
-        return HStack(spacing: 14) {
+        HStack(spacing: 14) {
             Text(first.isEmpty ? "?" : first)
                 .font(Typography.app(size * 0.43, .bold)).foregroundStyle(.white)
                 .frame(width: size, height: size)
@@ -140,21 +119,7 @@ struct GuestSettingsView: View {
                     .foregroundStyle(Palette.textFaint).lineLimit(1)
                     .padding(.top, 2)
             }
-            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 16).padding(.vertical, 14)
-        .background(Palette.surface, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.group))
-        .padding(.horizontal, DesignTokens.Space.screenInset)
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("guest-settings-agent-card")
-    }
-
-    private func value(_ text: String) -> some View {
-        Text(text).font(Typography.app(15)).foregroundStyle(Palette.text)
-    }
-
-    private func mono(_ text: String, _ color: Color) -> some View {
-        Text(text).font(Typography.machine(13.5, .medium)).foregroundStyle(color)
     }
 }
 
