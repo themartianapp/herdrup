@@ -91,8 +91,8 @@ final class PairingLinkTests: XCTestCase {
         let json = #"{"v":2,"host":"127.0.0.1","port":\#(daemon.port),"user":"forge","token":"t0k3n","fp":"SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","ssh_port":2222}"#
 
         // The mock list starts connected; its Back is the disconnect. Saved hosts start
-        // empty (argument domain); in a mock the key and pin stay in memory and the list is
-        // never written, so nothing outlives the run.
+        // empty (argument domain); in a mock the key stays in memory, nothing is pinned and
+        // the list is never written, so nothing outlives the run.
         let app = XCUIApplication()
         app.launchEnvironment["HERDR_SCREENSHOT_MOCK"] = "list"
         app.launchArguments = ["-dev.herdr.savedHosts.v1", "<5b5d>"]

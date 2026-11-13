@@ -17,12 +17,6 @@ final class KeychainHostKeyPolicy: HostKeyPolicy, @unchecked Sendable {
 
     private let lock = NSLock()
     private let service = "dev.herdr.hostkey.pins"
-    #if DEBUG && !HERDR_SHARE_EXTENSION
-    /// Pairing in a screenshot mock or UI test pins here, in memory: an unsigned simulator
-    /// build cannot write the Keychain, and a mock run must leave nothing behind. Guarded
-    /// by `lock`. (Never read for a connection: mocks do not open SSH to a paired machine.)
-    private var mockPins: [String: String] = [:]
-    #endif
 
     func evaluate(host: String, port: UInt16, presented: String) -> HostKeyDecision {
         lock.lock(); defer { lock.unlock() }
@@ -50,14 +44,14 @@ final class KeychainHostKeyPolicy: HostKeyPolicy, @unchecked Sendable {
     /// next key as first contact (a TOFU window).
     @discardableResult
     func pin(host: String, port: UInt16, fingerprint: String) -> Bool {
+        #if DEBUG && !HERDR_SHARE_EXTENSION
+        // A screenshot mock or UI test pairs without pinning: an unsigned simulator build
+        // cannot write the Keychain, a mock run must leave nothing behind, and mocks never
+        // open SSH to a paired machine, so there is no connection to check a pin against.
+        if ScreenshotMock.mode != nil { return true }
+        #endif
         lock.lock(); defer { lock.unlock() }
         let account = accountKey(host: host, port: port)
-        #if DEBUG && !HERDR_SHARE_EXTENSION
-        if ScreenshotMock.mode != nil {
-            mockPins[account] = fingerprint
-            return true
-        }
-        #endif
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
