@@ -184,6 +184,68 @@ The streaming upload channel requires macOS 15; macOS 14 keeps the per-chunk pat
 Tests that open the streaming channel skip on macOS 14, matching the production
 availability guard; teardown and never-started-channel checks still run there.
 
+### CI
+
+**GitHub Actions runs only the Linux checks** ([`ci.yml`](../.github/workflows/ci.yml), on
+`ubuntu-latest`, free for this public repository): *HerdrKit and SwiftTerm (Linux)*, *Symbol
+font is the upstream subset* (with the design-token check and `Tools/ci/check.sh`), *Guest
+relay (Linux)* and *Scope*. No GitHub workflow runs a simulator on a pull request. TestFlight
+uploads stay on GitHub ([`testflight.yml`](../.github/workflows/testflight.yml)), and the
+iPhone Duo screenshots workflow is manual.
+
+**The simulator UI matrix runs on macserve**, the owner's Mac build service, from
+[`.macserve.json`](../.macserve.json). macserve posts one check per shard on a pull request
+once it is ready for review (a draft gets only the build check,
+`mac-evidence/org-ios-sim-build-v1`); every new head reruns the whole matrix. Each shard
+job builds the app for itself, so there are few, long shards:
+
+| Check | macserve template, device | What it runs |
+|---|---|---|
+| `mac-evidence/org-ios-sim-uitest-v1/iphone-terminal` | UI test, iPhone 18 Pro | the terminal classes, `ChatViewTests`, `PagingTests`, `GramTests` |
+| `mac-evidence/org-ios-sim-uitest-v1/iphone-app` | UI test, iPhone 18 Pro | `HerdrFontTests` and every other iPhone class |
+| `mac-evidence/org-ios-sim-uitest-v1/ipad` | UI test, iPad Pro 13-inch | the iPad rounds: resize, Duo transition, control, drop, chat column, Gram column, needs-you, star bar |
+| `mac-evidence/org-ios-sim-script-v1/ipad-script` | script, iPhone 18 Pro + its own iPads | `Tools/ci/macserve-ipad-script.sh`: the built-version check, Herdrup Desktop's references on both iPads, iPad `AgentListChromeTests`, the optimized Settings stack regression, the SwiftTerm UIKit API tests |
+
+The UI-test template runs a shard's `-only-testing` selectors as one `xcodebuild test`;
+[`Tools/ci/test_macserve_shards.py`](../Tools/ci/test_macserve_shards.py) fails the Linux job
+when a test class is in no shard. The script shard runs the rounds a plain selector list
+cannot: the references need a dark simulator with a pinned status bar,
+`AgentListChromeTests` leaves iPadOS's window shrunk for every later launch, the Settings
+regression needs a Distribution build, and SwiftTerm's tests are their own package scheme.
+A failed shard is not rerun automatically; macserve reruns only jobs its own service
+cancelled. macserve does not skip docs-only or version-only pull requests;
+[`Tools/ci/ci_scope.py`](../Tools/ci/ci_scope.py) still records that decision in the
+*Scope* job.
+
+**Running a shard on any Mac.** [`Tools/ci/ui-shard.sh`](../Tools/ci/ui-shard.sh) runs the
+same shards round by round, with measured per-round budgets, an infrastructure-only rerun
+and receipts in `TestReceipts/` (it needs no Homebrew: `xcbeautify` and GNU `timeout` are
+used when present):
+
+```bash
+xcodegen generate
+eval "$(python3 Tools/ci/pick-simulators.py)"     # IPHONE_UDID, IPAD_UDID, IPAD11_UDID
+xcodebuild build-for-testing -project Herdr.xcodeproj -scheme Herdr \
+  -destination "platform=iOS Simulator,id=$IPHONE_UDID" \
+  -derivedDataPath .build-dd -clonedSourcePackagesDirPath SourcePackages CODE_SIGNING_ALLOWED=NO
+Tools/ci/ui-shard.sh iphone-app                    # or iphone-terminal, ipad, ipad-script
+ONLY_SUITE=GramTests ONLY_DEVICE=iphone Tools/ci/ui-shard.sh focused
+```
+
+To run a shard on macserve at a commit, submit a job to its API with the shard's template:
+
+```json
+{"repo":"themartianapp/herdrup","sha":"<40-hex head>","kind":"simulator_ui_test",
+ "profile":"org-ios-sim-uitest-v1","xcode":{"version":"27.1","build":"27A9275"},
+ "simulator":{"runtime":"com.apple.CoreSimulator.SimRuntime.iOS-27-0","runtime_build":"24A434",
+              "device_type":"com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro"},
+ "shard":"iphone-app"}
+```
+
+The `ipad` shard uses `com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-12GB`;
+`ipad-script` uses `"kind":"simulator_script"`, `"profile":"org-ios-sim-script-v1"` and the
+iPhone 18 Pro.
+
 The reconnect-history UI receipt recognizes the fixture's numbered history rows
 before and after real swipes, requiring earlier rows to become visible instead of
 requiring a fixed percentage of changed pixels. Update-retry coverage reads the
@@ -197,16 +259,14 @@ managed-size and completed-paint hooks. The default library mode still reflows t
 geometry only from ordered stream frames; a short retained frame covers resize transitions without
 stretching text or restarting the stream. For unmarked output,
 reveal uses a bounded quiet/deadline heuristic rather than assuming a semantic redraw-complete signal.
-CI runs core tests on Linux and UIKit/interaction regressions on both iPhone and iPad simulators.
-The app and test bundles are built before the timed UI runs. The first simulator boot
-allows ten minutes for cold data migration; later readiness checks allow five minutes.
-Both force termination after another 15 seconds and retain a boot log.
-Before reusing readiness, CI checks the device's current state. A device that shut down
-is booted again; a still-booted device skips `bootstatus`. Missing or unavailable devices
-and failed readiness or install steps fail the round.
+The device suite boots each simulator once with ten minutes for cold data migration; later
+readiness checks allow five minutes. Both force termination after another 15 seconds and
+retain a boot log. Before reusing readiness, `ui-shard.sh` checks the device's current state:
+a device that shut down is booted again, and a still-booted device skips `bootstatus`.
+Missing or unavailable devices and failed readiness or install steps fail the round.
 Debug resize receipts are per pane, so a background terminal's fixed grid
 cannot overwrite the foreground terminal's keyboard-resize result.
-The built-version check selects `Herdr.app`, not the separate UI test runner bundle.
+The built-version check (in `ipad-script`) selects `Herdr.app`, not the separate UI test runner bundle.
 Focused `Class/method` selectors keep their XCTest selector intact but replace the
 slash with a hyphen in receipt filenames, so the boot log remains inside `TestReceipts`.
 Gram search regressions check matching results and older-page fetch counts, not prompt wording.
@@ -317,7 +377,7 @@ actions stay on the right. Pushed Settings pages follow the same Back placement.
 control is declared before the title, matching
 the visual reading order. The sidebar rail and ⌘K remain available.
 Settings builds its compact index in a separate view body, keeping the large section tuple
-off the adaptive navigation stack. CI checks resize/resume in an optimized simulator build
+off the adaptive navigation stack. The `ipad-script` shard checks resize/resume in an optimized simulator build
 with a device-sized 1008 KiB main stack, and rejects attached crashes even if XCTest reports a pass.
 
 iPhone Duo uses the same continuous layout when open or partly folded: regular

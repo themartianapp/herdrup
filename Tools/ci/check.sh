@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Seconds-long checks of the CI tooling, run in CI's Linux job so a script error
-# fails there instead of an hour into every macOS shard. PR #649's first head put a single
+# fails there instead of an hour into a Mac shard. PR #649's first head put a single
 # quote inside Python passed to the interpreter as a shell-quoted string; it ended the shell
 # string, the f-string broke, and every shard's class check failed.
 #   - every Tools/ci shell script parses (bash -n);
 #   - ui-shard.sh passes no Python inline with -c: its Python lives in Tools/ci/*.py;
 #   - every Tools/ci/*.py and every quoted PY heredoc in ui-shard.sh compiles;
-#   - every Tools/ci/test_*.py passes: the helpers' fixture tests and the CI scope
-#     classifier's (ci_scope.py decides whether a PR skips the simulator matrix).
+#   - every Tools/ci/test_*.py passes: the helpers' fixture tests, the macserve shard
+#     coverage (test_macserve_shards.py: no test class left out of .macserve.json) and the
+#     CI scope classifier's (ci_scope.py decides whether a PR needs the simulator matrix).
 set -euo pipefail
 cd "$(dirname "$0")"
 status=0

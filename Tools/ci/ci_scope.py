@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Decides whether a pull request needs the simulator UI matrix (ci.yml `uitest`).
+"""Decides whether a pull request needs the simulator UI matrix (the macserve shards in
+.macserve.json; ci.yml's `scope` job records the answer on every PR).
 
 The matrix is skipped only when every changed file is one of:
 
