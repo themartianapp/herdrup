@@ -610,12 +610,14 @@ struct RootView: View {
                     .onAppear { mockOnMachineList = true }
             }
         case .guestMachine:
-            // Three shares on one machine; the store empties as the test removes them.
-            if let access = sharedMachines.machines.first {
+            // Three shares on one machine; the store empties as the test removes them. After
+            // Settings › Connect your own machine it is on the machine list.
+            if let access = sharedMachines.machines.first, !ownerSetupRequested, !mockOnMachineList {
                 SharedMachineHomeView(access: access, connect: GuestMockTransport.connection(for:),
-                                      onBack: nil, onLeave: {})
+                                      onBack: nil, onConnectOwnMachine: { connectOwnMachine() }, onLeave: {})
             } else {
-                ConnectView { _ in }
+                ConnectView(onConnect: { _ in }, ownerSetupRequested: $ownerSetupRequested)
+                    .onAppear { mockOnMachineList = true }
             }
         case .guestPane, .guestPaused, .guestBlocked, .guestOldHost:
             GuestPaneMockHost(

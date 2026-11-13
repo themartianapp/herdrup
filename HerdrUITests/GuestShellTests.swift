@@ -152,6 +152,34 @@ final class GuestShellTests: XCTestCase {
                       || app.buttons["Paste"].firstMatch.exists, "pairing should offer Paste")
     }
 
+    /// Several shares on one machine open their Settings in a sheet over the share list;
+    /// Connect your own machine closes it and reaches pairing (#666), which RootView presents
+    /// under the sheet.
+    func testConnectYourOwnMachineReachesPairingFromTheMultiShareSheet() {
+        let app = launchMachine()
+        let settingsTab = app.tabBars.firstMatch.buttons["Settings"]
+        for _ in 0..<3 where !settingsTab.isSelected {
+            settingsTab.tap()
+            _ = poll(3, every: 0.25) { settingsTab.isSelected }
+        }
+        let share = app.buttons.matching(identifier: "guest-share-row").firstMatch
+        XCTAssertTrue(share.waitForExistence(timeout: 10), "Settings should list the machine's shares")
+        share.tap()
+        let card = app.buttons["guest-settings-agent-card"]
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "a share's Settings should open in its sheet")
+        let connect = app.buttons["guest-settings-connect-own-machine"]
+        XCTAssertTrue(connect.waitForExistence(timeout: 10))
+        attach(app, "guest-settings-multi-share-sheet")
+        connect.tap()
+
+        let scan = app.buttons["Scan pairing code"]
+        XCTAssertTrue(scan.waitForExistence(timeout: 10),
+                      "Connect your own machine should close the sheet onto the machine list's pairing setup")
+        scan.tap()
+        XCTAssertTrue(app.navigationBars["Scan to connect"].waitForExistence(timeout: 10),
+                      "Scan pairing code should open the pairing sheet")
+    }
+
     private func openGuestSettings() -> XCUIApplication {
         let app = XCUIApplication.launched(mock: "guest")
         XCTAssertTrue(app.buttons["guest-agent-row"].waitForExistence(timeout: 10))
