@@ -5953,7 +5953,12 @@ struct TerminalPaneContent: View {
                     .allowsHitTesting(!showingChat)
                     .accessibilityHidden(showingChat)
                     .overlay {
-                        if showingChat {
+                        // Only the front pane's chat is mounted, and none in the background
+                        // (`ScenePhase.mountsChat`): a kept-alive pane keeps its ChatModel, so
+                        // fronting it again draws its newest window at once, but not hours of
+                        // drawn rows that every relayout (a rotation, the background
+                        // snapshots) would have to lay out again.
+                        if showingChat, isForeground, scenePhase.mountsChat {
                             ChatView(client: client, model: chatModel, viewer: .owner, eventsPaneID: paneID,
                                      isActive: isForeground, live: true, agentStatus: agent?.agentStatus,
                                      ground: Palette.groundMachine,
