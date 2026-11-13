@@ -2,6 +2,7 @@ import Foundation
 import Citadel
 import Crypto
 import NIOCore
+import NIOSSH
 
 /// The pure-Swift transport: swift-nio-ssh + Citadel, replacing libssh2.
 ///
@@ -26,7 +27,10 @@ import NIOCore
 ///   stdin, and base64 keeps arbitrary JSON off the remote shell's quoting rules).
 ///
 /// One `SSHClient` is held and reused across calls (no per-request handshake —
-/// closing issue #25). Conforms to the two-method `HerdrTransport` seam.
+/// closing issue #25), and every long-lived stream (status and chat subscriptions,
+/// `pane.stream`, `pane.input.stream`, Gram uploads) runs as a CHANNEL on that same
+/// connection rather than a connection of its own (`SharedFirstLink`). Conforms to
+/// the two-method `HerdrTransport` seam.
 /// Lets exactly one racer resume a continuation. Resuming a continuation twice is
 /// undefined behaviour rather than a catchable error, so the guard has to be
 /// atomic — a plain Bool read-then-write is a race in exactly the interleaving
@@ -150,10 +154,6 @@ public actor CitadelTransport: HerdrTransport, MachineFederationTransport, Sessi
         try await connection.connectedClient()
     }
 
-    private func makeConnection() async throws -> SSHClient {
-        try await connection.makeConnection()
-    }
-
     /// Conservative ceiling on the full command line, well under the kernel's
     /// MAX_ARG_STRLEN (~131072 on a 4-KiB-page Linux host; the reviewer measured
     /// E2BIG at exactly 131072). It bounds the WHOLE string `herdrCommand` builds,
@@ -177,6 +177,11 @@ public actor CitadelTransport: HerdrTransport, MachineFederationTransport, Sessi
     /// address. The gap between those two numbers is the whole point: 15s is long
     /// enough that no working connection is cut off, short enough that a broken
     /// one says so while the user is still looking at it.
+    ///
+    /// This budget is the ONLY one: it also bounds the TCP connect and Citadel's own
+    /// handshake timer (`SSHClientSettings.loginTimeout`, a fixed 10 s upstream), which
+    /// otherwise cut off a slow link's handshake first — measured at 5–8 s on a 600 ms,
+    /// 5 % loss link, and over 10 s once other traffic shares it.
     public static let defaultConnectTimeoutNanoseconds: UInt64 = 15 * 1_000_000_000
 
     /// The request, base64-encoded. Kept separate from the command so the
@@ -572,80 +577,53 @@ public actor CitadelTransport: HerdrTransport, MachineFederationTransport, Sessi
         throw TransportError.closedBeforeResponse
     }
 
+    /// Opens a long-lived stream (`events.subscribe`, `pane.stream`): the request rides
+    /// as the bridge's argument, and each stdout line is yielded in order until the
+    /// bridge exits or the caller stops consuming.
+    ///
+    /// It runs as a CHANNEL on the shared SSH connection, not on a connection of its
+    /// own: a new connection cost 9–13 round trips before the stream's first byte
+    /// (2.8 s of a terminal's 3.9 s first frame on 3G), and on a bad link it ran into the
+    /// handshake timeout and failed. `SharedFirstLink` decides where the channel runs,
+    /// and how each reason the stream once had its own connection is still met.
+    ///
+    /// Termination finishes the channel's stdin, which closes exactly this channel.
     public nonisolated func stream(_ requestLine: String) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
-            // A subscription gets its OWN connection, NOT the shared command
-            // client. Citadel's public `executeCommandStream` exposes only the
-            // output stream and never closes its child channel (only the internal
-            // `_executeCommandStream` does), so a subscription's resources are not
-            // individually owned. Giving each stream a dedicated client means
-            // termination closes it explicitly — deterministic per-subscription
-            // cleanup rather than relying on the event loop dropping it. (Review
-            // finding #2 asked for this explicit ownership.)
-            let connection = StreamConnection()
+            let host = credentials.host
+            let (stdin, stdinSink) = AsyncStream<ByteBuffer>.makeStream()
+            let reader = StreamLineReader(host: host, continuation: continuation, stdinSink: stdinSink)
             let task = Task {
-                var stderr = ""
                 do {
-                    let client = try await self.makeConnection()
-                    await connection.adopt(client)
-                    if Task.isCancelled { await connection.close(); continuation.finish(); return }
-                    let output = try await client.executeCommandStream(try Self.bridgeCommand(for: requestLine, session: credentials.session))
-                    // Same byte-accurate decoding as roundTrip: decode UTF-8 only
-                    // at newline boundaries so a multi-byte scalar straddling two
-                    // chunks is never corrupted.
-                    var lines = LineAccumulator()
-                    for try await chunk in output {
-                        switch chunk {
-                        case .stdout(let bytes):
-                            for line in lines.append(bytes) {
-                                if let error = Self.daemonSocketFailure(in: line, host: self.credentials.host) {
-                                    throw error
-                                }
-                                continuation.yield(line)
-                            }
-                        case .stderr(let bytes):
-                            stderr += String(buffer: bytes)
-                        }
+                    let command = try Self.bridgeCommand(for: requestLine, session: credentials.session)
+                    try await backend.openStreamLink(command).run(stdin: stdin) { chunk in
+                        reader.receive(chunk)
                     }
-                    if lines.hasRemainder {
-                        let line = lines.flush()
-                        if let error = Self.daemonSocketFailure(in: line, host: self.credentials.host) {
-                            throw error
-                        }
-                        continuation.yield(line)
-                    }
-                    await connection.close()
+                    try reader.finish()
                     continuation.finish()
                 } catch is CancellationError {
-                    await connection.close()
                     continuation.finish()
                 } catch let failure as RemoteExitError {
                     // Apply the same evidence-based classification as roundTrip;
                     // a bare exit 2 is not proof the command is unsupported.
-                    await connection.close()
-                    continuation.finish(
-                        throwing: Self.classifyBridgeFailure(
-                            stderr: stderr, exitCode: failure.remoteExitCode, host: self.credentials.host))
+                    continuation.finish(throwing: reader.failure ?? Self.classifyBridgeFailure(
+                        stderr: reader.stderr, exitCode: failure.remoteExitCode, host: host))
                 } catch {
-                    await connection.close()
-                    continuation.finish(throwing: error)
+                    continuation.finish(throwing: reader.failure ?? error)
                 }
             }
-            // Termination cancels the reader AND closes the dedicated client,
-            // which reaps the SSH channel now rather than leaking it until the
-            // process exits.
             continuation.onTermination = { _ in
+                stdinSink.finish()
                 task.cancel()
-                Task { await connection.close() }
             }
         }
     }
 
-    /// Opens a streaming upload channel for one gram attachment: a dedicated SSH
-    /// exec channel running `herdr remote-api-bridge`, over which
-    /// `GramUploadChannel` writes the `gram.upload.stream` open line and then chunk
-    /// frames. Its own connection keeps upload backpressure off the command socket
-    /// and pane.stream firehose.
+    /// Opens a streaming upload channel for one gram attachment: an SSH exec channel
+    /// running `herdr remote-api-bridge`, over which `GramUploadChannel` writes the
+    /// `gram.upload.stream` open line and then chunk frames. Placed like every stream
+    /// (`SharedFirstLink`); `GramUploadChannel` writes in small slices so the upload
+    /// cannot queue megabytes ahead of the requests sharing the connection.
     ///
     /// NOT `api-bridge --duplex`: herdr removed `api-bridge` after its upstream rebase
     /// (herdr 281341f5) and restored it WITHOUT `--duplex` (1956ea4e). Since then
@@ -661,8 +639,7 @@ public actor CitadelTransport: HerdrTransport, MachineFederationTransport, Sessi
     /// take the per-chunk fallback path automatically.
     public nonisolated func openUploadChannel(_ openLine: String) -> GramUploadChannel {
         GramUploadChannel(
-            makeConnection: { try await self.makeConnection() },
-            command: Self.inputStreamBridgeCommand(session: credentials.session),
+            link: backend.openStreamLink(Self.inputStreamBridgeCommand(session: credentials.session)),
             openLine: openLine
         )
     }
@@ -678,25 +655,244 @@ public actor CitadelTransport: HerdrTransport, MachineFederationTransport, Sessi
     var requestChannelPool: RequestChannelPool { requestChannels }
 }
 
-/// How `CitadelTransport` opens the exec channels that carry one-off requests: the
-/// per-request `api-bridge <base64>` exec and the held `api-bridge --multi` link, plus
-/// the held `remote-api-bridge` link a pane's `pane.input.stream` rides.
-/// Production execs on the shared `SSHConnectionCore`; tests script both.
+/// How `CitadelTransport` opens its exec channels: the per-request `api-bridge <base64>`
+/// exec, the held channels that carry requests (`api-bridge --multi`) and keystrokes
+/// (`pane.input.stream`), and the held channels of long-lived streams.
+/// Production execs on the shared `SSHConnectionCore`; tests script all three.
 struct ExecBackend: Sendable {
     /// Runs `command` and streams its output; the stream throws a `RemoteExitError`
     /// on a non-zero exit.
     let execute: @Sendable (_ command: String) async throws -> AsyncThrowingStream<ExecCommandOutput, Error>
-    /// The link for a held channel running `command`. Nothing runs until `run`.
+    /// The link for a held channel running `command` on the shared connection. Nothing
+    /// runs until `run`.
     let openLink: @Sendable (_ command: String) async throws -> RequestChannelLink
+    /// The link for a long-lived stream running `command`: a channel on the shared
+    /// connection while it has room, else a connection of its own (`SharedFirstLink`).
+    /// Nothing, not even the connect, happens until `run`.
+    let openStreamLink: @Sendable (_ command: String) -> RequestChannelLink
 
     static func ssh(_ connection: SSHConnectionCore) -> ExecBackend {
         ExecBackend(
             execute: { command in
-                try await connection.connectedClient().executeCommandStream(command)
+                try await connection.execute(command)
             },
             openLink: { command in
-                CitadelRequestLink(client: try await connection.connectedClient(), command: command)
+                CountedSharedLink(
+                    core: connection, client: try await connection.connectedClient(), command: command)
+            },
+            openStreamLink: { command in
+                SharedFirstLink(
+                    shared: { try await connection.sharedChannel(running: command) },
+                    dedicated: { try await connection.dedicatedChannel(running: command) })
             })
+    }
+}
+
+/// A held channel's slot on the shared connection.
+struct SharedChannelSlot: Sendable {
+    let link: RequestChannelLink
+    /// Gives the slot back. Called exactly once, when the channel has ended.
+    let release: @Sendable () async -> Void
+    /// sshd never answered the channel open: the connection is dead.
+    let openTimedOut: @Sendable () async -> Void
+}
+
+/// A held channel on a connection of its own; `close` closes that connection.
+struct DedicatedChannel: Sendable {
+    let link: RequestChannelLink
+    let close: @Sendable () async -> Void
+}
+
+/// Where a long-lived stream's channel runs: on the shared SSH connection when it has
+/// room, else on a connection of its own, which is how every stream used to run.
+///
+/// Streams had their own connections for three reasons. Each still holds:
+///
+/// - **Cleanup.** Citadel's `executeCommandStream` never closes its channel, so a stream
+///   closed its whole connection to end. The channel now runs under `withExec`
+///   (`CitadelRequestLink`), which closes exactly that channel when the stream ends.
+/// - **Failure isolation.** A channel that fails ends that channel only: the bridge
+///   exiting, the daemon refusing, or sshd refusing the open never touches the
+///   connection or the other streams on it. The connection is dropped only when it is
+///   shown dead: a channel open sshd never answers (Citadel gives up after 15 s), which
+///   is how a half-open TCP connection looks, so the next open reconnects instead of
+///   every stream retrying into it.
+/// - **Backpressure.** Every channel has its own flow-control window (2 MiB,
+///   `SSHConnectionCore.maximumPacketSize`), and NIO keeps reading the socket however
+///   slowly a consumer drains its stream, so one stalled stream cannot hold up another
+///   stream's bytes or a request's reply. Uploads, the one stream that WRITES in bulk,
+///   write in small slices (`GramUploadChannel.maxWriteBytes`) so a request is never
+///   queued behind a whole frame.
+///
+/// One limit is new: sshd allows only so many channels per connection (OpenSSH's
+/// `MaxSessions`, 10 by default). The shared connection carries at most
+/// `SSHConnectionCore.sharedHeldChannelLimit` held channels, leaving room for
+/// per-request execs; a stream past that, or one whose open sshd refuses, takes a
+/// connection of its own, and a per-request exec sshd refuses waits for a channel to
+/// close and retries (`SSHConnectionCore.execute`).
+struct SharedFirstLink: RequestChannelLink {
+    /// A slot on the shared connection, or nil when it is full (or channels cannot be
+    /// closed individually on this OS). Throws when the shared connection cannot connect.
+    let shared: @Sendable () async throws -> SharedChannelSlot?
+    let dedicated: @Sendable () async throws -> DedicatedChannel
+    /// Whether an error means sshd refused the channel open. A seam only because
+    /// `NIOSSHError` cannot be constructed outside NIOSSH.
+    var isRefused: @Sendable (Error) -> Bool = { SharedFirstLink.isChannelRefused($0) }
+
+    func run(
+        stdin: AsyncStream<ByteBuffer>,
+        onOutput: @escaping @Sendable (ExecCommandOutput) async -> Void
+    ) async throws {
+        if let slot = try await shared() {
+            if Task.isCancelled {
+                // The stream was dropped while the connection came up: open nothing.
+                await slot.release()
+                throw CancellationError()
+            }
+            do {
+                try await slot.link.run(stdin: stdin, onOutput: onOutput)
+                await slot.release()
+                return
+            } catch where isRefused(error) {
+                // The connection is at sshd's channel limit right now (per-request
+                // execs count too). Nothing ran: the open itself was refused, before
+                // stdin was read, so the stream opens on its own connection instead.
+                await slot.release()
+            } catch where Self.isOpenUnanswered(error) {
+                await slot.openTimedOut()
+                await slot.release()
+                throw error
+            } catch {
+                await slot.release()
+                throw error
+            }
+        }
+        try Task.checkCancellation()
+        let own = try await dedicated()
+        // Cancelling a task does not interrupt an await on a NIO promise, and a channel
+        // close awaits the peer's CHANNEL_CLOSE, which a dead link never sends. Closing
+        // the connection fails that promise, so the stream ends on cancel regardless.
+        try await withTaskCancellationHandler {
+            do {
+                try await own.link.run(stdin: stdin, onOutput: onOutput)
+            } catch {
+                await own.close()
+                throw error
+            }
+            await own.close()
+        } onCancel: {
+            Task { await own.close() }
+        }
+    }
+
+    /// sshd refused to open the channel (OpenSSH: `MaxSessions` reached).
+    static func isChannelRefused(_ error: Error) -> Bool {
+        (error as? NIOSSHError)?.type == .channelSetupRejected
+    }
+
+    /// The channel open went unanswered (Citadel's 15 s channel-create timer).
+    static func isOpenUnanswered(_ error: Error) -> Bool {
+        if case CitadelError.channelCreationFailed? = error as? CitadelError { return true }
+        return false
+    }
+}
+
+/// A held channel on the shared connection, counted against
+/// `SSHConnectionCore.sharedHeldChannelLimit` for as long as it runs.
+struct CountedSharedLink: RequestChannelLink, @unchecked Sendable {
+    let core: SSHConnectionCore
+    let client: SSHClient
+    let command: String
+
+    func run(
+        stdin: AsyncStream<ByteBuffer>,
+        onOutput: @escaping @Sendable (ExecCommandOutput) async -> Void
+    ) async throws {
+        await core.retainHeldChannel(on: client)
+        do {
+            try await CitadelRequestLink(client: client, command: command).run(stdin: stdin, onOutput: onOutput)
+        } catch {
+            await core.releaseHeldChannel(on: client)
+            throw error
+        }
+        await core.releaseHeldChannel(on: client)
+    }
+}
+
+/// A stream on a connection of its own where `withExec` is unavailable (macOS 14):
+/// `executeCommandStream` cannot close its channel, so the stream ends by closing the
+/// connection (`DedicatedChannel.close`). stdin is never written; finishing it ends
+/// the stream, as with `CitadelRequestLink`.
+struct ExecStreamLink: RequestChannelLink, @unchecked Sendable {
+    let client: SSHClient
+    let command: String
+
+    func run(
+        stdin: AsyncStream<ByteBuffer>,
+        onOutput: @escaping @Sendable (ExecCommandOutput) async -> Void
+    ) async throws {
+        let output = try await client.executeCommandStream(command)
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { for await _ in stdin {} }
+            group.addTask {
+                for try await chunk in output { await onOutput(chunk) }
+            }
+            try await group.next()
+            group.cancelAll()
+        }
+    }
+}
+
+/// Splits a stream's stdout into lines for `CitadelTransport.stream`, decoding UTF-8
+/// only at newlines. A line reporting that the daemon socket is unreachable ends the
+/// stream with that error: it is recorded, and the channel's stdin finished.
+final class StreamLineReader: @unchecked Sendable {
+    private let lock = NSLock()
+    private let host: String
+    private let continuation: AsyncThrowingStream<String, Error>.Continuation
+    private let stdinSink: AsyncStream<ByteBuffer>.Continuation
+    private var lines = LineAccumulator()
+    private var stderrText = ""
+    private var failed: Error?
+
+    init(host: String, continuation: AsyncThrowingStream<String, Error>.Continuation,
+         stdinSink: AsyncStream<ByteBuffer>.Continuation) {
+        self.host = host
+        self.continuation = continuation
+        self.stdinSink = stdinSink
+    }
+
+    var failure: Error? { lock.withLock { failed } }
+    var stderr: String { lock.withLock { stderrText } }
+
+    func receive(_ chunk: ExecCommandOutput) {
+        lock.withLock {
+            switch chunk {
+            case .stdout(let bytes):
+                for line in lines.append(bytes) { deliver(line) }
+            case .stderr(let bytes):
+                stderrText += String(buffer: bytes)
+            }
+        }
+    }
+
+    /// After the channel ended cleanly: delivers an unterminated last line, and throws
+    /// a daemon failure seen on the way.
+    func finish() throws {
+        try lock.withLock {
+            if lines.hasRemainder { deliver(lines.flush()) }
+            if let failed { throw failed }
+        }
+    }
+
+    private func deliver(_ line: String) {
+        guard failed == nil else { return }
+        if let error = CitadelTransport.daemonSocketFailure(in: line, host: host) {
+            failed = error
+            stdinSink.finish()
+            return
+        }
+        continuation.yield(line)
     }
 }
 
@@ -718,10 +914,34 @@ actor SSHConnectionCore {
 
     let connectTimeoutNanoseconds: UInt64
 
-    init(credentials: SSHCredentials, hostKeyValidator: SSHHostKeyValidator, connectTimeoutNanoseconds: UInt64) {
+    /// Connects that failed in a row, and when the last one did. When the shared
+    /// connection drops, every stream on it ends at once and each reopens with its own
+    /// backoff; they all join one connect (`connectTask`), and after a FAILED connect the
+    /// next one waits out `reconnectBackoff`, so a host that is down is not dialled once
+    /// per stream per retry.
+    private var connectFailures = 0
+    private var lastConnectFailure: ContinuousClock.Instant?
+    let reconnectBackoff: (initial: Duration, maximum: Duration)
+    static let defaultReconnectBackoff: (initial: Duration, maximum: Duration) = (.seconds(1), .seconds(15))
+
+    /// Held channels (streams, request channels, input channels) open on each client.
+    private var heldChannels: [ObjectIdentifier: Int] = [:]
+    /// How many held channels the shared connection carries before a stream takes a
+    /// connection of its own. OpenSSH's `MaxSessions` defaults to 10 channels per
+    /// connection; held channels take at most 6, so per-request execs (the requests
+    /// sent before the request channel is up, Gram previews, session lists) keep 4.
+    /// A screen holds 4–6: the request channel, the status stream, a terminal's stream
+    /// and input channel, the chat stream.
+    static let sharedHeldChannelLimit = 6
+
+    init(
+        credentials: SSHCredentials, hostKeyValidator: SSHHostKeyValidator, connectTimeoutNanoseconds: UInt64,
+        reconnectBackoff: (initial: Duration, maximum: Duration) = SSHConnectionCore.defaultReconnectBackoff
+    ) {
         self.credentials = credentials
         self.hostKeyValidator = hostKeyValidator
         self.connectTimeoutNanoseconds = connectTimeoutNanoseconds
+        self.reconnectBackoff = reconnectBackoff
     }
 
     /// The SSH maximum packet size this client offers, which swift-nio-ssh ALSO uses
@@ -753,7 +973,11 @@ actor SSHConnectionCore {
         if let connectTask {
             task = connectTask                      // join the in-flight attempt
         } else {
-            let created = Task<SSHClient, Error> { try await self.makeConnection() }
+            let wait = reconnectWait()
+            let created = Task<SSHClient, Error> {
+                if wait > .zero { try await Task.sleep(for: wait) }
+                return try await self.makeConnection()
+            }
             connectTask = created
             task = created
         }
@@ -769,14 +993,114 @@ actor SSHConnectionCore {
                 throw CancellationError()
             }
             client = connected
-            if connectTask == task { connectTask = nil }
+            if connectTask == task {
+                connectTask = nil
+                connectFailures = 0
+                lastConnectFailure = nil
+            }
             return connected
         } catch {
             // Only clear the slot if it still holds OUR task — never clobber a newer
             // connect started after a close() bumped the generation.
-            if connectTask == task { connectTask = nil }
+            if connectTask == task {
+                connectTask = nil
+                if gen == generation {
+                    connectFailures += 1
+                    lastConnectFailure = .now
+                }
+            }
             throw error
         }
+    }
+
+    /// How long the next connect waits: nothing after a success, else a doubling delay
+    /// counted from the last failure, so a caller that already waited that long (a
+    /// stream's own backoff, a user's retry) pays nothing extra.
+    private func reconnectWait() -> Duration {
+        guard connectFailures > 0, let lastConnectFailure else { return .zero }
+        var delay = reconnectBackoff.initial
+        for _ in 1..<min(connectFailures, 16) {
+            delay = min(delay * 2, reconnectBackoff.maximum)
+        }
+        let elapsed = ContinuousClock.now - lastConnectFailure
+        return max(.zero, min(delay, reconnectBackoff.maximum) - elapsed)
+    }
+
+    /// Runs `command` on its own exec channel of the shared connection. When sshd
+    /// refuses the channel because the connection is at its channel limit (`MaxSessions`;
+    /// streams now share the connection too), waits for one to close and tries again,
+    /// for up to ~3 s, rather than failing the request.
+    func execute(_ command: String) async throws -> AsyncThrowingStream<ExecCommandOutput, Error> {
+        var delay = Duration.milliseconds(100)
+        var waited = Duration.zero
+        while true {
+            do {
+                return try await connectedClient().executeCommandStream(command)
+            } catch where SharedFirstLink.isChannelRefused(error) && waited < Self.refusedExecPatience {
+                try await Task.sleep(for: delay)
+                waited += delay
+                delay = min(delay * 2, .milliseconds(800))
+            }
+        }
+    }
+    static let refusedExecPatience = Duration.seconds(3)
+
+    // MARK: - held channels
+
+    /// A slot for a long-lived stream on the shared connection, or nil when the
+    /// connection already carries `sharedHeldChannelLimit` held channels, or when this
+    /// OS cannot close one channel by itself (`withExec` needs macOS 15; iOS 17 always
+    /// has it). Throws when the shared connection cannot connect.
+    func sharedChannel(running command: String) async throws -> SharedChannelSlot? {
+        guard #available(macOS 15.0, *) else { return nil }
+        let client = try await connectedClient()
+        let key = ObjectIdentifier(client)
+        // No suspension between this check and the increment: concurrent opens cannot
+        // both take the last slot.
+        guard heldChannels[key, default: 0] < Self.sharedHeldChannelLimit else { return nil }
+        heldChannels[key, default: 0] += 1
+        return SharedChannelSlot(
+            link: CitadelRequestLink(client: client, command: command),
+            release: { await self.releaseHeldChannel(on: client) },
+            openTimedOut: { await self.drop(client) })
+    }
+
+    /// A long-lived stream on a connection of its own, as every stream ran before.
+    func dedicatedChannel(running command: String) async throws -> DedicatedChannel {
+        let client = try await makeConnection()
+        let link: RequestChannelLink
+        if #available(macOS 15.0, *) {
+            link = CitadelRequestLink(client: client, command: command)
+        } else {
+            link = ExecStreamLink(client: client, command: command)
+        }
+        return DedicatedChannel(link: link, close: { try? await client.close() })
+    }
+
+    func retainHeldChannel(on client: SSHClient) {
+        heldChannels[ObjectIdentifier(client), default: 0] += 1
+    }
+
+    func releaseHeldChannel(on client: SSHClient) {
+        let key = ObjectIdentifier(client)
+        let remaining = heldChannels[key, default: 0] - 1
+        heldChannels[key] = remaining > 0 ? remaining : nil
+    }
+
+    /// Drops `client` if it is still the shared connection: sshd did not answer a channel
+    /// open, so the TCP connection is dead (half-open) even though it still looks
+    /// connected. Its channels end, and the next caller reconnects. A connection already
+    /// replaced is left alone.
+    func drop(_ client: SSHClient) async {
+        guard let current = self.client, current === client else { return }
+        self.client = nil
+        try? await client.close()
+    }
+
+    /// Held channels open on the shared connection now. Test-only.
+    var sharedHeldChannelCount: Int {
+        guard let client else { return 0 }
+        return heldChannels[ObjectIdentifier(client), default: 0]
     }
 
     func makeConnection() async throws -> SSHClient {
@@ -808,18 +1132,20 @@ actor SSHConnectionCore {
         // `testConnectFailsWithinTheBudgetAgainstABlackHoleAddress`). The winner
         // must be able to return while the loser unwinds unobserved.
         let host = credentials.host
-        let port = Int(credentials.port)
-        let validator = hostKeyValidator
         let budget = connectTimeoutNanoseconds
+        var settings = SSHClientSettings(
+            host: host, port: Int(credentials.port),
+            authenticationMethod: { method }, hostKeyValidator: hostKeyValidator)
+        settings.protocolOptions = [.maximumPacketSize(SSHConnectionCore.maximumPacketSize)]
+        // ONE budget: the race below. Citadel's own timers (the TCP connect, and the
+        // handshake + auth timer that upstream fixes at 10 s) are set past it so they
+        // never cut a slow handshake short of the budget the app chose.
+        let citadelLimit = TimeAmount.nanoseconds(Int64(clamping: budget).addingReportingOverflow(1_000_000_000).overflow
+            ? .max : Int64(clamping: budget) + 1_000_000_000)
+        settings.connectTimeout = citadelLimit
+        settings.loginTimeout = citadelLimit
         let work = Task<SSHClient, Error> {
-            try await SSHClient.connect(
-                host: host,
-                port: port,
-                authenticationMethod: method,
-                hostKeyValidator: validator,
-                reconnect: .never,
-                protocolOptions: [.maximumPacketSize(SSHConnectionCore.maximumPacketSize)]
-            )
+            try await SSHClient.connect(to: settings)
         }
         do {
             return try await withCheckedThrowingContinuation { continuation in
@@ -921,30 +1247,6 @@ struct LineAccumulator {
     mutating func flush() -> String {
         defer { bytes.removeAll() }
         return String(decoding: bytes, as: UTF8.self)
-    }
-}
-
-/// Owns a subscription's dedicated SSH client so termination can close it —
-/// which reaps the exec channel that Citadel's `executeCommandStream` would
-/// otherwise leave open. Idempotent; a `close` that races the connect (`adopt`
-/// after `close`) still closes the late client.
-actor StreamConnection {
-    private var client: SSHClient?
-    private var closed = false
-
-    func adopt(_ client: SSHClient) async {
-        if closed {
-            try? await client.close()
-        } else {
-            self.client = client
-        }
-    }
-
-    func close() async {
-        closed = true
-        let held = client
-        client = nil
-        try? await held?.close()
     }
 }
 

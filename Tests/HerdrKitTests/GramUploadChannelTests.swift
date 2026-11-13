@@ -1,4 +1,6 @@
 import XCTest
+import Citadel
+import NIOCore
 
 @testable import HerdrKit
 
@@ -12,16 +14,22 @@ import XCTest
 /// This mirrors `CitadelTransportTests.testConnectFailsWithinTheBudgetAgainstABlackHoleAddress`,
 /// which shortens the same kind of unstructured race for the same reason.
 final class GramUploadChannelTests: XCTestCase {
-    /// A channel whose connection never resolves, so its runner can never finish.
+    /// A link that never opens: far longer than any grace under test, it stands in
+    /// for a half-open TCP that neither completes nor errors.
+    private struct StalledLink: RequestChannelLink {
+        func run(
+            stdin: AsyncStream<ByteBuffer>,
+            onOutput: @escaping @Sendable (ExecCommandOutput) async -> Void
+        ) async throws {
+            try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
+            throw CancellationError()
+        }
+    }
+
+    /// A channel whose link never opens, so its runner can never finish.
     private func stalledChannel(closeGrace: UInt64) -> GramUploadChannel {
         GramUploadChannel(
-            makeConnection: {
-                // Far longer than any grace under test: this stands in for a
-                // half-open TCP that neither completes nor errors.
-                try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
-                throw CancellationError()
-            },
-            command: "true",
+            link: StalledLink(),
             openLine: #"{"id":"t","method":"gram.upload.stream","params":{"upload_id":"t"}}"#,
             closeGrace: closeGrace
         )
