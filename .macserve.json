@@ -7,5 +7,6 @@
  "script":{"shards":{
   "ipad-script":{"run":"Tools/ci/macserve-ipad-script.sh"},
   "duo-screenshots":{"run":"Tools/ci/duo-screenshots.sh"},
-  "duo-column":{"run":"Tools/ci/duo-column.sh"}
+  "duo-column":{"run":"Tools/ci/duo-column.sh"},
+  "snapshot-stress":{"run":"Tools/ci/snapshot-stress.sh"}
  }}}

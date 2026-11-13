@@ -472,6 +472,9 @@ final class MermaidRenderer: NSObject {
         web.scrollView.contentInsetAdjustmentBehavior = .never
         web.navigationDelegate = self
         building = web
+        #if DEBUG
+        SnapshotStress.track(web)
+        #endif
         return ObjectIdentifier(web)
     }
 

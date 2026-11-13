@@ -78,6 +78,7 @@ final class ChatModel: ObservableObject {
     /// (not per draw), with each row's position by id.
     fileprivate private(set) var rows: [ChatRow] = []
     fileprivate private(set) var rowIndex: [String: Int] = [:]
+    var rowCount: Int { rows.count }
 
     let store: TranscriptStore
 
@@ -85,6 +86,9 @@ final class ChatModel: ObservableObject {
     init(target: String, subagent: String? = nil) {
         store = TranscriptStore(target: target, subagent: subagent)
         store.onChange = { [weak self] in self?.sync() }
+        #if DEBUG
+        SnapshotStress.track(self)
+        #endif
     }
 
     var target: String { store.target }
@@ -760,6 +764,11 @@ struct ChatView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("chat-view")
         .accessibilityValue("turns=\(model.turns.count)")
+        .onDisappear {
+            #if DEBUG
+            SnapshotStress.noteDrawn(model, rows: 0)
+            #endif
+        }
         .overlay(alignment: .top) { refreshStatus }
         .task(id: [isActive, live]) {
             guard isActive else { return }
@@ -907,9 +916,13 @@ struct ChatView: View {
         let hitsByRow = Dictionary(grouping: hits, by: \.rowID)
         let actions = rowActions
         let probesPrompts = offersPreviousMine
+        let start = drawnStart
+        #if DEBUG
+        SnapshotStress.noteDrawn(model, rows: model.rows.count - start)
+        #endif
         return VStack(alignment: .leading, spacing: 10) {
             topSentinel(proxy)
-            ForEach(model.rows[drawnStart...]) { row in
+            ForEach(model.rows[start...]) { row in
                 chatRow(row, hits: hitsByRow[row.id] ?? [], actions: actions)
                     .equatable()
                     .modifier(ChatPromptTopProbe(turnID: probesPrompts ? row.promptTurnID : nil,
