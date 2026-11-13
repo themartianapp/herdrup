@@ -241,6 +241,9 @@ public final class TranscriptStore {
     /// Why the newest refresh failed; nil after one succeeds.
     public private(set) var lastError: Error?
     public private(set) var loadingOlder = false
+    /// A page kept from an earlier launch is on screen and the first refresh has not
+    /// answered yet (`showCached`). A loaded page or a failed refresh ends it.
+    public private(set) var isShowingCached = false
     public var onChange: (() -> Void)?
 
     private var afterCursor: String?
@@ -359,8 +362,28 @@ public final class TranscriptStore {
             guard version == generation else { return }
             lastError = error
             loaded = true
+            isShowingCached = false
             onChange?()
         }
+    }
+
+    /// Paints `page`, the newest page `ContentCache` kept from an earlier launch, while the
+    /// first refresh is still out. Only before anything loaded. Its cursors describe the
+    /// server as it was, so none are adopted: the refresh then fetches the newest page as
+    /// on any first open, and `applyNewest` replaces this one in place. A send waits for
+    /// that page too (`prepareOutgoing` needs a real snapshot).
+    public func showCached(_ page: AgentTranscriptPage) {
+        guard !loaded, !hasSnapshot else { return }
+        entries = Self.unique(page.entries)
+        model = page.model
+        plan = page.plan
+        subagents = page.subagents ?? []
+        recap = page.recap
+        pendingAsk = page.pendingAsk
+        working = page.working
+        loaded = true
+        isShowingCached = true
+        regroup()
     }
 
     /// The next older page, prepended. A failure is thrown for the caller to show where
@@ -474,6 +497,7 @@ public final class TranscriptStore {
         working = page.working
         lastError = nil
         loaded = true
+        isShowingCached = false
         guard !unchanged else { return }
         regroup()
     }

@@ -140,6 +140,8 @@ final class SavedHostsStore: ObservableObject {
         hosts[i].nickname = n.isEmpty ? nil : n
         hosts[i].authKind = newKind
         persist()
+        // Pointed at another machine (or account): what the old one showed is not this one's.
+        if h != existing.host || u != existing.username { Self.wipeContentCache(existing) }
         return true
     }
 
@@ -201,7 +203,15 @@ final class SavedHostsStore: ObservableObject {
               passwordKeychain.delete(account: host.id.uuidString) else { return false }
         hosts.removeAll { $0.id == host.id }
         persist()
+        // A forgotten machine leaves nothing it showed behind (agents, chats, Gram, screens).
+        Self.wipeContentCache(host)
         return true
+    }
+
+    private static func wipeContentCache(_ host: SavedHost) {
+        #if !HERDR_SHARE_EXTENSION
+        AppContentCache.wipe(machine: host)
+        #endif
     }
 
     private func persist() {

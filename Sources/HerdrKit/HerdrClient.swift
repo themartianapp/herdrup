@@ -44,9 +44,15 @@ public actor HerdrClient {
     /// The value herdr reads as "a HerdrUp client acting for the owner".
     public static let appInputSource = "app"
 
-    public init(transport: HerdrTransport) {
+    /// Where this client records the replies a cold start paints from (the agent list, each
+    /// agent's newest chat page, the Gram inbox's first page), and where the views read
+    /// them back. Nil keeps nothing (mocks, the bench's no-cache run, one-off clients).
+    public nonisolated let contentCache: ContentCacheScope?
+
+    public init(transport: HerdrTransport, contentCache: ContentCacheScope? = nil) {
         self.transport = transport
         self.inputSource = transport.actsAsGuest ? nil : Self.appInputSource
+        self.contentCache = contentCache
     }
 
     private func nextID(_ method: String) -> String {
@@ -69,12 +75,15 @@ public actor HerdrClient {
         return try decoder.decode(ResultEnvelope<R>.self, from: data).result
     }
 
+    /// `record` receives the reply line and its decoded result, for `contentCache`.
     private func call<P: Encodable, R: Decodable>(
-        _ method: String, _ params: P, as type: R.Type
+        _ method: String, _ params: P, as type: R.Type, record: ((String, R) -> Void)? = nil
     ) async throws -> R {
         let line = try encodeRequest(method, params)
         let response = try await transport.roundTrip(line)
-        return try decodeResult(response, as: type)
+        let result = try decodeResult(response, as: type)
+        record?(response, result)
+        return result
     }
 
     // MARK: - Commands
@@ -128,8 +137,11 @@ public actor HerdrClient {
     private var listingSequence: UInt64 = 0
     private var lastListing: (sentAt: ContinuousClock.Instant, listing: AgentListing)?
 
+    /// The one request behind every `agentListing` caller; its reply is what a cold start
+    /// paints from next time (`contentCache`).
     private func fetchAgentListing() async throws -> AgentListing {
-        let result = try await call("agent.list", EmptyParams(), as: AgentListResult.self)
+        let result = try await call("agent.list", EmptyParams(), as: AgentListResult.self,
+                                    record: contentCache.map { cache in { line, _ in cache.recordAgentList(line) } })
         return AgentListing(agents: result.agents, originCapabilities: result.originCapabilities,
                             originMachineID: result.originMachineID)
     }
@@ -645,16 +657,25 @@ public actor HerdrClient {
     /// which decodes as a normal changed answer with `hasMore` nil, i.e. "this is
     /// everything". An old daemon therefore behaves exactly as before rather than
     /// erroring or paging half an inbox.
+    ///
+    /// `keepsForColdStart` records a changed answer in `contentCache` as the inbox's first
+    /// page, for the next cold start to paint before it asks. Only the inbox's own head
+    /// refresh sets it: a badge count or a one-message probe is not what the inbox shows.
     public func gramList(
         unreadOnly: Bool = false, ifUnchangedDigest: String? = nil,
-        limit: Int? = nil, beforeID: String? = nil
+        limit: Int? = nil, beforeID: String? = nil, keepsForColdStart: Bool = false
     ) async throws -> GramListAnswer {
+        let keeper = keepsForColdStart && !unreadOnly && beforeID == nil ? contentCache : nil
         let result = try await call(
             "gram.list",
             GramListParams(callerPaneID: nil, onlyQueue: false, unreadOnly: unreadOnly,
                            ifUnchangedDigest: ifUnchangedDigest, limit: limit,
                            beforeID: beforeID),
-            as: GramListResult.self)
+            as: GramListResult.self,
+            record: keeper.map { cache in { line, result in
+                // "Unchanged" carries no list: the page kept last time still holds.
+                if result.messages != nil { cache.recordGramHead(line) }
+            } })
         return GramListAnswer(
             messages: result.messages, digest: result.digest, storeID: result.storeID,
             hasMore: result.hasMore, unreadCount: result.unreadCount)
@@ -2037,8 +2058,14 @@ public actor HerdrClient {
     ) async throws -> AgentTranscriptPage {
         let params = AgentTranscriptParams(target: target, before: before, after: after,
                                            limit: limit.map { min(max($0, 1), 50) }, subagent: subagent)
+        // The newest page (no cursor) is what a chat opens on, so it is what a cold start
+        // paints from; a page of older history or of appended entries is not.
+        let keeper = before == nil && after == nil ? contentCache : nil
         do {
-            return try await call("agent.transcript", params, as: AgentTranscriptPage.self)
+            return try await call("agent.transcript", params, as: AgentTranscriptPage.self,
+                                  record: keeper.map { cache in { line, _ in
+                                      cache.recordTranscript(line, target: target, subagent: subagent)
+                                  } })
         } catch let error as APIError {
             switch error.code {
             case "agent_not_found": throw AgentTranscriptError.agentNotFound
