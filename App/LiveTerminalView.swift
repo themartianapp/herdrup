@@ -415,6 +415,7 @@ struct LiveTerminalView: UIViewRepresentable {
 
         override func layoutSubviews() {
             super.layoutSubviews()
+            layoutKeptScreen()
             if !isLiveAnchored, terminal.frame != bounds {
                 // May start a live anchor, so the target is read after it.
                 onGeometryWillChange?()
@@ -602,6 +603,44 @@ struct LiveTerminalView: UIViewRepresentable {
             cover?.removeFromSuperview()
             cover = nil
             coverContent = nil
+        }
+
+        /// The text of this pane's last screen from the previous launch (slow-network fix
+        /// 4), drawn dimmed over the still-empty terminal until the stream's first keyframe
+        /// replaces it. Text only: no colours or attributes were kept.
+        private var keptScreen: UILabel?
+
+        var isShowingKeptScreen: Bool { keptScreen != nil }
+
+        func showKeptScreen(_ text: String, font: UIFont) {
+            removeKeptScreen()
+            let label = UILabel()
+            label.numberOfLines = 0
+            label.lineBreakMode = .byClipping
+            label.font = font
+            label.text = text
+            label.textColor = UIColor(Palette.textDim)
+            label.backgroundColor = terminal.nativeBackgroundColor
+            label.isUserInteractionEnabled = false
+            label.isAccessibilityElement = true
+            label.accessibilityIdentifier = "terminal-kept-screen"
+            label.accessibilityLabel = "Last screen, updating"
+            addSubview(label)
+            keptScreen = label
+            layoutKeptScreen()
+        }
+
+        func removeKeptScreen() {
+            keptScreen?.removeFromSuperview()
+            keptScreen = nil
+        }
+
+        /// Top-anchored like the screen it stood for, clipped by the surface's bounds.
+        private func layoutKeptScreen() {
+            guard let keptScreen else { return }
+            let fitted = keptScreen.sizeThatFits(CGSize(width: bounds.width, height: .greatestFiniteMagnitude))
+            keptScreen.frame = CGRect(x: 0, y: 0, width: bounds.width, height: max(bounds.height, fitted.height))
+            bringSubviewToFront(keptScreen)
         }
 
         private func layoutCover() {
@@ -1872,8 +1911,27 @@ struct LiveTerminalView: UIViewRepresentable {
             // Tests that inspect the untouched terminal need a baseline before a gesture
             // publishes its first selection reading. Inert outside the mock DEBUG app.
             publishSelectionProbe("mounted")
+            // A cold start (slow-network fix 4): this pane's last screen from the previous
+            // launch, until the first keyframe paints the live one.
+            if let kept = client.contentCache?.terminalText(pane: paneID), !kept.isEmpty {
+                surface.showKeptScreen(kept, font: paneFont)
+            }
             startBackfill()   // fetch history CONCURRENTLY with the stream; see startBackfill
             start()
+        }
+
+        /// Keeps the text of the screen on show (the grid's rows, trailing blank rows dropped)
+        /// for the next cold start. Only after a real keyframe: a pane still showing the
+        /// kept screen, or nothing, has nothing new to keep.
+        private func keepScreenText() {
+            guard didSeedOnce, let view, let cache = client.contentCache else { return }
+            let terminal = view.getTerminal()
+            var lines = (0..<terminal.rows).map {
+                terminal.getLine(row: $0)?.translateToString(trimRight: true) ?? ""
+            }
+            while lines.last?.isEmpty == true { lines.removeLast() }
+            guard !lines.isEmpty else { return }
+            cache.storeTerminalText(lines.joined(separator: "\n"), pane: paneID)
         }
 
         /// Jump the pane to its newest output. A mouse-mode or alt-screen agent (Claude
@@ -2400,6 +2458,8 @@ struct LiveTerminalView: UIViewRepresentable {
         #endif
 
         func stop() {
+            keepScreenText()                // before teardown: what was on screen is the next launch's head start
+            mountedSurface?.removeKeptScreen()
             stopped = true                  // no new resize/scroll may start after this
             #if DEBUG
             if let view {
@@ -2610,6 +2670,8 @@ struct LiveTerminalView: UIViewRepresentable {
         func setSceneBackgrounded(_ backgrounded: Bool) {
             guard !stopped, backgrounded != sceneBackgrounded else { return }
             sceneBackgrounded = backgrounded
+            // The app may be killed in the background without a teardown: keep the screen now.
+            if backgrounded { keepScreenText() }
             if backgrounded {
                 hiddenReleaseTask?.cancel()
                 hiddenReleaseTask = nil
@@ -2905,6 +2967,7 @@ struct LiveTerminalView: UIViewRepresentable {
                     reconnectBackoff.reset()   // a full keyframe = the stream genuinely (re)established
                     graphicsFilter.reset()  // fresh screen: abandon any graphics string split before this keyframe
                     let firstReset = !didSeedOnce
+                    surface?.removeKeptScreen()   // the live screen replaces last launch's
                     if firstReset {
                         didSeedOnce = true
                         // Raise SwiftTerm's scrollback ring ONCE (its ~500 default) so it can hold the

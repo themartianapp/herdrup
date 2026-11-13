@@ -304,6 +304,14 @@ public struct ContentCacheScope: Sendable {
         cache.write(Data(text.utf8), to: terminalPath(pane: pane))
     }
 
+    /// Writes `responseLine` as the kept agent list and waits for it to land: the app's
+    /// DEBUG cold-start mock seeds "last launch" with it, and the bench seeds its cached run.
+    /// Same path a real reply takes.
+    public func seedAgentList(_ responseLine: String) {
+        recordAgentList(responseLine)
+        cache.flush()
+    }
+
     /// `responseLine` is herdr's whole `agent.list` reply. For a guest, only the shared
     /// agent's row is kept.
     func recordAgentList(_ responseLine: String) {
