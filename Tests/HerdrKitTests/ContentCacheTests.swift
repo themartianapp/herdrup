@@ -243,6 +243,51 @@ final class ContentCacheTests: XCTestCase {
         XCTAssertNotNil(cache().scope(machine: "me@linux:22", session: nil).agents())
     }
 
+    /// A wipe is final for every scope made before it. Leaving a share pops the guest's
+    /// screens, whose teardown then keeps the terminal's last screen; a reply in flight on
+    /// the still-live client lands after the wipe too. Neither may put the content back.
+    func testALateWriteAfterAWipeIsDroppedAndANewScopeStoresAgain() async throws {
+        let store = cache()
+        let share = store.scope(share: "relay/guest", sharedTarget: "t1")
+        let machine = store.scope(machine: "me@mac:22", session: "work")
+        let client = HerdrClient(transport: RecordingTransport(replies: [
+            "agent.list": Self.agentList(["alfa"]), "agent.transcript": Self.transcript(["e1"])]),
+                                 contentCache: machine)
+        share.storeTerminalText("before", pane: "t1")
+        _ = try await client.agentListing()
+        store.wipe(.share("relay/guest"))
+        store.wipe(.machine("me@mac:22"))
+
+        // Late: the left share's terminal teardown, and the forgotten machine's client.
+        share.storeTerminalText("late screen", pane: "t1")
+        _ = try await client.agentListing()
+        _ = try await client.agentTranscript(target: "t1", limit: 5)
+        machine.storeTerminalText("late screen", pane: "w1:p1")
+        XCTAssertEqual(storedFiles(), [], "a forgotten owner's content came back")
+        XCTAssertNil(cache().scope(share: "relay/guest", sharedTarget: "t1").terminalText(pane: "t1"))
+        XCTAssertNil(cache().scope(machine: "me@mac:22", session: "work").agents())
+
+        // Re-joining the share (or re-pairing the machine) makes a new scope, which keeps again.
+        let rejoined = store.scope(share: "relay/guest", sharedTarget: "t1")
+        rejoined.storeTerminalText("after", pane: "t1")
+        XCTAssertEqual(rejoined.terminalText(pane: "t1"), "after")
+        // ...while the scope from before the wipe stays dropped.
+        share.storeTerminalText("stale", pane: "t1")
+        XCTAssertEqual(rejoined.terminalText(pane: "t1"), "after")
+    }
+
+    func testALateWriteAfterWipeAllIsDropped() {
+        let store = cache()
+        let scope = store.scope(machine: "me@mac:22", session: nil)
+        scope.storeTerminalText("before", pane: "a")
+        store.wipeAll()
+        scope.storeTerminalText("late", pane: "a")
+        XCTAssertEqual(storedFiles(), [])
+        let fresh = store.scope(machine: "me@mac:22", session: nil)
+        fresh.storeTerminalText("after", pane: "a")
+        XCTAssertEqual(fresh.terminalText(pane: "a"), "after")
+    }
+
     func testLeavingAShareWipesOnlyThatShare() async throws {
         let store = cache()
         let left = store.scope(share: "relay/guest-1", sharedTarget: "t1")
