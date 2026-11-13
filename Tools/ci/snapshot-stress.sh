@@ -131,6 +131,8 @@ with open(failures, "a") as f:
     for p in problems:
         f.write(p + "\n")
 PY
+report_status=$?
+[ "$report_status" -eq 0 ] || fail "the report step exited $report_status (measurements unreadable); no verdict"
 
 {
   echo "# Background snapshot stress on macserve"
