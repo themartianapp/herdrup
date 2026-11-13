@@ -1426,7 +1426,7 @@ struct ChatView: View {
         transaction.disablesAnimations = true
         withTransaction(transaction) { drawWindow = windowStarting(at: count - Self.renderWindow) }
         let position = scrollPosition
-        DispatchQueue.main.async { position.jumpToLatest() }
+        Task { @MainActor in position.jumpToLatest() }
     }
 
     /// The reader reached the top: the next window of rows already loaded, else the next
