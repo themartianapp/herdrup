@@ -13,6 +13,7 @@ import http.server
 import json
 import pathlib
 import platform
+import socket
 import subprocess
 import sys
 
@@ -76,7 +77,15 @@ def serve(port, directory):
         def log_message(self, *args):
             pass
 
-    http.server.ThreadingHTTPServer(("127.0.0.1", int(port)), Handler).serve_forever()
+    class DualStack(http.server.ThreadingHTTPServer):
+        # The app connects to `localhost`, which may be ::1 or 127.0.0.1: listen on both.
+        address_family = socket.AF_INET6
+
+        def server_bind(self):
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            super().server_bind()
+
+    DualStack(("::", int(port)), Handler).serve_forever()
 
 
 if __name__ == "__main__":
