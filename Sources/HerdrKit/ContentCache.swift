@@ -18,9 +18,11 @@ import Foundation
 /// - **Bounded.** `budgetBytes` (20 MB) over all owners, least recently used first out.
 ///   A file's modification date is its last use, so the order survives a relaunch. One
 ///   entry over `entryLimitBytes` is not kept, so a single huge reply cannot flush the rest.
-/// - **No secrets.** Only those replies and screen text are written; credentials, keys and
-///   tokens never pass through here, and the owner key holds no more than the saved
-///   machine list already shows.
+/// - **Content, not credentials.** The app's own credentials, keys and tokens never pass
+///   through here. The cached replies and screen text are whatever the agents printed,
+///   which can include secrets of their own; they get the same protection as the app's
+///   other files (sandbox, iOS Data Protection, no backup) and nothing more. Forgetting a
+///   machine or leaving a share wipes its entries.
 ///
 /// Thread-safe: every file operation runs on one serial queue. Writes are asynchronous
 /// (the caller never waits on disk to show a fresh reply); reads wait for the writes
