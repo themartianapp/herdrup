@@ -19,7 +19,8 @@
 # every relayout and the background block <= MAX_BLOCK_MS, and layers grew by at most
 # MAX_LAYER_GROWTH times from the first measurement.
 #
-# Writes to MACSERVE_OUTPUT: snapshot-stress.jsonl, RESULTS.md, FAILURES.txt, run.log.
+# Writes to MACSERVE_OUTPUT: snapshot-stress.jsonl, RESULTS.md, FAILURES.txt, run.log; if the app
+# dies mid-run, death/ (its crash reports since launch and the last two minutes of its log).
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
 : "${MACSERVE_SIMULATOR_ID:?run by the macserve script template, which sets MACSERVE_SIMULATOR_ID}"
@@ -59,6 +60,23 @@ rm -f "$LINES"
 # Portrait, as the phone is held; the run turns it itself.
 t 60 xcrun simctl ui "$UDID" appearance dark >/dev/null 2>&1
 
+# Evidence for a run whose app died: the crash reports (.ips) written since launch, and the
+# simulator's log of the app's last two minutes, trimmed. An overloaded host's kill leaves no
+# report; a crash in the app does.
+REPORTS="$HOME/Library/Logs/DiagnosticReports"
+LAUNCH_MARK="$OUT/.launched"
+collect_death_evidence() {
+  mkdir -p "$OUT/death"
+  sleep 5 # ReportCrash writes the .ips a moment after the process is gone
+  find "$REPORTS" -maxdepth 2 -type f -iname '*herdr*' -newer "$LAUNCH_MARK" 2>/dev/null |
+    while IFS= read -r report; do cp "$report" "$OUT/death/"; log "crash report: $(basename "$report")"; done
+  [ -n "$(ls -A "$OUT/death" 2>/dev/null)" ] || log "no crash report for Herdr since launch"
+  t 120 xcrun simctl spawn "$UDID" log show --last 2m --style compact --predicate 'process == "Herdr"' 2>&1 |
+    tail -n 400 > "$OUT/death/log-show-last-2m.txt"
+  log "simulator log: $(wc -l < "$OUT/death/log-show-last-2m.txt" | tr -d ' ') lines in death/log-show-last-2m.txt"
+}
+
+touch "$LAUNCH_MARK"
 SIMCTL_CHILD_HERDR_SCREENSHOT_MOCK=chatview \
 SIMCTL_CHILD_HERDR_MOCK_CHAT_ANSWERED="Yes, merge and deploy" \
 SIMCTL_CHILD_HERDR_MOCK_CHAT_GROWTH="$GROWTH" \
@@ -71,7 +89,9 @@ DEADLINE=$(( $(date +%s) + 60 + ROUNDS * 20 ))
 until grep -q '"done":true' "$LINES" 2>/dev/null; do
   if [ "$(date +%s)" -gt "$DEADLINE" ]; then fail "the stress run did not finish in time"; break; fi
   if ! xcrun simctl spawn "$UDID" launchctl list 2>/dev/null | grep -q "$BUNDLE_ID"; then
-    fail "the app is no longer running"; break
+    fail "the app is no longer running"
+    collect_death_evidence
+    break
   fi
   sleep 10
   [ -s "$LINES" ] && log "last: $(grep '"round"' "$LINES" | tail -1)"
