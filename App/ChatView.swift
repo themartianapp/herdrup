@@ -52,6 +52,8 @@ final class ChatModel: ObservableObject {
         }
     }
     @Published private(set) var loaded = false
+    /// The chat shows the page kept from the last launch (`TranscriptStore.isShowingCached`).
+    @Published private(set) var showingCached = false
     @Published private(set) var failure: String?
     @Published private(set) var manualRefreshing = false
     @Published var refreshReceipt: String?
@@ -129,7 +131,17 @@ final class ChatModel: ObservableObject {
     }
 
     func refresh(client: HerdrClient) async {
+        showKeptPage(client: client)
         await store.refresh(client: client)
+    }
+
+    /// A cold start (slow-network fix 4): the newest page this agent's chat showed last
+    /// time, from disk, until the first refresh replaces it. Only onto an empty chat.
+    private func showKeptPage(client: HerdrClient) {
+        guard !store.loaded,
+              let page = client.contentCache?.transcript(target: store.target, subagent: store.subagent)
+        else { return }
+        store.showCached(page)
     }
 
     func manualRefresh(client: HerdrClient) async {
@@ -270,6 +282,7 @@ final class ChatModel: ObservableObject {
     /// transcript or while omp works, and a slow poll otherwise as a backstop for a missed
     /// event (and for guests, who have no event stream).
     func follow(client: HerdrClient, paneID: String?) async {
+        showKeptPage(client: client)
         await store.refresh(client: client)
         await withTaskGroup(of: Void.self) { group in
             if let paneID {
@@ -345,6 +358,7 @@ final class ChatModel: ObservableObject {
         assign(\.hasOlder, store.hasOlder)
         assign(\.loadingOlder, store.loadingOlder)
         assign(\.loaded, store.loaded)
+        assign(\.showingCached, store.isShowingCached)
         // Only a guest of a host older than guest answers is ever withheld an answerable question.
         if store.pendingAsk?.isWithheldFromCaller == true { assign(\.answersRefused, true) }
         if let error = store.lastError as? AgentTranscriptError {
@@ -843,6 +857,10 @@ struct ChatView: View {
             } else if model.rows.isEmpty, model.failure == nil {
                 Text("No messages yet").font(Typography.app(14 * textScale)).foregroundStyle(Palette.textFaint)
             }
+        }
+        // The kept page from the last launch is on screen until the first refresh lands.
+        .overlay(alignment: .top) {
+            CachedContentBadge.shown(model.showingCached, identifier: "chat-updating")
         }
         // The resizer's width is the chat's whole width: the most the column can take.
         .conversationColumnResizer(.chat)

@@ -120,6 +120,9 @@ struct GramView: View {
     @State private var sendError: String?
     /// A non-fatal refresh failure while messages are already shown.
     @State private var refreshNote: String?
+    /// The list on screen is the first page `AppContentCache` kept from the last launch,
+    /// and no load has answered yet: the "Updating" mark shows.
+    @State private var showingCached = false
     /// Consecutive failed loads, reset by any success. Drives the poll backoff: a
     /// warm cache keeps `phase == .loaded` through a failure, so `phase` alone can no
     /// longer tell a healthy poll from a failing one.
@@ -1183,6 +1186,10 @@ struct GramView: View {
                     .accessibilityIdentifier("gram-new-messages")
                 }
             }
+            // The first page kept from the last launch is on screen until the first load lands.
+            .overlay(alignment: .top) {
+                CachedContentBadge.shown(showingCached, identifier: "gram-updating").padding(.top, headerBottom)
+            }
             // Same path as the buttons: a pull that lands inside a poll must not be
             // swallowed either.
             .refreshable { await manualRefresh() }
@@ -1860,6 +1867,15 @@ struct GramView: View {
         // otherwise leave `phase` alone — which, before this line, meant `.loading`
         // for good, with a "Showing the last loaded messages" banner above an empty
         // spinner and no Retry.
+        // A cold start (slow-network fix 4): the first page this inbox showed last launch,
+        // from disk, so there is something to render before the network answers. Its digest
+        // comes with it, so the request below is conditional: an unchanged store answers in
+        // a few hundred bytes and the kept page simply stays.
+        if !inboxStore.inbox.hasLoaded, let kept = client.contentCache?.gramHead() {
+            inboxStore.inbox.apply(kept)
+            unread?.count = inboxStore.inbox.unreadCount
+            showingCached = true
+        }
         if inboxStore.inbox.hasLoaded, phase == .loading { phase = .loaded }
         if initial && !inboxStore.inbox.hasLoaded && messages.isEmpty { phase = .loading }
         do {
@@ -1878,12 +1894,14 @@ struct GramView: View {
             let answer = try await client.gramList(
                 ifUnchangedDigest: inboxStore.inbox.conditionalDigest,
                 limit: min(max(Self.pageSize, inboxStore.inbox.messages.count),
-                           Self.maxRefreshLimit))
+                           Self.maxRefreshLimit),
+                keepsForColdStart: true)
             let changed = inboxStore.inbox.apply(answer, readStamp: readStamp)
             // A saved copy whose file the store has since expired stops offering it.
             savedGrams.expireFiles(in: answer.messages ?? [])
             phase = .loaded
             refreshNote = nil
+            showingCached = false
             loadFailures = 0
             // Nothing moved: the reconciliation below would compute the same result
             // from the same list, so skip it (the common case on a 6s poll).
@@ -1901,6 +1919,7 @@ struct GramView: View {
             return .updated
         } catch let error as APIError where error.code == "gram_unavailable" {
             loadFailures += 1
+            showingCached = false   // the banner below says what is shown now
             if messages.isEmpty {
                 phase = .unavailable("Gram isn't available on this server yet.")
             } else {
@@ -1912,6 +1931,7 @@ struct GramView: View {
             // `gram_unavailable`, so a first-load failure gets one honest message
             // covering both "not deployed yet" and "couldn't reach it", plus a Retry.
             loadFailures += 1
+            showingCached = false
             if messages.isEmpty {
                 phase = .unavailable(
                     "Gram isn't available on this server yet, or the messages couldn't load.")
