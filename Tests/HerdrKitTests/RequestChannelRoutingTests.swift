@@ -250,8 +250,8 @@ final class RequestChannelRoutingTests: XCTestCase {
     }
 
     /// The bench's three-screens case: a transcript page still being written must not
-    /// hold up `agent.list`. Reply-heavy methods get the session's second channel; the
-    /// first one rides the interactive channel while that one opens.
+    /// hold up `agent.list`. Reply-heavy methods get the session's second channel,
+    /// opened on the first of them.
     func testBigRepliesRideTheirOwnChannelSoSmallOnesDoNotQueueBehindThem() async throws {
         let host = ScriptedHost(multi: true)
         let transport = makeTransport(host)
@@ -260,10 +260,10 @@ final class RequestChannelRoutingTests: XCTestCase {
         let interactive = try XCTUnwrap(host.lastBridge)
 
         let first = try await transport.roundTrip(requestLine("t1", method: "agent.transcript"))
-        XCTAssertEqual(via(first), "channel", "the first big request does not wait for the bulk channel")
-        await transport.requestChannelPool.settle()
-        XCTAssertEqual(host.opened.count, 2, "the bulk channel opened in the background")
+        XCTAssertEqual(via(first), "channel")
+        XCTAssertEqual(host.opened.count, 2, "the first big request opened the bulk channel")
         let bulk = try XCTUnwrap(host.lastBridge)
+        XCTAssertEqual(bulk.nonPingRequests, [requestLine("t1", method: "agent.transcript")])
         await assertEqual(await transport.requestChannelPool.hasOpenChannel(session: nil, lane: .bulk), true)
 
         bulk.setResponder(ScriptedBridge.answerPings)  // the page is still being written
@@ -272,8 +272,9 @@ final class RequestChannelRoutingTests: XCTestCase {
 
         let list = try await transport.roundTrip(requestLine("l1"))
         XCTAssertEqual(via(list), "channel", "agent.list answered while the page is outstanding")
-        XCTAssertEqual(interactive.nonPingRequests, [requestLine("t1", method: "agent.transcript"), requestLine("l1")])
-        XCTAssertEqual(bulk.nonPingRequests, [requestLine("t2", method: "agent.transcript")])
+        XCTAssertEqual(interactive.nonPingRequests, [requestLine("l1")], "no big request rides the interactive channel")
+        XCTAssertEqual(bulk.nonPingRequests, [requestLine("t1", method: "agent.transcript"),
+                                              requestLine("t2", method: "agent.transcript")])
 
         bulk.answer(requestLine("t2", method: "agent.transcript"), result: Self.viaChannel)
         let pageReply = try await page.value

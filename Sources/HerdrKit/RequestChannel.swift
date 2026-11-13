@@ -533,10 +533,11 @@ actor RequestChannel {
 ///   A channel that fails to open sends that request down the per-request path, and
 ///   the next attempt waits `openRetryAfter`. A request is never failed only because
 ///   the channel is unavailable.
-/// - the bulk lane opens on its first request, in the background: that request rides
-///   the interactive lane rather than wait for an open, and the ones after it get
-///   their own channel. A session that never asks for a big reply (another session's
-///   `agent.list` for the session pills) never holds a second bridge process.
+/// - each lane opens on its first request, so a session that never asks for a big
+///   reply (another session's `agent.list` for the session pills) never holds a second
+///   bridge process. A big request never borrows the interactive lane, even while its
+///   own channel opens: that wait is one exec on the open connection, while a big
+///   reply on the interactive lane holds up every small one behind it.
 actor RequestChannelPool {
     /// The per-request path for one request line in one session.
     typealias PerRequest = @Sendable (_ requestLine: String, _ session: String?) async throws -> String
@@ -595,37 +596,11 @@ actor RequestChannelPool {
         case .supported:
             break
         }
-        guard let channel = await channel(for: route.lane, key, session: session) else { return nil }
+        guard let channel = await readyChannel(key, lane: route.lane, session: session) else { return nil }
         do {
             return try await channel.send(requestLine, id: route.id, timeout: settings.requestTimeout)
         } catch is RequestChannel.NotSent {
             return nil
-        }
-    }
-
-    /// The channel a request on `lane` rides. A bulk request with no bulk channel
-    /// open or opening starts one in the background and rides the interactive lane.
-    private func channel(for lane: Lane, _ key: String, session: String?) async -> RequestChannel? {
-        if lane == .bulk {
-            let state = slots[key]?.lanes[.bulk]
-            let opening = state?.preparing != nil
-            let open = await state?.channel?.isOpen ?? false
-            if opening || open {
-                if let channel = await readyChannel(key, lane: .bulk, session: session) { return channel }
-            } else {
-                startBulkLane(key, session: session)
-            }
-        }
-        return await readyChannel(key, lane: .interactive, session: session)
-    }
-
-    private func startBulkLane(_ key: String, session: String?) {
-        guard slots[key]?.lanes[.bulk]?.preparing == nil else { return }
-        if let retryAt = slots[key]?.lanes[.bulk]?.retryOpenAt, settings.now() < retryAt { return }
-        let generation = generation
-        let current = slots[key]?.lanes[.bulk]?.channel
-        slots[key, default: Slot()].lanes[.bulk, default: LaneState()].preparing = Task {
-            await self.prepare(key, lane: .bulk, session: session, current: current, generation: generation)
         }
     }
 
