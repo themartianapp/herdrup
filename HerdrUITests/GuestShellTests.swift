@@ -180,10 +180,30 @@ final class GuestShellTests: XCTestCase {
                       "Scan pairing code should open the pairing sheet")
     }
 
+    /// A share opened over an owner session (an accepted invite, a tapped guest push): Connect
+    /// your own machine closes the share onto the owner's home and opens the pairing sheet,
+    /// rather than leaving a request the machine list never sees.
+    func testConnectYourOwnMachineOverAnOwnerSessionOpensPairing() {
+        let app = openGuestSettings(environment: ["HERDR_MOCK_OWNER_SESSION": "1"])
+        let connect = app.buttons["guest-settings-connect-own-machine"]
+        XCTAssertTrue(connect.waitForExistence(timeout: 10))
+        connect.tap()
+
+        XCTAssertTrue(app.navigationBars["Scan to connect"].waitForExistence(timeout: 10),
+                      "Connect your own machine should open the pairing sheet over the owner's home")
+        XCTAssertTrue(app.buttons["pairing-paste-button"].waitForExistence(timeout: 5)
+                      || app.buttons["Paste"].firstMatch.exists, "pairing should offer Paste")
+        attach(app, "guest-settings-connect-own-machine-owner-session")
+        app.buttons["Cancel"].tap()
+        let gram = app.tabBars.firstMatch.buttons["Gram"]
+        XCTAssertTrue(gram.waitForExistence(timeout: 10), "the owner's home should be under the sheet")
+        XCTAssertFalse(app.buttons["guest-settings-agent-card"].exists, "the share should be closed")
+    }
+
     /// Guest home's Settings tab. The iPad draws its tab bar at the top, where the item may
     /// not sit under a tab bar element, so fall back to the button by its label.
-    private func openGuestSettings() -> XCUIApplication {
-        let app = XCUIApplication.launched(mock: "guest")
+    private func openGuestSettings(environment: [String: String] = [:]) -> XCUIApplication {
+        let app = XCUIApplication.launched(mock: "guest", environment: environment)
         XCTAssertTrue(app.buttons["guest-agent-row"].waitForExistence(timeout: 10))
         let inTabBar = app.tabBars.firstMatch.buttons["Settings"]
         let settingsTab = inTabBar.exists ? inTabBar : app.buttons["Settings"].firstMatch

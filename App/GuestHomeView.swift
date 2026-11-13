@@ -102,10 +102,10 @@ struct GuestHomeView: View {
                 agentsTab
                     .tag(Tab.agents)
                     .tabItem { Label("Agents", systemImage: "square.grid.2x2.fill") }
-                SettingsView(client: nil, agents: [], host: access.machineLabel,
-                             guest: GuestSettingsShare(access: access, fingerprint: connection?.fingerprint,
-                                                       client: connection?.client, onLeave: leave,
-                                                       onConnectOwnMachine: onConnectOwnMachine))
+                SettingsView(mode: .guest(GuestSettingsShare(access: access, fingerprint: connection?.fingerprint,
+                                                            client: connection?.client, onLeave: leave,
+                                                            onConnectOwnMachine: onConnectOwnMachine)),
+                             agents: [], host: access.machineLabel)
                     .tag(Tab.settings)
                     .tabItem { Label("Settings", systemImage: "gearshape") }
             }

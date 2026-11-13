@@ -88,9 +88,7 @@ struct SharedMachineHomeView: View {
             }
             .tint(Palette.text)
             .sheet(item: $settingsAccess) { peer in
-                SettingsView(client: nil, agents: [], host: peer.machineLabel,
-                             onClose: { settingsAccess = nil },
-                             guest: GuestSettingsShare(
+                SettingsView(mode: .guest(GuestSettingsShare(
                                 access: peer, fingerprint: settingsConnection?.fingerprint,
                                 client: settingsConnection?.client,
                                 onLeave: {
@@ -99,7 +97,9 @@ struct SharedMachineHomeView: View {
                                     settingsConnection = nil
                                     leftShare()
                                 },
-                                onConnectOwnMachine: onConnectOwnMachine.map { connect -> () -> Void in { settingsAccess = nil; connect() } }))
+                                onConnectOwnMachine: onConnectOwnMachine.map { connect -> () -> Void in { settingsAccess = nil; connect() } })),
+                             agents: [], host: peer.machineLabel,
+                             onClose: { settingsAccess = nil })
             }
         }
     }

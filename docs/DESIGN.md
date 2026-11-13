@@ -24,7 +24,9 @@ herdr's JSON API exposes both, so panes and agents become real UI objects instea
   same index beside the selected detail page. A phone holding only shares gets the same index
   without what needs a machine of its own: the shared agent's card (opening Shared with you,
   with its device key and Leave) in place of the machine card, then Your own machine, whose
-  Connect your own machine row opens the machine list's pairing setup.
+  Connect your own machine row closes the share onto the machine list's pairing setup (or, with
+  an owner session kept underneath, onto the owner's home with the pairing sheet open).
+  `SettingsView` takes one `SettingsMode`: `.owner(client)` or `.guest(share)`.
 - **Live terminal** — a full SwiftTerm terminal for any pane, one tap behind its card, with gestures
   to page between agents, tail the output, and scroll history.
   History keeps its original row layout, including plain text, so resizing does not rewrap old
