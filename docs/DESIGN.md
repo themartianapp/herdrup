@@ -201,7 +201,17 @@ job builds the app for itself, so there are few, long shards:
 | `mac-evidence/org-ios-sim-uitest-v1/iphone-terminal` | UI test, iPhone 18 Pro | the terminal classes, `ChatViewTests`, `PagingTests`, `GramTests` |
 | `mac-evidence/org-ios-sim-uitest-v1/iphone-app` | UI test, iPhone 18 Pro | `HerdrFontTests` and every other iPhone class |
 | `mac-evidence/org-ios-sim-uitest-v1/ipad` | UI test, iPad Pro 13-inch | the iPad rounds: resize, Duo transition, control, drop, chat column, Gram column, needs-you, star bar |
-| `mac-evidence/org-ios-sim-script-v1/ipad-script` | script, iPhone 18 Pro + its own iPads | `Tools/ci/macserve-ipad-script.sh`: the built-version check, Herdrup Desktop's references on both iPads, iPad `AgentListChromeTests`, the optimized Settings stack regression, the SwiftTerm UIKit API tests |
+| on demand: shard `ipad-script-ondemand` | script, iPhone 18 Pro + its own iPads | `Tools/ci/macserve-ipad-script.sh`: the built-version check, Herdrup Desktop's references on both iPads, iPad `AgentListChromeTests`, the optimized Settings stack regression, the SwiftTerm UIKit API tests |
+
+**The PR matrix runs `iphone-terminal`, `iphone-app` and `ipad` on every ready pull request.
+`ipad-script-ondemand` runs on request** (its macserve API job is below):
+macserve runs script jobs exclusively, so on every head it would drain all of the shared Mac's
+lanes. Run it before merging changes to the desktop reference screenshots,
+`AgentListChrome`, Settings optimized builds or SwiftTerm. The PR policy still names the
+former check `mac-evidence/org-ios-sim-script-v1/ipad-script`; with no shard of that name,
+macserve posts it as action required with no job (it is not a required check). The shard
+returns to the PR matrix, under its old name `ipad-script`, when macserve can run script
+shards concurrently with other jobs.
 
 The UI-test template runs a shard's `-only-testing` selectors as one `xcodebuild test`;
 [`Tools/ci/test_macserve_shards.py`](../Tools/ci/test_macserve_shards.py) fails the Linux job
@@ -225,7 +235,7 @@ eval "$(python3 Tools/ci/pick-simulators.py)"     # IPHONE_UDID, IPAD_UDID, IPAD
 xcodebuild build-for-testing -project Herdr.xcodeproj -scheme Herdr \
   -destination "platform=iOS Simulator,id=$IPHONE_UDID" \
   -derivedDataPath .build-dd -clonedSourcePackagesDirPath SourcePackages CODE_SIGNING_ALLOWED=NO
-Tools/ci/ui-shard.sh iphone-app                    # or iphone-terminal, ipad, ipad-script
+Tools/ci/ui-shard.sh iphone-app                    # or iphone-terminal, ipad, ipad-script-ondemand
 ONLY_SUITE=GramTests ONLY_DEVICE=iphone Tools/ci/ui-shard.sh focused
 ```
 
@@ -240,8 +250,16 @@ To run a shard on macserve at a commit, submit a job to its API with the shard's
 ```
 
 The `ipad` shard uses `com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-12GB`;
-`ipad-script` uses `"kind":"simulator_script"`, `"profile":"org-ios-sim-script-v1"` and the
-iPhone 18 Pro.
+`ipad-script-ondemand` uses `"kind":"simulator_script"`, `"profile":"org-ios-sim-script-v1"`
+and the iPhone 18 Pro:
+
+```json
+{"repo":"themartianapp/herdrup","sha":"<40-hex head>","kind":"simulator_script",
+ "profile":"org-ios-sim-script-v1","xcode":{"version":"27.1","build":"27A9275"},
+ "simulator":{"runtime":"com.apple.CoreSimulator.SimRuntime.iOS-27-0","runtime_build":"24A434",
+              "device_type":"com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro"},
+ "shard":"ipad-script-ondemand"}
+```
 
 The reconnect-history UI receipt recognizes the fixture's numbered history rows
 before and after real swipes, requiring earlier rows to become visible instead of
@@ -263,7 +281,7 @@ a device that shut down is booted again, and a still-booted device skips `bootst
 Missing or unavailable devices and failed readiness or install steps fail the round.
 Debug resize receipts are per pane, so a background terminal's fixed grid
 cannot overwrite the foreground terminal's keyboard-resize result.
-The built-version check (in `ipad-script`) selects `Herdr.app`, not the separate UI test runner bundle.
+The built-version check (in `ipad-script-ondemand`) selects `Herdr.app`, not the separate UI test runner bundle.
 Focused `Class/method` selectors keep their XCTest selector intact but replace the
 slash with a hyphen in receipt filenames, so the boot log remains inside `TestReceipts`.
 Gram search regressions check matching results and older-page fetch counts, not prompt wording.
@@ -374,7 +392,7 @@ actions stay on the right. Pushed Settings pages follow the same Back placement.
 control is declared before the title, matching
 the visual reading order. The sidebar rail and ⌘K remain available.
 Settings builds its compact index in a separate view body, keeping the large section tuple
-off the adaptive navigation stack. The `ipad-script` shard checks resize/resume in an optimized simulator build
+off the adaptive navigation stack. The `ipad-script-ondemand` shard checks resize/resume in an optimized simulator build
 with a device-sized 1008 KiB main stack, and rejects attached crashes even if XCTest reports a pass.
 
 iPhone Duo uses the same continuous layout when open or partly folded: regular

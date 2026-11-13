@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The macserve script shard `ipad-script` (.macserve.json; template org-ios-sim-script-v1,
-# PR check mac-evidence/org-ios-sim-script-v1/ipad-script): Tools/ci/ui-shard.sh ipad-script,
+# The macserve script shard `ipad-script-ondemand` (.macserve.json; template
+# org-ios-sim-script-v1, run on request through macserve's API, not as a PR check; see
+# docs/DESIGN.md, CI): Tools/ci/ui-shard.sh ipad-script-ondemand,
 # the device rounds macserve's UI-test template cannot run as plain -only-testing selectors:
 #   - Herdrup Desktop's references on the 13-inch and the 1180x820 pt iPad, which need the
 #     simulator in dark appearance with a pinned status bar (simctl, before each round);
@@ -94,5 +95,5 @@ if [ -z "$BUILT" ] || [ "$BUILT" != "$EXPECTED" ]; then
   failed=1
 fi
 
-Tools/ci/ui-shard.sh ipad-script || failed=1
+Tools/ci/ui-shard.sh ipad-script-ondemand || failed=1
 exit "$failed"

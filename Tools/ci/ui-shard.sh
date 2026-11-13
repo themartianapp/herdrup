@@ -2,16 +2,17 @@
 # Runs one simulator shard of the device suite on any Mac, in rounds with measured budgets,
 # boot checks, one infrastructure-only rerun and first-failure diagnostics. The caller has
 # built the app and test bundles into .build-dd (build-for-testing) and exported
-# IPHONE_UDID, IPAD_UDID and, for ipad-script and focused reference runs, IPAD11_UDID
+# IPHONE_UDID, IPAD_UDID and, for ipad-script-ondemand and focused reference runs, IPAD11_UDID
 # (`eval "$(python3 Tools/ci/pick-simulators.py)"` picks them).
 #
-# The shard names and classes are .macserve.json's, where macserve runs them as PR checks:
-#   - iphone-terminal, iphone-app and ipad are its ui_test shards. macserve's simulator
-#     UI-test template runs each as one xcodebuild test run of the listed classes on one
-#     simulator (mac-evidence/org-ios-sim-uitest-v1/<shard>). Here the same classes run in
-#     rounds, for a local or diagnostic run of that shard.
-#   - ipad-script is its script shard (mac-evidence/org-ios-sim-script-v1/ipad-script):
-#     Tools/ci/macserve-ipad-script.sh creates the iPads and runs this shard as it is.
+# The shard names and classes are .macserve.json's, where macserve runs them:
+#   - iphone-terminal, iphone-app and ipad are its ui_test shards, PR checks. macserve's
+#     simulator UI-test template runs each as one xcodebuild test run of the listed classes
+#     on one simulator (mac-evidence/org-ios-sim-uitest-v1/<shard>). Here the same classes
+#     run in rounds, for a local or diagnostic run of that shard.
+#   - ipad-script-ondemand is its script shard, run on request through macserve's API, not
+#     on every PR head (docs/DESIGN.md, CI): Tools/ci/macserve-ipad-script.sh creates the
+#     iPads and runs this shard as it is.
 #
 #   iphone-terminal  TERMINAL_CLASSES, then ChatViewTests, PagingTests and GramTests in
 #                    rounds of their own, on iPhone
@@ -19,7 +20,8 @@
 #                    ChatUXSmokeTests in rounds of their own, then every other HerdrUITests
 #                    class on iPhone
 #   ipad             iPad-specific rounds, on iPad
-#   ipad-script      what the UI-test template cannot run: Herdrup Desktop's references on
+#   ipad-script-ondemand
+#                    what the UI-test template cannot run: Herdrup Desktop's references on
 #                    both iPads (dark, status bar pinned by simctl), AgentListChromeTests on
 #                    iPad, the iPad Settings resize/resume regression on an optimized
 #                    Distribution build with the device-sized stack (herdrup#416), and the
@@ -34,7 +36,7 @@
 # Tools/ci/test_macserve_shards.py fails when a test class is in no macserve shard.
 set -uo pipefail
 
-shard="${1:?usage: ui-shard.sh iphone-terminal|iphone-app|ipad|ipad-script|focused}"
+shard="${1:?usage: ui-shard.sh iphone-terminal|iphone-app|ipad|ipad-script-ondemand|focused}"
 TERMINAL_CLASSES=(TerminalControlTests TerminalResizeTests TerminalSearchTests TerminalSelectionTests TerminalDropTests)
 SIM_STATE="$(cd "$(dirname "$0")" && pwd)/sim-state.py"
 XCRESULT_TESTS="$(dirname "$SIM_STATE")/xcresult-tests.py"
@@ -98,7 +100,7 @@ trap stop_recording EXIT
 # CoreSimulator must leave time for receipt upload. TERM gets 15 s before KILL.
 # First-boot data migration took 5m41s in run 38916529804. Each device's first (cold)
 # boot gets 10m; later readiness checks of the same device keep the shorter 5m.
-# Per device, because ipad-script cold-boots three: both iPads and then the iPhone.
+# Per device, because ipad-script-ondemand cold-boots three: both iPads and then the iPhone.
 cold_booted=" "
 # Devices that bootstatus reported ready earlier in this job. Do not repeat bootstatus
 # for a still-booted device: on Xcode 27, with the screen recorder running, the second
@@ -800,7 +802,7 @@ case "$shard" in
       -only-testing:HerdrUITests/GitHubStarPromptTests/testBarFitsTheIPadSidebar || failed=1
     check_classes_ran TestReceipts/iPadStarPrompt-first.xcresult GitHubStarPromptTests || failed=1
     ;;
-  ipad-script)
+  ipad-script-ondemand)
     # The optimized build for the Settings regression below, before any simulator boots:
     # compiler and simulator compete for the Mac's CPUs.
     "$TIMEOUT_BIN" --signal=INT --kill-after=15s 40m \

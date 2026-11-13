@@ -5,7 +5,7 @@
   "ipad":["HerdrUITests/TerminalResizeTests","HerdrUITests/DuoTransitionTests","HerdrUITests/TerminalControlTests","HerdrUITests/SelectAgentFieldTests","HerdrUITests/TerminalDropTests","HerdrUITests/NeedsYouPillTests","HerdrUITests/AgentFoldersTests/testClosedFolderShowsWaitingCountAndOpensOnTap","HerdrUITests/ChatUXSmokeTests","HerdrUITests/GramColumnTests","HerdrUITests/ChatViewTests/testUpArrowOverTheIPadColumnEdgeStillJumps","HerdrUITests/GitHubStarPromptTests/testBarFitsTheIPadSidebar"]
  }},
  "script":{"shards":{
-  "ipad-script":{"run":"Tools/ci/macserve-ipad-script.sh"},
+  "ipad-script-ondemand":{"run":"Tools/ci/macserve-ipad-script.sh"},
   "duo-screenshots":{"run":"Tools/ci/duo-screenshots.sh"},
   "duo-column":{"run":"Tools/ci/duo-column.sh"}
  }}}

@@ -6,7 +6,7 @@ macserve's UI-test template runs exactly the -only-testing selectors a ui_test s
 a new test class that no shard names would run nowhere. Every class with test methods in
 HerdrUITests and HerdrFontTests must therefore appear as a whole class in an iPhone shard
 (iphone-terminal or iphone-app, exactly one of them), or, for an iPad-only class, as a whole
-class in the ipad shard, or be one of the classes the `ipad-script` script shard runs
+class in the ipad shard, or be one of the classes the `ipad-script-ondemand` script shard runs
 (Herdrup Desktop's references, ui-shard.sh DESKTOP_REFERENCE_CLASSES). Every selector must
 name an existing class or method."""
 import json
@@ -56,7 +56,7 @@ class MacserveShardTests(unittest.TestCase):
         for key in sorted(self.classes):
             homes = [shard for shard in IPHONE_SHARDS if key in whole[shard]]
             if key in self.script_classes:
-                self.assertEqual(homes, [], "%s runs in ipad-script; no iPhone shard needs it" % key)
+                self.assertEqual(homes, [], "%s runs in ipad-script-ondemand; no iPhone shard needs it" % key)
                 continue
             self.assertLessEqual(len(homes), 1, "%s is in more than one iPhone shard: %s" % (key, homes))
             self.assertTrue(homes or key in whole["ipad"],
