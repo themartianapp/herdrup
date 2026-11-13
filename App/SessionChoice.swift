@@ -7,7 +7,12 @@ enum SessionChoice {
     private static let defaultsKey = ShareStorage.sessionsKey
 
     static func machineKey(_ creds: SSHCredentials) -> String {
-        "\(creds.username)@\(HostKey.canonical(host: creds.host, port: creds.port))"
+        machineKey(username: creds.username, host: creds.host, port: creds.port)
+    }
+
+    /// The same key from a saved host's parts, for stores wiped when the host is forgotten.
+    static func machineKey(username: String, host: String, port: UInt16) -> String {
+        "\(username)@\(HostKey.canonical(host: host, port: port))"
     }
 
     static func remembered(for creds: SSHCredentials) -> String? {

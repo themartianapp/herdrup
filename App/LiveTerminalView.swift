@@ -415,6 +415,7 @@ struct LiveTerminalView: UIViewRepresentable {
 
         override func layoutSubviews() {
             super.layoutSubviews()
+            layoutKeptScreen()
             if !isLiveAnchored, terminal.frame != bounds {
                 // May start a live anchor, so the target is read after it.
                 onGeometryWillChange?()
@@ -602,6 +603,58 @@ struct LiveTerminalView: UIViewRepresentable {
             cover?.removeFromSuperview()
             cover = nil
             coverContent = nil
+        }
+
+        /// The text of this pane's last screen from the previous launch (slow-network fix
+        /// 4), drawn dimmed over the still-empty terminal until the stream's first keyframe
+        /// is painted. Text only: no colours or attributes were kept.
+        ///
+        /// An opaque container the size of the surface, ABOVE the terminal (added after it,
+        /// and brought to the front on every layout pass, so neither the terminal nor a resize
+        /// cover can draw over it), holding the text at its natural height.
+        private var keptScreen: UIView?
+        private var keptText: UILabel?
+
+        var isShowingKeptScreen: Bool { keptScreen != nil }
+
+        func showKeptScreen(_ text: String, font: UIFont) {
+            removeKeptScreen()
+            let container = UIView(frame: bounds)
+            container.backgroundColor = terminal.nativeBackgroundColor
+            container.clipsToBounds = true
+            container.isUserInteractionEnabled = false
+            let label = UILabel()
+            label.numberOfLines = 0
+            label.lineBreakMode = .byClipping   // a terminal row never wraps
+            label.font = font
+            label.text = text
+            label.textColor = UIColor(Palette.textDim)
+            label.isAccessibilityElement = true
+            label.accessibilityIdentifier = "terminal-kept-screen"
+            label.accessibilityLabel = "Last screen, updating"
+            label.accessibilityValue = text
+            container.addSubview(label)
+            addSubview(container)
+            keptScreen = container
+            keptText = label
+            layoutKeptScreen()
+        }
+
+        func removeKeptScreen() {
+            keptScreen?.removeFromSuperview()
+            keptScreen = nil
+            keptText = nil
+        }
+
+        /// The rows from the top, as the terminal draws them; when the kept screen had more
+        /// rows than now fit, its bottom (the prompt, the newest output) stays in view.
+        private func layoutKeptScreen() {
+            guard let keptScreen, let keptText else { return }
+            keptScreen.frame = bounds
+            let height = keptText.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude,
+                                                      height: .greatestFiniteMagnitude)).height
+            keptText.frame = CGRect(x: 0, y: min(0, bounds.height - height), width: bounds.width, height: height)
+            bringSubviewToFront(keptScreen)
         }
 
         private func layoutCover() {
@@ -1872,8 +1925,54 @@ struct LiveTerminalView: UIViewRepresentable {
             // Tests that inspect the untouched terminal need a baseline before a gesture
             // publishes its first selection reading. Inert outside the mock DEBUG app.
             publishSelectionProbe("mounted")
+            // A cold start (slow-network fix 4): this pane's last screen from the previous
+            // launch, until the first keyframe paints the live one.
+            if let kept = client.contentCache?.terminalText(pane: paneID), !kept.isEmpty {
+                surface.showKeptScreen(kept, font: paneFont)
+            }
+            // Every host, owner or guest: the app can be killed in the background without
+            // ever tearing this view down, so the screen is kept on the way there too.
+            backgroundObserver = NotificationCenter.default.addObserver(
+                forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                self?.keepScreenText()
+            }
             startBackfill()   // fetch history CONCURRENTLY with the stream; see startBackfill
             start()
+        }
+
+        private var backgroundObserver: NSObjectProtocol?
+
+        /// Keeps the text of the live screen (its rows, trailing blank rows dropped) for the
+        /// next cold start. Only after a real keyframe: a pane still showing the kept screen,
+        /// or nothing, has nothing new to keep. The LIVE rows, not the viewport: a reader
+        /// scrolled into history leaves the screen the agent last drew.
+        private func keepScreenText() {
+            guard didSeedOnce, let view, let cache = client.contentCache else { return }
+            let terminal = view.getTerminal()
+            let top = Self.liveScreenTop(terminal)
+            var lines = (0..<terminal.rows).map {
+                terminal.getScrollInvariantLine(row: top + $0)?.translateToString(trimRight: true) ?? ""
+            }
+            while lines.last?.isEmpty == true { lines.removeLast() }
+            guard !lines.isEmpty else { return }
+            cache.storeTerminalText(lines.joined(separator: "\n"), pane: paneID)
+        }
+
+        /// The scroll-invariant row at the top of the live screen: the last `rows` lines the
+        /// buffer holds. SwiftTerm does not publish its line count, so the end is found from
+        /// where `getScrollInvariantLine` stops answering (doubling, then halving).
+        static func liveScreenTop(_ terminal: Terminal) -> Int {
+            let first = terminal.buffer.totalLinesTrimmed
+            guard terminal.getScrollInvariantLine(row: first) != nil else { return first }
+            var known = first, step = max(terminal.rows, 1)
+            while terminal.getScrollInvariantLine(row: known + step) != nil { known += step; step *= 2 }
+            var low = known, high = known + step   // `low` answers, `high` does not
+            while high - low > 1 {
+                let mid = (low + high) / 2
+                if terminal.getScrollInvariantLine(row: mid) != nil { low = mid } else { high = mid }
+            }
+            return max(first, low + 1 - terminal.rows)
         }
 
         /// Jump the pane to its newest output. A mouse-mode or alt-screen agent (Claude
@@ -2400,6 +2499,8 @@ struct LiveTerminalView: UIViewRepresentable {
         #endif
 
         func stop() {
+            keepScreenText()                // before teardown: what was on screen is the next launch's head start
+            mountedSurface?.removeKeptScreen()
             stopped = true                  // no new resize/scroll may start after this
             #if DEBUG
             if let view {
@@ -2441,6 +2542,8 @@ struct LiveTerminalView: UIViewRepresentable {
             prediction.detach()
             if !viewOnly { TypingLatencyRecorder.shared.abandonUnsent() }  // queued keys never go out
             for token in keyboardObservers { NotificationCenter.default.removeObserver(token) }
+            if let backgroundObserver { NotificationCenter.default.removeObserver(backgroundObserver) }
+            backgroundObserver = nil
             keyboardObservers.removeAll()
             keyboardSweepActive = false
             keyboardSweepDeadlineTask?.cancel()
@@ -2965,6 +3068,9 @@ struct LiveTerminalView: UIViewRepresentable {
                     // already collapsed the backlog into this keyframe).
                     view.feed(byteArray: Self.clearSequence[...])
                     if !data.isEmpty { feedFiltered(data, into: view) }
+                    // Only now: the history wait above can take seconds on a slow link, and
+                    // the kept screen must cover the empty terminal for all of them.
+                    surface?.removeKeptScreen()   // the live screen replaces last launch's
                     prediction.reset()   // a keyframe replaced the screen the guesses stood on
                     noteStreamData()
                     publishTopRowProbe()
@@ -3022,6 +3128,7 @@ struct LiveTerminalView: UIViewRepresentable {
             // that will never be served. Say so once and stop.
             if let notice = Self.permanentRefusalNotice(error) {
                 paneGone = true
+                surface?.removeKeptScreen()   // the refusal must be readable, not under an old screen
                 if let view {
                     let line = "\r\n\u{1b}[2m\(notice)\u{1b}[0m\r\n"
                     view.feed(byteArray: [UInt8](line.utf8)[...])
