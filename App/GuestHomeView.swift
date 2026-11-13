@@ -21,7 +21,8 @@ struct GuestConnection {
         let identity = try GuestDevice.identity()
         let features = GuestFeaturesModel()
         let transport = access.transport(identity: identity, onFeatures: features.sink())
-        return GuestConnection(client: HerdrClient(transport: transport),
+        // The share's own cache scope: its one agent's chat and last screen, nothing else.
+        return GuestConnection(client: HerdrClient(transport: transport, contentCache: AppContentCache.scope(for: access)),
                                fingerprint: identity.fingerprint, features: features)
     }
 }

@@ -420,6 +420,12 @@ struct RootView: View {
                 TerminalHomeView(client: HerdrClient(transport: NeedsYouMockTransport()), onDisconnect: {},
                                  onTrustHostKey: { _ in false })
             }
+        case .cachedHome:
+            // Slow-network fix 4: a cold start whose agent.list is slow. The cache holds the
+            // last launch's roster, so the rows and the "Updating" mark show at once and the
+            // fresh roster replaces them when the mock answers.
+            TerminalHomeView(client: CachedHomeMock.client(), onDisconnect: {},
+                             onTrustHostKey: { _ in false })
         case .folders:
             let _ = AgentFoldersMockTransport.prepared
             TerminalHomeView(client: HerdrClient(transport: AgentFoldersMockTransport()), onDisconnect: {},
@@ -9907,6 +9913,7 @@ enum ScreenshotMock {
     case chatView, guestChat
     // The Agents home with a long roster and `HERDR_MOCK_WAITING` agents asking (#551).
     case needsYou
+    case cachedHome
     // The Agents home with two agent folders and a star, over a daemon that keeps them in
     // memory (#552); `HERDR_MOCK_GROUPS=off` is a server without folders.
     case folders
@@ -9932,6 +9939,7 @@ enum ScreenshotMock {
         case "archivedclose": return .archivedClose
         case "sessions": return .sessions
         case "needsyou": return .needsYou
+        case "cachedhome": return .cachedHome
         case "folders": return .folders
         case "serverupdate": return .serverUpdate
         case "desktopref": return .desktopReference
