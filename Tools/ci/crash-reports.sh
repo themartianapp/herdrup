@@ -144,9 +144,10 @@ log "symbolicate"
 CRASH=$(grep -l '"kind":"crash"' "$OUT"/received/on-*.json | head -1)
 if [ -n "$CRASH" ]; then
   python3 Tools/crash/symbolicate.py --report "$CRASH" --dsyms "$OUT/dSYMs" --out "$OUT/symbolicated" --symbolizer atos
-  for name in "CrashReportsLaunch.start()" "CrashReportsLaunch.usageCountSwitched(on:)"; do
+  while IFS= read -r name; do
     grep -qF "$name" "$OUT"/symbolicated/*.txt || fail "symbolicated report does not name $name"
-  done
+    log "symbolicated: $name"
+  done < <(python3 -c 'import json, sys; print("\n".join(json.load(open(sys.argv[1]))["expected"]))' "$OUT/expected.json")
 else
   fail "no crash report received in round on"
 fi

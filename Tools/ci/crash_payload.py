@@ -5,7 +5,8 @@
       Writes OUT: the recorded MXDiagnosticPayload FIXTURE (Tests/HerdrKitTests/Fixtures) with
       its Herdr frames moved into the built app: IMAGE's name and UUID, and the offsets of
       CrashReportsLaunch.start() and CrashReportsLaunch.usageCountSwitched(on:) in it (from
-      `nm`), plus the built VERSION and BUILD. Prints the expected symbol names.
+      `nm`; two other CrashReportsLaunch functions if those names changed), plus the built
+      VERSION and BUILD. Prints JSON whose `expected` lists the names symbolication must print.
   crash_payload.py serve PORT DIR
       A stub relay: each POST to /<round>/v1/crash is saved as DIR/<round>-<n>.json, 204."""
 import http.server
@@ -46,8 +47,14 @@ def payload(image, fixture, version, build, out):
         node = (node.get("subFrames") or [None])[0]
     assert herdr == 2, herdr
     pathlib.Path(out).write_text(json.dumps(data, indent=1))
+    # What symbolication must print for the two frames: `swift-demangle --simplified` of each
+    # symbol, less `static `, e.g. "CrashReportsLaunch.start()".
+    symbols = [line.split()[2].removeprefix("_") for line in ours[:2]]
+    demangled = subprocess.run(["xcrun", "swift-demangle", "--simplified", "--compact"], input="\n".join(symbols) + "\n",
+                               capture_output=True, text=True, check=True).stdout.splitlines()
+    expected = [name.removeprefix("static ") for name in demangled]
     print(json.dumps({"image": pathlib.Path(image).name, "uuid": uuid, "arch": arch, "vmaddr": hex(vmaddr),
-                      "offsets": offsets}))
+                      "offsets": offsets, "symbols": symbols, "expected": expected}))
 
 
 def serve(port, directory):
