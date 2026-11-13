@@ -258,8 +258,8 @@ final class SettingsTests: XCTestCase {
         // first that is device-free — because a share-of-window gate CANNOT work: the
         // name saturates at its 136.25pt intrinsic width, so the correct layout's share
         // falls as 1/W and goes red above ~505pt. The review measured the correct layout
-        // at 0.183 on a 744pt iPad and 0.132 at 1032pt — the iPad Pro ci.yml:167-170
-        // deliberately selects — and at 320pt iPad Slide Over. My width-bucket table
+        // at 0.183 on a 744pt iPad and 0.132 at 1032pt — the iPad Pro 13-inch the device
+        // suite deliberately selects — and at 320pt iPad Slide Over. My width-bucket table
         // passed every phone and would have failed every iPad.
         //
         // The two labels this test already holds are enough — with ONE premise, which is
