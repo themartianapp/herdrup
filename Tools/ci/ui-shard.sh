@@ -1,60 +1,60 @@
 #!/usr/bin/env bash
-# Runs one simulator shard of the CI device suite. ci.yml runs the shards as
-# parallel jobs; each job has already built the app and test bundles into .build-dd
-# (build-for-testing) and exported IPHONE_UDID / IPAD_UDID.
+# Runs one simulator shard of the device suite on any Mac, in rounds with measured budgets,
+# boot checks, one infrastructure-only rerun and first-failure diagnostics. The caller has
+# built the app and test bundles into .build-dd (build-for-testing) and exported
+# IPHONE_UDID, IPAD_UDID and, for ipad-script and focused reference runs, IPAD11_UDID
+# (`eval "$(python3 Tools/ci/pick-simulators.py)"` picks them).
 #
-#   iphone-terminal  TERMINAL_CLASSES, then ChatViewTests and PagingTests in rounds of
-#                    their own, on iPhone
-#   iphone-app       HerdrFontTests, then StatusMotionTests and the guest classes in rounds
-#                    of their own, then every other HerdrUITests class on iPhone, then the
-#                    SwiftTerm UIKit API tests on iPhone
-#   ipad             iPad-specific rounds, then the SwiftTerm UIKit API tests on iPad
-#   settings-build   optimized simulator build; CI caches its products before testing
-#   settings-gram    iPad Settings resize/resume regression using that Distribution build
-#                    with the device-sized stack (herdrup#416), even on cache hits; then
-#                    GramTests on the iPhone with the Debug build
-#   focused          ONLY_SUITE on ONLY_DEVICE (manual dispatch)
-#   wait-runtimes    before the Metal toolchain download: wait until the simulator runtimes
-#                    are Ready and mounted (wait_for_runtimes); needs no timeout binary yet
+# The shard names and classes are .macserve.json's, where macserve runs them as PR checks:
+#   - iphone-terminal, iphone-app and ipad are its ui_test shards. macserve's simulator
+#     UI-test template runs each as one xcodebuild test run of the listed classes on one
+#     simulator (mac-evidence/org-ios-sim-uitest-v1/<shard>). Here the same classes run in
+#     rounds, for a local or diagnostic run of that shard.
+#   - ipad-script is its script shard (mac-evidence/org-ios-sim-script-v1/ipad-script):
+#     Tools/ci/macserve-ipad-script.sh creates the iPads and runs this shard as it is.
 #
-# The iPhone rounds are complementary BY CONSTRUCTION: iphone-terminal runs exactly
-# TERMINAL_CLASSES plus ChatViewTests and PagingTests and settings-gram runs GramTests,
-# while iphone-app skips those same identifiers, so a new test class lands in iphone-app
-# without anyone listing it. A misspelled or renamed entry would silently drop that class, so
-# iphone-terminal fails unless its result bundles show every listed class executed tests.
+#   iphone-terminal  TERMINAL_CLASSES, then ChatViewTests, PagingTests and GramTests in
+#                    rounds of their own, on iPhone
+#   iphone-app       HerdrFontTests, then StatusMotionTests, the guest classes and
+#                    ChatUXSmokeTests in rounds of their own, then every other HerdrUITests
+#                    class on iPhone
+#   ipad             iPad-specific rounds, on iPad
+#   ipad-script      what the UI-test template cannot run: Herdrup Desktop's references on
+#                    both iPads (dark, status bar pinned by simctl), AgentListChromeTests on
+#                    iPad, the iPad Settings resize/resume regression on an optimized
+#                    Distribution build with the device-sized stack (herdrup#416), and the
+#                    SwiftTerm UIKit API tests on iPad and iPhone
+#   focused          ONLY_SUITE on ONLY_DEVICE: iphone, ipad, or ipad-pro-13 for the references
+#
+# The iPhone rounds are complementary BY CONSTRUCTION here: iphone-terminal runs exactly
+# TERMINAL_CLASSES plus its listed classes, while iphone-app skips those same identifiers, so
+# a new test class lands in iphone-app without anyone listing it. A misspelled or renamed
+# entry would silently drop that class, so iphone-terminal fails unless its result bundles
+# show every listed class executed tests. .macserve.json lists classes explicitly instead;
+# Tools/ci/test_macserve_shards.py fails when a test class is in no macserve shard.
 set -uo pipefail
 
-shard="${1:?usage: ui-shard.sh iphone-terminal|iphone-app|ipad|settings-build|settings-gram|focused|wait-runtimes}"
+shard="${1:?usage: ui-shard.sh iphone-terminal|iphone-app|ipad|ipad-script|focused}"
 TERMINAL_CLASSES=(TerminalControlTests TerminalResizeTests TerminalSearchTests TerminalSelectionTests TerminalDropTests)
 SIM_STATE="$(cd "$(dirname "$0")" && pwd)/sim-state.py"
 XCRESULT_TESTS="$(dirname "$SIM_STATE")/xcresult-tests.py"
 mkdir -p TestReceipts
 SIM_TMP=$(mktemp -d)
 
-# wait-runtimes runs before Homebrew's coreutils is installed; bounded() falls back to a
-# watchdog there. Every other shard needs the real timeout for its budgets.
-TIMEOUT_BIN=$(command -v timeout || command -v gtimeout || true)
-if [ -z "$TIMEOUT_BIN" ] && [ "$shard" != wait-runtimes ]; then
-  echo "::error::no timeout binary; per-suite budgets would be unenforceable"
-  exit 1
-fi
+# GNU timeout from coreutils where installed; otherwise Tools/ci/timeout.py, the same
+# options in Python (macOS has no `timeout`, and macserve's job PATH has no Homebrew).
+TIMEOUT_BIN=$(command -v timeout || command -v gtimeout || echo "$(dirname "$SIM_STATE")/timeout.py")
+
+# xcbeautify where installed, for a readable console; the raw log is always tee'd first.
+beautify() {
+  if command -v xcbeautify >/dev/null 2>&1; then xcbeautify; else cat; fi
+}
 
 # bounded SECONDS COMMAND...: runs COMMAND, TERMs it after SECONDS (KILL 5 s later).
 bounded() {
-  local seconds="$1" pid watchdog status=0
+  local seconds="$1"
   shift
-  if [ -n "$TIMEOUT_BIN" ]; then
-    "$TIMEOUT_BIN" --signal=TERM --kill-after=5s "${seconds}s" "$@"
-    return
-  fi
-  "$@" &
-  pid=$!
-  ( sleep "$seconds"; kill -TERM "$pid" 2>/dev/null; sleep 5; kill -KILL "$pid" 2>/dev/null ) &
-  watchdog=$!
-  wait "$pid" || status=$?
-  kill "$watchdog" 2>/dev/null
-  wait "$watchdog" 2>/dev/null
-  return "$status"
+  "$TIMEOUT_BIN" --signal=TERM --kill-after=5s "${seconds}s" "$@"
 }
 
 PROJECT=(-project Herdr.xcodeproj -scheme Herdr
@@ -98,7 +98,7 @@ trap stop_recording EXIT
 # CoreSimulator must leave time for receipt upload. TERM gets 15 s before KILL.
 # First-boot data migration took 5m41s in run 38916529804. Each device's first (cold)
 # boot gets 10m; later readiness checks of the same device keep the shorter 5m.
-# Per device, because settings-gram cold-boots the iPad and then the iPhone.
+# Per device, because ipad-script cold-boots three: both iPads and then the iPhone.
 cold_booted=" "
 # Devices that bootstatus reported ready earlier in this job. Do not repeat bootstatus
 # for a still-booted device: on Xcode 27, with the screen recorder running, the second
@@ -150,19 +150,16 @@ wait_for_simulator_service() {
   done
 }
 
-# SIMULATOR RUNTIMES CAN BE UNMOUNTED MID-JOB ON THE XCODE 27 IMAGE (actions/runner-images#14946).
-# When `xcodebuild -downloadComponent MetalToolchain` mounts its cryptex within milliseconds of
-# simdiskimaged mounting an iOS runtime's, the runtime gets attached twice, and simdiskimaged
-# later force-unmounts it: every booted simulator goes down, and every simctl or xcodebuild call
-# on that runtime's devices fails until it is mounted again. ci.yml ran `xcodebuild -version`
-# (which starts CoreSimulator) 3-5 s before that download. 13 hosted jobs from 2026-10-29 to
-# 2026-11-07 lost their runtime and then failed every later round, e.g. 42335785645 (iphone-app:
-# "The iOS 27.2 simulator runtime is not available. runtime path not found"), 42319983254 and
-# 41841861442 (ipad: "Unable to boot device because we cannot determine the runtime bundle",
-# "cannot determine current simulator state", and "Unable to find a device matching the
-# provided destination specifier" for the SwiftTerm build). ci.yml now runs wait-runtimes before
-# the download; boot_simulator checks each round's runtime, and recover_simulator mounts a lost
-# one again.
+# A SIMULATOR RUNTIME CAN BE UNMOUNTED MID-JOB (actions/runner-images#14946 on GitHub's Xcode 27
+# image): every booted simulator on it goes down, and every simctl or xcodebuild call on its
+# devices fails until it is mounted again. 13 hosted jobs from 2026-10-29 to 2026-11-07 lost
+# their runtime and then failed every later round, e.g. 42335785645 ("The iOS 27.2 simulator
+# runtime is not available. runtime path not found") and 41841861442 ("Unable to boot device
+# because we cannot determine the runtime bundle"). boot_simulator checks each round's
+# runtime, and recover_simulator names a lost one as infrastructure, with the mount log. It
+# does not remount: that meant `simctl shutdown all` and restarting simdiskimaged and
+# CoreSimulatorService, which on a shared Mac (macserve runs two jobs at once) would take
+# down every other job's simulators.
 runtime_verdict=
 # check_device_runtime UDID LOG: 0 when the device's runtime is Ready and mounted and the device
 # is available on it, 1 when simctl says otherwise, 2 when simctl did not answer (readiness then
@@ -188,70 +185,6 @@ check_device_runtime() {
     runtime_verdict="$runtime_verdict; $udid is unavailable"
   fi
   return "$status"
-}
-# wait_for_runtimes LOG BUDGET_SECONDS: waits until every simulator runtime that is not Unusable
-# is Ready and mounted. Non-iOS runtimes that never get there only warn; this suite needs iOS.
-wait_for_runtimes() {
-  local log="$1" budget="$2" start probe=0 status
-  start=$(date +%s)
-  while :; do
-    probe=$((probe + 1))
-    status=1
-    if bounded 60 xcrun simctl runtime list -j >"$SIM_TMP/runtimes.json" 2>>"$log"; then
-      if [ "$probe" -eq 1 ]; then
-        { echo "$(date -u +%FT%TZ) simctl runtime list -j:"; cat "$SIM_TMP/runtimes.json"; } >>"$log"
-      fi
-      status=0
-      python3 "$SIM_STATE" runtimes "$SIM_TMP/runtimes.json" >"$SIM_TMP/runtime-verdict.txt" 2>&1 || status=$?
-      sed "s/^/$(date -u +%FT%TZ) probe $probe: /" "$SIM_TMP/runtime-verdict.txt" >>"$log"
-      runtime_verdict=$(grep -v '(ignored)' "$SIM_TMP/runtime-verdict.txt" | paste -sd ';' -)
-      if [ "$status" -eq 0 ]; then
-        echo "$(date -u +%FT%TZ) simulator runtimes Ready and mounted after $(( $(date +%s) - start )) s: $runtime_verdict" | tee -a "$log"
-        return 0
-      fi
-    else
-      echo "$(date -u +%FT%TZ) probe $probe: simctl runtime list did not answer in 60 s" >>"$log"
-    fi
-    if [ $(( $(date +%s) - start )) -ge "$budget" ]; then
-      if [ "$status" -eq 2 ]; then
-        echo "::warning::the iOS simulator runtimes are Ready and mounted, other runtimes are not after ${budget}s: $runtime_verdict; see $log"
-        return 0
-      fi
-      echo "::error::infrastructure: the iOS simulator runtimes were not Ready and mounted within ${budget}s: ${runtime_verdict:-simctl did not answer}; see $log"
-      return 1
-    fi
-    sleep 5
-  done
-}
-# Mounts lost runtimes again and makes CoreSimulator see them. Measured on a hosted runner
-# whose iOS runtime was force-unmounted on purpose (probe run 42766613734): restarting
-# CoreSimulatorService alone left it unmounted for 120 s; restarting simdiskimaged (launchd
-# relaunches it) mounted it again within 2 s, but the device stayed "unavailable, runtime
-# profile not found" because CoreSimulatorService had already started without it. So:
-# simdiskimaged first, then CoreSimulatorService once the runtimes are mounted, then wait for
-# the device to be available. Every booted simulator goes down with the service.
-remount_runtimes() {
-  local log="$1" udid="$2" start
-  echo "$(date -u +%FT%TZ) shutting down every simulator; restarting simdiskimaged" | tee -a "$log"
-  bounded 120 xcrun simctl shutdown all >>"$log" 2>&1 || true
-  ready_devices=" "
-  sudo -n killall -9 simdiskimaged >>"$log" 2>&1 || true
-  wait_for_runtimes "$log" 300 || return 1
-  echo "$(date -u +%FT%TZ) restarting CoreSimulatorService so it finds the mounted runtimes" | tee -a "$log"
-  killall -9 com.apple.CoreSimulator.CoreSimulatorService >>"$log" 2>&1 || true
-  start=$(date +%s)
-  while :; do
-    if bounded 60 xcrun simctl list devices --json >"$SIM_TMP/devices.json" 2>>"$log" \
-        && python3 "$SIM_STATE" device "$SIM_TMP/devices.json" "$udid" >>"$log" 2>&1; then
-      echo "$(date -u +%FT%TZ) $udid is available again after $(( $(date +%s) - start )) s" | tee -a "$log"
-      return 0
-    fi
-    if [ $(( $(date +%s) - start )) -ge 180 ]; then
-      echo "::error::infrastructure: $udid is still unavailable 180 s after its runtime was mounted again; see $log"
-      return 1
-    fi
-    sleep 5
-  done
 }
 # The unified log of runtime mounts and unmounts: the evidence of what took a runtime away.
 save_runtime_log() {
@@ -408,7 +341,8 @@ recover_simulator() {
   if [ "$status" -ne 0 ]; then
     echo "$(date -u +%FT%TZ) the runtime of $udid is not confirmed Ready and mounted: $runtime_verdict" | tee -a "$log"
     save_runtime_log "TestReceipts/$label-recovery-runtime-events.log" 60
-    remount_runtimes "$log" "$udid" || return 1
+    echo "::error::infrastructure, not a test result: $label: the runtime of $udid is lost ($runtime_verdict); see $log and TestReceipts/$label-recovery-runtime-events.log"
+    return 1
   fi
   echo "$(date -u +%FT%TZ) simctl shutdown $udid" >>"$log"
   bounded 120 xcrun simctl shutdown "$udid" >>"$log" 2>&1 || true
@@ -489,7 +423,7 @@ first_run() {
       -default-test-execution-time-allowance 300 \
       -maximum-test-execution-time-allowance 600 \
       -resultBundlePath "TestReceipts/$label-first.xcresult" \
-      "$@" 2>&1 | tee "TestReceipts/$label-first.log" | xcbeautify || status=$?
+      "$@" 2>&1 | tee "TestReceipts/$label-first.log" | beautify || status=$?
   # The first case's result and time is the first real XCTest launch after install.
   grep -m1 -E "^Test Case '.*' (passed|failed|skipped) \(" "TestReceipts/$label-first.log" \
     | sed 's/^/first test after install: /' >>"TestReceipts/$label-install.log" || true
@@ -613,7 +547,7 @@ infra_rerun() {
       -default-test-execution-time-allowance 300 \
       -maximum-test-execution-time-allowance 600 \
       -resultBundlePath "TestReceipts/$label-infra-rerun.xcresult" \
-      $failed 2>&1 | tee "TestReceipts/$label-infra-rerun.log" | xcbeautify || status=$?
+      $failed 2>&1 | tee "TestReceipts/$label-infra-rerun.log" | beautify || status=$?
   if [ "$status" -eq 0 ]; then
     echo "$label: the rerun of its infrastructure failures passed"
     return 0
@@ -715,7 +649,7 @@ PY
     if ! "$TIMEOUT_BIN" --signal=INT 10m xcodebuild build-for-testing -scheme "$scheme" \
         -destination "platform=iOS Simulator,id=$udid" \
         -derivedDataPath ../../.build-dd-swiftterm \
-        CODE_SIGNING_ALLOWED=NO 2>&1 | tee "../../TestReceipts/SwiftTermUIKit-$device-build.log" | xcbeautify; then
+        CODE_SIGNING_ALLOWED=NO 2>&1 | tee "../../TestReceipts/SwiftTermUIKit-$device-build.log" | beautify; then
       echo "::error::SwiftTerm test build failed; see TestReceipts/SwiftTermUIKit-$device-build.log"
       exit 1
     fi
@@ -726,7 +660,7 @@ PY
         -only-testing:SwiftTermTests/TerminalViewGeometryTests \
         -derivedDataPath ../../.build-dd-swiftterm \
         -resultBundlePath "../../TestReceipts/$label-first.xcresult" \
-        CODE_SIGNING_ALLOWED=NO 2>&1 | tee "../../TestReceipts/$label-first.log" | xcbeautify; then
+        CODE_SIGNING_ALLOWED=NO 2>&1 | tee "../../TestReceipts/$label-first.log" | beautify; then
       echo "::error::$label first run failed; collecting raw diagnostics without erasing failure"
       boot_simulator "$udid" "../../TestReceipts/$label-diagnostic-boot.log" || exit 1
       "$TIMEOUT_BIN" --signal=INT 15m xcodebuild test-without-building -scheme "$scheme" \
@@ -759,9 +693,6 @@ case "$shard" in
     # its 300 s allowance, then the runner restarted) and 42200270228 short.
     run_suite iPhoneTerminal "$IPHONE_UDID" 50m "${only[@]}" || failed=1
     check_classes_ran TestReceipts/iPhoneTerminal-first.xcresult "${TERMINAL_CLASSES[@]}" || failed=1
-    # GramTests run in settings-gram: after #445 this shard had ~40 min of tests against
-    # ~26 (iphone-app) and ~24 (ipad), and settings-stack finished in ~13 min (runs
-    # 39128731625, 39132955146, 39137628334).
     # ChatViewTests (#485, ~3.5 min on a hosted runner) run here: in the app round they
     # pushed iPhoneApp to 29 min of tests against its 30 m budget, which run 39930335960
     # exceeded. This shard had ~18 min of tests in that run against 40 m.
@@ -772,16 +703,16 @@ case "$shard" in
     # 42907183978), so slowest pass + 2 min = 16.3 and 1.3 x 14.3 = 18.5 round up to 20m.
     run_suite iPhoneChat "$IPHONE_UDID" 20m -only-testing:HerdrUITests/ChatViewTests || failed=1
     check_classes_ran TestReceipts/iPhoneChat-first.xcresult ChatViewTests || failed=1
-    # Chat UX owns a separate round so its keyboard/history checks cannot consume
-    # the general app suite's deadline. 25m: p95 15.8 min, slowest pass 17.4 (n=142).
-    run_suite iPhoneChatUX "$IPHONE_UDID" 25m -only-testing:HerdrUITests/ChatUXSmokeTests || failed=1
-    check_classes_ran TestReceipts/iPhoneChatUX-first.xcresult ChatUXSmokeTests || failed=1
     # PagingTests (~4.3 min) run here too: every class in the app round slowed together
     # from run to run (23.7, 26.9 and 29.0 min of tests in runs 39938860577, 39954390114
     # and 39966934030), and 39966934030 ran out of the 30 m on the last class. This shard
     # had ~26 min of tests in its slowest recent run (39944992620) against 40 m + 10 m.
     run_suite iPhonePaging "$IPHONE_UDID" 10m -only-testing:HerdrUITests/PagingTests || failed=1
     check_classes_ran TestReceipts/iPhonePaging-first.xcresult PagingTests || failed=1
+    # 45m: p95 33.3 min, slowest pass 34.8 (n=151); 35m cut 41841861442, 41642629325 and
+    # 41523127667 short.
+    run_suite iPhoneGram "$IPHONE_UDID" 45m -only-testing:HerdrUITests/GramTests || failed=1
+    check_classes_ran TestReceipts/iPhoneGram-first.xcresult GramTests || failed=1
     ;;
   iphone-app)
     run_suite font-contract "$IPHONE_UDID" 10m -only-testing:HerdrFontTests || failed=1
@@ -798,6 +729,10 @@ case "$shard" in
     # the last classes. 15m: p95 6.3 min, slowest pass 8.3 (n=153).
     run_suite iPhoneServerUpdate "$IPHONE_UDID" 15m -only-testing:HerdrUITests/ServerUpdateUITests || failed=1
     check_classes_ran TestReceipts/iPhoneServerUpdate-first.xcresult ServerUpdateUITests || failed=1
+    # Chat UX owns a separate round so its keyboard/history checks cannot consume
+    # the general app suite's deadline. 25m: p95 15.8 min, slowest pass 17.4 (n=142).
+    run_suite iPhoneChatUX "$IPHONE_UDID" 25m -only-testing:HerdrUITests/ChatUXSmokeTests || failed=1
+    check_classes_ran TestReceipts/iPhoneChatUX-first.xcresult ChatUXSmokeTests || failed=1
     # The guest classes (#312) took ~18 min of the app round in run 42599598427, which with
     # two new GuestShellTests cases exceeded its 40m twice. 30m: only 3 passes on their own
     # round yet, all 21.0 min; 1.3 x that.
@@ -816,11 +751,6 @@ case "$shard" in
     # 40m: p95 37.5 min, slowest pass 39.6 (n=136) while the guest classes ran here; without
     # them (their case times subtracted) p95 22.1, slowest 22.9, so 40m keeps that margin.
     run_suite iPhoneApp "$IPHONE_UDID" 40m -only-testing:HerdrUITests "${skip[@]}" || failed=1
-    swiftterm_api iPhone "$IPHONE_UDID" || failed=1
-    # Herdrup Desktop's 11-inch references; the 13-inch ones run in the ipad shard. This
-    # shard had the most room (31 min against the ipad shard's 60 in run 40655871305).
-    xcrun simctl shutdown "$IPHONE_UDID" >/dev/null 2>&1 || true
-    desktop_reference_round iPad11DesktopReference "$IPAD11_UDID" || failed=1
     ;;
   ipad)
     ensure_simulator "$IPAD_UDID" iPadRecording || exit 1
@@ -869,33 +799,45 @@ case "$shard" in
     run_suite iPadStarPrompt "$IPAD_UDID" 10m \
       -only-testing:HerdrUITests/GitHubStarPromptTests/testBarFitsTheIPadSidebar || failed=1
     check_classes_ran TestReceipts/iPadStarPrompt-first.xcresult GitHubStarPromptTests || failed=1
-    # Herdrup Desktop's 13-inch references, before AgentListChrome leaves a window behind.
-    desktop_reference_round iPadDesktopReference "$IPAD_UDID" || failed=1
-    # Last of the app rounds: AgentListChromeTests shrinks the app into a window on purpose,
-    # and iPadOS keeps that window for later launches, even across a reinstall. Run
-    # 40537708095 (and 40552658219, which uninstalled the app after this round) ran
-    # NeedsYouPill and the first ChatUX cases in a 715-722 pt window: no room for the chat
-    # column and pixel probes off the window, failing four ChatUX cases that pass full screen.
-    # 10m: p95 2.9 min, slowest pass 4.2 (n=151).
-    run_suite iPadAgentListChrome "$IPAD_UDID" 10m -only-testing:HerdrUITests/AgentListChromeTests || failed=1
-    swiftterm_api iPad "$IPAD_UDID" || failed=1
     ;;
-  settings-build)
-    # Build before booting: compiler and simulator compete for the hosted runner's CPUs.
+  ipad-script)
+    # The optimized build for the Settings regression below, before any simulator boots:
+    # compiler and simulator compete for the Mac's CPUs.
     "$TIMEOUT_BIN" --signal=INT --kill-after=15s 40m \
         xcodebuild build-for-testing "${SETTINGS_PROJECT[@]}" \
         -destination "platform=iOS Simulator,id=$IPAD_UDID" \
         -only-testing:HerdrUITests/SettingsTests/testCompactSettingsSurviveResizeAndResume \
-        2>&1 | tee TestReceipts/settings-device-stack-build.log | xcbeautify || failed=1
-    ;;
-  settings-gram)
+        2>&1 | tee TestReceipts/settings-device-stack-build.log | beautify || failed=1
+    # Herdrup Desktop's references at both sizes, full screen, dark, with the status bar
+    # pinned: the 13-inch iPad, then the 1180x820 pt one, which is shut down afterwards.
+    desktop_reference_round iPadDesktopReference "$IPAD_UDID" || failed=1
+    desktop_reference_round iPad11DesktopReference "$IPAD11_UDID" || failed=1
+    bounded 120 xcrun simctl shutdown "$IPAD11_UDID" >/dev/null 2>&1 || true
+    ready_devices="${ready_devices/ $IPAD11_UDID / }"
+    # AgentListChromeTests shrinks the app into a window on purpose, and iPadOS keeps that
+    # window for later launches, even across a reinstall. Run 40537708095 (and 40552658219,
+    # which uninstalled the app after this round) ran NeedsYouPill and the first ChatUX
+    # cases in a 715-722 pt window: no room for the chat column and pixel probes off the
+    # window, failing four ChatUX cases that pass full screen. So it runs after every
+    # full-screen iPad round, and the iPad is erased before the Settings regression.
+    # 10m: p95 2.9 min, slowest pass 4.2 (n=151).
+    run_suite iPadAgentListChrome "$IPAD_UDID" 10m -only-testing:HerdrUITests/AgentListChromeTests || failed=1
+    check_classes_ran TestReceipts/iPadAgentListChrome-first.xcresult AgentListChromeTests || failed=1
+    stop_recording
+    bounded 120 xcrun simctl shutdown "$IPAD_UDID" >/dev/null 2>&1 || true
+    ready_devices="${ready_devices/ $IPAD_UDID / }"
+    if bounded 180 xcrun simctl erase "$IPAD_UDID" >TestReceipts/iPad-erase.log 2>&1; then
+      cold_booted="${cold_booted/ $IPAD_UDID / }"
+    else
+      echo "::error::could not erase $IPAD_UDID before the Settings regression; see TestReceipts/iPad-erase.log"
+      failed=1
+    fi
     # Distribution, so the optimizer produces the frame sizes that overflowed a
     # device's 1008 KiB main stack; project.yml gives simulator builds that stack.
     # DEBUG keeps the screenshot fixtures; testability lets the UI tests attach.
     # The test-run file uses __TESTROOT__ paths, so Build/Products is self-contained.
-    # Never infer a pass from a cache hit or fall back to a different configuration.
-    # A missing prerequisite fails the shard but still lets GramTests below run: they
-    # need neither the iPad nor the Distribution products.
+    # Never fall back to a different configuration. A missing prerequisite fails the shard
+    # but still lets the SwiftTerm tests below run: they need no Distribution products.
     settings_runs=(.build-dd-settings-stack/Build/Products/Herdr_*.xctestrun)
     if [ "${#settings_runs[@]}" -ne 1 ] || [ ! -f "${settings_runs[0]}" ]; then
       echo "::error::expected one optimized Settings .xctestrun in Build/Products"
@@ -911,7 +853,7 @@ case "$shard" in
           -maximum-test-execution-time-allowance 600 \
           -resultBundlePath TestReceipts/settings-device-stack.xcresult \
           -only-testing:HerdrUITests/SettingsTests/testCompactSettingsSurviveResizeAndResume \
-          2>&1 | tee TestReceipts/settings-device-stack.log | xcbeautify || failed=1
+          2>&1 | tee TestReceipts/settings-device-stack.log | beautify || failed=1
       # XCTest activation can restart a crashed app and still report a pass.
       # Without a readable export the guard cannot tell, so that fails the shard too.
       if ! xcrun xcresulttool export attachments \
@@ -929,13 +871,13 @@ case "$shard" in
         fi
       fi
     fi
-    # Then GramTests on the iPhone with the Debug build. The iPad is shut down first: the
-    # hosted runner has 7 GB, and a second booted simulator adds to the memory pressure
-    # measured during launch stalls (herdrup#418). 45m: p95 33.3 min, slowest pass 34.8
-    # (n=151); 35m cut 41841861442, 41642629325 and 41523127667 short.
+    # The vendored SwiftTerm's UIKit API tests, on the iPad and then the iPhone. The iPad is
+    # shut down before the iPhone boots: a second booted simulator adds to the memory
+    # pressure measured during launch stalls (herdrup#418).
+    swiftterm_api iPad "$IPAD_UDID" || failed=1
     xcrun simctl shutdown "$IPAD_UDID" >/dev/null 2>&1 || true
     ready_devices="${ready_devices/ $IPAD_UDID / }"
-    run_suite iPhoneGram "$IPHONE_UDID" 45m -only-testing:HerdrUITests/GramTests || failed=1
+    swiftterm_api iPhone "$IPHONE_UDID" || failed=1
     ;;
   focused)
     case "${ONLY_DEVICE:-iphone}" in
@@ -978,12 +920,6 @@ case "$shard" in
       run_suite "$label-${ONLY_SUITE//\//-}" "$udid" 25m "-only-testing:HerdrUITests/$ONLY_SUITE" || failed=1
       stop_recording
     fi
-    ;;
-  wait-runtimes)
-    # 600 s: the runtimes were already mounted when the first call returned in the jobs
-    # actions/runner-images#14946 measured (2-6 s); the bound only keeps a wedged
-    # CoreSimulator from holding the job.
-    wait_for_runtimes TestReceipts/wait-runtimes.log 600 || failed=1
     ;;
   *)
     echo "::error::unknown shard $shard"

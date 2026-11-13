@@ -48,8 +48,9 @@ commit; this JSON is not claimed to contain that daemon output. Chat fixture dat
 and separators honor the pinned clock. The writer's software keyboard is dismissed
 through its real Collapse keyboard action before collapsed/expanded capture.
 
-Run `ci.yml` with `only_suite=DesktopDetailReferenceShots`, `only_device=ipad` for both
-reference sizes. It exports Chat, Terminal, collapsed writer, expanded writer and
+Run `ONLY_SUITE=DesktopDetailReferenceShots ONLY_DEVICE=ipad Tools/ci/ui-shard.sh focused`
+on a Mac (docs/DESIGN.md "CI") for both reference sizes. It exports Chat, Terminal,
+collapsed writer, expanded writer and
 saved-host selection images. The saved-host chooser is connection home, not the
 Settings federation list or a fabricated connected-host dropdown.
 

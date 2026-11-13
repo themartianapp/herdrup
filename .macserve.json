@@ -1,14 +1,11 @@
 {"version":1,"work_dir":".","project":"Herdr.xcodeproj","scheme":"Herdr","xcodegen":true,"resolve_packages":true,
  "ui_test":{"shards":{
-  "terminal":["HerdrUITests/TerminalControlTests","HerdrUITests/TerminalResizeTests","HerdrUITests/TerminalSearchTests","HerdrUITests/TerminalSelectionTests","HerdrUITests/TerminalDropTests","HerdrUITests/ScrollTests","HerdrUITests/PagingTests"],
-  "chat":["HerdrUITests/ChatViewTests","HerdrUITests/ChatUXSmokeTests"],
-  "gram":["HerdrUITests/GramTests","HerdrUITests/GramColumnTests"],
-  "guest":["HerdrUITests/GuestPaneTests","HerdrUITests/GuestGramPaneTests","HerdrUITests/GuestPushTests","HerdrUITests/GuestShareTests","HerdrUITests/GuestShellTests"],
-  "agents":["HerdrUITests/AgentFoldersTests","HerdrUITests/AgentListChromeTests","HerdrUITests/AgentRosterScrollTests","HerdrUITests/AgentAvatarUITests","HerdrUITests/ArchivedCloseTests","HerdrUITests/NeedsYouPillTests","HerdrUITests/SessionPillsTests","HerdrUITests/StaleFleetRowTests","HerdrUITests/StatusMotionTests","HerdrUITests/LiveEventsTests"],
-  "settings":["HerdrUITests/SettingsTests","HerdrUITests/ServerUpdateUITests","HerdrUITests/SavedHostMissingSecretTests","HerdrUITests/GitHubStarPromptTests","HerdrUITests/OnboardingTests","HerdrUITests/PairingLinkTests"],
-  "duo":["HerdrUITests/DuoTransitionTests"]
+  "iphone-terminal":["HerdrUITests/TerminalControlTests","HerdrUITests/TerminalResizeTests","HerdrUITests/TerminalSearchTests","HerdrUITests/TerminalSelectionTests","HerdrUITests/TerminalDropTests","HerdrUITests/ChatViewTests","HerdrUITests/PagingTests","HerdrUITests/GramTests"],
+  "iphone-app":["HerdrFontTests/DesignTokensTests","HerdrFontTests/DictationLocaleTests","HerdrFontTests/GramBubbleCapTests","HerdrFontTests/ScrollInputObserverTests","HerdrFontTests/TerminalFileDropTests","HerdrFontTests/TerminalFontTests","HerdrUITests/StatusMotionTests","HerdrUITests/AgentFoldersTests","HerdrUITests/NeedsYouPillTests","HerdrUITests/ServerUpdateUITests","HerdrUITests/GuestPaneTests","HerdrUITests/GuestGramPaneTests","HerdrUITests/GuestPushTests","HerdrUITests/GuestShareTests","HerdrUITests/GuestShellTests","HerdrUITests/ChatUXSmokeTests","HerdrUITests/AgentAvatarUITests","HerdrUITests/AgentListChromeTests","HerdrUITests/AgentRosterScrollTests","HerdrUITests/ArchivedCloseTests","HerdrUITests/GitHubStarPromptTests","HerdrUITests/GramColumnTests","HerdrUITests/LiveEventsTests","HerdrUITests/OnboardingTests","HerdrUITests/PairingLinkTests","HerdrUITests/SavedHostMissingSecretTests","HerdrUITests/ScrollTests","HerdrUITests/SessionPillsTests","HerdrUITests/SettingsTests","HerdrUITests/StaleFleetRowTests","HerdrUITests/StoreScreenshotTests","HerdrUITests/WidgetGalleryTests"],
+  "ipad":["HerdrUITests/TerminalResizeTests","HerdrUITests/DuoTransitionTests","HerdrUITests/TerminalControlTests","HerdrUITests/SelectAgentFieldTests","HerdrUITests/TerminalDropTests","HerdrUITests/NeedsYouPillTests","HerdrUITests/AgentFoldersTests/testClosedFolderShowsWaitingCountAndOpensOnTap","HerdrUITests/ChatUXSmokeTests","HerdrUITests/GramColumnTests","HerdrUITests/ChatViewTests/testUpArrowOverTheIPadColumnEdgeStillJumps","HerdrUITests/GitHubStarPromptTests/testBarFitsTheIPadSidebar"]
  }},
  "script":{"shards":{
+  "ipad-script":{"run":"Tools/ci/macserve-ipad-script.sh"},
   "duo-screenshots":{"run":"Tools/ci/duo-screenshots.sh"},
   "duo-column":{"run":"Tools/ci/duo-column.sh"}
  }}}
