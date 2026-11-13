@@ -62,6 +62,11 @@ final class ScriptedBridge: RequestChannelLink, @unchecked Sendable {
         outputContinuation.yield(.stdout(ByteBuffer(string: line + "\n")))
     }
 
+    /// Writes bytes as they are, newline or not: part of a reply still arriving.
+    func emitRaw(_ bytes: String) {
+        outputContinuation.yield(.stdout(ByteBuffer(string: bytes)))
+    }
+
     func answer(_ requestLine: String, result: String) {
         emit(Self.reply(to: requestLine, result: result))
     }
@@ -361,6 +366,70 @@ final class RequestChannelTests: XCTestCase {
         try await eventually("stdin closed") { bridge.stdinClosed }
     }
 
+    /// The 3G foreground case from the slow-network bench: a 0.9 MB transcript reply is
+    /// still arriving when the app returns to the front, so the probe's pong queues
+    /// behind it for longer than the probe budget. The link is working, so the probe
+    /// must pass and the reply must land, instead of the channel closing and failing it
+    /// with "peer closed before sending a response line".
+    func testProbeBehindAReplyStillStreamingInKeepsTheChannelAndTheReply() async throws {
+        var settings = testSettings()
+        settings.probeTimeout = 60 * ms
+        let bridge = ScriptedBridge()
+        let channel = try await openChannel(bridge, settings: settings)
+        bridge.setResponder { _ in nil }  // replies come from the feeder below, in order
+        let big = Task {
+            try await channel.send(requestLine("big", method: "agent.transcript"), id: "big", timeout: 5_000 * ms)
+        }
+        try await eventually("big request written") { bridge.nonPingRequests.count == 1 }
+        await channel.markSuspect()
+
+        // The big reply arrives in pieces for ~4x the probe budget; the pong only after it.
+        let feeder = Task {
+            bridge.emitRaw(#"{"id":"big","result":{"text":""#)
+            for _ in 0..<12 {
+                try await Task.sleep(nanoseconds: 20 * ms)
+                bridge.emitRaw(String(repeating: "x", count: 4096))
+            }
+            bridge.emitRaw("\"}}\n")
+            try await eventually("probe ping written") { bridge.pingCount == 2 }
+            let ping = try XCTUnwrap(bridge.requests.last { $0.contains(#""method":"ping""#) })
+            bridge.emit(ScriptedBridge.reply(to: ping, result: #"{"type":"pong"}"#))
+        }
+
+        let probed = await channel.probe()
+        XCTAssertTrue(probed, "bytes still arriving prove the link alive")
+        await assertEqual(await channel.isOpen, true)
+        let reply = try await big.value
+        XCTAssertTrue(reply.hasPrefix(#"{"id":"big""#))
+        XCTAssertEqual(reply.utf8.count, #"{"id":"big","result":{"text":""}}"#.utf8.count + 12 * 4096)
+        try await feeder.value
+        await assertEqual(await channel.status(), .ready)
+    }
+
+    /// A link that sent part of a reply and then went silent is dead: only bytes after
+    /// the probe started count.
+    func testProbeOnALinkThatStoppedMidReplyClosesIt() async throws {
+        var settings = testSettings()
+        settings.probeTimeout = 60 * ms
+        let bridge = ScriptedBridge()
+        let channel = try await openChannel(bridge, settings: settings)
+        bridge.setResponder { _ in nil }
+        let big = Task {
+            try await channel.send(requestLine("big", method: "agent.transcript"), id: "big", timeout: 5_000 * ms)
+        }
+        try await eventually("big request written") { bridge.nonPingRequests.count == 1 }
+        bridge.emitRaw(#"{"id":"big","result":{"text":"xxxx"#)
+        try await Task.sleep(nanoseconds: 20 * ms)
+        await channel.markSuspect()
+        let probed = await channel.probe()
+        XCTAssertFalse(probed)
+        await assertEqual(await channel.status(), .closed)
+        do {
+            _ = try await big.value
+            XCTFail("the dead channel's request must fail")
+        } catch TransportError.closedBeforeResponse {}
+    }
+
     func testChannelUnusedForTheIntervalCloses() async throws {
         var settings = testSettings()
         settings.unusedCloseAfter = 400 * ms
@@ -391,21 +460,31 @@ final class RequestChannelTests: XCTestCase {
 
     // MARK: routing rules
 
-    func testRoutableIDAppliesTheBridgeLimits() {
-        XCTAssertEqual(RequestChannel.routableID(requestLine("a")), "a")
-        XCTAssertNil(RequestChannel.routableID(requestLine("s", method: "pane.stream")))
-        XCTAssertNil(RequestChannel.routableID(requestLine("s", method: "events.subscribe")))
-        XCTAssertNil(RequestChannel.routableID(requestLine("")))
-        XCTAssertNil(RequestChannel.routableID(#"{"method":"ping","params":{}}"#))
-        XCTAssertNil(RequestChannel.routableID("not json"))
+    func testRouteAppliesTheBridgeLimits() {
+        XCTAssertEqual(RequestChannel.route(requestLine("a"))?.id, "a")
+        XCTAssertNil(RequestChannel.route(requestLine("s", method: "pane.stream")))
+        XCTAssertNil(RequestChannel.route(requestLine("s", method: "events.subscribe")))
+        XCTAssertNil(RequestChannel.route(requestLine("")))
+        XCTAssertNil(RequestChannel.route(#"{"method":"ping","params":{}}"#))
+        XCTAssertNil(RequestChannel.route("not json"))
 
         // Exactly the bridge's 1 MiB line limit rides the channel; one byte more does not.
         let skeleton = requestLine("big").replacingOccurrences(of: "{}", with: #"{"text":""}"#)
         let filler = String(repeating: "x", count: RequestChannel.maxRequestLineBytes - skeleton.utf8.count)
         let atLimit = skeleton.replacingOccurrences(of: #""text":"""#, with: #""text":"\#(filler)""#)
         XCTAssertEqual(atLimit.utf8.count, RequestChannel.maxRequestLineBytes)
-        XCTAssertEqual(RequestChannel.routableID(atLimit), "big")
-        XCTAssertNil(RequestChannel.routableID(atLimit.replacingOccurrences(of: "xx", with: "xxx", options: [], range: atLimit.range(of: "xx"))))
+        XCTAssertEqual(RequestChannel.route(atLimit)?.id, "big")
+        XCTAssertNil(RequestChannel.route(atLimit.replacingOccurrences(of: "xx", with: "xxx", options: [], range: atLimit.range(of: "xx"))))
+    }
+
+    func testRouteSendsReplyHeavyMethodsToTheBulkLane() {
+        for method in ["agent.transcript", "agent.read", "pane.read", "pane.history",
+                       "gram.list", "gram.get_file", "gram.get_file_chunk"] {
+            XCTAssertEqual(RequestChannel.route(requestLine("b", method: method))?.lane, .bulk, method)
+        }
+        for method in ["agent.list", "ping", "accounts.list", "agent.prompt", "pane.send_text", "gram.post"] {
+            XCTAssertEqual(RequestChannel.route(requestLine("i", method: method))?.lane, .interactive, method)
+        }
     }
 
     func testResponseIDReadsHerdrsLeadingIDAndFallsBackToJSON() {

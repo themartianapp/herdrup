@@ -29,13 +29,6 @@ enum ChatPreference {
     }
 }
 
-enum ChatPaneLayout {
-    /// The owner page's key row height, last measured on any pane (the keycaps are the same
-    /// everywhere). A page that opens in Chat has never shown its own row; this sizes the
-    /// terminal under the chat as if it had. The default is the row at 100 % text.
-    @MainActor static var lastKeyRowHeight: CGFloat = 52
-}
-
 /// The owner page's `Chat | Terminal` switch: a small centred capsule under the header
 /// (13 pt semibold segments, 26 tall, in a 1 pt hairline capsule), as in the mockup.
 struct ChatTerminalSwitch: View {
