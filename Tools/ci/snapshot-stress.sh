@@ -86,9 +86,17 @@ SIMCTL_CHILD_HERDR_SNAPSHOT_STRESS_EVERY="$EVERY" \
 
 # A round fronts five screens, ~11 s; each measurement adds ~6 s.
 DEADLINE=$(( $(date +%s) + 60 + ROUNDS * 20 ))
+# The app is dead only when two listings in a row SUCCEED without it: on an overloaded host
+# `simctl spawn` itself fails or times out, which must not read as a dead app.
+missing=0
 until grep -q '"done":true' "$LINES" 2>/dev/null; do
   if [ "$(date +%s)" -gt "$DEADLINE" ]; then fail "the stress run did not finish in time"; break; fi
-  if ! xcrun simctl spawn "$UDID" launchctl list 2>/dev/null | grep -q "$BUNDLE_ID"; then
+  if listing=$(t 60 xcrun simctl spawn "$UDID" launchctl list 2>&1); then
+    if grep -q "$BUNDLE_ID" <<<"$listing"; then missing=0; else missing=$((missing + 1)); fi
+  else
+    log "launchctl list failed (host busy?): $(printf '%s' "$listing" | tail -n 1)"
+  fi
+  if [ "$missing" -ge 2 ]; then
     fail "the app is no longer running"
     collect_death_evidence
     break
