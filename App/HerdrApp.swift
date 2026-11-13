@@ -8206,16 +8206,18 @@ struct SettingsView: View {
         }
     }
 
-    /// The anonymous daily usage ping's switch, on by default. Off stops the pings and deletes
-    /// the install ID at once; on again makes a new ID. A toggle drawn like `groupedToggleRow`'s,
-    /// the whole row the tap target.
+    /// The anonymous daily usage ping's switch, on by default; it also gates the crash reports
+    /// (`CrashReportsLaunch`). Off stops the pings, deletes the install ID and any queued crash
+    /// reports at once; on again makes a new ID. A toggle drawn like `groupedToggleRow`'s, the
+    /// whole row the tap target.
     private var usageCountRow: some View {
         Button {
             shareUsageCount.toggle()
             UsagePing.setEnabled(shareUsageCount, in: .standard)
+            CrashReportsLaunch.usageCountSwitched(on: shareUsageCount)
         } label: {
             glyphRow("Share anonymous usage count", systemImage: "chart.bar",
-                     subtitle: "Once a day: a random ID, the app version and the platform. Nothing about your agents or machines.") {
+                     subtitle: "Once a day: a random ID, the app version and the platform. After a crash: where in the app it happened. Nothing about your agents or machines.") {
                 Toggle("", isOn: .constant(shareUsageCount))
                     .labelsHidden()
                     .tint(Palette.brand)

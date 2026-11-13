@@ -75,3 +75,18 @@ simple = { limit = 60, period = 60 }
 [[analytics_engine_datasets]]
 binding = "USAGE"
 dataset = "herdrup_usage"
+
+# Opt-in crash and hang reports (POST /v1/crash) have their own per-IP budget, apart from
+# the ping and connect limits. The app sends at most 5 a day.
+[[ratelimits]]
+name = "CRASH_LIMIT"
+namespace_id = "3104"
+simple = { limit = 10, period = 60 }
+
+# One object per accepted crash or hang report, re-serialized from its validated fields:
+# never the IP, headers, country or user agent. The bucket's lifecycle rule deletes each
+# object 90 days after upload (README "Crash reports"). The admin reads need the
+# CRASH_ADMIN_TOKEN secret; without it they are 404.
+[[r2_buckets]]
+binding = "CRASHES"
+bucket_name = "herdrup-crash-reports"

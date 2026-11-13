@@ -268,6 +268,19 @@ jobs:
             echo "::error::archived version ($BUILT) does not match project.yml ($EXPECTED)"; exit 1
           fi
 
+      - name: Keep the dSYMs for crash symbolication
+        # The opt-in crash reports (POST /v1/crash on the guest relay) carry binary UUIDs and
+        # offsets only; Tools/crash/symbolicate.py turns them into functions and lines with
+        # these dSYMs, fetched by the artifact's name, dSYMs-<build number>. A few tens of
+        # MB, kept 90 days, as long as the relay keeps a report. A missing folder warns
+        # rather than failing a release.
+        uses: actions/upload-artifact@v4
+        with:
+          name: dSYMs-${{ env.BUILD }}
+          path: /tmp/Herdr.xcarchive/dSYMs
+          retention-days: 90
+          if-no-files-found: warn
+
       - name: Upload to TestFlight
         # The App Store Connect API key already exists (issuer + key id + .p8). altool
         # wants the .p8 on disk at a fixed filename; keephair proved this path ships.
