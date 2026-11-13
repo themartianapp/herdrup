@@ -56,6 +56,19 @@ public final class ContentCache: @unchecked Sendable {
     private var index: [String: (bytes: Int, used: Date)]?
     private let now: @Sendable () -> Date
 
+    /// Which wipe a scope was made after. A scope writes only while its owner has not been
+    /// wiped since (nor the whole cache): leaving a share pops screens whose teardown still
+    /// keeps the terminal's last screen, and a reply in flight on a forgotten machine's
+    /// client still lands. Without this, either put the wiped content straight back.
+    /// Making a scope again (re-pairing, re-joining) takes a fresh lease, so it keeps again.
+    struct Lease: Equatable, Sendable {
+        let ownerWipes: Int
+        let allWipes: Int
+    }
+    /// Wipes per owner and of everything, in memory; read and changed on `queue` only.
+    private var ownerWipes: [Owner: Int] = [:]
+    private var allWipes = 0
+
     public init(root: URL, budgetBytes: Int = ContentCache.defaultBudgetBytes,
                 entryLimitBytes: Int = ContentCache.defaultEntryLimitBytes,
                 now: @escaping @Sendable () -> Date = { Date() }) {
@@ -69,23 +82,38 @@ public final class ContentCache: @unchecked Sendable {
     /// session, or one guest share. A share's `sharedTarget` and `sharedName` name the one
     /// agent it shows (as `GuestAccess.agentTarget` and `agentName`).
     public func scope(machine: String, session: String?) -> ContentCacheScope {
-        ContentCacheScope(cache: self, owner: .machine(machine), session: session, sharedTarget: nil, sharedName: nil)
+        let owner = Owner.machine(machine)
+        return ContentCacheScope(cache: self, owner: owner, session: session, sharedTarget: nil, sharedName: nil,
+                                 lease: lease(for: owner))
     }
 
     public func scope(share id: String, sharedTarget: String, sharedName: String? = nil) -> ContentCacheScope {
-        ContentCacheScope(cache: self, owner: .share(id), session: nil, sharedTarget: sharedTarget,
-                          sharedName: sharedName)
+        let owner = Owner.share(id)
+        return ContentCacheScope(cache: self, owner: owner, session: nil, sharedTarget: sharedTarget,
+                                 sharedName: sharedName, lease: lease(for: owner))
+    }
+
+    private func lease(for owner: Owner) -> Lease {
+        queue.sync { currentLease(owner) }
+    }
+
+    private func currentLease(_ owner: Owner) -> Lease {
+        Lease(ownerWipes: ownerWipes[owner] ?? 0, allWipes: allWipes)
     }
 
     // MARK: Storage
 
-    func write(_ data: Data, to path: String) {
+    /// Keeps `data` at `path` for `owner`, unless `owner` was wiped after `lease` was taken.
+    /// Checked on the queue, in order with the wipes, so a write queued before a wipe is
+    /// removed by it and one after it is dropped.
+    func write(_ data: Data, to path: String, owner: Owner, lease: Lease) {
         guard data.count <= entryLimitBytes else {
             // Too big to keep: drop any older copy too, so a stale screen cannot outlive it.
             queue.async { self.removeEntry(path) }
             return
         }
         queue.async {
+            guard self.currentLease(owner) == lease else { return }
             var index = self.loadIndex()
             let url = self.root.appendingPathComponent(path)
             let used = self.now()
@@ -131,6 +159,7 @@ public final class ContentCache: @unchecked Sendable {
     public func wipe(_ owner: Owner) {
         queue.sync {
             let prefix = owner.directoryName + "/"
+            ownerWipes[owner, default: 0] += 1   // every scope made before this stops writing
             try? files.removeItem(at: root.appendingPathComponent(owner.directoryName))
             if var index {
                 for key in index.keys where key.hasPrefix(prefix) { index[key] = nil }
@@ -142,6 +171,7 @@ public final class ContentCache: @unchecked Sendable {
     /// Removes everything.
     public func wipeAll() {
         queue.sync {
+            allWipes += 1
             try? files.removeItem(at: root)
             index = [:]
         }
@@ -236,6 +266,12 @@ public struct ContentCacheScope: Sendable {
     /// The shared agent's name, for a host whose list omits its ids (as the guest home
     /// matches it).
     public let sharedName: String?
+    /// Taken when the scope was made; a wipe of `owner` after that ends this scope's writes.
+    let lease: ContentCache.Lease
+
+    private func put(_ data: Data, at path: String) {
+        cache.write(data, to: path, owner: owner, lease: lease)
+    }
 
     private var directory: String {
         switch owner {
@@ -303,7 +339,7 @@ public struct ContentCacheScope: Sendable {
 
     public func storeTerminalText(_ text: String, pane: String) {
         guard shows(pane) else { return }
-        cache.write(Data(text.utf8), to: terminalPath(pane: pane))
+        put(Data(text.utf8), at: terminalPath(pane: pane))
     }
 
     /// Writes `responseLine` as the kept agent list and waits for it to land: the app's
@@ -318,21 +354,21 @@ public struct ContentCacheScope: Sendable {
     /// agent's row is kept.
     func recordAgentList(_ responseLine: String) {
         guard let sharedTarget else {
-            cache.write(Data(responseLine.utf8), to: agentsPath)
+            put(Data(responseLine.utf8), at: agentsPath)
             return
         }
         guard let filtered = Self.keepingOnlyAgent(sharedTarget, named: sharedName, in: responseLine) else { return }
-        cache.write(filtered, to: agentsPath)
+        put(filtered, at: agentsPath)
     }
 
     func recordTranscript(_ responseLine: String, target: String, subagent: String?) {
         guard shows(target) else { return }
-        cache.write(Data(responseLine.utf8), to: transcriptPath(target: target, subagent: subagent))
+        put(Data(responseLine.utf8), at: transcriptPath(target: target, subagent: subagent))
     }
 
     func recordGramHead(_ responseLine: String) {
         guard sharedTarget == nil else { return }
-        cache.write(Data(responseLine.utf8), to: gramPath)
+        put(Data(responseLine.utf8), at: gramPath)
     }
 
     /// The reply with every agent but the shared one removed. Matched as the guest home
