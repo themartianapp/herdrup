@@ -10,6 +10,7 @@ import UIKit
 /// returns false WITHOUT recording the host if that fails, so a false here never leaves a
 /// half-written host behind.
 extension SavedHostsStore: PairingCoordinator.HostStore {
+    @MainActor
     func addPairedHost(nickname: String, host: String, username: String,
                        privateKeyPEM: String) -> Bool {
         add(nickname: nickname, host: host, username: username, secret: .key(privateKeyPEM))
@@ -344,10 +345,10 @@ struct PairingSheet: View {
         phase = .pairing
         let coordinator = PairingCoordinator(store: store, pinner: KeychainHostKeyPolicy.shared)
         let label = UIDevice.current.name
-        // Awaited on the MAIN actor deliberately, NOT in a detached task. The coordinator
-        // sends only the blocking socket round trip off-actor; the pin and the store write
-        // must stay here, because `addPairedHost` mutates an `@Published` property and
-        // SwiftUI does not allow that from a background thread.
+        // Not in a detached task: `completePairing` is `@MainActor`, and sends only the
+        // blocking socket round trip off the main thread. The pin and the store write stay
+        // on it, because `addPairedHost` mutates an `@Published` property and SwiftUI does
+        // not allow that from a background thread (#664).
         Task {
             do {
                 let nickname = try await coordinator.completePairing(

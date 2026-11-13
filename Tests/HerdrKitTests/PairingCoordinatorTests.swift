@@ -27,6 +27,7 @@ final class PairingCoordinatorTests: XCTestCase {
         var savedUser: String?
         var sentPublicKey: String?
         var sentDeviceLabel: String?
+        var savedOnMainThread: Bool?
     }
 
     private struct FakeStore: PairingCoordinator.HostStore {
@@ -34,6 +35,7 @@ final class PairingCoordinatorTests: XCTestCase {
         func addPairedHost(nickname: String, host: String, username: String,
                            privateKeyPEM: String) -> Bool {
             recorder.events.append("save")
+            recorder.savedOnMainThread = Thread.isMainThread
             recorder.savedHost = host
             recorder.savedUser = username
             recorder.savedKeyPEM = privateKeyPEM
@@ -278,6 +280,17 @@ final class PairingCoordinatorTests: XCTestCase {
         XCTAssertEqual(recorder.savedHost, "100.64.1.2")
         XCTAssertEqual(recorder.savedUser, "jerry")
         XCTAssertEqual(name, "jerry@100.64.1.2", "a default nickname a person can recognise")
+    }
+
+    // MARK: - Threads
+
+    /// The save publishes UI state (`SavedHostsStore.hosts` is `@Published`), so it must run
+    /// on the main thread however the caller got there (#664). A nonisolated test method is
+    /// the caller that tells them apart: before the fix the save ran on its background thread.
+    func testSavesOnTheMainThread() async throws {
+        let recorder = Recorder()
+        try await makeCoordinator(recorder).completePairing(payload: payload(), deviceLabel: "iPhone")
+        XCTAssertEqual(recorder.savedOnMainThread, true, "the store write must run on the main thread")
     }
 
     // MARK: - Failures downstream of the remote change
