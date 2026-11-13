@@ -180,10 +180,13 @@ final class GuestShellTests: XCTestCase {
                       "Scan pairing code should open the pairing sheet")
     }
 
+    /// Guest home's Settings tab. The iPad draws its tab bar at the top, where the item may
+    /// not sit under a tab bar element, so fall back to the button by its label.
     private func openGuestSettings() -> XCUIApplication {
         let app = XCUIApplication.launched(mock: "guest")
         XCTAssertTrue(app.buttons["guest-agent-row"].waitForExistence(timeout: 10))
-        let settingsTab = app.tabBars.firstMatch.buttons["Settings"]
+        let inTabBar = app.tabBars.firstMatch.buttons["Settings"]
+        let settingsTab = inTabBar.exists ? inTabBar : app.buttons["Settings"].firstMatch
         for _ in 0..<3 where !settingsTab.isSelected {
             settingsTab.tap()
             _ = poll(3, every: 0.25) { settingsTab.isSelected }
