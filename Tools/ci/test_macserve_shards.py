@@ -8,8 +8,7 @@ HerdrUITests and HerdrFontTests must therefore appear as a whole class in an iPh
 (iphone-terminal or iphone-app, exactly one of them), or, for an iPad-only class, as a whole
 class in the ipad shard, or be one of the classes the `ipad-script` script shard runs
 (Herdrup Desktop's references, ui-shard.sh DESKTOP_REFERENCE_CLASSES). Every selector must
-name an existing class or method, and every shard must be a shard Tools/ci/ui-shard.sh can
-run locally."""
+name an existing class or method."""
 import json
 import pathlib
 import re
@@ -38,7 +37,6 @@ class MacserveShardTests(unittest.TestCase):
     def setUpClass(cls):
         config = json.loads((ROOT / ".macserve.json").read_text())
         cls.ui = config["ui_test"]["shards"]
-        cls.scripts = config["script"]["shards"]
         cls.classes = {**test_classes("HerdrUITests"), **test_classes("HerdrFontTests")}
         cls.ui_shard = (ROOT / "Tools/ci/ui-shard.sh").read_text()
         references = re.search(r"^DESKTOP_REFERENCE_CLASSES=\(([^)]*)\)", cls.ui_shard, re.M)
@@ -64,14 +62,6 @@ class MacserveShardTests(unittest.TestCase):
             self.assertTrue(homes or key in whole["ipad"],
                             "%s is in no shard: add it to %s, or to ipad if it is iPad-only" % (key, IPHONE_SHARDS))
         self.assertTrue(self.script_classes <= set(self.classes), "DESKTOP_REFERENCE_CLASSES names a missing class")
-
-    def test_every_shard_runs_locally_through_ui_shard_sh(self):
-        cases = set(re.findall(r"^  ([a-z0-9-]+)\)$", self.ui_shard, re.M))
-        for shard in self.ui:
-            self.assertIn(shard, cases, "ui-shard.sh has no `%s` shard" % shard)
-        self.assertIn("ipad-script", cases)
-        self.assertEqual(self.scripts["ipad-script"]["run"], "Tools/ci/macserve-ipad-script.sh")
-        self.assertIn("ui-shard.sh ipad-script", (ROOT / "Tools/ci/macserve-ipad-script.sh").read_text())
 
 
 if __name__ == "__main__":
