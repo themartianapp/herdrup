@@ -182,7 +182,10 @@ herdrup needs; the app tells you if it finds one.
 **2. On your phone**, [get herdrup from the App Store](https://apps.apple.com/app/id6798087089).
 
 **3. Connect.** Tap **Scan pairing code** and point the camera at the QR. Your agents appear.
-**Add host** is the manual SSH alternative.
+**Add host** is the manual SSH alternative. A page that shows the pairing QR can also offer the
+code as text or as a `herdrup://pair#<base64url of the QR's JSON>` link: on the scan screen, tap
+**Paste** (the raw JSON or the link), or open the link. Either way you confirm the host, user and
+host key, then tap **Connect**.
 
 To update herdr later, run the installer again, then restart the server with `herdr server stop`
 and `herdr`. Stopping it closes the agents and terminals running in herdr.

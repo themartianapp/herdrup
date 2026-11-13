@@ -43,6 +43,12 @@ struct HerdrApp: App {
         WindowGroup {
             RootView()
                 .onOpenURL { url in
+                    // A pairing link (herdrup://pair#…) opens its confirmation; nothing
+                    // connects before the person taps Connect.
+                    if PairingRouter.isPairingLink(url) {
+                        PairingRouter.shared.open(url.absoluteString)
+                        return
+                    }
                     // A guest invite (herdrup://guest-invite#…, or the relay's https /i/… page)
                     // opens the Accept screen; everything else is the agent deep link.
                     if GuestInviteRouter.isInviteLink(url) {
@@ -109,6 +115,8 @@ struct RootView: View {
     /// over the owner session, which stays connected underneath).
     @ObservedObject private var sharedMachines = SharedMachinesStore.shared
     @ObservedObject private var invites = GuestInviteRouter.shared
+    /// Pairing a machine (#126): the scanner, or the confirmation for a pasted or linked code.
+    @ObservedObject private var pairing = PairingRouter.shared
     @State private var openGuest: GuestAccess?
     /// Whether launch already decided to open the only shared machine.
     @State private var didAutoOpenGuest = false
@@ -165,6 +173,20 @@ struct RootView: View {
         } message: {
             Text(invites.failure ?? "")
         }
+        .sheet(item: $pairing.pending) { pending in
+            PairingSheet(store: SavedHostsStore.shared, initialPayload: pending.payload,
+                         activeConnection: activeConnectionLabel) { nickname in
+                openPairedMachine(nickname)
+            }
+        }
+        .alert("Can't use this pairing code", isPresented: Binding(
+            get: { pairing.failure != nil },
+            set: { if !$0 { pairing.failure = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(pairing.failure ?? "")
+        }
         .onAppear { autoOpenSharedMachine() }
         // A tapped push for an agent shared with this phone opens that share (its home picks
         // the Gram tab or the terminal), in place of whatever screen is showing. A share the
@@ -208,7 +230,7 @@ struct RootView: View {
         if let openGuest {
             SharedMachineHomeView(
                 access: openGuest,
-                onBack: guestCanGoBack ? { self.openGuest = nil } : nil,
+                onBack: { self.openGuest = nil },
                 onLeave: { self.openGuest = nil })
             .id(openGuest.id)
         } else if let client, let credentials, homeShown {
@@ -251,9 +273,34 @@ struct RootView: View {
         }
     }
 
-    /// A guest-only phone with one shared host opens its combined agent list.
-    private var guestCanGoBack: Bool {
-        client != nil || !SavedHostsStore.shared.hosts.isEmpty || sharedMachines.groups.count > 1
+    /// The machine this phone is connected to, named as the confirmation shows it, so pairing
+    /// another asks before replacing it (as a scanned code always has).
+    private var activeConnectionLabel: String? {
+        guard client != nil, let credentials else { return nil }
+        return Self.hostLabel(for: credentials)
+    }
+
+    /// The person tapped "Open it" on a machine they just paired: close what is showing (the
+    /// session, a shared machine's home — the share stays in the list) and connect to it,
+    /// here and now. Nothing is handed to the machine list to act on later, so returning to
+    /// that list never connects by itself.
+    private func openPairedMachine(_ nickname: String) {
+        let store = SavedHostsStore.shared
+        openGuest = nil
+        if client != nil { disconnect() }
+        // Just saved with its key, so this is ready. If not, the machine list shows the new
+        // row, and tapping it explains what is missing.
+        guard let saved = store.hosts.first(where: { $0.nickname == nickname }),
+              case .ready(let creds) = store.connection(for: saved)
+        else { return }
+        #if DEBUG
+        // The mock list (`list`) stands in for a connection with its own flag.
+        if ScreenshotMock.mode != nil {
+            mockDisconnected = false
+            return
+        }
+        #endif
+        connect(creds)
     }
 
     private func autoOpenSharedMachine() {
@@ -811,9 +858,6 @@ struct ConnectView: View {
     /// The add/edit sheet target; nil = closed.
     @State private var editorTarget: HostEditorTarget?
     @State private var showingOwnerSetup = false
-    /// The scan-to-connect sheet (#126) — the path that needs no key, no host address and
-    /// no knowledge of what a daemon is.
-    @State private var showingPairing = false
 
     var body: some View {
         ZStack {
@@ -855,15 +899,6 @@ struct ConnectView: View {
             HostEditor(target: target, store: savedHosts) { creds in
                 editorTarget = nil
                 onConnect(creds)
-            }
-        }
-        .sheet(isPresented: $showingPairing) {
-            PairingSheet(store: savedHosts) { nickname in
-                // Connect straight into what was just paired: the point of scanning is
-                // that nothing else is asked for.
-                if let paired = savedHosts.hosts.first(where: { $0.nickname == nickname }) {
-                    tapSavedHost(paired)
-                }
             }
         }
         .sheet(isPresented: $showingInviteScan, onDismiss: {
@@ -988,7 +1023,7 @@ struct ConnectView: View {
     }
 
     private var scanButton: some View {
-        Button { showingPairing = true } label: {
+        Button { PairingRouter.shared.scan() } label: {
             HStack(spacing: 8) {
                 Image(systemName: "qrcode.viewfinder").font(.system(size: 16, weight: .semibold))
                 Text("Scan pairing code").font(connectFont(16, .semibold))
@@ -1137,7 +1172,7 @@ struct ConnectView: View {
         // rebuilt while open (see StableContextMenu.swift).
         .stableContextMenu {
             StableMenuItem("Edit", systemImage: "pencil") {
-                editorTarget = storedSecret(saved) == nil ? .missingSecret(saved) : .edit(saved)
+                editorTarget = savedHosts.secret(for: saved) == nil ? .missingSecret(saved) : .edit(saved)
             }
             StableMenuItem("Remove", systemImage: "trash", role: .destructive) { savedHosts.delete(saved) }
         }
@@ -1150,41 +1185,14 @@ struct ConnectView: View {
         return hasNickname ? "\(saved.username)@\(saved.host)" : saved.username
     }
 
-    /// The host's secret from this phone's Keychain, or nil when it is not here (the host
-    /// list came from another phone, or the secret was deleted). A key is trimmed; a
-    /// password is not, since its leading/trailing spaces can be significant.
-    private func storedSecret(_ saved: SavedHost) -> HostSecret? {
-        switch saved.auth {
-        case .key:
-            guard let key = savedHosts.key(for: saved)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !key.isEmpty else { return nil }
-            return .key(key)
-        case .password:
-            guard let password = savedHosts.password(for: saved), !password.isEmpty else { return nil }
-            return .password(password)
-        }
-    }
-
     /// One-tap connect from a saved host. If the secret is not on this device, open the
     /// editor in reconnect mode, which says so and asks for it, rather than a silent dead tap.
     private func tapSavedHost(_ saved: SavedHost) {
-        guard let ep = HostEndpoint.parse(saved.host) else {
-            editorTarget = .edit(saved)
-            return
+        switch savedHosts.connection(for: saved) {
+        case .ready(let creds): onConnect(creds)
+        case .unparseableHost: editorTarget = .edit(saved)
+        case .missingSecret: editorTarget = .missingSecret(saved)
         }
-        let creds: SSHCredentials
-        switch storedSecret(saved) {
-        case nil:
-            editorTarget = .missingSecret(saved)
-            return
-        case .key(let key):
-            creds = SSHCredentials(host: ep.host, port: ep.port, username: saved.username,
-                                   privateKeyPEM: key, remoteSocketPath: "")
-        case .password(let password):
-            creds = SSHCredentials(host: ep.host, port: ep.port, username: saved.username,
-                                   password: password, remoteSocketPath: "")
-        }
-        onConnect(creds)
     }
 }
 
