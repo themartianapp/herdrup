@@ -5,7 +5,7 @@
   "gram":["HerdrUITests/GramTests","HerdrUITests/GramColumnTests"],
   "guest":["HerdrUITests/GuestPaneTests","HerdrUITests/GuestGramPaneTests","HerdrUITests/GuestPushTests","HerdrUITests/GuestShareTests","HerdrUITests/GuestShellTests"],
   "agents":["HerdrUITests/AgentFoldersTests","HerdrUITests/AgentListChromeTests","HerdrUITests/AgentRosterScrollTests","HerdrUITests/AgentAvatarUITests","HerdrUITests/ArchivedCloseTests","HerdrUITests/NeedsYouPillTests","HerdrUITests/SessionPillsTests","HerdrUITests/StaleFleetRowTests","HerdrUITests/StatusMotionTests","HerdrUITests/LiveEventsTests"],
-  "settings":["HerdrUITests/SettingsTests","HerdrUITests/ServerUpdateUITests","HerdrUITests/SavedHostMissingSecretTests","HerdrUITests/GitHubStarPromptTests","HerdrUITests/OnboardingTests"],
+  "settings":["HerdrUITests/SettingsTests","HerdrUITests/ServerUpdateUITests","HerdrUITests/SavedHostMissingSecretTests","HerdrUITests/GitHubStarPromptTests","HerdrUITests/OnboardingTests","HerdrUITests/PairingLinkTests"],
   "duo":["HerdrUITests/DuoTransitionTests"]
  }},
  "script":{"shards":{

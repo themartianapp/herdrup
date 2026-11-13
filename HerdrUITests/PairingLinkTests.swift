@@ -19,7 +19,9 @@ final class PairingLinkTests: XCTestCase {
     private static let json =
         #"{"v":2,"host":"192.0.2.44","port":4021,"user":"forge","token":"t0k3n","fp":"SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","ssh_port":2222}"#
 
-    private static var link: String {
+    private static var link: String { pairingLink(json) }
+
+    private static func pairingLink(_ json: String) -> String {
         let base64url = Data(json.utf8).base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
@@ -122,6 +124,28 @@ final class PairingLinkTests: XCTestCase {
                        "returning to the machine list must not reconnect without a tap")
         XCTAssertTrue(row.exists)
         attach(app, "pairing-back-stays-on-machines")
+    }
+
+    /// Pair for real from a `herdrup://pair#` link: the sheet that opens on a link (or a
+    /// guest Settings paste) is the confirmation, not the scanner, and its Connect must save
+    /// the machine too ("Open it" shows only once the save succeeded). The save publishes the
+    /// machine list, which in a Debug build stops the app if it happens off the main thread
+    /// (#664), so this fails rather than warns.
+    func testConnectingFromALinkSavesTheMachine() throws {
+        let daemon = try StubPairingDaemon()
+        defer { daemon.stop() }
+        let json = #"{"v":2,"host":"127.0.0.1","port":\#(daemon.port),"user":"forge","token":"t0k3n","fp":"SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","ssh_port":2222}"#
+
+        let app = XCUIApplication.launched(mock: "onboarding")
+        XCTAssertTrue(app.buttons["Scan pairing code"].waitForExistence(timeout: 10))
+        app.open(URL(string: Self.pairingLink(json))!)
+        let connect = app.buttons["pairing-confirm-connect"]
+        XCTAssertTrue(connect.waitForExistence(timeout: 15), "the link should open its confirmation")
+        connect.tap()
+
+        XCTAssertTrue(app.buttons["Open it"].waitForExistence(timeout: 20),
+                      "pairing with the stub listener should succeed")
+        attach(app, "pairing-link-paired")
     }
 
     // MARK: - Helpers
