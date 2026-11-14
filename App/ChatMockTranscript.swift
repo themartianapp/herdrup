@@ -21,6 +21,8 @@ struct ChatViewMockHome: View {
     var body: some View {
         TerminalHomeView(client: client, onDisconnect: {}, onTrustHostKey: { _ in false },
                          livePaneIDs: [ChatMockTransport.paneID, "w9:p2", "w9:p3"])
+            // `HERDR_SNAPSHOT_STRESS`: hours of use played over this home (`SnapshotStress`).
+            .task { SnapshotStress.startIfRequested() }
     }
 }
 
@@ -52,6 +54,14 @@ final class ChatMockConversation: @unchecked Sendable {
     private var formAnswers: [[String: String]]?
     /// Prompts sent through `agent.prompt`, as the agent records them: trimmed.
     private var prompted: [(text: String, ms: UInt64)] = []
+    /// `HERDR_MOCK_CHAT_GROWTH=<n>` (owner): omp keeps working, so each live (`after`) refresh
+    /// finds `n` more turns, the way an agent left running for hours fills its transcript. The
+    /// snapshot stress run (`SnapshotStress`) uses it; unset, the conversation stays as written.
+    private static let growthPerRefresh = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_GROWTH"]
+        .flatMap(Int.init) ?? 0
+    static var grows: Bool { growthPerRefresh > 0 }
+    /// Turns added by `growthPerRefresh` so far.
+    private var grown = 0
 
     private init(audience: Audience) {
         self.audience = audience
@@ -85,7 +95,13 @@ final class ChatMockConversation: @unchecked Sendable {
             return subagentTranscript(id: id, subagent: subagent)
         }
         let limit = max(1, min(params["limit"] as? Int ?? 20, 50))
-        let (turns, sentCount) = lock.withLock { (buildTurns(), prompted.count) }
+        let (turns, sentCount) = lock.withLock {
+            // A live refresh finds the agent's newest work (`HERDR_MOCK_CHAT_GROWTH`).
+            if Self.growthPerRefresh > 0, params["before"] == nil, params["after"] != nil {
+                grown += Self.growthPerRefresh
+            }
+            return (buildTurns(), prompted.count)
+        }
         let start: Int
         let end: Int
         let after = (params["before"] as? String) == nil ? params["after"] as? String : nil
@@ -298,6 +314,7 @@ final class ChatMockConversation: @unchecked Sendable {
             ]
         }
         turns += audience == .owner ? ownerTurns() : guestTurns()
+        if audience == .owner { turns += (0..<grown).map(Self.grownTurn) }
         for (index, sent) in prompted.enumerated() {
             turns.append([Self.entry("sent\(index)u", sent.ms, ["kind": "user", "text": sent.text, "author": "owner"])])
         }
@@ -305,6 +322,44 @@ final class ChatMockConversation: @unchecked Sendable {
             turns = turns.map { turn in turn.map { Self.marked($0, origins: origins) } }
         }
         return turns
+    }
+
+    /// Turn `n` of the work `growthPerRefresh` adds: a prompt, a thought, four steps and a
+    /// reply in markdown (a list and a code block; every eighth also a mermaid diagram), timed
+    /// a minute apart after launch.
+    private static func grownTurn(_ n: Int) -> [[String: Any]] {
+        let at = launchMs + UInt64(n) * 60_000
+        var turn: [[String: Any]] = [
+            entry("w\(n)u", at, ["kind": "user", "author": "owner",
+                                 "text": "Run \(n): rebuild the shard, check the numbers and tell me what moved."]),
+            entry("w\(n)t", at + 1_000, ["kind": "thinking",
+                                          "text": "Rebuild first, then compare run \(n) against run \(max(n - 1, 0))."]),
+        ]
+        for step in 0..<4 {
+            turn.append(entry("w\(n)s\(step)", at + 2_000 + UInt64(step) * 5_000, [
+                "kind": "step", "tool": "bash", "status": "ok",
+                "intent": ownerStepIntents[(n + step) % ownerStepIntents.count],
+                "detail": "step \(step + 1) of run \(n)",
+            ]))
+        }
+        var reply = """
+            Run \(n) is done. What moved:
+
+            - **Build**: \(40 + n % 17) s, down \(n % 5) s from run \(max(n - 1, 0)).
+            - **Tests**: \(300 + n) passed, none failed.
+            - The flaky resize case passed \(n % 3 + 1) times in a row.
+
+            ```swift
+            let run = Run(number: \(n), shards: \(n % 6 + 2))
+            try await run.compare(with: .previous)
+            ```
+            """
+        if n % 8 == 0 {
+            reply += "\n\n```mermaid\ngraph TD\n  A[Run \(n)] --> B{Green?}\n  B -->|yes| C[Ship]\n  B -->|no| D[Retry]\n```"
+        }
+        turn.append(entry("w\(n)r", at + 25_000, ["kind": "reply", "final": true, "text": reply]))
+        turn.append(entry("w\(n)e", at + 26_000, ["kind": "turn_end", "status": "done"]))
+        return turn
     }
 
     /// `HERDR_MOCK_CHAT_ORIGINS` (owner): who started each turn, as a host with `turn_origin`
@@ -526,7 +581,11 @@ struct ChatMockTransport: HerdrTransport {
             return AgentAvatarMockServer.overlay(#"{"id":"\#(id)","result":{"type":"agent_list","agents":[\#(Self.agentsJSON)]}}"#)
         case "agent.transcript":
             let target = params["target"] as? String
-            guard target == Self.paneID || target == "herdr-app" else {
+            // Under `HERDR_MOCK_CHAT_GROWTH` llm-opt (w9:p3) serves the same conversation, so the
+            // stress run keeps two chats open at once.
+            let served = target == Self.paneID || target == "herdr-app"
+                || (ChatMockConversation.grows && target == "w9:p3")
+            guard served else {
                 return ChatMockConversation.error(id: id, code: "transcript_unsupported", message: "not an omp agent")
             }
             if let code = Self.startupErrors.next() {

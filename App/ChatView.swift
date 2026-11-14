@@ -78,6 +78,7 @@ final class ChatModel: ObservableObject {
     /// (not per draw), with each row's position by id.
     fileprivate private(set) var rows: [ChatRow] = []
     fileprivate private(set) var rowIndex: [String: Int] = [:]
+    var rowCount: Int { rows.count }
 
     let store: TranscriptStore
 
@@ -85,6 +86,9 @@ final class ChatModel: ObservableObject {
     init(target: String, subagent: String? = nil) {
         store = TranscriptStore(target: target, subagent: subagent)
         store.onChange = { [weak self] in self?.sync() }
+        #if DEBUG
+        SnapshotStress.track(self)
+        #endif
     }
 
     var target: String { store.target }
@@ -578,6 +582,16 @@ private enum ChatWindow: Equatable {
     case from(String)
 }
 
+extension ScenePhase {
+    /// Whether a chat may stay mounted. Going to the background, iOS snapshots the scene in
+    /// the other orientation and the other appearance, and each snapshot lays the whole tree
+    /// out again on the main thread under a 10 s watchdog (0x8BADF00D, "scene-update watchdog
+    /// transgression"). A chat is the largest part of that tree, so in the background it is
+    /// unmounted: its `ChatModel`, and so the conversation, stays, and the chat mounts again
+    /// at its newest message when the app comes back.
+    var mountsChat: Bool { self != .background }
+}
+
 /// The omp Chat view: the conversation read from omp's session file, newest at the bottom,
 /// older turns loading as the reader scrolls up (Gram's pattern). Owner and guest share it.
 struct ChatView: View {
@@ -643,6 +657,9 @@ struct ChatView: View {
     /// Which rows are drawn (`drawnStart`): the newest `renderWindow` until the chat lands,
     /// then from a fixed row down, so rows arriving at the tail never push out the top of
     /// what the reader sees. Reaching the top reveals another window before any fetch.
+    /// While the chat follows its tail the top slides down again (`slideWindowToTail`): the
+    /// rows are an eager stack, so a window that only grew made every relayout lay out every
+    /// row an agent had written since the chat opened, hours of them.
     @State private var drawWindow = ChatWindow.newest
 
     /// Rows drawn at first and revealed per arrival at the top: a few screens, cheap to lay
@@ -654,6 +671,10 @@ struct ChatView: View {
         #endif
         return 40
     }
+
+    /// Following the tail, the drawn window may grow to this many rows before it slides back
+    /// to the newest `renderWindow`.
+    static var followedWindowCap: Int { renderWindow * 2 }
 
     /// How long typing must pause before the term is searched.
     private static let typingPause: Duration = .milliseconds(180)
@@ -760,6 +781,11 @@ struct ChatView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("chat-view")
         .accessibilityValue("turns=\(model.turns.count)")
+        .onDisappear {
+            #if DEBUG
+            SnapshotStress.noteDrawn(model, rows: 0)
+            #endif
+        }
         .overlay(alignment: .top) { refreshStatus }
         .task(id: [isActive, live]) {
             guard isActive else { return }
@@ -876,6 +902,7 @@ struct ChatView: View {
             landed = true
             drawWindow = windowStarting(at: drawnStart)
         }
+        .onChange(of: model.rowCount) { _, _ in slideWindowToTail() }
         // One search update per change: a new term (once typing pauses), a step (Next or
         // Previous), or a new transcript under the same term.
         .task(id: findRequest?.term ?? "") {
@@ -907,9 +934,13 @@ struct ChatView: View {
         let hitsByRow = Dictionary(grouping: hits, by: \.rowID)
         let actions = rowActions
         let probesPrompts = offersPreviousMine
+        let start = drawnStart
+        #if DEBUG
+        SnapshotStress.noteDrawn(model, rows: model.rows.count - start)
+        #endif
         return VStack(alignment: .leading, spacing: 10) {
             topSentinel(proxy)
-            ForEach(model.rows[drawnStart...]) { row in
+            ForEach(model.rows[start...]) { row in
                 chatRow(row, hits: hitsByRow[row.id] ?? [], actions: actions)
                     .equatable()
                     .modifier(ChatPromptTopProbe(turnID: probesPrompts ? row.promptTurnID : nil,
@@ -1380,6 +1411,22 @@ struct ChatView: View {
         guard index < rows.count else { return nil }
         if case .day = rows[index], index + 1 < rows.count { index += 1 }
         return rows[index].id
+    }
+
+    /// New rows arrived while the chat follows its tail: once the window holds more than
+    /// `followedWindowCap` rows, its top slides down to the newest `renderWindow`. The rows that
+    /// go are above the screen, so the reader sees nothing move; the tail is put back before the
+    /// next frame. A reader who scrolled up stops following, and keeps every row until they
+    /// come back down. Not while a send glides in or a search holds the chat.
+    private func slideWindowToTail() {
+        let count = model.rows.count
+        guard landed, followingLatest, findRequest == nil, !model.sendIsLanding,
+              count - drawnStart > Self.followedWindowCap else { return }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { drawWindow = windowStarting(at: count - Self.renderWindow) }
+        let position = scrollPosition
+        Task { @MainActor in position.jumpToLatest() }
     }
 
     /// The reader reached the top: the next window of rows already loaded, else the next

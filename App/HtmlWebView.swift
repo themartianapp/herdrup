@@ -59,6 +59,9 @@ struct HtmlWebView: UIViewRepresentable {
 
         let web = WKWebView(frame: .zero, configuration: config)
         web.navigationDelegate = context.coordinator
+        #if DEBUG
+        SnapshotStress.track(web)
+        #endif
         web.scrollView.contentInsetAdjustmentBehavior = .always
 
         // The network block is a SECURITY boundary, so it must FAIL CLOSED: if the rule
