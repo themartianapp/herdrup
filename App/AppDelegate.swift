@@ -22,6 +22,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         // permission PROMPT is deferred to `connect()` (see requestAuthorizationIfWanted), because
         // asking before the user has even connected is poor UX.
         Self.refreshTokenIfAuthorized()
+        // Opt-in crash reports: subscribe to MetricKit before anything else can crash, and send
+        // what an earlier launch queued (gated on the usage-count switch inside).
+        CrashReportsLaunch.start()
         #if DEBUG
         // UI tests can't tap a real notification: `HERDR_MOCK_PUSH_TAP` carries a payload's JSON,
         // routed exactly as a tap on it would be.
