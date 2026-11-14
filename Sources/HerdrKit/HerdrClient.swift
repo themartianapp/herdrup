@@ -1790,8 +1790,8 @@ public actor HerdrClient {
     /// advertises `ServerCapabilities.eventsV2`: an older daemon rejects the entries
     /// without `pane_id`, which surfaces here as a thrown `APIError`.
     ///
-    /// The stream holds its own transport stream (a dedicated SSH connection on
-    /// `CitadelTransport`). Ending iteration or cancelling the consuming task closes
+    /// The stream holds its own transport stream (a channel on `CitadelTransport`'s
+    /// shared SSH connection). Ending iteration or cancelling the consuming task closes
     /// it. It finishes normally when the daemon closes the connection, and throws
     /// `AgentStatusStreamError.silent` when no line (event or heartbeat, which the
     /// daemon writes every 15 s) arrives within `silenceTimeout`, so a half-open

@@ -34,7 +34,17 @@ let package = Package(
         // swift-nio-ssh FORK (Wellz26/swift-nio-ssh), and a fork carrying the
         // transport's crypto is worth a fixed, reviewed revision rather than a
         // range. Proven to build+link for iOS-simulator (spike/citadel-ios).
-        .package(url: "https://github.com/orlandos-nl/Citadel.git", exact: "0.12.1"),
+        //
+        // Citadel is OUR FORK too: jerryfane/Citadel tag 0.12.1-herdr.1 is upstream
+        // 0.12.1 (ae8562f8) plus `SSHClientSettings.loginTimeout`. Upstream fixes the
+        // handshake + auth timer at 10 s, below the app's 15 s connect budget, and a
+        // slow link's handshake hit it first (5–8 s measured on a 600 ms, 5 % loss
+        // link; over 10 s with other traffic on it). The fork also closes the socket of
+        // a handshake that fails instead of leaking it. Package identity is the URL's
+        // last path component, so `package: "Citadel"` below is unchanged. Drop the
+        // fork once upstream makes the timer configurable.
+        .package(url: "https://github.com/jerryfane/Citadel.git",
+                 revision: "160e41bff00ef08b2275369f49b4d919adc18f36"),
         // swift-nio-ssh is OVERRIDDEN with our own fork of Citadel's fork, at one
         // revision. Wellz26 0.3.6 (a05e6bbe) killed the app (Mac crash, build 220):
         // a read buffered in the multiplexer was delivered after a child channel had
