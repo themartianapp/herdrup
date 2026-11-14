@@ -15,6 +15,16 @@ below because the wrong turns are more instructive than the answer.
 > channel described below is still the path for older herdr, requests over the
 > bridge's 1 MiB line limit, Gram downloads that report progress, and any request
 > made while the channel is unavailable. Streams keep their own connections.
+>
+> **Update (slow-network fix 2, 2026-11-13).** Each session now holds up to two such
+> channels: an interactive one and a bulk one for reply-heavy methods
+> (`agent.transcript`, `agent.read`, `pane.read`, `pane.history`, `gram.list`,
+> `gram.get_file`, `gram.get_file_chunk`; `RequestChannel.bulkMethods`). The bridge
+> writes each reply whole, so on one channel a 0.9 MB transcript page held
+> `agent.list` up for seconds on a slow link. The bulk channel opens on the first
+> big request. A probe after idle or the return to the foreground no longer closes a
+> channel that is still receiving bytes: any inbound byte within the probe budget
+> counts as alive.
 
 ## The design
 

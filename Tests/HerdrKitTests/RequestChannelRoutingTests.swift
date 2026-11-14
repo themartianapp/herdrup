@@ -249,6 +249,50 @@ final class RequestChannelRoutingTests: XCTestCase {
         XCTAssertEqual(host.opened.count, 2, "eight concurrent requests share one reopened channel")
     }
 
+    /// The bench's three-screens case: a transcript page still being written must not
+    /// hold up `agent.list`. Reply-heavy methods get the session's second channel,
+    /// opened on the first of them.
+    func testBigRepliesRideTheirOwnChannelSoSmallOnesDoNotQueueBehindThem() async throws {
+        let host = ScriptedHost(multi: true)
+        let transport = makeTransport(host)
+        try await warmUp(transport)
+        XCTAssertEqual(host.opened.count, 1)
+        let interactive = try XCTUnwrap(host.lastBridge)
+
+        let first = try await transport.roundTrip(requestLine("t1", method: "agent.transcript"))
+        XCTAssertEqual(via(first), "channel")
+        XCTAssertEqual(host.opened.count, 2, "the first big request opened the bulk channel")
+        let bulk = try XCTUnwrap(host.lastBridge)
+        XCTAssertEqual(bulk.nonPingRequests, [requestLine("t1", method: "agent.transcript")])
+        await assertEqual(await transport.requestChannelPool.hasOpenChannel(session: nil, lane: .bulk), true)
+
+        bulk.setResponder(ScriptedBridge.answerPings)  // the page is still being written
+        let page = Task { try await transport.roundTrip(requestLine("t2", method: "agent.transcript")) }
+        try await eventually("page requested on the bulk channel") { bulk.nonPingRequests.count == 1 }
+
+        let list = try await transport.roundTrip(requestLine("l1"))
+        XCTAssertEqual(via(list), "channel", "agent.list answered while the page is outstanding")
+        XCTAssertEqual(interactive.nonPingRequests, [requestLine("l1")], "no big request rides the interactive channel")
+        XCTAssertEqual(bulk.nonPingRequests, [requestLine("t1", method: "agent.transcript"),
+                                              requestLine("t2", method: "agent.transcript")])
+
+        bulk.answer(requestLine("t2", method: "agent.transcript"), result: Self.viaChannel)
+        let pageReply = try await page.value
+        XCTAssertEqual(via(pageReply), "channel")
+    }
+
+    /// A host without `api_bridge_multi` keeps every request, big or small, on the
+    /// per-request path, exactly as before.
+    func testBigRepliesOnAnOldHostKeepThePerRequestPath() async throws {
+        let host = ScriptedHost(multi: false)
+        let transport = makeTransport(host)
+        try await warmUp(transport)
+        let reply = try await transport.roundTrip(requestLine("t1", method: "agent.transcript"))
+        XCTAssertEqual(via(reply), "exec")
+        await transport.requestChannelPool.settle()
+        XCTAssertEqual(host.opened.count, 0)
+    }
+
     /// Gram download progress keeps the per-request path (see `roundTrip(_:onBytesReceived:)`).
     func testProgressReportingRequestKeepsThePerRequestPath() async throws {
         let host = ScriptedHost(multi: true)

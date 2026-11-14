@@ -195,6 +195,13 @@ actor RequestChannel {
     private var suspect = false
     private var pingSequence: UInt64 = 0
     private var unusedTimer: Task<Void, Never>?
+    /// Every stdout byte the bridge has sent, complete line or not. A reply still
+    /// streaming in moves it, which is how a probe tells a busy link from a dead one.
+    private var inboundBytes: UInt64 = 0
+    /// Probes waiting for any inbound byte, resumed true on the next chunk, false at
+    /// their deadline or when the channel ends.
+    private var progressWaiters: [UInt64: (continuation: CheckedContinuation<Bool, Never>, timer: Task<Void, Never>)] = [:]
+    private var progressSequence: UInt64 = 0
 
     init(host: String, settings: RequestChannelSettings) {
         self.host = host
@@ -243,16 +250,26 @@ actor RequestChannel {
         }
     }
 
-    /// Pings the channel; on failure closes it. True when it answered.
+    /// Checks the link is alive before a request uses it. It pings, then waits up to
+    /// `probeTimeout` for ANY inbound byte: the pong, or the next piece of a reply still
+    /// streaming in. On a slow link the pong queues behind whatever reply is ahead of
+    /// it (a 0.9 MB transcript page takes far longer than 5 s on 3G), and closing then
+    /// would fail that reply and every other pending request on a link that is
+    /// working. Only a link silent for the whole budget is closed. True when alive.
     func probe() async -> Bool {
-        do {
-            _ = try await ping(timeout: settings.probeTimeout)
+        guard state == .open else { return false }
+        let mark = inboundBytes
+        // The pong only has to prove liveness when nothing else is arriving, so it gets
+        // the normal request budget: a short one would expire behind the busy reply and
+        // mark the channel suspect again for no reason.
+        let pong = Task { _ = try? await self.ping(timeout: self.settings.requestTimeout) }
+        if await inboundArrived(since: mark, within: settings.probeTimeout) {
             suspect = false
             return true
-        } catch {
-            close()
-            return false
         }
+        pong.cancel()
+        close()
+        return false
     }
 
     private func ping(timeout: UInt64) async throws -> String {
@@ -261,7 +278,7 @@ actor RequestChannel {
         return try await send(#"{"id":"\#(id)","method":"ping","params":{}}"#, id: id, timeout: timeout)
     }
 
-    /// Writes `requestLine` (whose `id` is `id`, see `routableID`) and waits for the
+    /// Writes `requestLine` (whose `id` is `id`, see `route`) and waits for the
     /// reply carrying that id. Throws `NotSent` when nothing was written; after that,
     /// a `TransportError` (the channel ended, or `requestTimedOut`), or
     /// `CancellationError` when the caller is cancelled.
@@ -323,6 +340,7 @@ actor RequestChannel {
     private func receive(_ chunk: ExecCommandOutput) {
         switch chunk {
         case .stdout(let bytes):
+            if bytes.readableBytes > 0 { noteInbound(bytes.readableBytes) }
             for line in lines.append(bytes) {
                 deliver(line)
             }
@@ -330,6 +348,47 @@ actor RequestChannel {
             if stderr.utf8.count < Self.maxStderrBytes {
                 stderr += String(buffer: bytes)  // diagnostic text; a lossy decode is fine
             }
+        }
+    }
+
+    /// Any stdout byte proves the link alive: it counts as activity (so a channel busy
+    /// receiving a long reply is not "idle" and owes no probe) and wakes every probe.
+    private func noteInbound(_ count: Int) {
+        inboundBytes &+= UInt64(count)
+        lastActivity = settings.now()
+        resolveProgressWaiters(alive: true)
+    }
+
+    /// True as soon as an inbound byte arrives after `mark`; false when none does
+    /// within `timeout`, or the channel ends first.
+    private func inboundArrived(since mark: UInt64, within timeout: UInt64) async -> Bool {
+        if inboundBytes != mark { return true }
+        guard state == .open else { return false }
+        progressSequence &+= 1
+        let token = progressSequence
+        return await withCheckedContinuation { continuation in
+            let timer = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: timeout)
+                guard !Task.isCancelled else { return }
+                await self?.resolveProgressWaiter(token, alive: false)
+            }
+            progressWaiters[token] = (continuation, timer)
+        }
+    }
+
+    private func resolveProgressWaiter(_ token: UInt64, alive: Bool) {
+        guard let waiter = progressWaiters.removeValue(forKey: token) else { return }
+        waiter.timer.cancel()
+        waiter.continuation.resume(returning: alive)
+    }
+
+    private func resolveProgressWaiters(alive: Bool) {
+        guard !progressWaiters.isEmpty else { return }
+        let waiting = progressWaiters
+        progressWaiters = [:]
+        for waiter in waiting.values {
+            waiter.timer.cancel()
+            waiter.continuation.resume(returning: alive)
         }
     }
 
@@ -365,6 +424,7 @@ actor RequestChannel {
             entry.timer.cancel()
             entry.continuation.resume(throwing: failure)
         }
+        resolveProgressWaiters(alive: false)
     }
 
     private func scheduleUnusedCloseIfIdle() {
@@ -408,17 +468,39 @@ actor RequestChannel {
         }
     }
 
-    /// The request's `id` when it can ride the channel: within the bridge's line
-    /// limit, a single line, a non-empty string id, and not a streaming method. nil
-    /// sends it down the per-request path instead.
-    static func routableID(_ requestLine: String) -> String? {
+    /// Which held channel a request rides. The bridge writes each reply whole, so on
+    /// one channel a big reply holds up every reply queued behind it: a 0.9 MB
+    /// transcript page took `agent.list` from 0.8 s to 8.6 s on a 3G link. Replies that
+    /// can run to hundreds of kilobytes get their own channel, so the small ones the
+    /// screen waits on (the agent list, a prompt, a key) never queue behind them.
+    enum Lane: Hashable, Sendable {
+        case interactive
+        case bulk
+    }
+
+    /// Methods whose replies can be large: transcript pages, terminal reads and
+    /// history, Gram lists and file bytes.
+    static let bulkMethods: Set<String> = [
+        "agent.transcript", "agent.read", "pane.read", "pane.history",
+        "gram.list", "gram.get_file", "gram.get_file_chunk",
+    ]
+
+    struct Route: Equatable {
+        let id: String
+        let lane: Lane
+    }
+
+    /// How the request can ride a channel: within the bridge's line limit, a single
+    /// line, a non-empty string id, and not a streaming method. nil sends it down the
+    /// per-request path instead.
+    static func route(_ requestLine: String) -> Route? {
         let bytes = requestLine.utf8
         guard bytes.count <= maxRequestLineBytes, !bytes.contains(UInt8(ascii: "\n")),
               let head = try? JSONDecoder().decode(Head.self, from: Data(bytes)),
               let id = head.id, !id.isEmpty,
               let method = head.method, !unsupportedMethods.contains(method)
         else { return nil }
-        return id
+        return Route(id: id, lane: bulkMethods.contains(method) ? .bulk : .interactive)
     }
 
     /// A reply's `id`. herdr writes it first, so the common case reads only the
@@ -438,33 +520,44 @@ actor RequestChannel {
     }
 }
 
-/// The request channels of one SSH connection, at most one per herdr session
-/// (herdrup#390, #391). Shared by a `CitadelTransport` and its `forSession` siblings.
+/// The request channels of one SSH connection, at most two per herdr session
+/// (herdrup#390, #391): an interactive lane and a bulk lane (`RequestChannel.Lane`).
+/// Shared by a `CitadelTransport` and its `forSession` siblings.
 ///
 /// Routing per session:
 /// - capability unknown: the request takes the per-request path while a `ping` over
 ///   that path reads `capabilities.api_bridge_multi` in the background, so first use
 ///   costs no extra round trip. A failed probe stays unknown and is retried.
 /// - unsupported (older herdr): always the per-request path.
-/// - supported: the session's channel, opened (or reopened after it ended) on demand.
+/// - supported: the lane's channel, opened (or reopened after it ended) on demand.
 ///   A channel that fails to open sends that request down the per-request path, and
 ///   the next attempt waits `openRetryAfter`. A request is never failed only because
 ///   the channel is unavailable.
+/// - each lane opens on its first request, so a session that never asks for a big
+///   reply (another session's `agent.list` for the session pills) never holds a second
+///   bridge process. A big request never borrows the interactive lane, even while its
+///   own channel opens: that wait is one exec on the open connection, while a big
+///   reply on the interactive lane holds up every small one behind it.
 actor RequestChannelPool {
     /// The per-request path for one request line in one session.
     typealias PerRequest = @Sendable (_ requestLine: String, _ session: String?) async throws -> String
     /// Opens the link for one session's `api-bridge --multi` channel.
     typealias LinkOpener = @Sendable (_ session: String?) async throws -> RequestChannelLink
+    typealias Lane = RequestChannel.Lane
 
     private enum Capability { case unknown, supported, unsupported }
 
-    private struct Slot {
-        var capability = Capability.unknown
-        var probe: Task<Void, Never>?
+    private struct LaneState {
         var channel: RequestChannel?
         /// An open or a ping in flight; concurrent requests await this one.
         var preparing: Task<RequestChannel?, Never>?
         var retryOpenAt: UInt64?
+    }
+
+    private struct Slot {
+        var capability = Capability.unknown
+        var probe: Task<Void, Never>?
+        var lanes: [Lane: LaneState] = [:]
     }
 
     private let host: String
@@ -489,10 +582,10 @@ actor RequestChannelPool {
         CitadelTransport.flagSession(session) ?? ""
     }
 
-    /// The reply when the request rode the session's channel; nil when the caller must
-    /// use the per-request path (nothing was written to a channel).
+    /// The reply when the request rode one of the session's channels; nil when the
+    /// caller must use the per-request path (nothing was written to a channel).
     func send(_ requestLine: String, session: String?) async throws -> String? {
-        guard let id = RequestChannel.routableID(requestLine) else { return nil }
+        guard let route = RequestChannel.route(requestLine) else { return nil }
         let key = Self.key(session)
         switch slots[key]?.capability ?? .unknown {
         case .unsupported:
@@ -503,9 +596,9 @@ actor RequestChannelPool {
         case .supported:
             break
         }
-        guard let channel = await readyChannel(key, session: session) else { return nil }
+        guard let channel = await readyChannel(key, lane: route.lane, session: session) else { return nil }
         do {
-            return try await channel.send(requestLine, id: id, timeout: settings.requestTimeout)
+            return try await channel.send(requestLine, id: route.id, timeout: settings.requestTimeout)
         } catch is RequestChannel.NotSent {
             return nil
         }
@@ -515,7 +608,9 @@ actor RequestChannelPool {
     /// return to the foreground: a suspended process's channel may not have survived).
     func markSuspect() async {
         for slot in slots.values {
-            await slot.channel?.markSuspect()
+            for state in slot.lanes.values {
+                await state.channel?.markSuspect()
+            }
         }
     }
 
@@ -526,20 +621,24 @@ actor RequestChannelPool {
         slots = [:]
         for slot in closing.values {
             slot.probe?.cancel()
-            slot.preparing?.cancel()
-            await slot.channel?.close()
+            for state in slot.lanes.values {
+                state.preparing?.cancel()
+                await state.channel?.close()
+            }
         }
     }
 
     /// Waits until no background probe or open is in flight. Test-only.
     func settle() async {
         while let task = slots.values.lazy.compactMap({ $0.probe }).first { await task.value }
-        while let task = slots.values.lazy.compactMap({ $0.preparing }).first { _ = await task.value }
+        while let task = slots.values.lazy.flatMap({ $0.lanes.values }).compactMap({ $0.preparing }).first {
+            _ = await task.value
+        }
     }
 
-    /// Whether the session's channel is open right now. Test-only.
-    func hasOpenChannel(session: String?) async -> Bool {
-        guard let channel = slots[Self.key(session)]?.channel else { return false }
+    /// Whether the session's channel on `lane` is open right now. Test-only.
+    func hasOpenChannel(session: String?, lane: Lane = .interactive) async -> Bool {
+        guard let channel = slots[Self.key(session)]?.lanes[lane]?.channel else { return false }
         return await channel.isOpen
     }
 
@@ -568,7 +667,7 @@ actor RequestChannelPool {
         guard let supported else { return }
         slots[key, default: Slot()].capability = supported ? .supported : .unsupported
         // Open now, off the request path, so the next request finds it ready.
-        if supported { _ = await readyChannel(key, session: session) }
+        if supported { _ = await readyChannel(key, lane: .interactive, session: session) }
     }
 
     /// `api_bridge_multi` from a `ping` reply; nil when the reply is not a ping result
@@ -581,24 +680,26 @@ actor RequestChannelPool {
 
     // MARK: - channel
 
-    /// The session's channel ready for a request, opening or pinging it first when
+    /// The lane's channel ready for a request, opening or pinging it first when
     /// needed; nil when there is none to use right now.
-    private func readyChannel(_ key: String, session: String?) async -> RequestChannel? {
-        if let preparing = slots[key]?.preparing { return await preparing.value }
-        let current = slots[key]?.channel
+    private func readyChannel(_ key: String, lane: Lane, session: String?) async -> RequestChannel? {
+        if let preparing = slots[key]?.lanes[lane]?.preparing { return await preparing.value }
+        let current = slots[key]?.lanes[lane]?.channel
         let status = await current?.status() ?? .closed
         if status == .ready, let current { return current }
         // Re-read after the suspension: another request may have started preparing.
-        if let preparing = slots[key]?.preparing { return await preparing.value }
-        if status == .closed, let retryAt = slots[key]?.retryOpenAt, settings.now() < retryAt { return nil }
+        if let preparing = slots[key]?.lanes[lane]?.preparing { return await preparing.value }
+        if status == .closed, let retryAt = slots[key]?.lanes[lane]?.retryOpenAt, settings.now() < retryAt { return nil }
         let generation = generation
-        let task = Task { await self.prepare(key, session: session, current: current, generation: generation) }
-        slots[key, default: Slot()].preparing = task
+        let task = Task { await self.prepare(key, lane: lane, session: session, current: current, generation: generation) }
+        slots[key, default: Slot()].lanes[lane, default: LaneState()].preparing = task
         return await task.value
     }
 
-    private func prepare(_ key: String, session: String?, current: RequestChannel?, generation: UInt64) async -> RequestChannel? {
-        defer { if generation == self.generation { slots[key]?.preparing = nil } }
+    private func prepare(
+        _ key: String, lane: Lane, session: String?, current: RequestChannel?, generation: UInt64
+    ) async -> RequestChannel? {
+        defer { if generation == self.generation { slots[key]?.lanes[lane]?.preparing = nil } }
         if let current {
             switch await current.status() {
             // A reply landed since the caller looked: it is live, and may have
@@ -615,8 +716,8 @@ actor RequestChannelPool {
         } catch {
             await channel.close()
             if generation == self.generation {
-                slots[key]?.channel = nil
-                slots[key]?.retryOpenAt = settings.now() &+ settings.openRetryAfter
+                slots[key]?.lanes[lane]?.channel = nil
+                slots[key]?.lanes[lane]?.retryOpenAt = settings.now() &+ settings.openRetryAfter
             }
             // The host advertised api_bridge_multi but the bridge would not answer:
             // usually the `herdr` found first on that machine's PATH is older than its
@@ -628,8 +729,8 @@ actor RequestChannelPool {
             await channel.close()
             return nil
         }
-        slots[key, default: Slot()].channel = channel
-        slots[key]?.retryOpenAt = nil
+        slots[key, default: Slot()].lanes[lane, default: LaneState()].channel = channel
+        slots[key]?.lanes[lane]?.retryOpenAt = nil
         return channel
     }
 }
