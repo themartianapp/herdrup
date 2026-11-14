@@ -50,8 +50,8 @@ final class CrashReportTests: XCTestCase {
                                hangSeconds: kind == .hang ? 2.5 : nil, callStackTree: tree)
     }
 
-    /// A call-stack tree of `threads` chains of `depth` frames each, thread 0 attributed.
-    private func tree(threads: Int, depth: Int, binaries: Int = 4) throws -> Data {
+    /// A call-stack tree of `threads` chains of `depth` frames each, thread `attributed` attributed.
+    private func tree(threads: Int, depth: Int, binaries: Int = 4, attributed: Int = 0) throws -> Data {
         var stacks: [[String: Any]] = []
         for thread in 0..<threads {
             var root: [String: Any]?
@@ -65,7 +65,7 @@ final class CrashReportTests: XCTestCase {
                 if let root { frame["subFrames"] = [root] }
                 root = frame
             }
-            stacks.append(["threadAttributed": thread == 0, "callStackRootFrames": [root!]])
+            stacks.append(["threadAttributed": thread == attributed, "callStackRootFrames": [root!]])
         }
         return try JSONSerialization.data(withJSONObject: ["callStackPerThread": true, "callStacks": stacks])
     }
@@ -190,6 +190,60 @@ final class CrashReportTests: XCTestCase {
         ]]]])
         let stacks = try XCTUnwrap(object(CrashReport.body(for: diagnostic(tree: tree)))["stacks"] as? [[String: Any]])
         XCTAssertEqual(stacks.map { $0["frames"] as? [[Int]] }, [[[0, 1], [0, 2], [0, 3]], [[0, 1], [0, 20]]])
+    }
+
+    /// What `GuestRelay/src/crash.ts` `parseCrash` refuses on counts and size. A report the relay
+    /// refuses with 400 is deleted unsent, so the app must never build one.
+    private func assertWithinRelayLimits(_ body: Data, file: StaticString = #filePath, line: UInt = #line) throws {
+        XCTAssertLessThanOrEqual(body.count, CrashReport.maxBytes, file: file, line: line)
+        let report = try object(body)
+        let stacks = try XCTUnwrap(report["stacks"] as? [[String: Any]], file: file, line: line)
+        let binaries = try XCTUnwrap(report["binaries"] as? [[String: String]], file: file, line: line)
+        XCTAssertLessThanOrEqual(stacks.count, 1_024, "crash.ts MAX_STACKS", file: file, line: line)
+        XCTAssertLessThanOrEqual(binaries.count, 8_192, "crash.ts MAX_BINARIES", file: file, line: line)
+        var total = 0
+        for stack in stacks {
+            let frames = try XCTUnwrap(stack["frames"] as? [[Int]], file: file, line: line)
+            XCTAssertTrue((1...512).contains(frames.count), "crash.ts MAX_FRAMES_PER_STACK", file: file, line: line)
+            XCTAssertTrue(frames.allSatisfy { $0.count == 2 && $0[0] < binaries.count && $0[1] >= 0 }, file: file, line: line)
+            total += frames.count
+        }
+        XCTAssertLessThanOrEqual(total, 8_192, "crash.ts MAX_FRAMES", file: file, line: line)
+    }
+
+    /// More threads than the relay takes: the report keeps 1024 stacks, the attributed one
+    /// first even when MetricKit lists it last, and says it was truncated.
+    func testMoreThreadsThanTheRelayTakesKeepsTheAttributedOneAndIsTruncated() throws {
+        for (threads, attributed) in [(1_025, 0), (1_100, 1_099)] {
+            let body = try XCTUnwrap(CrashReport.body(for: diagnostic(tree: try tree(threads: threads, depth: 1,
+                                                                                     attributed: attributed))))
+            try assertWithinRelayLimits(body)
+            let report = try object(body)
+            XCTAssertEqual(report["truncated"] as? Bool, true, "\(threads) threads")
+            let stacks = try XCTUnwrap(report["stacks"] as? [[String: Any]])
+            XCTAssertEqual(stacks.count, 1_024, "\(threads) threads")
+            XCTAssertEqual(stacks.first?["attributed"] as? Bool, true, "\(threads) threads, attributed #\(attributed)")
+            XCTAssertEqual(stacks.filter { $0["attributed"] as? Bool == true }.count, 1)
+        }
+        // Exactly the relay's limit is not truncated.
+        let exact = try object(XCTUnwrap(CrashReport.body(for: diagnostic(tree: try tree(threads: 1_024, depth: 1)))))
+        XCTAssertNil(exact["truncated"])
+        XCTAssertEqual((exact["stacks"] as? [Any])?.count, 1_024)
+    }
+
+    /// MetricKit's NSNumbers can hold any Int; one JSON can't keep exactly is left out, never a trap.
+    func testExtremeExceptionNumbersAreLeftOutNotATrap() throws {
+        var extreme = diagnostic()
+        extreme.exceptionType = Int.max
+        extreme.exceptionCode = Int.min
+        extreme.signal = -9_007_199_254_740_991
+        let report = try object(CrashReport.body(for: extreme))
+        XCTAssertEqual(report["exception"] as? [String: Int], ["signal": -9_007_199_254_740_991])
+        XCTAssertNil(CrashReport.safeInteger(Int.min))
+        XCTAssertNil(CrashReport.safeInteger(Int.max))
+        XCTAssertNil(CrashReport.safeInteger(9_007_199_254_740_992))
+        XCTAssertNil(CrashReport.safeInteger(-9_007_199_254_740_992))
+        XCTAssertEqual(CrashReport.safeInteger(9_007_199_254_740_991), 9_007_199_254_740_991)
     }
 
     func testAnOversizedReportDropsOtherThreadsThenFramesToFitTheCap() throws {

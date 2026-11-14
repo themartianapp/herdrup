@@ -16,6 +16,7 @@ import { errorResponse, json, log, readCapped, type Env } from "./relay";
 export const MAX_CRASH_BYTES = 65_536;
 /** As many binaries as frames: at worst each frame names a binary of its own. */
 export const MAX_BINARIES = 8_192;
+/** The app caps a report at this many stacks too (CrashReport.maxStacks); keep them equal. */
 export const MAX_STACKS = 1_024;
 export const MAX_FRAMES_PER_STACK = 512;
 export const MAX_FRAMES = 8_192;

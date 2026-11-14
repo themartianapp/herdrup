@@ -261,6 +261,13 @@ def fetch_dsyms(build, out, repo):
     return target
 
 
+def output_names(paths):
+    """A distinct `<stem>.txt` for each input; inputs whose stems clash get `<n>-<stem>.txt`, n
+    their position, so a/report.json and b/report.json don't overwrite each other."""
+    stems = [pathlib.Path(path).stem for path in paths]
+    return [f"{stem}.txt" if stems.count(stem) == 1 else f"{n}-{stem}.txt" for n, stem in enumerate(stems)]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--report", nargs="+", type=pathlib.Path)
@@ -295,9 +302,9 @@ def main():
                 roots.append(fetched)
     dsyms = index_dsyms(roots)
 
-    for path, report in reports:
+    for (path, report), name in zip(reports, output_names([path for path, _ in reports])):
         text = render(report, dsyms, tool)
-        (args.out / (pathlib.Path(path).stem + ".txt")).write_text(text)
+        (args.out / name).write_text(text)
         print(f"== {path}\n{text}")
 
 

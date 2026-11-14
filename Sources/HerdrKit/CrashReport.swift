@@ -22,6 +22,10 @@ public enum CrashReport {
     public static let maxFramesPerStack = 512
     /// Frames kept across all threads.
     public static let maxFrames = 8_192
+    /// Stacks kept, attributed ones first. The relay refuses a report with more
+    /// (GuestRelay/src/crash.ts `MAX_STACKS`; keep the two equal), and a refused report is
+    /// deleted unsent.
+    public static let maxStacks = 1_024
 
     public enum Kind: String, Sendable {
         case crash
@@ -273,7 +277,10 @@ public enum CrashReport {
             var binaries: [Binary] = []
             var index: [Binary: Int] = [:]
             var stacks: [Stack] = []
-            walk: for (stack, firsts) in roots.enumerated() {
+            // Attributed threads first, so a cap on stacks never drops the one that crashed.
+            let order = roots.indices.sorted { (attributed[$0] ? 0 : 1, $0) < (attributed[$1] ? 0 : 1, $1) }
+            walk: for stack in order {
+                let firsts = roots[stack]
                 // (frame, the frames above it on its stack) still to walk.
                 var pending: [(Int, [Frame])] = firsts.reversed().map { ($0, []) }
                 while let (first, above) = pending.popLast() {
@@ -297,18 +304,31 @@ public enum CrashReport {
                         if frames.count > CrashReport.maxFramesPerStack { break }
                     }
                     if !frames.isEmpty { stacks.append(Stack(attributed: attributed[stack], frames: frames)) }
-                    if stacks.count > 1_024 { break walk }
+                    // One past the cap, so `limit` sees that stacks were dropped.
+                    if stacks.count > CrashReport.maxStacks { break walk }
                 }
             }
             self.binaries = binaries
             self.stacks = stacks
         }
 
-        /// Keeps the top `perStack` frames of each stack and `total` frames in all, attributed
-        /// stacks first. True when any frame was dropped.
-        mutating func limit(perStack: Int, total: Int) -> Bool {
-            var budget = total
+        /// Keeps at most `maxStacks` stacks, attributed ones first, then the top `perStack`
+        /// frames of each and `total` frames in all, attributed stacks first. True when any
+        /// stack or frame was dropped.
+        mutating func limit(perStack: Int, total: Int, maxStacks: Int = CrashReport.maxStacks) -> Bool {
             var dropped = false
+            if stacks.count > maxStacks {
+                // Unattributed stacks go first, from the last; attributed ones only if they alone
+                // are too many.
+                var excess = stacks.count - maxStacks
+                for i in stacks.indices.reversed() where excess > 0 && !stacks[i].attributed {
+                    stacks.remove(at: i)
+                    excess -= 1
+                }
+                if excess > 0 { stacks.removeLast(excess) }
+                dropped = true
+            }
+            var budget = total
             let order = stacks.indices.sorted { (stacks[$0].attributed ? 0 : 1, $0) < (stacks[$1].attributed ? 0 : 1, $1) }
             for i in order {
                 let keep = max(0, min(stacks[i].frames.count, perStack, budget))
@@ -358,7 +378,8 @@ public enum CrashReport {
 
     /// Integers JSON keeps exactly everywhere (JavaScript's safe range).
     static func safeInteger(_ value: Int) -> Int? {
-        abs(value) <= 9_007_199_254_740_991 ? value : nil
+        // Bounds, not `abs`: `abs(Int.min)` traps.
+        (-9_007_199_254_740_991...9_007_199_254_740_991).contains(value) ? value : nil
     }
 
     static func integer(_ value: Any?) -> Int? {

@@ -152,6 +152,13 @@ describe("crash reports", () => {
     expect(await storedKeys()).toEqual([]);
   });
 
+  it("takes 1024 stacks and refuses 1025, the app's CrashReport.maxStacks", async () => {
+    const stacks = (count: number) => Array.from({ length: count }, (_, i) => ({ attributed: i === 0, frames: [[0, i]] }));
+    expect((await crash(validCrash({ stacks: stacks(1_024), truncated: true }))).status).toBe(204);
+    await expectError(await crash(validCrash({ stacks: stacks(1_025), truncated: true })), 400, "bad_request");
+    expect(await storedKeys()).toHaveLength(1);
+  });
+
   it("takes a body of 65536 bytes and refuses 65537 with 413", async () => {
     const json = JSON.stringify(validCrash());
     expect((await crash(json.padEnd(65_536, " "))).status).toBe(204);
