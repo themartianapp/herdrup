@@ -62,7 +62,7 @@ enum GuestShareMock {
     @MainActor
     static func settingsView() -> some View {
         prepare()
-        return SettingsView(client: HerdrClient(transport: GuestShareMockTransport()),
+        return SettingsView(mode: .owner(HerdrClient(transport: GuestShareMockTransport())),
                             agents: [agent, peerAgent], host: "studio.tail-scale.ts.net")
             .environment(\.guestMachineLabel, machineLabel)
     }

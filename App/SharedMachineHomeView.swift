@@ -8,6 +8,8 @@ struct SharedMachineHomeView: View {
     /// Opens a grant's connection; the relay unless a mock stands in.
     var connect: (GuestAccess) throws -> GuestConnection = GuestConnection.open
     let onBack: (() -> Void)?
+    /// Settings › Connect your own machine (see `GuestHomeView.onConnectOwnMachine`).
+    var onConnectOwnMachine: (() -> Void)? = nil
     let onLeave: () -> Void
     @ObservedObject private var store = SharedMachinesStore.shared
     @State private var settingsAccess: GuestAccess?
@@ -23,7 +25,7 @@ struct SharedMachineHomeView: View {
     var body: some View {
         if peers.count == 1, let only = peers.first {
             GuestHomeView(access: only, connect: { try connect(only) },
-                          onBack: onBack, onLeave: leftShare)
+                          onBack: onBack, onConnectOwnMachine: onConnectOwnMachine, onLeave: leftShare)
                 .id(only.id)
         } else {
             TabView {
@@ -86,13 +88,18 @@ struct SharedMachineHomeView: View {
             }
             .tint(Palette.text)
             .sheet(item: $settingsAccess) { peer in
-                GuestSettingsView(access: peer, fingerprint: settingsConnection?.fingerprint,
-                                  client: settingsConnection?.client) {
-                    store.remove(peer)
-                    settingsAccess = nil
-                    settingsConnection = nil
-                    leftShare()
-                }
+                SettingsView(mode: .guest(GuestSettingsShare(
+                                access: peer, fingerprint: settingsConnection?.fingerprint,
+                                client: settingsConnection?.client,
+                                onLeave: {
+                                    store.remove(peer)
+                                    settingsAccess = nil
+                                    settingsConnection = nil
+                                    leftShare()
+                                },
+                                onConnectOwnMachine: onConnectOwnMachine.map { connect -> () -> Void in { settingsAccess = nil; connect() } })),
+                             agents: [], host: peer.machineLabel,
+                             onClose: { settingsAccess = nil })
             }
         }
     }
