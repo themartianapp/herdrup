@@ -134,6 +134,28 @@ final class TerminalControlTests: TerminalInteractionTestCase {
         attach("two-taps-cancel-without-input")
     }
 
+    /// Refresh remounts the terminal (`streamGen`), and tearing the old one down cancels an
+    /// armed Ctrl. That cancel wrote the pane's `ctrlArmed` state from `dismantleUIView`,
+    /// inside SwiftUI's graph teardown: an exclusivity abort (`swift_beginAccess` fatal, as in
+    /// the 1.2.1 (238) TestFlight crash). Arm, refresh: the app must stay up, the one-shot
+    /// must be cancelled, and the next key must arrive plain.
+    func testRefreshWhileControlIsArmedDoesNotCrashOrLeak() throws {
+        launch("control"); focusTerminal()
+        cap("terminal-ctrl").tap()
+        XCTAssertTrue(armed, "one tap must arm the one-shot")
+        let refresh = try XCTUnwrap(onscreen("terminal-refresh", requiringHittable: true),
+                                    "the pane's refresh button. \(elementDump())")
+        refresh.tap()
+        XCTAssertTrue(holds(within: 15) { ($0["opens"] as? Int ?? 0) >= 2 && ($0["covered"] as? Bool) == false },
+                      "refreshing with Ctrl armed must remount the terminal, not crash the app "
+                      + "(state \(app.state.rawValue), probe \(probe()))")
+        XCTAssertEqual(app.state, .runningForeground, "refreshing with Ctrl armed must not crash")
+        XCTAssertTrue(poll(5, every: 0.25) { !self.armed }, "the remount must cancel the one-shot")
+        focusTerminal(); typeDirect("p")
+        input("p", previous: 0)
+        attach("refresh-while-armed-no-crash-no-leak")
+    }
+
     /// The reply path takes the keyboard first, from a fresh launch. Typing the chord
     /// is the observable focus check; this must not depend on a SwiftUI toolbar control
     /// because the reply editor is UIKit-backed.

@@ -333,31 +333,46 @@ final class TerminalGlyphFieldView: UIView {
         }
     }
 
-    /// Draws the resting field into one texture, always off the main thread. Requests made while
-    /// a render is running collapse into one follow-up, so a rotation or a window being dragged
-    /// through many sizes renders only the latest one; results for a stale size are dropped.
+    /// Draws the resting field's image off the main thread. Requests made while a render is
+    /// running collapse into one follow-up, so a rotation or a window being dragged through
+    /// many sizes renders only the latest one; results for a stale size are dropped.
+    ///
+    /// Only the CoreGraphics drawing runs on `restQueue`; SpriteKit stays on the main thread.
+    /// Making and preloading the `SKTexture` on the queue aborted the app at launch (#651:
+    /// `_os_unfair_lock_unowned_abort` on this queue, called from code in no registered image,
+    /// while the accessibility runtime was `dlopen`ing a bundle on `AXBundleLoadQueue`).
     private func renderRestField() {
         guard !restRenderInFlight else { restRenderPending = true; return }
         restRenderInFlight = true
         restRenderPending = false
         let job = RestFieldJob(
             cols: cols, rows: rows, size: builtSize, scale: builtScale,
-            characters: restChr, alpha: restAlpha, font: font,
+            characters: restChr, alpha: restAlpha,
+            font: font as CTFont, lineHeight: font.lineHeight, ascender: font.ascender,
             colour: Self.palette[Self.restIndex].cgColor, ground: Self.ground.cgColor,
             glyphs: Self.scrambleCharacters, cellW: Self.cellW, cellH: Self.cellH)
         let generation = generation
         Self.restQueue.async { [weak self] in
-            let texture = job.render().map { SKTexture(cgImage: $0) }
-            let finish = {
-                DispatchQueue.main.async {
-                    guard let self else { return }
-                    self.restRenderInFlight = false
-                    if self.generation == generation, let texture { self.restNode.texture = texture }
-                    if self.restRenderPending { self.renderRestField() }
-                }
+            let image = job.render()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.restRenderDrawn(image, generation: generation)
             }
-            if let texture { texture.preload(completionHandler: finish) } else { finish() }
         }
+    }
+
+    /// On the main thread: the drawn image becomes the resting texture once SpriteKit has it
+    /// in GPU memory, so swapping it in never stalls a frame.
+    private func restRenderDrawn(_ image: CGImage?, generation: Int) {
+        let finish = { [weak self] (texture: SKTexture?) in
+            guard let self else { return }
+            self.restRenderInFlight = false
+            if self.generation == generation, let texture { self.restNode.texture = texture }
+            if self.restRenderPending { self.renderRestField() }
+        }
+        guard let image, self.generation == generation else { finish(nil); return }
+        let texture = SKTexture(cgImage: image)
+        texture.preload { DispatchQueue.main.async { finish(texture) } }
     }
 
     private func texture(_ glyph: Int32, _ colour: UInt8) -> SKTexture {
@@ -742,6 +757,8 @@ private struct FieldDice: RandomNumberGenerator {
 }
 
 /// Everything needed to draw the resting field, copied so it can render off the main thread.
+/// CoreGraphics and CoreText calls only: the `UIFont` metrics are read on the main thread, and
+/// neither UIKit nor SpriteKit is called on the queue (see `renderRestField`).
 private struct RestFieldJob: @unchecked Sendable {
     let cols: Int
     let rows: Int
@@ -749,7 +766,9 @@ private struct RestFieldJob: @unchecked Sendable {
     let scale: CGFloat
     let characters: [UInt8]
     let alpha: [Float]
-    let font: UIFont
+    let font: CTFont
+    let lineHeight: CGFloat
+    let ascender: CGFloat
     let colour: CGColor
     let ground: CGColor
     let glyphs: [Character]
@@ -766,17 +785,15 @@ private struct RestFieldJob: @unchecked Sendable {
         context.scaleBy(x: scale, y: scale)
         context.setFillColor(ground)
         context.fill(CGRect(origin: .zero, size: size))
-        let ctFont = font as CTFont
         var cg = [CGGlyph](repeating: 0, count: glyphs.count)
         var advance = [CGSize](repeating: .zero, count: glyphs.count)
         for (k, character) in glyphs.enumerated() {
             var unit = Array(String(character).utf16)
-            CTFontGetGlyphsForCharacters(ctFont, &unit, &cg[k], 1)
+            CTFontGetGlyphsForCharacters(font, &unit, &cg[k], 1)
         }
-        CTFontGetAdvancesForGlyphs(ctFont, .horizontal, cg, &advance, cg.count)
+        CTFontGetAdvancesForGlyphs(font, .horizontal, cg, &advance, cg.count)
         // Match NSString drawing: the line box centred in the cell, nudged down half a point.
-        let lineHeight = font.lineHeight
-        let baselineFromTop = (cellH - lineHeight) / 2 + 0.5 + font.ascender
+        let baselineFromTop = (cellH - lineHeight) / 2 + 0.5 + ascender
         context.setFillColor(colour)
         for i in 0..<(cols * rows) {
             let a = alpha[i]
@@ -786,7 +803,7 @@ private struct RestFieldJob: @unchecked Sendable {
                 x: CGFloat(i % cols) * cellW + (cellW - advance[k].width) / 2,
                 y: size.height - (CGFloat(i / cols) * cellH + baselineFromTop))
             context.setAlpha(CGFloat(a))
-            CTFontDrawGlyphs(ctFont, &cg[k], &position, 1, context)
+            CTFontDrawGlyphs(font, &cg[k], &position, 1, context)
         }
         return context.makeImage()
     }
