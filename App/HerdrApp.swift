@@ -1904,7 +1904,8 @@ struct TerminalHomeView: View {
     @State private var error: String?
     @State private var loading = true
     /// The roster on screen is the one `AppContentCache` kept from the last launch, and no
-    /// `agent.list` has answered yet. Shows the "Updating" mark; the first load clears it.
+    /// `agent.list` has answered yet: nothing has connected. Shows the "Updating" mark. The
+    /// first load clears it; a failed one surfaces its error as if the list were empty.
     @State private var showingCachedRoster = false
     @State private var rejectedFingerprint: String?
     @State private var trustFailed = false
@@ -5032,8 +5033,12 @@ struct TerminalHomeView: View {
             // A BACKGROUND refresh failure keeps the stale-but-good list rather than blowing it
             // away into the error screen. Surface the error only when there is nothing to show —
             // EXCEPT a host-key rejection, which always surfaces (a mid-session key change must
-            // never be hidden behind a cached list).
-            if agents.isEmpty || rejected != nil {
+            // never be hidden behind a cached list), and a failure while the rows are still the
+            // disk roster from the last launch: nothing has connected yet, so this is the
+            // connect failing (auth, no herdr, daemon down), not a refresh, and its guidance
+            // must show. It replaces the "Updating…" mark, which would otherwise stay for good.
+            let unconnectedDiskRoster = showingCachedRoster
+            if agents.isEmpty || rejected != nil || unconnectedDiskRoster {
                 self.error = "\(error)"
                 rejectedFingerprint = rejected
                 // Only when this is the surfaced error do we drive the install-guidance
@@ -5042,6 +5047,7 @@ struct TerminalHomeView: View {
                 herdrIncompatibleBuild = incompatibleBuild
                 unavailableDaemonHost = daemonHost
             }
+            if unconnectedDiskRoster { showingCachedRoster = false }
             // DROP a pending deep-link this failed load couldn't service, rather than leave it armed:
             // a push targets a just-now event, so firing it after some much-later successful load would
             // yank the reader into a stale pane (an agent that may have finished long ago). If it was

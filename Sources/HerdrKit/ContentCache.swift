@@ -105,15 +105,17 @@ public final class ContentCache: @unchecked Sendable {
 
     /// Keeps `data` at `path` for `owner`, unless `owner` was wiped after `lease` was taken.
     /// Checked on the queue, in order with the wipes, so a write queued before a wipe is
-    /// removed by it and one after it is dropped.
+    /// removed by it and one after it is dropped. A value over `entryLimitBytes` is not
+    /// kept and drops the older copy, under the same lease: a stale scope must not remove
+    /// what a newer one kept either.
     func write(_ data: Data, to path: String, owner: Owner, lease: Lease) {
-        guard data.count <= entryLimitBytes else {
-            // Too big to keep: drop any older copy too, so a stale screen cannot outlive it.
-            queue.async { self.removeEntry(path) }
-            return
-        }
         queue.async {
             guard self.currentLease(owner) == lease else { return }
+            // Too big to keep: drop any older copy too, so a stale screen cannot outlive it.
+            guard data.count <= self.entryLimitBytes else {
+                self.removeEntry(path)
+                return
+            }
             var index = self.loadIndex()
             let url = self.root.appendingPathComponent(path)
             let used = self.now()
@@ -129,6 +131,14 @@ public final class ContentCache: @unchecked Sendable {
             index[path] = (data.count, used)
             self.index = index
             self.evict(keeping: path)
+        }
+    }
+
+    /// Removes `path` for `owner`, under the same lease as `write`.
+    func remove(_ path: String, owner: Owner, lease: Lease) {
+        queue.async {
+            guard self.currentLease(owner) == lease else { return }
+            self.removeEntry(path)
         }
     }
 
@@ -342,6 +352,16 @@ public struct ContentCacheScope: Sendable {
         put(Data(text.utf8), at: terminalPath(pane: pane))
     }
 
+    /// Keeps a terminal's live screen, `rows` top first (SwiftTerm's `liveScreenRows()`),
+    /// as `pane`'s last screen, trailing blank rows dropped. A blank screen is kept too, as
+    /// "": after an erase, the screen before it must not be what the pane reopens on (a
+    /// mount draws nothing for an empty kept screen).
+    public func storeTerminalScreen(rows: [String], pane: String) {
+        var rows = rows[...]
+        while rows.last?.isEmpty == true { rows.removeLast() }
+        storeTerminalText(rows.joined(separator: "\n"), pane: pane)
+    }
+
     /// Writes `responseLine` as the kept agent list and waits for it to land: the app's
     /// DEBUG cold-start mock seeds "last launch" with it, and the bench seeds its cached run.
     /// Same path a real reply takes.
@@ -369,6 +389,11 @@ public struct ContentCacheScope: Sendable {
     func recordGramHead(_ responseLine: String) {
         guard sharedTarget == nil else { return }
         put(Data(responseLine.utf8), at: gramPath)
+    }
+
+    /// Drops the kept inbox head: a message on it was deleted (`HerdrClient.gramDelete`).
+    func forgetGramHead() {
+        cache.remove(gramPath, owner: owner, lease: lease)
     }
 
     /// The reply with every agent but the shared one removed. Matched as the guest home

@@ -28,6 +28,23 @@ final class CachedHomeTests: XCTestCase {
         XCTAssertTrue(poll(3, every: 0.2) { !self.element(app, "agents-updating").exists }, "the Updating mark stayed")
     }
 
+    /// The first connection fails (herdr is not running): the kept rows were never confirmed,
+    /// so this is the connect failing, not a background refresh, and its guidance must show.
+    /// The "Updating" mark must not stay up for good.
+    func testAFirstConnectionFailureShowsItsGuidanceOverTheKeptRoster() {
+        let app = XCUIApplication.launched(mock: "cachedhome", environment: [
+            "HERDR_MOCK_LIST_DELAY": "3", "HERDR_MOCK_LIST_FAIL": "1"])
+
+        XCTAssertTrue(element(app, "agent-row-w1:p1").waitForExistence(timeout: 4), "the kept roster did not paint")
+        XCTAssertTrue(element(app, "agents-updating").exists, "a kept roster is marked as updating")
+
+        XCTAssertTrue(app.staticTexts["herdr isn't running on cachedhome"].waitForExistence(timeout: 10),
+                      "the failed connection was hidden behind the kept roster")
+        XCTAssertTrue(app.buttons["retry"].exists, "the guidance offers a retry")
+        XCTAssertTrue(poll(3, every: 0.2) { !self.element(app, "agents-updating").exists },
+                      "the Updating mark stayed after the connection failed")
+    }
+
     /// The terminal's kept screen must be SEEN, not merely present: Desktop's equivalent
     /// existed under the terminal's opaque layer and users got a blank terminal. Hittable is
     /// the proof: XCUITest's hit test finds the topmost element at the point, so a kept screen

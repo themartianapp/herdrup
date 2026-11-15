@@ -7,7 +7,9 @@ import HerdrKit
 /// `fresh-charlie`'s terminal (w1:p3, a codex agent, so its page opens on the terminal). The
 /// daemon answers `agent.list` after `HERDR_MOCK_LIST_DELAY` seconds (default 6) with today's
 /// roster (`fresh-alfa` on the same pane, `fresh-charlie` new), and starts every pane stream
-/// and backfill read `HERDR_MOCK_STREAM_DELAY` seconds late (default 0). The cache lives in
+/// and backfill read `HERDR_MOCK_STREAM_DELAY` seconds late (default 0). With
+/// `HERDR_MOCK_LIST_FAIL=1` the daemon is not running: `agent.list` fails after the same
+/// delay, as a first connection to a machine whose herdr is down does. The cache lives in
 /// its own temporary directory, never the app's.
 enum CachedHomeMock {
     static let keptList = #"{"id":"mock","result":{"type":"agent_list","agents":[{"pane_id":"w1:p1","name":"kept-alfa","agent":"omp","agent_status":"idle","cwd":"/root/alfa"},{"pane_id":"w1:p2","name":"kept-bravo","agent":"claude","agent_status":"blocked","cwd":"/root/bravo"}]}}"#
@@ -21,6 +23,9 @@ enum CachedHomeMock {
     }
     static var listDelaySeconds: Double { seconds("HERDR_MOCK_LIST_DELAY", default: 6) }
     static var streamDelaySeconds: Double { seconds("HERDR_MOCK_STREAM_DELAY", default: 0) }
+    static var listFails: Bool { ProcessInfo.processInfo.environment["HERDR_MOCK_LIST_FAIL"] == "1" }
+    /// The host a failing connection names in its "herdr isn't running" guidance.
+    static let host = "cachedhome"
 
     static func client() -> HerdrClient {
         let root = FileManager.default.temporaryDirectory
@@ -38,6 +43,7 @@ enum CachedHomeMock {
         func roundTrip(_ requestLine: String) async throws -> String {
             if requestLine.contains("agent.list") {
                 try await Task.sleep(nanoseconds: UInt64(CachedHomeMock.listDelaySeconds * 1e9))
+                if CachedHomeMock.listFails { throw TransportError.daemonUnavailable(host: CachedHomeMock.host) }
                 return CachedHomeMock.freshList
             }
             if requestLine.contains("agent.read") || requestLine.contains("pane.read") {

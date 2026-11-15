@@ -1943,36 +1943,14 @@ struct LiveTerminalView: UIViewRepresentable {
 
         private var backgroundObserver: NSObjectProtocol?
 
-        /// Keeps the text of the live screen (its rows, trailing blank rows dropped) for the
-        /// next cold start. Only after a real keyframe: a pane still showing the kept screen,
-        /// or nothing, has nothing new to keep. The LIVE rows, not the viewport: a reader
-        /// scrolled into history leaves the screen the agent last drew.
+        /// Keeps the text of the live screen for the next cold start. Only after a real
+        /// keyframe: a pane still showing the kept screen, or nothing, has nothing new to
+        /// keep. The LIVE rows, not the viewport: a reader scrolled into history leaves the
+        /// screen the agent last drew. A blank screen (after an erase) is kept as blank, so
+        /// the pane does not reopen on what was erased.
         private func keepScreenText() {
             guard didSeedOnce, let view, let cache = client.contentCache else { return }
-            let terminal = view.getTerminal()
-            let top = Self.liveScreenTop(terminal)
-            var lines = (0..<terminal.rows).map {
-                terminal.getScrollInvariantLine(row: top + $0)?.translateToString(trimRight: true) ?? ""
-            }
-            while lines.last?.isEmpty == true { lines.removeLast() }
-            guard !lines.isEmpty else { return }
-            cache.storeTerminalText(lines.joined(separator: "\n"), pane: paneID)
-        }
-
-        /// The scroll-invariant row at the top of the live screen: the last `rows` lines the
-        /// buffer holds. SwiftTerm does not publish its line count, so the end is found from
-        /// where `getScrollInvariantLine` stops answering (doubling, then halving).
-        static func liveScreenTop(_ terminal: Terminal) -> Int {
-            let first = terminal.buffer.totalLinesTrimmed
-            guard terminal.getScrollInvariantLine(row: first) != nil else { return first }
-            var known = first, step = max(terminal.rows, 1)
-            while terminal.getScrollInvariantLine(row: known + step) != nil { known += step; step *= 2 }
-            var low = known, high = known + step   // `low` answers, `high` does not
-            while high - low > 1 {
-                let mid = (low + high) / 2
-                if terminal.getScrollInvariantLine(row: mid) != nil { low = mid } else { high = mid }
-            }
-            return max(first, low + 1 - terminal.rows)
+            cache.storeTerminalScreen(rows: view.getTerminal().liveScreenRows(), pane: paneID)
         }
 
         /// Jump the pane to its newest output. A mouse-mode or alt-screen agent (Claude

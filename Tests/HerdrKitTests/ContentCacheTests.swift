@@ -120,6 +120,71 @@ final class ContentCacheTests: XCTestCase {
         XCTAssertEqual(scope.agents()?.agents.map(\.name), ["after"])
     }
 
+    /// Two fresh callers send two lists; the newer answers first. The older reply, landing
+    /// after it, is not what memory serves (`lastListing`), so it must not be what the next
+    /// cold start paints either.
+    func testAnOlderListAnsweringAfterANewerOneIsNotKept() async throws {
+        let store = cache()
+        let scope = store.scope(machine: "me@mac:22", session: nil)
+        let transport = HeldTransport(holding: "agent.list")
+        let client = HerdrClient(transport: transport, contentCache: scope)
+        let start = ContinuousClock.now
+
+        let older = Task { try await client.agentListing() }
+        try await waitUntil { transport.heldCount == 1 }
+        let newer = Task { try await client.agentListing() }
+        try await waitUntil { transport.heldCount == 2 }
+
+        transport.release(1, with: Self.agentList(["new"]))
+        _ = try await newer.value
+        transport.release(0, with: Self.agentList(["old"]))
+        _ = try await older.value
+
+        let served = try await client.agentListing(sentAfter: start)
+        XCTAssertEqual(transport.heldCount, 2, "served from memory, no third request")
+        XCTAssertEqual(served.agents.map(\.name), ["new"])
+        XCTAssertEqual(scope.agents()?.agents.map(\.name), ["new"],
+                       "the older reply replaced the newer kept roster")
+    }
+
+    /// Answers `holding` requests only when the test releases them, by arrival order; every
+    /// other request at once with an empty result.
+    private final class HeldTransport: HerdrTransport, @unchecked Sendable {
+        private let holding: String
+        private let lock = NSLock()
+        private var held: [CheckedContinuation<String, Never>] = []
+
+        init(holding method: String) { holding = method }
+
+        var heldCount: Int { lock.withLock { held.count } }
+
+        func release(_ index: Int, with reply: String) {
+            lock.withLock { held[index] }.resume(returning: reply)
+        }
+
+        func roundTrip(_ requestLine: String) async throws -> String {
+            let object = (try? JSONSerialization.jsonObject(with: Data(requestLine.utf8))) as? [String: Any]
+            guard object?["method"] as? String == holding else { return RecordingTransport.emptyResult }
+            return await withCheckedContinuation { continuation in
+                lock.withLock { held.append(continuation) }
+            }
+        }
+
+        func stream(_ requestLine: String) -> AsyncThrowingStream<String, Error> {
+            AsyncThrowingStream { $0.finish() }
+        }
+    }
+
+    private func waitUntil(_ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        while !condition() {
+            guard Date() < deadline else { throw TimedOut() }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+    }
+
+    private struct TimedOut: Error {}
+
     private final class ClientBox: @unchecked Sendable { var client: HerdrClient? }
 
     func testMachinesAndSessionsAreKeptApart() async throws {
@@ -184,11 +249,57 @@ final class ContentCacheTests: XCTestCase {
         XCTAssertEqual(scope.gramHead()?.messages?.map(\.id), ["g3", "g1", "g2"])
     }
 
+    /// A confirmed delete drops the kept head: the next cold start must not paint the
+    /// deleted message back.
+    func testDeletingAGramDropsTheKeptHead() async throws {
+        let store = cache()
+        let transport = RecordingTransport(replies: ["gram.list": Self.gram(["g1", "g2"])])
+        let client = HerdrClient(transport: transport, contentCache: store.scope(machine: "me@mac:22", session: nil))
+        _ = try await client.gramList(limit: 40, keepsForColdStart: true)
+        XCTAssertNotNil(store.scope(machine: "me@mac:22", session: nil).gramHead())
+
+        try await client.gramDelete(id: "g1")
+        XCTAssertNil(cache().scope(machine: "me@mac:22", session: nil).gramHead(),
+                     "a deleted message stays on the kept inbox head")
+
+        // The next head refresh keeps again.
+        _ = try await client.gramList(limit: 40, keepsForColdStart: true)
+        XCTAssertNotNil(store.scope(machine: "me@mac:22", session: nil).gramHead())
+    }
+
+    /// A head page asked for before a delete, answering after it, still holds the deleted
+    /// message: it must not become the kept head again.
+    func testAHeadPageInFlightAcrossADeleteIsNotKept() async throws {
+        let store = cache()
+        let scope = store.scope(machine: "me@mac:22", session: nil)
+        let transport = HeldTransport(holding: "gram.list")
+        let client = HerdrClient(transport: transport, contentCache: scope)
+
+        let refresh = Task { try await client.gramList(limit: 40, keepsForColdStart: true) }
+        try await waitUntil { transport.heldCount == 1 }
+        try await client.gramDelete(id: "g1")
+        transport.release(0, with: Self.gram(["g1", "g2"]))
+        _ = try await refresh.value
+
+        XCTAssertNil(scope.gramHead(), "a page from before the delete put the deleted message back")
+    }
+
     func testTerminalTextIsPlainTextPerPane() {
         let scope = cache().scope(machine: "me@mac:22", session: nil)
         scope.storeTerminalText("$ ls\nREADME.md", pane: "w1:p1")
         XCTAssertEqual(scope.terminalText(pane: "w1:p1"), "$ ls\nREADME.md")
         XCTAssertNil(scope.terminalText(pane: "w1:p2"))
+    }
+
+    /// After an erase the live screen is all blank rows; it must replace the screen before
+    /// it, or the pane reopens on what was erased.
+    func testABlankScreenReplacesTheScreenBeforeIt() {
+        let scope = cache().scope(machine: "me@mac:22", session: nil)
+        scope.storeTerminalScreen(rows: ["$ cargo test", "ok", "", ""], pane: "w1:p1")
+        XCTAssertEqual(scope.terminalText(pane: "w1:p1"), "$ cargo test\nok", "trailing blank rows are dropped")
+
+        scope.storeTerminalScreen(rows: ["", "", "", ""], pane: "w1:p1")
+        XCTAssertEqual(scope.terminalText(pane: "w1:p1"), "", "the erased screen's content survived the erase")
     }
 
     // MARK: Bounds
@@ -243,6 +354,21 @@ final class ContentCacheTests: XCTestCase {
         scope.storeTerminalText(String(repeating: "x", count: 101), pane: "a")
         XCTAssertNil(scope.terminalText(pane: "a"), "a stale screen must not outlive the one that replaced it")
         XCTAssertEqual(store.totalBytes, 0)
+    }
+
+    /// After a wipe and a rejoin, the old scope's oversized write is as stale as any other:
+    /// it must not drop the entry the new scope kept.
+    func testAnOversizedWriteFromAWipedScopeLeavesTheNewScopesEntry() {
+        let store = cache(entryLimit: 100)
+        let old = store.scope(share: "relay/guest", sharedTarget: "t1")
+        old.storeTerminalText("before", pane: "t1")
+        store.wipe(.share("relay/guest"))
+        let rejoined = store.scope(share: "relay/guest", sharedTarget: "t1")
+        rejoined.storeTerminalText("rejoined screen", pane: "t1")
+
+        old.storeTerminalText(String(repeating: "x", count: 101), pane: "t1")
+        XCTAssertEqual(rejoined.terminalText(pane: "t1"), "rejoined screen",
+                       "a wiped scope's oversized write removed the rejoined scope's entry")
     }
 
     // MARK: Wipes

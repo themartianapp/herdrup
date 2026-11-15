@@ -140,6 +140,9 @@ public actor HerdrClient {
     private var listingSequence: UInt64 = 0
     private var lastListing: (sentAt: ContinuousClock.Instant, listing: AgentListing)?
     private let listChange = ListChangeMark()
+    /// When the request behind the agent list kept in `contentCache` was sent. A reply to
+    /// an older request that lands after it is not kept, as `lastListing` does not take it.
+    private var keptListingSentAt: ContinuousClock.Instant?
 
     /// A live event (a status change, a turn, a pane's lifecycle) said the daemon's
     /// agent list changed at `instant`. From then on `agentListing` neither reuses nor
@@ -151,15 +154,20 @@ public actor HerdrClient {
     }
 
     /// The one request behind every `agentListing` caller; its reply is what a cold start
-    /// paints from next time (`contentCache`), under the rule `agentListing` serves by: a
+    /// paints from next time (`contentCache`), under the rules `agentListing` serves by: a
     /// list sent before the last `noteAgentListChanged()` is older than what is on screen,
-    /// so it is not kept either. The cache keeps the copy it had, or the next list's.
+    /// and a reply to an older request that lands after a newer one's is older than it, so
+    /// neither is kept. The cache keeps the copy it had, or the next list's.
     private func fetchAgentListing(sentAt: ContinuousClock.Instant) async throws -> AgentListing {
         let listChange = self.listChange
         let result = try await call("agent.list", EmptyParams(), as: AgentListResult.self,
                                     record: contentCache.map { cache in { line, _ in
                                         // Checked when the reply lands, so an event during the request counts.
-                                        guard listChange.latest.map({ $0 <= sentAt }) ?? true else { return }
+                                        guard listChange.latest.map({ $0 <= sentAt }) ?? true,
+                                              // Newest request wins: two requests can answer out of order.
+                                              self.keptListingSentAt.map({ $0 <= sentAt }) ?? true
+                                        else { return }
+                                        self.keptListingSentAt = sentAt
                                         cache.recordAgentList(line)
                                     } })
         return AgentListing(agents: result.agents, originCapabilities: result.originCapabilities,
@@ -695,6 +703,7 @@ public actor HerdrClient {
         limit: Int? = nil, beforeID: String? = nil, keepsForColdStart: Bool = false
     ) async throws -> GramListAnswer {
         let keeper = keepsForColdStart && !unreadOnly && beforeID == nil ? contentCache : nil
+        let deletions = gramDeletions
         let result = try await call(
             "gram.list",
             GramListParams(callerPaneID: nil, onlyQueue: false, unreadOnly: unreadOnly,
@@ -702,6 +711,9 @@ public actor HerdrClient {
                            beforeID: beforeID),
             as: GramListResult.self,
             record: keeper.map { cache in { line, result in
+                // A delete sent or answered while this page was out: the page may still hold
+                // the deleted message, so it must not become what the next cold start paints.
+                guard self.gramDeletions == deletions else { return }
                 // "Unchanged" carries no list: the page kept last time still holds.
                 if result.messages != nil { cache.recordGramHead(line) }
             } })
@@ -819,10 +831,21 @@ public actor HerdrClient {
 
     struct GramDeleteParams: Encodable { let id: String }
 
+    /// Moves when a `gram.delete` is sent and when it answers, so a head page asked for
+    /// before or during a delete is not kept for the next cold start (`gramList`).
+    private var gramDeletions: UInt64 = 0
+
     /// The owner deletes a gram message and any file attached to it, for good. As
     /// the owner the app sends no caller pane, so it may delete any message.
+    ///
+    /// Once herdr confirms it, the inbox head kept in `contentCache` is dropped: it may hold
+    /// the message, and the next cold start must not paint it back. The next head refresh
+    /// keeps a new one.
     public func gramDelete(id: String) async throws {
+        gramDeletions &+= 1
+        defer { gramDeletions &+= 1 }
         _ = try await call("gram.delete", GramDeleteParams(id: id), as: JSONNull.self)
+        contentCache?.forgetGramHead()
     }
 
     struct GramUploadDiscardParams: Encodable {
