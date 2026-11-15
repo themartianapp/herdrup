@@ -8210,6 +8210,11 @@ struct SettingsView: View {
     /// (`CrashReportsLaunch`). Off stops the pings, deletes the install ID and any queued crash
     /// reports at once; on again makes a new ID. A toggle drawn like `groupedToggleRow`'s, the
     /// whole row the tap target.
+    ///
+    /// The subtitle must wrap to no more lines than the pre-crash-reports one ("Once a day: a
+    /// random ID, the app version and the platform. …"): the whole ABOUT group has to fit the
+    /// iPad 11 sidebar at once (DesktopSettingsReferenceShots.testSettingsAboutIndexReference).
+    /// Measured with Geist 14 widths, this copy wraps to as many or fewer lines from 100 to 260 pt.
     private var usageCountRow: some View {
         Button {
             shareUsageCount.toggle()
@@ -8217,7 +8222,7 @@ struct SettingsView: View {
             CrashReportsLaunch.usageCountSwitched(on: shareUsageCount)
         } label: {
             glyphRow("Share anonymous usage count", systemImage: "chart.bar",
-                     subtitle: "Once a day: a random ID, the app version and the platform. After a crash: where in the app it happened. Nothing about your agents or machines.") {
+                     subtitle: "A random ID, the app version, the platform and crashes. Nothing about your agents or machines.") {
                 Toggle("", isOn: .constant(shareUsageCount))
                     .labelsHidden()
                     .tint(Palette.brand)
