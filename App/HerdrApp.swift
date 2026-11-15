@@ -5271,7 +5271,6 @@ struct ComposerTextField: UIViewRepresentable {
         // whether the content overflows.
         view.isScrollEnabled = true
         view.alwaysBounceVertical = false
-        view.accessibilityIdentifier = accessibilityIdentifier
         view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         view.updatePlaceholder()
         return view
@@ -5285,6 +5284,11 @@ struct ComposerTextField: UIViewRepresentable {
         // SwiftUI opacity does not hide the retained UITextView from UIKit/AX.
         // Keep the native editor mounted, but make its visibility match its pane.
         view.isHidden = !isPresented
+        // Neither that nor the pane's `accessibilityHidden` takes it out of the tree XCUITest
+        // reads: a warm pane's hidden editor answered to the front one's identifier, the two
+        // were told apart only by their order, and a composer animation flipped it (#677).
+        // So only the presented editor is the reply input.
+        view.accessibilityIdentifier = isPresented ? accessibilityIdentifier : nil
         if !isPresented { context.coordinator.nativeFocusPendingStateSync = false }
         view.onPasteFile = onPasteFile
         view.onCommandReturn = onCommandReturn

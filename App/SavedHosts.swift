@@ -54,7 +54,11 @@ final class SavedHostsStore: ObservableObject {
     /// password never collide on the same account id. Same device-only discipline.
     private let passwordKeychain = KeychainCredentialStore(service: "dev.herdr.credentials.password")
 
-    @Published private(set) var hosts: [SavedHost]
+    /// Published to SwiftUI, which forbids that from a background thread: in a Debug build a
+    /// write off the main thread stops here rather than as a runtime warning (#664).
+    @Published private(set) var hosts: [SavedHost] {
+        willSet { assert(Thread.isMainThread, "SavedHostsStore.hosts is published; change it on the main thread") }
+    }
 
     init() {
         if let data = ShareStorage.defaults.data(forKey: defaultsKey),

@@ -24,6 +24,11 @@ public struct PairingCoordinator {
     public protocol HostStore {
         /// Returns false WITHOUT recording the host if the secret could not be persisted,
         /// which is the contract `SavedHostsStore.add` already has.
+        ///
+        /// MAIN ACTOR: the app's store publishes its list to SwiftUI, which forbids that
+        /// from a background thread (#664). Declaring it here makes the compiler refuse a
+        /// caller that is not on the main actor.
+        @MainActor
         func addPairedHost(nickname: String, host: String, username: String,
                            privateKeyPEM: String) -> Bool
     }
@@ -87,12 +92,15 @@ public struct PairingCoordinator {
     /// - Parameter deviceLabel: shown in the machine's `authorized_keys` so a person can
     ///   recognise and revoke this device later. A device name, not a secret.
     /// - Returns: the nickname the host was saved under.
-    /// ASYNC, and the reason is not style. The redemption is a blocking socket round
-    /// trip, so it must leave the caller's actor — but the store and the pinner must NOT.
-    /// `store.addPairedHost` mutates an `@Published` property, and SwiftUI forbids that
-    /// off the main actor. Awaiting only the socket keeps steps 1 and 3 on the caller's
-    /// actor while step 2 goes wide, instead of detaching the whole thing and mutating
-    /// observable state from a background thread.
+    ///
+    /// ON THE MAIN ACTOR, and the reason is not style. `store.addPairedHost` mutates an
+    /// `@Published` property, and SwiftUI forbids that off the main thread. A nonisolated
+    /// async function does NOT run on its caller's actor: it runs on the global executor,
+    /// so without this attribute steps 1 and 3 ran on a background thread even when the
+    /// sheet awaited from the main actor (#664). The redemption is a blocking socket round
+    /// trip and must still leave the main thread: `redeem` is a nonisolated async call, and
+    /// the real `Pairing.redeem` runs its socket in a detached task.
+    @MainActor
     @discardableResult
     public func completePairing(
         payload: Pairing.Payload,
