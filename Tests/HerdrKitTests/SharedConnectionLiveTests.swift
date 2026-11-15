@@ -188,4 +188,59 @@ final class SharedConnectionLiveTests: XCTestCase {
         for held in streams { held.task?.cancel() }
         await transport.close()
     }
+
+    /// The review's case: under `MaxSessions 3`, three streams hold every session on
+    /// the shared connection (sshd does not advertise its limit, so nothing could have
+    /// reserved one). A request must still be answered, on the overflow connection,
+    /// and promptly: it used to retry the full connection for 3 s and fail
+    /// `channelSetupRejected`, for as long as the streams lived.
+    func testRequestsStillRunWhenStreamsFillAThreeSessionLimit() async throws {
+        try await assertRequestsRun(limitEnv: "HERDRKIT_LIVE_LOW_SESSIONS_PORT", sessions: 3)
+    }
+
+    /// The same at `MaxSessions 1`: one stream fills the shared connection, and the
+    /// overflow connection carries one exec at a time, so concurrent requests queue.
+    func testRequestsStillRunWhenStreamsFillAOneSessionLimit() async throws {
+        try await assertRequestsRun(limitEnv: "HERDRKIT_LIVE_ONE_SESSION_PORT", sessions: 1)
+    }
+
+    private func assertRequestsRun(limitEnv: String, sessions: Int,
+                                   file: StaticString = #filePath, line: UInt = #line) async throws {
+        guard let value = ProcessInfo.processInfo.environment[limitEnv], let port = UInt16(value) else {
+            throw XCTSkip("set \(limitEnv) to an sshd with MaxSessions \(sessions)")
+        }
+        let relay = try TCPRelay(upstreamPort: port)
+        defer { relay.stop() }
+        let transport = try transport(via: relay)
+        var streams: [Held] = []
+        for _ in 0..<(sessions + 1) { streams.append(try await hold(transport, subscribe)) }
+        for held in streams { assertAcknowledged(held, file: file, line: line) }
+        let core = await transport.connectionCore
+        let held = await core.sharedHeldChannelCount
+        XCTAssertEqual(held, sessions, "the streams should fill the shared connection", file: file, line: line)
+
+        let started = ContinuousClock.now
+        let replies = try await withThrowingTaskGroup(of: String.self) { group in
+            for index in 0..<4 {
+                group.addTask {
+                    try await transport.roundTrip(
+                        index.isMultiple(of: 2) ? self.ping : #"{"id":"l","method":"agent.list","params":{}}"#)
+                }
+            }
+            return try await group.reduce(into: [String]()) { $0.append($1) }
+        }
+        XCTAssertEqual(replies.count, 4, file: file, line: line)
+        XCTAssertTrue(replies.allSatisfy { $0.contains(#""result""#) }, "\(replies)", file: file, line: line)
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(3),
+                          "requests waited on the full shared connection", file: file, line: line)
+        let overflowOpen = await core.hasOverflowConnection
+        XCTAssertTrue(overflowOpen, "requests should have run on the overflow connection", file: file, line: line)
+        // The streams were not disturbed.
+        XCTAssertFalse(streams.contains { $0.ended }, file: file, line: line)
+
+        for held in streams { held.task?.cancel() }
+        await transport.close()
+        let overflowAfterClose = await core.hasOverflowConnection
+        XCTAssertFalse(overflowAfterClose, "close() must close the overflow connection", file: file, line: line)
+    }
 }

@@ -653,6 +653,9 @@ public actor CitadelTransport: HerdrTransport, MachineFederationTransport, Sessi
 
     /// Test-only window into the request channels.
     var requestChannelPool: RequestChannelPool { requestChannels }
+
+    /// Test-only window into the shared connection.
+    var connectionCore: SSHConnectionCore { connection }
 }
 
 /// How `CitadelTransport` opens its exec channels: the per-request `api-bridge <base64>`
@@ -686,6 +689,18 @@ struct ExecBackend: Sendable {
                     dedicated: { try await connection.dedicatedChannel(running: command) })
             })
     }
+}
+
+/// Reports one per-request exec's end to its connection. `@unchecked` because
+/// Citadel does not mark `SSHClient` Sendable (see `CitadelRequestLink`).
+private final class ExecEnd: @unchecked Sendable {
+    private let core: SSHConnectionCore
+    private let client: SSHClient
+    init(core: SSHConnectionCore, client: SSHClient) {
+        self.core = core
+        self.client = client
+    }
+    func fire() async { await core.execEnded(on: client) }
 }
 
 /// A held channel's slot on the shared connection.
@@ -728,8 +743,9 @@ struct DedicatedChannel: Sendable {
 /// `MaxSessions`, 10 by default). The shared connection carries at most
 /// `SSHConnectionCore.sharedHeldChannelLimit` held channels, leaving room for
 /// per-request execs; a stream past that, or one whose open sshd refuses, takes a
-/// connection of its own, and a per-request exec sshd refuses waits for a channel to
-/// close and retries (`SSHConnectionCore.execute`).
+/// connection of its own. On a host whose limit is at or below the held channels, the
+/// streams can fill the shared connection; a per-request exec sshd refuses there runs
+/// on an overflow connection instead (`SSHConnectionCore.execute`).
 struct SharedFirstLink: RequestChannelLink {
     /// A slot on the shared connection, or nil when it is full (or channels cannot be
     /// closed individually on this OS). Throws when the shared connection cannot connect.
@@ -1026,24 +1042,150 @@ actor SSHConnectionCore {
         return max(.zero, min(delay, reconnectBackoff.maximum) - elapsed)
     }
 
-    /// Runs `command` on its own exec channel of the shared connection. When sshd
-    /// refuses the channel because the connection is at its channel limit (`MaxSessions`;
-    /// streams now share the connection too), waits for one to close and tries again,
-    /// for up to ~3 s, rather than failing the request.
+    /// Runs `command` on its own exec channel: on the shared connection, or, when sshd
+    /// refuses the channel there because the connection is at its channel limit
+    /// (`MaxSessions`), on the overflow connection.
+    ///
+    /// A refusal has two causes, told apart by this connection's own execs in flight:
+    /// - **Other execs hold the sessions** (a burst of requests before the request
+    ///   channel is up). They end within a round trip or two, so this waits and
+    ///   retries the shared connection, which is far cheaper on a slow link than a new
+    ///   connection's 9–13 round trips.
+    /// - **None do: held channels fill the connection.** sshd does not advertise
+    ///   `MaxSessions`, so nothing learns the limit before streams reach it (3 streams
+    ///   under `MaxSessions 3`), and they hold their sessions for as long as they live.
+    ///   Waiting would fail every request while the streams look healthy, so the exec
+    ///   runs on the overflow connection.
+    ///
+    /// Either way it waits for up to ~3 s in total, then tries the overflow before
+    /// failing. When the overflow refuses too (`MaxSessions 1` with an exec already
+    /// on it), the retries cover both.
     func execute(_ command: String) async throws -> AsyncThrowingStream<ExecCommandOutput, Error> {
         var delay = Duration.milliseconds(100)
         var waited = Duration.zero
         while true {
+            let shared = try await connectedClient()
             do {
-                return try await connectedClient().executeCommandStream(command)
-            } catch where SharedFirstLink.isChannelRefused(error) && waited < Self.refusedExecPatience {
-                try await Task.sleep(for: delay)
-                waited += delay
-                delay = min(delay * 2, .milliseconds(800))
+                return try await trackedExecute(command, on: shared)
+            } catch where SharedFirstLink.isChannelRefused(error) {
+                if execsInFlight[ObjectIdentifier(shared), default: 0] == 0 || waited >= Self.refusedExecPatience {
+                    do {
+                        return try await trackedExecute(command, on: overflowClient())
+                    } catch where SharedFirstLink.isChannelRefused(error) && waited < Self.refusedExecPatience {}
+                }
             }
+            try await Task.sleep(for: delay)
+            waited += delay
+            delay = min(delay * 2, .milliseconds(800))
         }
     }
     static let refusedExecPatience = Duration.seconds(3)
+
+    /// Per-request execs whose output has not ended yet, per connection.
+    private var execsInFlight: [ObjectIdentifier: Int] = [:]
+
+    /// `command` on `client`, counted in `execsInFlight` until its output ends.
+    private func trackedExecute(
+        _ command: String, on client: SSHClient
+    ) async throws -> AsyncThrowingStream<ExecCommandOutput, Error> {
+        execStarted(on: client)
+        let output: AsyncThrowingStream<ExecCommandOutput, Error>
+        do {
+            output = try await client.executeCommandStream(command)
+        } catch {
+            execEnded(on: client)
+            throw error
+        }
+        // Forwarded so the exec's end is seen here.
+        let ended = ExecEnd(core: self, client: client)
+        return AsyncThrowingStream { continuation in
+            let forward = Task {
+                do {
+                    for try await chunk in output { continuation.yield(chunk) }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+                await ended.fire()
+            }
+            continuation.onTermination = { _ in forward.cancel() }
+        }
+    }
+
+    private func execStarted(on client: SSHClient) {
+        execsInFlight[ObjectIdentifier(client), default: 0] += 1
+        if let overflow, overflow === client {
+            overflowIdleClose?.cancel()
+            overflowIdleClose = nil
+        }
+    }
+
+    fileprivate func execEnded(on client: SSHClient) {
+        let key = ObjectIdentifier(client)
+        let remaining = execsInFlight[key, default: 0] - 1
+        execsInFlight[key] = remaining > 0 ? remaining : nil
+        guard remaining <= 0, let overflow, overflow === client else { return }
+        overflowIdleClose?.cancel()
+        overflowIdleClose = Task {
+            try? await Task.sleep(for: Self.overflowIdleAfter)
+            guard !Task.isCancelled else { return }
+            await self.closeOverflowIfIdle(client)
+        }
+    }
+
+    // MARK: - overflow connection
+
+    /// A second connection for per-request execs the shared connection cannot take.
+    /// Opened on first use, shared by every exec that overflows, and closed once it has
+    /// carried no exec for `overflowIdleAfter`, or by `close()`.
+    private var overflow: SSHClient?
+    private var overflowConnect: Task<SSHClient, Error>?
+    private var overflowIdleClose: Task<Void, Never>?
+    static let overflowIdleAfter = Duration.seconds(30)
+
+    /// The overflow connection, connecting on first use or after it dropped. Concurrent
+    /// callers join one connect.
+    private func overflowClient() async throws -> SSHClient {
+        if let overflow, overflow.isConnected { return overflow }
+        let gen = generation
+        let task: Task<SSHClient, Error>
+        if let overflowConnect {
+            task = overflowConnect
+        } else {
+            task = Task { try await self.makeConnection() }
+            overflowConnect = task
+        }
+        let connected: SSHClient
+        do {
+            connected = try await task.value
+        } catch {
+            if overflowConnect == task { overflowConnect = nil }
+            throw error
+        }
+        if overflowConnect == task {
+            overflowConnect = nil
+            guard gen == generation else {
+                // close() ran during the connect: reap it rather than install it.
+                try? await connected.close()
+                throw CancellationError()
+            }
+            let replaced = overflow
+            overflow = connected
+            if let replaced { try? await replaced.close() }
+        }
+        guard let current = overflow, current === connected else { throw CancellationError() }
+        return connected
+    }
+
+    private func closeOverflowIfIdle(_ client: SSHClient) async {
+        guard let overflow, overflow === client, execsInFlight[ObjectIdentifier(client)] == nil else { return }
+        self.overflow = nil
+        overflowIdleClose = nil
+        try? await client.close()
+    }
+
+    /// Whether the overflow connection is open. Test-only.
+    var hasOverflowConnection: Bool { overflow != nil }
 
     // MARK: - held channels
 
@@ -1205,7 +1347,14 @@ actor SSHConnectionCore {
         // client and never clobbers a reconnect that lands mid-close.
         let old = client
         client = nil
+        overflowConnect?.cancel()
+        overflowConnect = nil
+        overflowIdleClose?.cancel()
+        overflowIdleClose = nil
+        let oldOverflow = overflow
+        overflow = nil
         try? await old?.close()
+        try? await oldOverflow?.close()
     }
 }
 
