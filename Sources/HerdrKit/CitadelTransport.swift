@@ -1145,6 +1145,12 @@ actor SSHConnectionCore {
 
     /// The overflow connection, connecting on first use or after it dropped. Concurrent
     /// callers join one connect.
+    ///
+    /// Whoever awaits the connect owns its result until it is installed. `close()`
+    /// clears `overflowConnect` and cancels it, but cancelling does not interrupt a
+    /// handshake in progress, so a connect can still resolve after `close()`. Every
+    /// awaiter then sees the moved `generation` and closes the client (closing it twice
+    /// is harmless), instead of leaving an authenticated connection nobody holds.
     private func overflowClient() async throws -> SSHClient {
         if let overflow, overflow.isConnected { return overflow }
         let gen = generation
@@ -1162,13 +1168,12 @@ actor SSHConnectionCore {
             if overflowConnect == task { overflowConnect = nil }
             throw error
         }
+        guard gen == generation else {
+            try? await connected.close()
+            throw CancellationError()
+        }
         if overflowConnect == task {
             overflowConnect = nil
-            guard gen == generation else {
-                // close() ran during the connect: reap it rather than install it.
-                try? await connected.close()
-                throw CancellationError()
-            }
             let replaced = overflow
             overflow = connected
             if let replaced { try? await replaced.close() }

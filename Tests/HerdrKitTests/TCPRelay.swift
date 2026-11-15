@@ -54,6 +54,9 @@ final class TCPRelay: @unchecked Sendable {
     /// TCP connections accepted so far.
     var accepted: Int { lock.withLock { acceptedCount } }
 
+    /// Relayed connections still open: neither side has closed yet.
+    var live: Int { lock.withLock { open.count / 2 } }
+
     /// Cuts every relayed connection, both sides, as a network drop would. The
     /// listener keeps accepting, so a reconnect gets through.
     func severAll() {

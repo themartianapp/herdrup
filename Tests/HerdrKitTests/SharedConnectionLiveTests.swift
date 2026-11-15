@@ -204,6 +204,42 @@ final class SharedConnectionLiveTests: XCTestCase {
         try await assertRequestsRun(limitEnv: "HERDRKIT_LIVE_ONE_SESSION_PORT", sessions: 1)
     }
 
+    /// `close()` while the overflow connection is still handshaking: the handshake
+    /// completes afterwards (cancelling does not interrupt it), and that client must be
+    /// closed, not left as an authenticated connection nobody holds (review of
+    /// dc4b1e9d). Once the in-flight request has settled and the transport is closed,
+    /// no connection the relay carried may remain open.
+    func testClosingDuringTheOverflowConnectLeavesNoConnectionOpen() async throws {
+        guard let value = ProcessInfo.processInfo.environment["HERDRKIT_LIVE_ONE_SESSION_PORT"],
+              let port = UInt16(value) else {
+            throw XCTSkip("set HERDRKIT_LIVE_ONE_SESSION_PORT to an sshd with MaxSessions 1")
+        }
+        let handshakeDelay: TimeInterval = 2
+        let relay = try TCPRelay(upstreamPort: port, serverHelloDelay: handshakeDelay)
+        defer { relay.stop() }
+        let transport = try transport(via: relay)
+        // One stream takes the shared connection's only session, so the next request
+        // is refused there and dials the overflow connection.
+        let stream = try await hold(transport, subscribe)
+        assertAcknowledged(stream)
+        XCTAssertEqual(relay.accepted, 1)
+
+        let request = Task { try await transport.roundTrip(self.ping) }
+        try await eventually("the overflow connect starts", timeout: 10) { relay.accepted == 2 }
+        stream.task?.cancel()
+        await transport.close()
+
+        // The request may fail, or (as before this change) reconnect the closed
+        // transport and succeed: a transport stays usable after `close()`. Either way
+        // it settles once the overflow handshake has resolved.
+        _ = try? await request.value
+        await transport.close()
+        let core = await transport.connectionCore
+        let overflowOpen = await core.hasOverflowConnection
+        XCTAssertFalse(overflowOpen)
+        try await eventually("every relayed connection closes", timeout: 5) { relay.live == 0 }
+    }
+
     private func assertRequestsRun(limitEnv: String, sessions: Int,
                                    file: StaticString = #filePath, line: UInt = #line) async throws {
         guard let value = ProcessInfo.processInfo.environment[limitEnv], let port = UInt16(value) else {
