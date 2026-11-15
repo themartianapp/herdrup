@@ -1904,9 +1904,14 @@ struct TerminalHomeView: View {
     @State private var error: String?
     @State private var loading = true
     /// The roster on screen is the one `AppContentCache` kept from the last launch, and no
-    /// `agent.list` has answered yet: nothing has connected. Shows the "Updating" mark. The
-    /// first load clears it; a failed one surfaces its error as if the list were empty.
+    /// `agent.list` has answered yet. Shows the "Updating" mark until the first load lands
+    /// or fails; `rosterValidated` is what says whether anything has connected.
     @State private var showingCachedRoster = false
+    /// An `agent.list` has succeeded on this connection. Until then the rows on screen (last
+    /// launch's, or another session's) were never confirmed, so every failure is the connect
+    /// failing, not a background refresh, and republishes its error and guidance: a Retry
+    /// that fails differently (daemon down, then herdr too old) must say so.
+    @State private var rosterValidated = false
     @State private var rejectedFingerprint: String?
     @State private var trustFailed = false
     /// Set when the connect failed because herdr is not installed on the host
@@ -4923,6 +4928,7 @@ struct TerminalHomeView: View {
             receiveRoster(agents: fetched, accounts: latestAccounts)
             sessionCache?.store(fetched, session: session)
             if showingCachedRoster { showingCachedRoster = false }   // fresh rows replaced the kept ones
+            if !rosterValidated { rosterValidated = true }
 
             clearSuccessfulLoadState()
             // Prune keep-mounted panes whose agent is gone (Stopped / vanished) so no dead
@@ -5033,12 +5039,11 @@ struct TerminalHomeView: View {
             // A BACKGROUND refresh failure keeps the stale-but-good list rather than blowing it
             // away into the error screen. Surface the error only when there is nothing to show —
             // EXCEPT a host-key rejection, which always surfaces (a mid-session key change must
-            // never be hidden behind a cached list), and a failure while the rows are still the
-            // disk roster from the last launch: nothing has connected yet, so this is the
-            // connect failing (auth, no herdr, daemon down), not a refresh, and its guidance
-            // must show. It replaces the "Updating…" mark, which would otherwise stay for good.
-            let unconnectedDiskRoster = showingCachedRoster
-            if agents.isEmpty || rejected != nil || unconnectedDiskRoster {
+            // never be hidden behind a cached list), and any failure before the first success
+            // on this connection (`rosterValidated`): the rows are last launch's (or another
+            // session's), so this is the connect failing (auth, no herdr, daemon down), not a
+            // refresh, and its guidance must show, the newest failure's on every Retry.
+            if agents.isEmpty || rejected != nil || !rosterValidated {
                 self.error = "\(error)"
                 rejectedFingerprint = rejected
                 // Only when this is the surfaced error do we drive the install-guidance
@@ -5047,7 +5052,8 @@ struct TerminalHomeView: View {
                 herdrIncompatibleBuild = incompatibleBuild
                 unavailableDaemonHost = daemonHost
             }
-            if unconnectedDiskRoster { showingCachedRoster = false }
+            // The error replaces the "Updating…" mark, which would otherwise stay for good.
+            if showingCachedRoster { showingCachedRoster = false }
             // DROP a pending deep-link this failed load couldn't service, rather than leave it armed:
             // a push targets a just-now event, so firing it after some much-later successful load would
             // yank the reader into a stale pane (an agent that may have finished long ago). If it was

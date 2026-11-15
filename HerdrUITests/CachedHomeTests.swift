@@ -33,7 +33,7 @@ final class CachedHomeTests: XCTestCase {
     /// The "Updating" mark must not stay up for good.
     func testAFirstConnectionFailureShowsItsGuidanceOverTheKeptRoster() {
         let app = XCUIApplication.launched(mock: "cachedhome", environment: [
-            "HERDR_MOCK_LIST_DELAY": "3", "HERDR_MOCK_LIST_FAIL": "1"])
+            "HERDR_MOCK_LIST_DELAY": "3", "HERDR_MOCK_LIST_FAIL": "daemonUnavailable"])
 
         XCTAssertTrue(element(app, "agent-row-w1:p1").waitForExistence(timeout: 4), "the kept roster did not paint")
         XCTAssertTrue(element(app, "agents-updating").exists, "a kept roster is marked as updating")
@@ -43,6 +43,23 @@ final class CachedHomeTests: XCTestCase {
         XCTAssertTrue(app.buttons["retry"].exists, "the guidance offers a retry")
         XCTAssertTrue(poll(3, every: 0.2) { !self.element(app, "agents-updating").exists },
                       "the Updating mark stayed after the connection failed")
+    }
+
+    /// The kept rows stay unconfirmed until a list succeeds, so a Retry that fails another way
+    /// shows that failure's guidance, not the first one's: the daemon was down, the owner
+    /// started it, and it turns out too old.
+    func testARetryThatFailsDifferentlyReplacesTheFirstFailuresGuidance() {
+        let app = XCUIApplication.launched(mock: "cachedhome", environment: [
+            "HERDR_MOCK_LIST_DELAY": "2", "HERDR_MOCK_LIST_FAIL": "daemonUnavailable,incompatible"])
+
+        XCTAssertTrue(element(app, "agent-row-w1:p1").waitForExistence(timeout: 4), "the kept roster did not paint")
+        let notRunning = app.staticTexts["herdr isn't running on cachedhome"]
+        XCTAssertTrue(notRunning.waitForExistence(timeout: 10), "the first failure's guidance did not show")
+
+        app.buttons["retry"].tap()
+        XCTAssertTrue(app.staticTexts["herdr here is too old"].waitForExistence(timeout: 10),
+                      "the Retry's failure kept the first failure's guidance")
+        XCTAssertFalse(notRunning.exists)
     }
 
     /// The terminal's kept screen must be SEEN, not merely present: Desktop's equivalent
