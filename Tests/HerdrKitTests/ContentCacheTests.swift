@@ -88,6 +88,40 @@ final class ContentCacheTests: XCTestCase {
         XCTAssertEqual(relaunched.agents()?.agents.map(\.name), ["alfa", "bravo"])
     }
 
+    /// A live event during an `agent.list` request makes that reply older than what is on
+    /// screen (#675's rule for serving it); the cache must not keep it as the roster either.
+    func testAListSentBeforeALiveEventIsNotKept() async throws {
+        let store = cache()
+        let scope = store.scope(machine: "me@mac:22", session: nil)
+        let box = ClientBox()
+        var names = ["before"]
+        var eventDuringRequest = false
+        let transport = RecordingTransport { _, _ in
+            // The event lands while this request is out: after it was sent, before its reply.
+            if eventDuringRequest { box.client?.noteAgentListChanged() }
+            return Self.agentList(names)
+        }
+        let client = HerdrClient(transport: transport, contentCache: scope)
+        box.client = client
+
+        _ = try await client.agentListing()
+        XCTAssertEqual(scope.agents()?.agents.map(\.name), ["before"])
+
+        names = ["pre-event"]
+        eventDuringRequest = true
+        _ = try await client.agentListing()
+        XCTAssertEqual(scope.agents()?.agents.map(\.name), ["before"],
+                       "a list sent before a live event replaced the kept roster")
+
+        // The next list, sent after the event, is current again and is kept.
+        names = ["after"]
+        eventDuringRequest = false
+        _ = try await client.agentListing()
+        XCTAssertEqual(scope.agents()?.agents.map(\.name), ["after"])
+    }
+
+    private final class ClientBox: @unchecked Sendable { var client: HerdrClient? }
+
     func testMachinesAndSessionsAreKeptApart() async throws {
         let store = cache()
         for (machine, session, name) in [("me@mac:22", nil, "default-agent"), ("me@mac:22", "work", "work-agent"),

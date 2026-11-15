@@ -121,7 +121,7 @@ public actor HerdrClient {
         // Unstructured, so a waiter's cancellation does not fail the others' answer.
         let task = Task { () async throws -> AgentListing in
             defer { if self.listingFlight?.token == token { self.listingFlight = nil } }
-            let listing = try await self.fetchAgentListing()
+            let listing = try await self.fetchAgentListing(sentAt: sentAt)
             if self.lastListing.map({ $0.sentAt <= sentAt }) ?? true {
                 self.lastListing = (sentAt, listing)
             }
@@ -151,10 +151,17 @@ public actor HerdrClient {
     }
 
     /// The one request behind every `agentListing` caller; its reply is what a cold start
-    /// paints from next time (`contentCache`).
-    private func fetchAgentListing() async throws -> AgentListing {
+    /// paints from next time (`contentCache`), under the rule `agentListing` serves by: a
+    /// list sent before the last `noteAgentListChanged()` is older than what is on screen,
+    /// so it is not kept either. The cache keeps the copy it had, or the next list's.
+    private func fetchAgentListing(sentAt: ContinuousClock.Instant) async throws -> AgentListing {
+        let listChange = self.listChange
         let result = try await call("agent.list", EmptyParams(), as: AgentListResult.self,
-                                    record: contentCache.map { cache in { line, _ in cache.recordAgentList(line) } })
+                                    record: contentCache.map { cache in { line, _ in
+                                        // Checked when the reply lands, so an event during the request counts.
+                                        guard listChange.latest.map({ $0 <= sentAt }) ?? true else { return }
+                                        cache.recordAgentList(line)
+                                    } })
         return AgentListing(agents: result.agents, originCapabilities: result.originCapabilities,
                             originMachineID: result.originMachineID)
     }
