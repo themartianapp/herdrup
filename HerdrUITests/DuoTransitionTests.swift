@@ -25,10 +25,21 @@ final class DuoTransitionTests: TerminalInteractionTestCase {
         return try XCTUnwrap(candidates.allElementsBoundByIndex.first { $0.isHittable })
     }
 
+    /// The fixture keeps RESIZE-BRAVO's pane warm behind RESIZE-ALFA's, with its own reply
+    /// editor. Only the front editor may answer to the identifier. When both did, `editor`
+    /// returned an element bound by INDEX, the order followed the two editors' frames, and
+    /// the composer's spring into the one-row regular layout re-ordered them between the hit
+    /// test and the value read: the read landed on BRAVO's empty editor (#677).
+    private func assertOneReplyInput(_ when: String, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(app.textViews.matching(identifier: "terminal-reply-input").count, 1,
+                       "Only the front pane's editor may be the reply input \(when)", file: file, line: line)
+    }
+
     func testTerminalDraftAndStreamSurviveCompactRegularTransitions() throws {
         try start()
         let draft = "Keep this unsent terminal reply"
         let input = try editor("terminal-reply-input")
+        assertOneReplyInput("with another pane warm behind it")
         input.tap()
         input.typeText(draft)
         XCTAssertEqual(input.value as? String, draft)
@@ -38,6 +49,7 @@ final class DuoTransitionTests: TerminalInteractionTestCase {
 
         for layout in ["compact", "regular", "compact", "regular"] {
             transition(layout)
+            assertOneReplyInput("entering \(layout)")
             let retained = try editor("terminal-reply-input")
             XCTAssertEqual(retained.value as? String, draft, "Draft lost entering \(layout)")
             wait { ($0["covered"] as? Bool) == false && ($0["top"] as? String) != nil }
@@ -51,7 +63,9 @@ final class DuoTransitionTests: TerminalInteractionTestCase {
             XCTAssertFalse(app.buttons["terminal-find"].exists,
                            "The covered terminal must not expose controls over \(section)")
             try XCTUnwrap(onscreen("Agents", requiringHittable: true)).tap()
-            XCTAssertEqual(try editor("terminal-reply-input").value as? String, draft)
+            let returned = try editor("terminal-reply-input")
+            assertOneReplyInput("returning from \(section)")
+            XCTAssertEqual(returned.value as? String, draft)
             XCTAssertEqual(probe()["opens"] as? Int, originalOpens,
                            "Changing tabs must keep the terminal stream mounted")
             attach("terminal-return-from-\(section)")
