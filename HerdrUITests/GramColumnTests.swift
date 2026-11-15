@@ -198,11 +198,11 @@ final class GramColumnTests: XCTestCase {
 
         // Aim at 714: within 12 pt of Readable, so it lands on exactly 720.
         dragRightEdge(app, by: -(narrowed - 714) / 2)
+        // The readout first, straight off the release: it stays only for the hold, and on a
+        // loaded runner each frame query below can take seconds (#681, job j_7d38e2ee).
+        pollLabel(app, "gram-width-readout", "the readout names Readable", timeout: 3) { $0 == "720 pt · Readable" }
         let readable = settle({ column.frame.width }, until: { abs($0 - 720) < 0.5 })
         XCTAssertEqual(readable, 720, accuracy: 0.5, "a width near 720 snaps to Readable")
-        let readout = app.staticTexts["gram-width-readout"]
-        XCTAssertTrue(readout.waitForExistence(timeout: 3), app.debugDescription)
-        XCTAssertEqual(readout.label, "720 pt · Readable")
         XCTAssertEqual(right.value as? String, "720 points, Readable")
         XCTAssertEqual(column.frame.midX, area.frame.midX, accuracy: 1)
         assertComposerMatchesColumn(app, "Readable")
