@@ -97,10 +97,13 @@ public actor HerdrClient {
     ///   instant: one in flight is joined, a finished one reused. The default, the call
     ///   itself, always asks anew, so a caller that just changed something (or learned
     ///   of a change) never gets an answer older than that. A caller that only needs a
-    ///   recent list passes an earlier instant.
+    ///   recent list passes an earlier instant. Never earlier than the last change
+    ///   reported to `noteAgentListChanged()`: a list sent before a live event cannot
+    ///   undo the newer row the event put on screen.
     public func agentListing(sentAfter: ContinuousClock.Instant = .now) async throws -> AgentListing {
-        if let last = lastListing, last.sentAt >= sentAfter { return last.listing }
-        if let flight = listingFlight, flight.sentAt >= sentAfter {
+        let floor = max(sentAfter, listChange.latest ?? sentAfter)
+        if let last = lastListing, last.sentAt >= floor { return last.listing }
+        if let flight = listingFlight, flight.sentAt >= floor {
             return try await flight.task.value
         }
         listingSequence &+= 1
@@ -127,6 +130,16 @@ public actor HerdrClient {
     private var listingFlight: ListingFlight?
     private var listingSequence: UInt64 = 0
     private var lastListing: (sentAt: ContinuousClock.Instant, listing: AgentListing)?
+    private let listChange = ListChangeMark()
+
+    /// A live event (a status change, a turn, a pane's lifecycle) said the daemon's
+    /// agent list changed at `instant`. From then on `agentListing` neither reuses nor
+    /// joins a request sent before it, so a page that opens with the event's newer row
+    /// (blocked on a menu, say) never re-resolves to the older one (still working).
+    /// Synchronous, so the mark is set before anything that reacts to the event runs.
+    public nonisolated func noteAgentListChanged(at instant: ContinuousClock.Instant = .now) {
+        listChange.advance(to: instant)
+    }
 
     private func fetchAgentListing() async throws -> AgentListing {
         let result = try await call("agent.list", EmptyParams(), as: AgentListResult.self)
@@ -184,23 +197,32 @@ public actor HerdrClient {
 
     /// Feature flags from the daemon's `ping` result. `nil` capabilities means an
     /// older daemon; callers treat every new feature as unsupported in that case.
-    /// Always asks; the answer refreshes the per-client cache `knownCapabilities` reads.
+    /// Never answers from the cache: it joins a `ping` still in flight (its answer comes
+    /// after this call) or sends one. The answer refreshes the cache
+    /// `knownCapabilities` reads.
     public func serverCapabilities() async throws -> ServerCapabilities? {
-        let capabilities = try await call("ping", EmptyParams(), as: PingResult.self).capabilities
-        capabilityCache = .probed(capabilities)
-        return capabilities
+        try await capabilityPing()
     }
 
     /// The capabilities this client already learned (the home screen pings once per
-    /// connection), or one `ping` when it has none yet, shared by concurrent callers.
-    /// For gates a screen waits on: opening an agent's page no longer pays a round trip
-    /// before Chat can show.
+    /// connection), or the `ping` that is learning them. For gates a screen waits on:
+    /// opening an agent's page no longer pays a round trip before Chat can show, nor
+    /// sends a second ping while the home screen's is still on its way.
     public func knownCapabilities() async throws -> ServerCapabilities? {
         if case .probed(let capabilities) = capabilityCache { return capabilities }
+        return try await capabilityPing()
+    }
+
+    /// The one `ping` in flight for `serverCapabilities` and `knownCapabilities`,
+    /// started when there is none. Unstructured, so one waiter's cancellation does not
+    /// fail the others' answer.
+    private func capabilityPing() async throws -> ServerCapabilities? {
         if let capabilityFlight { return try await capabilityFlight.value }
         let task = Task { () async throws -> ServerCapabilities? in
             defer { self.capabilityFlight = nil }
-            return try await self.serverCapabilities()
+            let capabilities = try await self.call("ping", EmptyParams(), as: PingResult.self).capabilities
+            self.capabilityCache = .probed(capabilities)
+            return capabilities
         }
         capabilityFlight = task
         return try await task.value
@@ -2143,4 +2165,17 @@ public let appArchiveReason = "user action"
 /// Decodes any JSON value, for calls whose result body the client ignores.
 struct JSONNull: Decodable {
     init(from decoder: Decoder) throws { _ = decoder }
+}
+
+/// The latest instant a live event reported an agent-list change. Lock-guarded so the
+/// actor-isolated `HerdrClient` can take the mark synchronously from the event path.
+private final class ListChangeMark: @unchecked Sendable {
+    private let lock = NSLock()
+    private var instant: ContinuousClock.Instant?
+
+    var latest: ContinuousClock.Instant? { lock.withLock { instant } }
+
+    func advance(to next: ContinuousClock.Instant) {
+        lock.withLock { if instant.map({ $0 < next }) ?? true { instant = next } }
+    }
 }

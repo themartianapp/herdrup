@@ -8,24 +8,29 @@ private final class SlowCountingTransport: HerdrTransport, @unchecked Sendable {
     private let lock = NSLock()
     private var counts: [String: Int] = [:]
     private var requestLines: [String] = []
+    private var agentStatus = "idle"
     let delay: UInt64
 
     init(delay: UInt64 = 80 * ms) { self.delay = delay }
 
     func count(_ method: String) -> Int { lock.withLock { counts[method] ?? 0 } }
     var lines: [String] { lock.withLock { requestLines } }
+    /// The daemon's state from now on. A request already received answers with the
+    /// state it saw when it arrived.
+    func setAgentStatus(_ status: String) { lock.withLock { agentStatus = status } }
 
     func roundTrip(_ requestLine: String) async throws -> String {
         let object = (try? JSONSerialization.jsonObject(with: Data(requestLine.utf8))) as? [String: Any]
         let method = object?["method"] as? String ?? ""
-        lock.withLock {
+        let status = lock.withLock {
             counts[method, default: 0] += 1
             requestLines.append(requestLine)
+            return agentStatus
         }
         try await Task.sleep(nanoseconds: delay)
         switch method {
         case "agent.list":
-            return #"{"id":"x","result":{"type":"agent_list","agents":[{"pane_id":"w1:p1","name":"a","agent":"omp","agent_status":"idle"}]}}"#
+            return #"{"id":"x","result":{"type":"agent_list","agents":[{"pane_id":"w1:p1","name":"a","agent":"omp","agent_status":"\#(status)"}]}}"#
         case "ping":
             return #"{"id":"x","result":{"type":"pong","version":"0.9.5","protocol":22,"capabilities":{"agent_transcript":true}}}"#
         default:
@@ -40,6 +45,70 @@ private final class SlowCountingTransport: HerdrTransport, @unchecked Sendable {
 
 /// What the home screen and an agent's page cost in requests (slow-network fix 2).
 final class HomeLoadRequestTests: XCTestCase {
+    /// Review of #675: the agent goes working → blocked by a live event, and the reader
+    /// opens it within 5 s of the last `agent.list`. The page starts on the event's
+    /// blocked row; its status resolve must not swap it for the cached working one,
+    /// which would route menu keys to `agent.prompt`, refused while blocked.
+    func testPageResolveAfterALiveChangeDoesNotReuseTheOlderList() async throws {
+        let transport = SlowCountingTransport(delay: 10 * ms)
+        let client = HerdrClient(transport: transport)
+        transport.setAgentStatus("working")
+        _ = try await client.agentList()                                  // home load
+
+        transport.setAgentStatus("blocked")
+        client.noteAgentListChanged()                                     // home receives the event
+
+        let page = try await client.agentListing(sentAfter: .now - .seconds(5))  // page mount
+        XCTAssertEqual(page.agents.first?.agentStatus, "blocked")
+        XCTAssertEqual(transport.count("agent.list"), 2)
+    }
+
+    /// The same, with the older list still in flight when the event arrives: the page
+    /// must not join it.
+    func testPageResolveAfterALiveChangeDoesNotJoinAnOlderRequestInFlight() async throws {
+        let transport = SlowCountingTransport()
+        let client = HerdrClient(transport: transport)
+        transport.setAgentStatus("working")
+        async let home = client.agentList()
+        try await eventually("home list sent") { transport.count("agent.list") == 1 }
+
+        transport.setAgentStatus("blocked")
+        client.noteAgentListChanged()
+
+        let page = try await client.agentListing(sentAfter: .now - .seconds(5))
+        XCTAssertEqual(page.agents.first?.agentStatus, "blocked")
+        let homeList = try await home
+        XCTAssertEqual(homeList.first?.agentStatus, "working")
+        XCTAssertEqual(transport.count("agent.list"), 2)
+    }
+
+    /// With no live change since, the page still shares the home's list.
+    func testPageResolveWithoutALiveChangeReusesTheHomeList() async throws {
+        let transport = SlowCountingTransport(delay: 10 * ms)
+        let client = HerdrClient(transport: transport)
+        client.noteAgentListChanged(at: .now - .seconds(1))               // an earlier event
+        _ = try await client.agentList()
+        _ = try await client.agentListing(sentAfter: .now - .seconds(5))
+        XCTAssertEqual(transport.count("agent.list"), 1)
+    }
+
+    /// Review of #675: the home load pings with `serverCapabilities`; a page opened
+    /// while that ping is on its way must wait for it, not send its own.
+    func testPageCapabilityCheckJoinsTheHomePingInFlight() async throws {
+        let transport = SlowCountingTransport()
+        let client = HerdrClient(transport: transport)
+        async let home = client.serverCapabilities()
+        try await eventually("home ping sent") { transport.count("ping") == 1 }
+        let page = try await client.knownCapabilities()
+        XCTAssertEqual(page?.agentTranscript, true)
+        let homeCapabilities = try await home
+        XCTAssertEqual(homeCapabilities?.agentTranscript, true)
+        XCTAssertEqual(transport.count("ping"), 1)
+        // An explicit refresh after it answered still asks the daemon.
+        _ = try await client.serverCapabilities()
+        XCTAssertEqual(transport.count("ping"), 2)
+    }
+
     /// A cold start used to send `agent.list` three or four times at once: the connect
     /// pre-warm, the home's first load, the page's status resolve and the pre-fill's
     /// `isPromptable`. On a slow link each ~55 KB copy queued behind the others.

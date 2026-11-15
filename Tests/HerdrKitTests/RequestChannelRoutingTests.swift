@@ -268,7 +268,11 @@ final class RequestChannelRoutingTests: XCTestCase {
 
         bulk.setResponder(ScriptedBridge.answerPings)  // the page is still being written
         let page = Task { try await transport.roundTrip(requestLine("t2", method: "agent.transcript")) }
-        try await eventually("page requested on the bulk channel") { bulk.nonPingRequests.count == 1 }
+        // t1 is already on the bulk bridge: wait for t2 itself, so l1 below goes out
+        // while t2's reply is outstanding.
+        try await eventually("page requested on the bulk channel") {
+            bulk.nonPingRequests.contains(requestLine("t2", method: "agent.transcript"))
+        }
 
         let list = try await transport.roundTrip(requestLine("l1"))
         XCTAssertEqual(via(list), "channel", "agent.list answered while the page is outstanding")

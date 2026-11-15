@@ -5090,7 +5090,11 @@ struct TerminalHomeView: View {
             liveEvents.ledger.record(update, receivedAt: now)
         }
         let latest = rosterRefreshState().latest
-        switch latest.agents.effect(of: line, receivedAt: now) {
+        let effect = latest.agents.effect(of: line, receivedAt: now)
+        // The list changed after any `agent.list` already sent: a page opened from the
+        // patched row must not re-resolve to the client's older cached list.
+        if line.liveUpdate != nil || effect != .ignore { client.noteAgentListChanged() }
+        switch effect {
         case .patch(let patched):
             receiveRoster(agents: patched, accounts: latest.accounts)
         case .reload:
