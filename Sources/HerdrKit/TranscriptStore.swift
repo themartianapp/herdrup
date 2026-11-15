@@ -323,7 +323,10 @@ public final class TranscriptStore {
         }
         let version = generation
         do {
-            let page = try await client.agentTranscript(target: target, after: after, subagent: subagent)
+            // What this store holds, so marks herdr learns late reach scrolled-in history too.
+            let heldFrom = hasOlder ? beforeCursor : ""
+            let page = try await client.agentTranscript(target: target, after: after, subagent: subagent,
+                                                        heldFrom: heldFrom)
             guard version == generation else { return }
             if let session = page.sessionID, let known = sessionID, session != known {
                 // omp started a new session in this pane: the old cursor's history is not

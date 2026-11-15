@@ -862,7 +862,7 @@ final class TranscriptStoreTests: XCTestCase {
             reply("63568b78:reply", 1_794_754_428_208, "I'll tell you."),
             end("63568b78:end", 1_794_754_431_057),
         ]
-        let (client, _) = scripted { params in
+        let (client, transport) = scripted { params in
             params["after"] == nil
                 ? Self.page(newest, before: "b1", after: "a1", session: "01a086e3")
                 : Self.page(resent + appended, after: "a2", session: "01a086e3")
@@ -871,6 +871,8 @@ final class TranscriptStoreTests: XCTestCase {
         await store.refresh(client: client)
         let outgoing = store.stageOutgoing(text: "When will it be ready?", author: .guest(name: nil))
         await store.refresh(client: client)
+        // The poll says what it holds: the newest page, from its `before` cursor on.
+        XCTAssertEqual(transport.requests.last?.params["held_from"] as? String, "b1")
 
         XCTAssertEqual(store.entries.map(\.id), [
             "a7902a04", "c2592b34:reply", "c2592b34:end", "bcf1ae30", "b46a7d09:reply", "b46a7d09:end",

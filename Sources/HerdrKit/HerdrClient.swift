@@ -1972,10 +1972,11 @@ public actor HerdrClient {
     /// that cannot deserialize the method reports `.unsupported` like a non-omp agent.
     public func agentTranscript(
         target: String, before: String? = nil, after: String? = nil, limit: UInt32? = nil,
-        subagent: String? = nil
+        subagent: String? = nil, heldFrom: String? = nil
     ) async throws -> AgentTranscriptPage {
         let params = AgentTranscriptParams(target: target, before: before, after: after,
-                                           limit: limit.map { min(max($0, 1), 50) }, subagent: subagent)
+                                           limit: limit.map { min(max($0, 1), 50) }, subagent: subagent,
+                                           heldFrom: heldFrom)
         do {
             return try await call("agent.transcript", params, as: AgentTranscriptPage.self)
         } catch let error as APIError {
