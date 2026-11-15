@@ -13,8 +13,8 @@
 #   - ipad-script is its script shard (mac-evidence/org-ios-sim-script-v1/ipad-script):
 #     Tools/ci/macserve-ipad-script.sh creates the iPads and runs this shard as it is.
 #
-#   iphone-terminal  TERMINAL_CLASSES, then ChatViewTests, PagingTests and GramTests in
-#                    rounds of their own, on iPhone
+#   iphone-terminal  TERMINAL_CLASSES, then ChatViewTests, PagingTests, GramTests and
+#                    CachedHomeTests in rounds of their own, on iPhone
 #   iphone-app       HerdrFontTests, then StatusMotionTests, the guest classes and
 #                    ChatUXSmokeTests in rounds of their own, then every other HerdrUITests
 #                    class on iPhone
@@ -713,6 +713,10 @@ case "$shard" in
     # 41523127667 short.
     run_suite iPhoneGram "$IPHONE_UDID" 45m -only-testing:HerdrUITests/GramTests || failed=1
     check_classes_ran TestReceipts/iPhoneGram-first.xcresult GramTests || failed=1
+    # The cold-start cache (#674): the kept roster and the kept terminal screen, each behind
+    # a mock that answers 8 s late. Here because iphone-app is at macserve's 32-selector cap.
+    run_suite iPhoneCachedHome "$IPHONE_UDID" 10m -only-testing:HerdrUITests/CachedHomeTests || failed=1
+    check_classes_ran TestReceipts/iPhoneCachedHome-first.xcresult CachedHomeTests || failed=1
     ;;
   iphone-app)
     run_suite font-contract "$IPHONE_UDID" 10m -only-testing:HerdrFontTests || failed=1
@@ -744,7 +748,7 @@ case "$shard" in
     skip=(-skip-testing:HerdrUITests/GramTests -skip-testing:HerdrUITests/StatusMotionTests
       -skip-testing:HerdrUITests/ChatViewTests -skip-testing:HerdrUITests/ChatUXSmokeTests -skip-testing:HerdrUITests/PagingTests
       -skip-testing:HerdrUITests/AgentFoldersTests -skip-testing:HerdrUITests/NeedsYouPillTests
-      -skip-testing:HerdrUITests/ServerUpdateUITests)
+      -skip-testing:HerdrUITests/ServerUpdateUITests -skip-testing:HerdrUITests/CachedHomeTests)
     for class in "${GUEST_CLASSES[@]}"; do skip+=("-skip-testing:HerdrUITests/$class"); done
     for class in "${DESKTOP_REFERENCE_CLASSES[@]}"; do skip+=("-skip-testing:HerdrUITests/$class"); done
     for class in "${TERMINAL_CLASSES[@]}"; do skip+=("-skip-testing:HerdrUITests/$class"); done
