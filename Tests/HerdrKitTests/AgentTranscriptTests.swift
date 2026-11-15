@@ -826,6 +826,66 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertEqual(store.sessionID, "s2")
     }
 
+    /// Captured 2026-11-15 from a live host (herdr 0.9.5) for a long-running orchestrator
+    /// shared with a guest; ids and timestamps are real, text is replaced. When the pane's
+    /// remembered non-owner prompts change (here: the guest's new prompt was delivered), the
+    /// `after` page re-sends every earlier user entry now marked `origin: "other"`, back to
+    /// the start of the session. The chat appended the ones it had not loaded after the
+    /// newest turn: a wall of the guest's old prompts with no replies, until a reopen.
+    func testAfterPageResendingOlderMarkedPromptsDoesNotAppendThemAfterTheNewestTurn() async throws {
+        func user(_ id: String, _ ms: UInt64, _ text: String, guest: Bool) -> String {
+            let origin = guest ? #","origin":"other""# : ""
+            return #"{"id":"\#(id)","ts_ms":\#(ms),"kind":"user","text":"\#(text)","author":"\#(guest ? "guest" : "owner")"\#(origin)}"#
+        }
+        func reply(_ id: String, _ ms: UInt64, _ text: String) -> String {
+            #"{"id":"\#(id)","ts_ms":\#(ms),"kind":"reply","text":"\#(text)","final":true}"#
+        }
+        func end(_ id: String, _ ms: UInt64) -> String { #"{"id":"\#(id)","ts_ms":\#(ms),"kind":"turn_end","status":"done"}"# }
+        let newest = [
+            user("a7902a04", 1_794_753_108_363, "Send the latest file again", guest: false),
+            reply("c2592b34:reply", 1_794_753_112_999, "Sent."),
+            end("c2592b34:end", 1_794_753_115_998),
+            user("bcf1ae30", 1_794_753_889_379, "Comments should stay visible", guest: true),
+            reply("b46a7d09:reply", 1_794_753_900_013, "Added."),
+            end("b46a7d09:end", 1_794_753_904_047),
+        ]
+        let resent = [
+            user("abe83412", 1_794_665_461_081, "Proposals v7: my comments", guest: true),
+            user("f505eb3c", 1_794_674_624_471, "When will it be ready?", guest: true),
+            user("23cbfb00", 1_794_735_060_803, "I received the email", guest: true),
+            user("bcf1ae30", 1_794_753_889_379, "Comments should stay visible", guest: true),
+        ]
+        let appended = [
+            user("b2f25ccb", 1_794_754_423_482, "Tell me when it is ready", guest: true),
+            #"{"id":"2db84f2f:thinking","ts_ms":1794754423554,"kind":"thinking","text":"Noting it."}"#,
+            #"{"id":"2db84f2f:toolu_015EWurddNboHwrfLZKfJmEh","ts_ms":1794754423554,"kind":"step","tool":"todo","intent":"Noting it","status":"ok"}"#,
+            reply("63568b78:reply", 1_794_754_428_208, "I'll tell you."),
+            end("63568b78:end", 1_794_754_431_057),
+        ]
+        let (client, _) = scripted { params in
+            params["after"] == nil
+                ? Self.page(newest, before: "b1", after: "a1", session: "01a086e3")
+                : Self.page(resent + appended, after: "a2", session: "01a086e3")
+        }
+        let store = TranscriptStore(target: "w1:p9Y")
+        await store.refresh(client: client)
+        let outgoing = store.stageOutgoing(text: "When will it be ready?", author: .guest(name: nil))
+        await store.refresh(client: client)
+
+        XCTAssertEqual(store.entries.map(\.id), [
+            "a7902a04", "c2592b34:reply", "c2592b34:end", "bcf1ae30", "b46a7d09:reply", "b46a7d09:end",
+            "b2f25ccb", "2db84f2f:thinking", "2db84f2f:toolu_015EWurddNboHwrfLZKfJmEh", "63568b78:reply",
+            "63568b78:end",
+        ])
+        XCTAssertEqual(store.turns.map(\.id), ["a7902a04", "bcf1ae30", "b2f25ccb"])
+        XCTAssertEqual(store.turns.last?.items.map(\.id),
+                       ["2db84f2f:thinking", "63568b78:reply"])
+        // An old prompt with the same words is not the send just staged.
+        XCTAssertTrue(store.outbox.messages.contains(where: { $0.id == outgoing }))
+        // An older page still brings them, in place.
+        XCTAssertTrue(store.hasOlder)
+    }
+
     func testLocalAnswerHidesTheButtonsUntilTheServerReportsIt() async {
         let ask = Self.entry("a1", "ask", extra: #""questions":[{"question":"Merge?","options":["Yes","No"],"multi":false}]"#)
         let pending = #"{"id":"a1","questions":[{"question":"Merge?","options":["Yes","No"],"multi":false}],"answerable":true}"#
