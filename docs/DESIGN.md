@@ -395,6 +395,9 @@ the stable feed so search controls remain separate from scrolling message conten
 The DEBUG `HERDR_LAYOUT_TRANSITIONS=1` interaction fixture changes width and size class
 without relaunching, so draft, stream-lifetime, and active-search regressions exercise
 a live transition. Terminal tab roundtrips also check the exact draft and stream count.
+Only the presented pane's reply editor carries `terminal-reply-input`: a warm pane's
+hidden editor drops the identifier, so the fixture's second pane cannot answer for the
+front one's draft (#677).
 Search coverage includes emptying a query and continuing to type without refocusing,
 then closing and reopening the editor with normal taps and checking the exact query
 and filtered results before returning to the regular layout.
