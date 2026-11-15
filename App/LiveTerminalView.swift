@@ -366,7 +366,7 @@ struct LiveTerminalView: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ uiView: TerminalSurfaceView, coordinator: Coordinator) {
-        coordinator.stop()
+        coordinator.stop(dismantling: true)
         coordinator.mountedSurface = nil
     }
 
@@ -2407,7 +2407,12 @@ struct LiveTerminalView: UIViewRepresentable {
         private static let publishesHistoryProbe = ScreenshotMock.mode == .keyframeHistory
         #endif
 
-        func stop() {
+        /// `dismantling`: called from `dismantleUIView`, i.e. while SwiftUI tears its view graph
+        /// down. Writing the host's state there (the armed-Ctrl binding) is an exclusivity
+        /// violation that aborts the app (`swift_beginAccess` fatal in `GraphHost.isUpdating`,
+        /// the same abort as the 1.2.1 (238) TestFlight crash in `ScrollActivityObserver`):
+        /// arming Ctrl and then tapping refresh (which remounts the terminal) did exactly that.
+        func stop(dismantling: Bool = false) {
             stopped = true                  // no new resize/scroll may start after this
             #if DEBUG
             if let view {
@@ -2427,7 +2432,7 @@ struct LiveTerminalView: UIViewRepresentable {
                 NotificationCenter.default.removeObserver(observer)
                 controlResetObserver = nil
             }
-            cancelArmedControl()
+            cancelArmedControl(deferringHostWrite: dismantling)
             view?.sizeChangeRequestHandler = nil
             view?.synchronizedOutputChangeHandler = nil
             view?.displayCompletedHandler = nil
@@ -3631,8 +3636,16 @@ struct LiveTerminalView: UIViewRepresentable {
                 && view.isFirstResponder && (controlArmedGetter?() ?? false)
         }
 
-        func cancelArmedControl() {
-            if controlArmedGetter?() == true { controlArmedSetter?(false) }
+        /// `deferringHostWrite` delivers the disarm on the next main-queue turn, for a caller
+        /// inside SwiftUI's graph teardown (see `stop(dismantling:)`).
+        func cancelArmedControl(deferringHostWrite: Bool = false) {
+            if controlArmedGetter?() == true, let disarm = controlArmedSetter {
+                if deferringHostWrite {
+                    DispatchQueue.main.async { disarm(false) }
+                } else {
+                    disarm(false)
+                }
+            }
             applyingControlModifier = true
             view?.controlModifier = false
             applyingControlModifier = false
