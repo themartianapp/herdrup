@@ -40,8 +40,9 @@ struct GuestGramTab: View {
                 }
             }
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("guest-gram-tab")
+        // No accessibility container of its own: on a phone its one accessible child is the
+        // open feed, and SwiftUI folds a container around a single container child into one
+        // element, which took the feed's `guest-gram-list` identifier away.
     }
 
     private func conversation(_ selection: GuestGramSelectionKey, back: (() -> Void)?) -> some View {

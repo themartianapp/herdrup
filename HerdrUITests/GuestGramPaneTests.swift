@@ -36,14 +36,18 @@ final class GuestGramPaneTests: XCTestCase {
     }
 
     private func openGramTab(_ app: XCUIApplication) {
-        openAgentPage(app)
         let tab = app.buttons["guest-tab-gram"]
+        // Already on the agent page (a test that checked its badge first): don't tap the row
+        // under it again.
+        if !tab.exists { openAgentPage(app) }
         XCTAssertTrue(tab.waitForExistence(timeout: 10), "a host that shares Gram should offer the Gram button")
         let list = element(app, "guest-gram-list")
         for _ in 0..<3 where !list.exists {
             if tab.exists { tab.tap() }
             _ = list.waitForExistence(timeout: 3)
         }
+        // Which half failed, if one did: the shell's tab, or the agent's feed in it.
+        XCTAssertTrue(app.tabBars.buttons["Gram"].isSelected, "the Gram button should select the shell's Gram tab")
         XCTAssertTrue(list.exists, "the Gram button should open the agent's Gram")
     }
 

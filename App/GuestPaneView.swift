@@ -15,11 +15,15 @@ struct GuestPaneView: View {
     let gramUnread: Int
     /// Opens the Gram tab with this agent's row selected; nil where no Gram inbox exists.
     let onOpenGram: (() -> Void)?
+    /// DEBUG: draw the `guest-forbidden-calls` / `guest-host-calls` probes. Off where the
+    /// guest shell around the pane already draws them (`GuestGramProbes`), so each identifier
+    /// is on screen once.
+    let callProbes: Bool
     let onClose: () -> Void
 
     init(client: HerdrClient, access: GuestAccess, features: GuestFeaturesModel,
          tab: Binding<GuestPaneTab>, gramUnread: Int = 0, onOpenGram: (() -> Void)? = nil,
-         onClose: @escaping () -> Void) {
+         callProbes: Bool = true, onClose: @escaping () -> Void) {
         self.client = client
         self.access = access
         self.features = features
@@ -27,6 +31,7 @@ struct GuestPaneView: View {
         _tab = tab
         self.gramUnread = gramUnread
         self.onOpenGram = onOpenGram
+        self.callProbes = callProbes
         self.onClose = onClose
     }
 
@@ -978,14 +983,16 @@ struct GuestPaneView: View {
     /// arguments (`guest-host-calls`).
     private var debugProbes: some View {
         ZStack {
-            Color.clear
-                .accessibilityElement()
-                .accessibilityIdentifier("guest-forbidden-calls")
-                .accessibilityLabel(forbiddenProbe)
-            Color.clear
-                .accessibilityElement()
-                .accessibilityIdentifier("guest-host-calls")
-                .accessibilityLabel(hostCallsProbe)
+            if callProbes {
+                Color.clear
+                    .accessibilityElement()
+                    .accessibilityIdentifier("guest-forbidden-calls")
+                    .accessibilityLabel(forbiddenProbe)
+                Color.clear
+                    .accessibilityElement()
+                    .accessibilityIdentifier("guest-host-calls")
+                    .accessibilityLabel(hostCallsProbe)
+            }
             Color.clear
                 .accessibilityElement()
                 .accessibilityIdentifier("guest-stream-opens")

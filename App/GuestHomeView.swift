@@ -106,7 +106,10 @@ struct GuestHomeView: View {
     private func pane(_ connection: GuestConnection, close: @escaping () -> Void) -> some View {
         GuestPaneView(client: connection.client, access: access, features: connection.features,
                       tab: $paneTab, gramUnread: inbox.unread(access.id),
-                      onOpenGram: hasGram ? { openGram() } : nil, onClose: close)
+                      onOpenGram: hasGram ? { openGram() } : nil,
+                      // The machine home's probes cover the inline pane; a full-screen cover
+                      // (embedded) hides them, so the pane draws its own there.
+                      callProbes: embedded, onClose: close)
     }
 
     var body: some View {
