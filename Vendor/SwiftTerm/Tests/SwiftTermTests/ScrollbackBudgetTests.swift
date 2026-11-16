@@ -15,10 +15,29 @@ import Testing
 private let rows = 50
 private let budget = 8 << 20
 
-/// The ring the embedder would set for `cols`: the most it pages to, lowered to the budget.
-private func ring (cols: Int) -> Int {
-    Terminal.scrollbackLines (budgetBytes: budget, cols: cols, rows: rows, minimum: 0, maximum: 20_000)
+/// The ring the embedder would set for `cols` × `height`: the most it pages to, lowered to the budget.
+private func ring (cols: Int, height: Int = rows) -> Int {
+    Terminal.scrollbackLines (budgetBytes: budget, cols: cols, rows: height, minimum: 0, maximum: 20_000)
 }
+
+private func text (_ terminal: Terminal, _ index: Int) -> String {
+    terminal.normalBuffer.translateBufferLineToString (lineIndex: index, trimRight: true)
+}
+
+/// A full ring the way a keyframe seeds it: `row 0` (the oldest) at the top, exactly
+/// `scrollback + rows` rows, none trimmed yet; and the anchor the embedder takes for it.
+private func seededFullRing (cols: Int) -> (Terminal, Terminal.HistoryTop) {
+    let (terminal, _) = TerminalTestHarness.makeTerminal (cols: cols, rows: rows, scrollback: ring (cols: cols))
+    terminal.preservesScrollbackLayout = true
+    let count = ring (cols: cols) + rows
+    for i in 0..<count {
+        terminal.feed (text: "row \(i)" + (i < count - 1 ? "\r\n" : ""))
+    }
+    return (terminal, terminal.historyTop)
+}
+
+/// The page above `row 0` a `pane.history` cursor names: `old 0` … `old 99`.
+private let olderPage = ArraySlice ((0..<100).map { "old \($0)" }.joined (separator: "\r\n").utf8)
 
 /// `count` full-width rows, so every row is as wide as the grid.
 private func feedRows (_ terminal: Terminal, _ count: Int, cols: Int, prefix: String = "row") {
@@ -109,6 +128,47 @@ struct ScrollbackBudgetTests {
 
         #expect (terminal.normalBufferRowCount == cap + rows)
         #expect (terminal.normalBufferBytes <= budget)
+    }
+
+    // Review of #694: at 250 columns a 50-row grid shrunk to 25 under the old scrollback
+    // trimmed the 25 oldest rows, and the re-budget then reopened room for 25: the page
+    // above `row 0` was inserted above `row 25`.
+
+    @Test("a shorter grid re-budgeted in one step keeps the oldest row, so a page adjoins it")
+    func shorterGridKeepsTop () {
+        let cols = 250
+        let (terminal, top) = seededFullRing (cols: cols)
+        #expect (text (terminal, 0) == "row 0")
+
+        terminal.resize (cols: cols, rows: 25, scrollback: ring (cols: cols, height: 25))
+
+        #expect (text (terminal, 0) == "row 0", "no row left the top")
+        #expect (terminal.historyAdjoins (top))
+        #expect (terminal.normalBufferBytes <= budget)
+        let inserted = terminal.prependHistory (olderPage, maxScrollback: ring (cols: cols, height: 25), adjoining: top)
+        #expect (text (terminal, inserted) == "row 0", "whatever was inserted sits directly above row 0")
+
+        // And back: the taller grid re-budgets down without trimming either.
+        let before = text (terminal, 0)
+        terminal.resize (cols: cols, rows: rows, scrollback: ring (cols: cols))
+        #expect (text (terminal, 0) == before)
+        #expect (terminal.normalBufferBytes <= budget)
+    }
+
+    @Test("a page is refused once any row has left the top", arguments: ["trim", "resize", "output", "erase"])
+    func pageRefusedAfterTopRowLeaves (how: String) {
+        let cols = 250
+        let (terminal, top) = seededFullRing (cols: cols)
+        switch how {
+        case "trim": terminal.changeHistorySize (ring (cols: cols) - 10)
+        case "resize": terminal.resize (cols: cols, rows: 25)     // under the old scrollback
+        case "output": terminal.feed (text: "\r\nmore")           // pushes row 0 out of the full ring
+        default: terminal.feed (text: "\u{1b}[3J")                // erases the scrollback
+        }
+        terminal.changeHistorySize (ring (cols: cols) + 100)      // room again
+
+        #expect (!terminal.historyAdjoins (top))
+        #expect (terminal.prependHistory (olderPage, maxScrollback: ring (cols: cols) + 100, adjoining: top) == 0)
     }
 
     @Test("the budget never takes the ring below its minimum or above its maximum")

@@ -87,7 +87,7 @@ struct LiveTerminalView: UIViewRepresentable {
     /// PTY width-lock for a short grace, then RELEASES it so it stops pinning a co-viewing
     /// desktop to this device's width while nobody's looking; it re-takes the lock when fronted
     /// again. Left hidden past `Coordinator.parkGraceNanos` it is parked: its stream stops and
-    /// its scrollback shrinks, and fronting it re-seeds both from a fresh keyframe (#687).
+    /// its scrollback is freed, and fronting it re-seeds both like a fresh attach (#687).
     var isForeground: Bool = true
     /// Another surface (the Chat view) is drawn over this terminal, which stays mounted and
     /// sized under it. The terminal view is then hidden: on iOS 27 neither SwiftUI's
@@ -869,7 +869,7 @@ struct LiveTerminalView: UIViewRepresentable {
         /// The ring last asked for, before the budget lowered it (`scrollbackCap` or
         /// `historyScrollbackCap`); nil until the first reset raises it.
         private var ringTarget: Int?
-        /// Hidden past `parkGraceNanos`: the stream is stopped and the ring shrunk, and
+        /// Hidden past `parkGraceNanos`: the stream is stopped and the scrollback freed, and
         /// showing the pane re-seeds it (`unpark`).
         private var parked = false
         /// Parks the pane once it has stayed hidden for the grace.
@@ -1067,6 +1067,10 @@ struct LiveTerminalView: UIViewRepresentable {
         /// the seed's clear erases them), no fewer, however short the history is.
         private func seedKeyframeHistory(_ history: Data, rows: Int, into view: TerminalView) {
             view.feed(byteArray: Self.historyResetSequence[...])
+            // The screen's top row is where the history starts, and so what the cursor's
+            // page must adjoin. Taken before the history is fed: if feeding it overflows the
+            // ring, this row is gone and paging ends rather than stitching across the gap.
+            historyTop = view.getTerminal().historyTop
             var clean = graphicsFilter.filter([UInt8](history)[...])
             while let last = clean.last, last == 0x0A || last == 0x0D { clean.removeLast() }
             guard !clean.isEmpty else { return }
@@ -1104,6 +1108,10 @@ struct LiveTerminalView: UIViewRepresentable {
         /// The `pane.history` token for the rows above the oldest one this emulator holds:
         /// from the latest keyframe, then from each page. nil = nothing (more) to load.
         private var historyCursor: String?
+        /// The oldest row held when `historyCursor` was taken. A row leaving the top of the
+        /// buffer (output past a full ring, a smaller ring, a resize trim, parking) makes the
+        /// cursor's page land above a gap, so paging ends then (`dropCursorIfDetached`).
+        private var historyTop: Terminal.HistoryTop?
         private var historyPageTask: Task<Void, Never>?
         /// Bumped whenever the history the cursor describes is replaced (a reset, teardown):
         /// a page requested before that belongs to history that is no longer here.
@@ -1151,6 +1159,7 @@ struct LiveTerminalView: UIViewRepresentable {
             historyArmed = false
             historySettled = false
             historyCursor = cursor
+            historyTop = nil                // `seedKeyframeHistory` anchors the cursor
             historyPaging = .hidden
             // Judged once the seed this reset feeds has landed: a pane that cannot scroll
             // never moves its offset, so no observation would judge it.
@@ -1237,6 +1246,7 @@ struct LiveTerminalView: UIViewRepresentable {
                 historyPaging = .loading
                 return
             }
+            if let view { dropCursorIfDetached(in: view) }
             guard !stopped, historyCursor != nil, let view,
                   !view.getTerminal().isCurrentBufferAlternate else {
                 historyPaging = .hidden
@@ -1244,6 +1254,16 @@ struct LiveTerminalView: UIViewRepresentable {
             }
             let nearTop = view.contentOffset.y < view.bounds.height
             historyPaging = (historyArmed || historySettled) && nearTop ? .offered : .hidden
+        }
+
+        /// The cursor names the rows above `historyTop`. Once that row has left the top of
+        /// the buffer, its page would land above a gap, so paging ends; the next keyframe
+        /// brings a cursor for the history it seeds.
+        @MainActor
+        private func dropCursorIfDetached(in view: TerminalView) {
+            guard historyCursor != nil else { return }
+            if let top = historyTop, view.getTerminal().historyAdjoins(top) { return }
+            historyCursor = nil
         }
 
         /// Called on every scroll position change: within one screen of the top of the
@@ -1254,6 +1274,8 @@ struct LiveTerminalView: UIViewRepresentable {
                   offsetY < viewportHeight, let view,
                   !view.getTerminal().isCurrentBufferAlternate else { return }
             if let retryAt = historyRetryAt, ContinuousClock.now < retryAt { return }
+            dropCursorIfDetached(in: view)
+            guard historyCursor != nil else { return }
             let client = self.client, pane = self.paneID, generation = historyGeneration
             historyLoading = true
             refreshHistoryPaging()
@@ -1296,6 +1318,9 @@ struct LiveTerminalView: UIViewRepresentable {
             // The pane switched to its alternate screen while the page was in flight. The
             // normal screen's history is unchanged underneath, so this cursor pages it later.
             guard !view.getTerminal().isCurrentBufferAlternate else { return }
+            // A row left the top while the page was in flight: it no longer adjoins.
+            dropCursorIfDetached(in: view)
+            guard historyCursor != nil else { return }
             // Its own filter: the stream's holds the state of the live bytes around this page.
             var filter = TerminalGraphicsFilter()
             let clean = filter.filter([UInt8](page.data)[...])
@@ -1308,12 +1333,13 @@ struct LiveTerminalView: UIViewRepresentable {
             let terminal = view.getTerminal()
             let cap = Self.scrollbackRing(Self.historyScrollbackCap,
                                           cols: max(widestCols, terminal.cols), rows: terminal.rows)
-            let inserted = view.prependHistory(clean[...], maxScrollback: cap)
-            // Nothing fit: the scrollback is at the cap, and paging ends. A page the cap cut
-            // short kept its NEWEST rows, so its cursor no longer adjoins the top; that cannot
-            // leave a gap, because the cut filled the scrollback and the next page inserts
-            // nothing.
-            historyCursor = inserted == 0 ? nil : page.cursor
+            let inserted = view.prependHistory(clean[...], maxScrollback: cap, adjoining: historyTop)
+            // Nothing fit, or the page filled the ring: paging ends. A page the cap cut short
+            // kept its NEWEST rows, so its cursor no longer adjoins the top, and a ring the
+            // budget later raises (a shorter grid) would take that cursor's page above a gap.
+            let full = terminal.normalBufferRowCount >= cap + terminal.rows
+            historyCursor = inserted == 0 || full ? nil : page.cursor
+            historyTop = terminal.historyTop
             publishTopRowProbe()
             publishHistoryProbe()
         }
@@ -1624,18 +1650,13 @@ struct LiveTerminalView: UIViewRepresentable {
         // does not bound memory: 20,000 rows were 41 MB at 80 columns and 123 MB at an iPad
         // Pro's 250. Each terminal's ring is sized in BYTES from the widest grid its rows
         // have been laid out at, and a pane left hidden is parked: its stream stops and its
-        // ring shrinks, and showing it again re-seeds it from a fresh keyframe, as a
-        // reconnect does.
+        // scrollback is freed, and showing it again re-seeds it like a fresh attach.
 
         /// What one terminal's normal buffer (screen and scrollback) may hold.
         static let scrollbackBudgetBytes = 40 << 20
         /// The ring never goes below this, whatever the width: a full backfill and the
         /// live tail under it. 2,000 rows at 300 columns are 15 MB.
         static let minimumScrollback = 2 * Int(backfillLines)
-        /// The scrollback a parked pane keeps while it waits to be shown, capped to
-        /// `parkedScrollbackBudgetBytes`: enough to read while the re-seed is on its way.
-        static let parkedScrollback = Int(backfillLines)
-        static let parkedScrollbackBudgetBytes = 4 << 20
         /// How long a pane stays hidden, stream running, before it is parked. Longer than
         /// `TerminalSizeClaim.hiddenGraceNanos`, so a glance at another agent and back
         /// stays instant, and the width it gave back has been answered by then.
@@ -1645,12 +1666,6 @@ struct LiveTerminalView: UIViewRepresentable {
         static func scrollbackRing(_ lines: Int, cols: Int, rows: Int) -> Int {
             Terminal.scrollbackLines(budgetBytes: scrollbackBudgetBytes, cols: cols, rows: rows,
                                      minimum: min(minimumScrollback, lines), maximum: lines)
-        }
-
-        /// The rows a parked pane keeps for a `cols` × `rows` grid.
-        static func parkedRing(cols: Int, rows: Int) -> Int {
-            Terminal.scrollbackLines(budgetBytes: parkedScrollbackBudgetBytes, cols: cols, rows: rows,
-                                     minimum: 0, maximum: parkedScrollback)
         }
 
         /// Safety cap so a truly hung `read` can't stall the seed forever — NOT a tight budget.
@@ -2707,10 +2722,12 @@ struct LiveTerminalView: UIViewRepresentable {
 
         /// Sizes the scrollback ring to `target` rows, lowered to `scrollbackBudgetBytes` at
         /// the widest grid the rows have been laid out at, and remembers `target` so a later
-        /// grid change re-sizes it. A smaller ring trims its oldest rows and frees them; a
-        /// pane that can page then holds a full ring, which takes no page, so no gap opens.
+        /// grid change re-sizes it (`applyStreamGeometry`). A parked pane only remembers it:
+        /// `unpark` applies it. A smaller ring trims its oldest rows and frees them; paging
+        /// then ends (`dropCursorIfDetached`), so no page lands above the gap.
         private func applyScrollbackRing(_ target: Int, in view: ReadOnlyTerminalView) {
             ringTarget = target
+            guard !parked else { return }
             let terminal = view.getTerminal()
             widestCols = max(widestCols, terminal.cols)
             let lines = Self.scrollbackRing(target, cols: widestCols, rows: terminal.rows)
@@ -2729,8 +2746,9 @@ struct LiveTerminalView: UIViewRepresentable {
             }
         }
 
-        /// Hidden past the grace: stop the stream and free the scrollback down to
-        /// `parkedRing`. Nothing reconnects a parked pane; showing it does (`unpark`).
+        /// Hidden past the grace: stop the stream and free the whole scrollback. Nothing
+        /// restarts a parked pane (`start` refuses, and every restart path checks `parked`);
+        /// showing it does (`unpark`). The screen stays until the re-seed repaints it.
         /// Internal, not private, so the unit tests can park without waiting out the grace.
         func park() {
             guard !stopped, !foreground, !parked, !sawExited, !paneGone, let view else { return }
@@ -2747,17 +2765,21 @@ struct LiveTerminalView: UIViewRepresentable {
             backfillTask?.cancel()
             backfillTask = nil
             adoptHistoryCursor(nil)         // the re-seed brings the cursor for its own history
-            let terminal = view.getTerminal()
-            terminal.changeHistorySize(Self.parkedRing(cols: max(widestCols, terminal.cols),
-                                                       rows: terminal.rows))
+            // ALL of it, not a smaller ring: the re-seed rebuilds the history whole, and on a
+            // server whose keyframes carry none the backfill read lands above the seed, which
+            // would sit on top of whatever this pane still held and repeat it.
+            view.getTerminal().changeHistorySize(0)
         }
 
-        /// Shown again after parking: give the ring back its budget and re-open the stream.
-        /// Its first keyframe replaces the screen and the history, as after a reconnect.
+        /// Shown again after parking: give the ring back its budget and re-seed like a fresh
+        /// attach. The first keyframe replaces the screen and, when it carries history, the
+        /// history (cancelling the backfill read); from a server whose keyframes carry none,
+        /// the backfill read restores what scrolled off while the pane was parked.
         private func unpark() {
             guard parked, !stopped, let view else { return }
             parked = false
             if let ringTarget { applyScrollbackRing(ringTarget, in: view) }
+            startBackfill()
             start()
         }
 
@@ -2860,6 +2882,8 @@ struct LiveTerminalView: UIViewRepresentable {
         }
 
         private func start() {
+            // A parked pane opens no stream until it is shown: `unpark` clears `parked` first.
+            guard !parked else { return }
             discardPresentationReadiness()
             streamTask?.cancel()
             sawExited = false
@@ -2909,7 +2933,10 @@ struct LiveTerminalView: UIViewRepresentable {
             watchdogTask = Task { @MainActor [weak self] in
                 while !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: 5_000_000_000)   // poll every 5s
-                    guard let self, !self.stopped, !self.sawExited, !self.paneGone else { return }
+                    // Cancelled (a park or teardown cancels it while it sleeps; `try?` swallows
+                    // that) or parked: a silent parked stream is not a stuck one.
+                    guard !Task.isCancelled, let self, !self.stopped, !self.parked,
+                          !self.sawExited, !self.paneGone else { return }
                     if Date().timeIntervalSince(self.lastStreamActivity) > Self.streamStuckTimeout {
                         self.scheduleReconnect("no response for \(Int(Self.streamStuckTimeout))s")
                         return   // scheduleReconnect → start() re-arms a fresh watchdog
@@ -2991,7 +3018,7 @@ struct LiveTerminalView: UIViewRepresentable {
         /// or a real process `exited`; at most one restart in flight.
         @MainActor
         private func scheduleReconnect(_ reason: String) {
-            guard !stopped, !sawExited, !paneGone, reconnectTask == nil else { return }
+            guard !stopped, !parked, !sawExited, !paneGone, reconnectTask == nil else { return }
             let delay = reconnectBackoff.next()
             if let view {
                 let notice = "\r\n\u{1b}[2m\(reason); reconnecting…\u{1b}[0m\r\n"
@@ -2999,7 +3026,10 @@ struct LiveTerminalView: UIViewRepresentable {
             }
             reconnectTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: delay)
-                guard let self, !self.stopped, !self.sawExited else { return }
+                // `try?` swallows the sleep's cancellation, so check it: `park()` cancels this
+                // task without setting `stopped`, and a restart here would bring a parked
+                // pane's stream back with nothing left to park it again.
+                guard !Task.isCancelled, let self, !self.stopped, !self.parked, !self.sawExited else { return }
                 self.reconnectTask = nil
                 self.start()   // re-open the stream (cancels any lingering task, re-arms the watchdog)
             }
@@ -3007,7 +3037,9 @@ struct LiveTerminalView: UIViewRepresentable {
 
         @MainActor
         private func handle(_ event: TerminalStreamEvent) async {
-            guard let view else { return }
+            // A parked pane takes no frame: one already on its way when the stream was
+            // cancelled would re-raise the ring (a keyframe with history) or repaint the screen.
+            guard let view, !parked else { return }
             let now = Date()
             lastStreamActivity = now   // any event (data, ping, resize) means the stream is alive
             // Mirror to the host, which uses it to decide whether returning to the front has
@@ -3078,7 +3110,7 @@ struct LiveTerminalView: UIViewRepresentable {
                             }
                             seedKeyframeHistory(history, rows: rows, into: view)
                         }
-                    } else if firstReset {
+                    } else if let backfill = backfillTask {
                         // An older server sends no history: fall back to the separate backfill.
                         // History ABOVE the seed: feed it now so its lines scroll into SwiftTerm's
                         // scrollback; the ESC[2J below then erases only the overlapping VISIBLE rows
@@ -3087,8 +3119,20 @@ struct LiveTerminalView: UIViewRepresentable {
                         // re-check teardown before feeding a possibly-dismantled view. The trailing
                         // ESC[0m resets any SGR the history left active, so ESC[2J's background-colour
                         // erase can't tint the rows the seed does not repaint.
-                        let history = await backfillTask?.value ?? nil
+                        //
+                        // A read exists for the first reset (`attach`) and for the first reset after
+                        // an unpark, which re-seeds like an attach; a reconnect starts none. Consumed
+                        // here so no later reset feeds it again.
+                        backfillTask = nil
+                        let history = await backfill.value
+                        // Hidden and parked again while the read was out: the next show re-seeds.
+                        if parked { return }
                         if let history, !history.isEmpty, !stopped {
+                            // After an unpark the screen still shows the pane from before it was
+                            // parked, and feeding the history from the cursor would push those
+                            // stale rows into the scrollback under it: start from an empty
+                            // terminal, as an attach does. (Parking already freed the scrollback.)
+                            if !firstReset { view.feed(byteArray: Self.historyResetSequence[...]) }
                             let cleanHistory = graphicsFilter.filter(history[...])   // backfill can carry graphics too
                             if !cleanHistory.isEmpty { view.feed(byteArray: cleanHistory[...]) }
                             view.feed(byteArray: [UInt8]("\u{1b}[0m".utf8)[...])
@@ -3197,11 +3241,17 @@ struct LiveTerminalView: UIViewRepresentable {
                 resizeCount += 1
                 prediction.reset()
             }
-            view.applyTerminalSize(cols: newCols, rows: newRows)
-            // A wider grid widens every row, so the same ring now costs more: re-size it
-            // to the budget. Rows also count against it, so any grid change re-sizes.
+            // A wider grid widens every row, so the same ring costs more, and rows count
+            // against the budget too: the ring is re-budgeted for the new grid IN THE SAME
+            // STEP, ordered so the ring never shrinks below what the old and new grids both
+            // keep. Resizing first and re-budgeting after made a shorter grid trim the oldest
+            // rows under the old ring and then reopen room for them, and a page could land
+            // above that gap (review of #694). A parked pane keeps no scrollback.
             widestCols = max(widestCols, newCols)
-            if changed, let ringTarget { applyScrollbackRing(ringTarget, in: view) }
+            let ring = parked ? nil : ringTarget.map {
+                Self.scrollbackRing($0, cols: widestCols, rows: newRows)
+            }
+            view.applyTerminalSize(cols: newCols, rows: newRows, scrollback: ring)
             // A live-anchored terminal now follows the container again, in the same
             // layout pass as this reflow.
             surface?.contentDidChange()

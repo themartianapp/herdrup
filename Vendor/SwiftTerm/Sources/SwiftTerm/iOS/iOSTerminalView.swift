@@ -342,8 +342,8 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     /// offset to the gesture and the next gesture frame would otherwise resolve the old
     /// offset to the newly inserted rows.
     @discardableResult
-    public func prependHistory (_ bytes: ArraySlice<UInt8>, maxScrollback: Int) -> Int {
-        let count = terminal.prependHistory (bytes, maxScrollback: maxScrollback)
+    public func prependHistory (_ bytes: ArraySlice<UInt8>, maxScrollback: Int, adjoining top: Terminal.HistoryTop? = nil) -> Int {
+        let count = terminal.prependHistory (bytes, maxScrollback: maxScrollback, adjoining: top)
         guard count > 0 else { return 0 }
         selection.shiftRows (by: count)
         search.invalidate ()
