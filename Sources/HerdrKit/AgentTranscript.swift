@@ -18,14 +18,24 @@ public struct AgentTranscriptParams: Encodable, Sendable, Equatable {
     public let after: String?
     public let limit: UInt32?
     public let subagent: String?
+    /// With `after`: the `before` cursor of the oldest page held, or "" when the whole
+    /// session is held, so herdr re-sends changed origin marks for scrolled-in history too
+    /// (herdr #430). Older servers ignore it.
+    public let heldFrom: String?
+
+    enum CodingKeys: String, CodingKey {
+        case target, before, after, limit, subagent
+        case heldFrom = "held_from"
+    }
 
     public init(target: String, before: String? = nil, after: String? = nil, limit: UInt32? = nil,
-                subagent: String? = nil) {
+                subagent: String? = nil, heldFrom: String? = nil) {
         self.target = target
         self.before = before
         self.after = after
         self.limit = limit
         self.subagent = subagent
+        self.heldFrom = heldFrom
     }
 }
 
