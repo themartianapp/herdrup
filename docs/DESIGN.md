@@ -141,10 +141,12 @@ herdr's JSON API exposes both, so panes and agents become real UI objects instea
   whatever the agents printed, which can hold secrets of their own, and get the protection of the
   app's other files. A guest keeps only its share's one agent. Forgetting a machine, or leaving a
   share, wipes what it kept, and a reply or screen that lands after the wipe is dropped rather than
-  written back. Only the newest agent list is kept, a deleted Gram message drops the kept first
-  page, and an erased terminal is kept blank. Until a list succeeds on the connection, every
-  failure's error and guidance replace the kept roster, the newest on each Retry. Works with any
-  herdr: no capability needed.
+  written back. Only the newest agent list is kept, whichever client of the session asked for it
+  (an older request answering late, even on a client a session switch replaced, is dropped), a
+  deleted Gram message drops the kept first page, a terminal's screen is kept only once its live
+  keyframe has been painted, and an erased terminal is kept blank. Until a list succeeds on the
+  connection, every failure's error and guidance replace the kept roster, the newest on each
+  Retry. Works with any herdr: no capability needed.
 
 ## Requirements
 

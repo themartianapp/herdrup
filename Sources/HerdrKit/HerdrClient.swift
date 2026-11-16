@@ -140,9 +140,6 @@ public actor HerdrClient {
     private var listingSequence: UInt64 = 0
     private var lastListing: (sentAt: ContinuousClock.Instant, listing: AgentListing)?
     private let listChange = ListChangeMark()
-    /// When the request behind the agent list kept in `contentCache` was sent. A reply to
-    /// an older request that lands after it is not kept, as `lastListing` does not take it.
-    private var keptListingSentAt: ContinuousClock.Instant?
 
     /// A live event (a status change, a turn, a pane's lifecycle) said the daemon's
     /// agent list changed at `instant`. From then on `agentListing` neither reuses nor
@@ -156,19 +153,17 @@ public actor HerdrClient {
     /// The one request behind every `agentListing` caller; its reply is what a cold start
     /// paints from next time (`contentCache`), under the rules `agentListing` serves by: a
     /// list sent before the last `noteAgentListChanged()` is older than what is on screen,
-    /// and a reply to an older request that lands after a newer one's is older than it, so
-    /// neither is kept. The cache keeps the copy it had, or the next list's.
+    /// so it is not kept, and a reply to an older request that lands after a newer one's is
+    /// older than it, so the cache does not keep it (`ContentCacheScope.recordAgentList`
+    /// checks that at the entry, across every client of this machine and session). The
+    /// cache keeps the copy it had, or the next list's.
     private func fetchAgentListing(sentAt: ContinuousClock.Instant) async throws -> AgentListing {
         let listChange = self.listChange
         let result = try await call("agent.list", EmptyParams(), as: AgentListResult.self,
                                     record: contentCache.map { cache in { line, _ in
                                         // Checked when the reply lands, so an event during the request counts.
-                                        guard listChange.latest.map({ $0 <= sentAt }) ?? true,
-                                              // Newest request wins: two requests can answer out of order.
-                                              self.keptListingSentAt.map({ $0 <= sentAt }) ?? true
-                                        else { return }
-                                        self.keptListingSentAt = sentAt
-                                        cache.recordAgentList(line)
+                                        guard listChange.latest.map({ $0 <= sentAt }) ?? true else { return }
+                                        cache.recordAgentList(line, sentAt: sentAt)
                                     } })
         return AgentListing(agents: result.agents, originCapabilities: result.originCapabilities,
                             originMachineID: result.originMachineID)

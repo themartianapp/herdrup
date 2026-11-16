@@ -68,6 +68,9 @@ public final class ContentCache: @unchecked Sendable {
     /// Wipes per owner and of everything, in memory; read and changed on `queue` only.
     private var ownerWipes: [Owner: Int] = [:]
     private var allWipes = 0
+    /// Per path, when the request behind the copy kept there was sent, for the entries whose
+    /// writes say (the agent list). In memory, on `queue` only, like the wipes.
+    private var keptSentAt: [String: ContinuousClock.Instant] = [:]
 
     public init(root: URL, budgetBytes: Int = ContentCache.defaultBudgetBytes,
                 entryLimitBytes: Int = ContentCache.defaultEntryLimitBytes,
@@ -108,9 +111,18 @@ public final class ContentCache: @unchecked Sendable {
     /// removed by it and one after it is dropped. A value over `entryLimitBytes` is not
     /// kept and drops the older copy, under the same lease: a stale scope must not remove
     /// what a newer one kept either.
-    func write(_ data: Data, to path: String, owner: Owner, lease: Lease) {
+    ///
+    /// `sentAt`, when the request `data` answers was sent: a reply to a request sent before
+    /// the one already written at `path` is dropped. Checked here, at the entry, because
+    /// every client for one machine and session writes the same entry, and a replaced client
+    /// (a session switch away and back) can still be answering an older request.
+    func write(_ data: Data, to path: String, owner: Owner, lease: Lease, sentAt: ContinuousClock.Instant? = nil) {
         queue.async {
             guard self.currentLease(owner) == lease else { return }
+            if let sentAt {
+                guard self.keptSentAt[path].map({ $0 <= sentAt }) ?? true else { return }
+                self.keptSentAt[path] = sentAt
+            }
             // Too big to keep: drop any older copy too, so a stale screen cannot outlive it.
             guard data.count <= self.entryLimitBytes else {
                 self.removeEntry(path)
@@ -170,6 +182,7 @@ public final class ContentCache: @unchecked Sendable {
         queue.sync {
             let prefix = owner.directoryName + "/"
             ownerWipes[owner, default: 0] += 1   // every scope made before this stops writing
+            for key in keptSentAt.keys where key.hasPrefix(prefix) { keptSentAt[key] = nil }
             try? files.removeItem(at: root.appendingPathComponent(owner.directoryName))
             if var index {
                 for key in index.keys where key.hasPrefix(prefix) { index[key] = nil }
@@ -184,6 +197,7 @@ public final class ContentCache: @unchecked Sendable {
             allWipes += 1
             try? files.removeItem(at: root)
             index = [:]
+            keptSentAt = [:]
         }
     }
 
@@ -279,8 +293,8 @@ public struct ContentCacheScope: Sendable {
     /// Taken when the scope was made; a wipe of `owner` after that ends this scope's writes.
     let lease: ContentCache.Lease
 
-    private func put(_ data: Data, at path: String) {
-        cache.write(data, to: path, owner: owner, lease: lease)
+    private func put(_ data: Data, at path: String, sentAt: ContinuousClock.Instant? = nil) {
+        cache.write(data, to: path, owner: owner, lease: lease, sentAt: sentAt)
     }
 
     private var directory: String {
@@ -366,19 +380,20 @@ public struct ContentCacheScope: Sendable {
     /// DEBUG cold-start mock seeds "last launch" with it, and the bench seeds its cached run.
     /// Same path a real reply takes.
     public func seedAgentList(_ responseLine: String) {
-        recordAgentList(responseLine)
+        recordAgentList(responseLine, sentAt: .now)
         cache.flush()
     }
 
-    /// `responseLine` is herdr's whole `agent.list` reply. For a guest, only the shared
-    /// agent's row is kept.
-    func recordAgentList(_ responseLine: String) {
+    /// `responseLine` is herdr's whole `agent.list` reply, to a request sent at `sentAt`.
+    /// Kept unless a reply to a newer request already was, from any client of this machine
+    /// and session. For a guest, only the shared agent's row is kept.
+    func recordAgentList(_ responseLine: String, sentAt: ContinuousClock.Instant) {
         guard let sharedTarget else {
-            put(Data(responseLine.utf8), at: agentsPath)
+            put(Data(responseLine.utf8), at: agentsPath, sentAt: sentAt)
             return
         }
         guard let filtered = Self.keepingOnlyAgent(sharedTarget, named: sharedName, in: responseLine) else { return }
-        put(filtered, at: agentsPath)
+        put(filtered, at: agentsPath, sentAt: sentAt)
     }
 
     func recordTranscript(_ responseLine: String, target: String, subagent: String?) {
@@ -410,5 +425,34 @@ public struct ContentCacheScope: Sendable {
         result["agents"] = (byID ?? byName).map { [$0] } ?? []
         envelope["result"] = result
         return try? JSONSerialization.data(withJSONObject: envelope)
+    }
+}
+
+/// Keeps one live terminal's screen as its pane's last screen
+/// (`ContentCacheScope.storeTerminalScreen`), but only once a keyframe's clear-and-seed has
+/// been fed into the emulator. Until then the emulator is blank under last launch's kept
+/// screen, sometimes for seconds (the first keyframe from an older server waits for the
+/// history backfill first), and keeping it would replace that screen with "". After the
+/// seed, a blank screen is a real erase and is kept.
+public struct TerminalScreenKeeper: Sendable {
+    public let cache: ContentCacheScope?
+    public let pane: String
+    /// Whether a keyframe's clear-and-seed feed has completed.
+    public private(set) var seeded = false
+
+    public init(cache: ContentCacheScope?, pane: String) {
+        self.cache = cache
+        self.pane = pane
+    }
+
+    /// A keyframe's clear-and-seed has been fed: the emulator shows the live screen.
+    public mutating func seedFed() {
+        seeded = true
+    }
+
+    /// Keeps the live screen, `rows` top first; `rows` is read only when it is kept.
+    public func keep(_ rows: () -> [String]) {
+        guard seeded, let cache else { return }
+        cache.storeTerminalScreen(rows: rows(), pane: pane)
     }
 }

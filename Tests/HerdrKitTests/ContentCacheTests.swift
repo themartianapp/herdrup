@@ -147,6 +147,29 @@ final class ContentCacheTests: XCTestCase {
                        "the older reply replaced the newer kept roster")
     }
 
+    /// Switching sessions A → B → A makes a new client for A, over the same kept roster,
+    /// while the first A client may still have a list out. That request, answering after
+    /// the new client's newer one, is older than it: the shared entry keeps the newer roster.
+    func testAnOlderListFromAReplacedClientDoesNotReplaceTheNewClientsRoster() async throws {
+        let store = cache()
+        let held = HeldTransport(holding: "agent.list")
+        let replaced = HerdrClient(transport: held, contentCache: store.scope(machine: "me@mac:22", session: nil))
+        let older = Task { try await replaced.agentListing() }
+        try await waitUntil { held.heldCount == 1 }
+
+        // Back on A: a new client with its own scope over the same entry, and a newer list.
+        let scope = store.scope(machine: "me@mac:22", session: nil)
+        let current = HerdrClient(transport: RecordingTransport(replies: ["agent.list": Self.agentList(["new"])]),
+                                  contentCache: scope)
+        _ = try await current.agentListing()
+        XCTAssertEqual(scope.agents()?.agents.map(\.name), ["new"])
+
+        held.release(0, with: Self.agentList(["old"]))
+        _ = try await older.value
+        XCTAssertEqual(scope.agents()?.agents.map(\.name), ["new"],
+                       "the replaced client's older reply replaced the newer kept roster")
+    }
+
     /// Answers `holding` requests only when the test releases them, by arrival order; every
     /// other request at once with an empty result.
     private final class HeldTransport: HerdrTransport, @unchecked Sendable {
@@ -300,6 +323,29 @@ final class ContentCacheTests: XCTestCase {
 
         scope.storeTerminalScreen(rows: ["", "", "", ""], pane: "w1:p1")
         XCTAssertEqual(scope.terminalText(pane: "w1:p1"), "", "the erased screen's content survived the erase")
+    }
+
+    /// The first keyframe from an older server waits for the history backfill before its
+    /// clear-and-seed, and the emulator is blank under last launch's kept screen all that
+    /// time. Backgrounding or leaving then must not keep the blank emulator over the kept
+    /// screen. Once the seed is fed, the live screen is kept, a blank one (an erase) too.
+    func testATerminalKeepsItsScreenOnlyOnceAKeyframeIsSeeded() {
+        let scope = cache().scope(machine: "me@mac:22", session: nil)
+        scope.storeTerminalText("last useful screen", pane: "w1:p1")
+        var keeper = TerminalScreenKeeper(cache: scope, pane: "w1:p1")
+
+        // Backgrounded (or torn down) while the first reset waits for the backfill.
+        var read = false
+        keeper.keep { read = true; return ["", "", ""] }
+        XCTAssertEqual(scope.terminalText(pane: "w1:p1"), "last useful screen",
+                       "the blank emulator replaced the kept screen before the seed was fed")
+        XCTAssertFalse(read, "an unseeded emulator's rows were read")
+
+        keeper.seedFed()
+        keeper.keep { ["$ cargo test", "ok", ""] }
+        XCTAssertEqual(scope.terminalText(pane: "w1:p1"), "$ cargo test\nok")
+        keeper.keep { ["", "", ""] }
+        XCTAssertEqual(scope.terminalText(pane: "w1:p1"), "", "an erase after the seed was not kept")
     }
 
     // MARK: Bounds
@@ -534,7 +580,7 @@ final class ContentCacheTests: XCTestCase {
     func testAnUnreadableEntryReadsAsNothing() throws {
         let store = cache()
         let scope = store.scope(machine: "me@mac:22", session: nil)
-        scope.recordAgentList("not json")
+        scope.recordAgentList("not json", sentAt: .now)
         XCTAssertNil(scope.agents())
     }
 

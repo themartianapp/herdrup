@@ -1654,6 +1654,7 @@ struct LiveTerminalView: UIViewRepresentable {
         init(client: HerdrClient, paneID: String) {
             self.client = client
             self.paneID = paneID
+            self.screenKeeper = TerminalScreenKeeper(cache: client.contentCache, pane: paneID)
         }
 
         func attach(_ surface: TerminalSurfaceView) {
@@ -1942,15 +1943,19 @@ struct LiveTerminalView: UIViewRepresentable {
         }
 
         private var backgroundObserver: NSObjectProtocol?
+        /// Keeps this pane's live screen for the next cold start, once a keyframe's
+        /// clear-and-seed has been fed (`seedFed()` in the reset handler).
+        private var screenKeeper: TerminalScreenKeeper
 
-        /// Keeps the text of the live screen for the next cold start. Only after a real
-        /// keyframe: a pane still showing the kept screen, or nothing, has nothing new to
-        /// keep. The LIVE rows, not the viewport: a reader scrolled into history leaves the
-        /// screen the agent last drew. A blank screen (after an erase) is kept as blank, so
-        /// the pane does not reopen on what was erased.
+        /// Keeps the text of the live screen for the next cold start. Only after a keyframe's
+        /// clear-and-seed has been fed: before that the emulator is blank under the kept
+        /// screen (the first reset can wait seconds for the history backfill), and keeping it
+        /// would replace the kept screen with nothing. The LIVE rows, not the viewport: a
+        /// reader scrolled into history leaves the screen the agent last drew. A blank screen
+        /// (after an erase) is kept as blank, so the pane does not reopen on what was erased.
         private func keepScreenText() {
-            guard didSeedOnce, let view, let cache = client.contentCache else { return }
-            cache.storeTerminalScreen(rows: view.getTerminal().liveScreenRows(), pane: paneID)
+            guard let view else { return }
+            screenKeeper.keep { view.getTerminal().liveScreenRows() }
         }
 
         /// Jump the pane to its newest output. A mouse-mode or alt-screen agent (Claude
@@ -3051,6 +3056,10 @@ struct LiveTerminalView: UIViewRepresentable {
                     // already collapsed the backlog into this keyframe).
                     view.feed(byteArray: Self.clearSequence[...])
                     if !data.isEmpty { feedFiltered(data, into: view) }
+                    // The live screen is in the emulator now: only from here may leaving or
+                    // backgrounding keep it over last launch's (`didSeedOnce` was set before
+                    // the backfill wait above, while the emulator was still blank).
+                    screenKeeper.seedFed()
                     // Only now: the history wait above can take seconds on a slow link, and
                     // the kept screen must cover the empty terminal for all of them.
                     surface?.removeKeptScreen()   // the live screen replaces last launch's
