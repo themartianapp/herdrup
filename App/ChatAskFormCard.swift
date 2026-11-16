@@ -138,7 +138,13 @@ struct ChatAskFormCard: View {
         if answerable { return .answer }
         // The capability is not known yet: nothing that may vanish a moment later.
         if formsSupported == nil || !canAnswerHere { return .browse(offersTerminal: false) }
-        if case .guest(_, let owner) = viewer { return .waiting(owner: owner) }
+        if case .guest(_, let owner) = viewer {
+            // Only the host's own word hands the question to the owner: a `guest_forbidden`
+            // from `agent.answer_form`. A form the chat cannot answer (a host whose guest
+            // ping leaves out `ask_form`, a field herdr cannot drive) goes to the Terminal's
+            // menu keys (herdrup#714).
+            return answersRefused ? .waiting(owner: owner) : .needsTerminal
+        }
         return .browse(offersTerminal: true)
     }
 
@@ -258,7 +264,9 @@ struct AskFormStepper: View {
         /// Read-only steps (a server without `ask_form`, or controls herdr cannot drive);
         /// the Terminal answers.
         case browse(offersTerminal: Bool)
-        /// A guest who cannot answer: the owner will.
+        /// A guest whose chat cannot answer this form: its keys are in the Terminal.
+        case needsTerminal
+        /// A guest whose host refused their answer: the owner will.
         case waiting(owner: String)
     }
 
@@ -577,6 +585,15 @@ struct AskFormStepper: View {
         case .browse(let offersTerminal):
             navigation(next: .link("Next"))
             if offersTerminal { terminalButton.padding(.top, 10) }
+        case .needsTerminal:
+            navigation(next: .link("Next"))
+            VStack(alignment: .leading, spacing: 8) {
+                Text("This question needs the Terminal").font(Typography.app(13 * textScale))
+                    .foregroundStyle(Palette.waiting)
+                    .accessibilityIdentifier("chat-ask-needs-terminal")
+                terminalButton
+            }
+            .padding(.top, 10)
         case .answer:
             if draft.isReviewing {
                 HStack {

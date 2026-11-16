@@ -146,8 +146,9 @@ final class ChatMockConversation: @unchecked Sendable {
                 "questions": ChatMockAskForm.questions,
                 "answerable": false,
                 "form": ChatMockAskForm.form,
-                "form_answerable": ChatMockAskForm.answerable
-                    && (audience == .owner || !GuestMockTransport.ownerOnlyAnswers),
+                // No herdr with form asks withholds them from guests: an owner-only host
+                // (`HERDR_MOCK_GUEST_OWNER_ANSWERS`) says so by refusing `agent.answer_form`.
+                "form_answerable": ChatMockAskForm.answerable,
             ]
         } else {
             result["pending_ask"] = [
