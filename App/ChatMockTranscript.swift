@@ -52,15 +52,23 @@ final class ChatMockConversation: @unchecked Sendable {
     private var answered: String?
     /// omp's `details.answers` once the form (`ChatMockAskForm`) was answered.
     private var formAnswers: [[String: String]]?
-    /// Prompts sent through `agent.prompt`, as the agent records them: trimmed.
-    private var prompted: [(text: String, ms: UInt64)] = []
+    /// What came after the written conversation, oldest first, as omp appends it to the session
+    /// file: turns of work (`HERDR_MOCK_CHAT_GROWTH`) and prompts sent through `agent.prompt`.
+    /// Append-only, so an `after` cursor (a turn count) always names the same turns.
+    private var appended: [Appended] = []
+    private enum Appended {
+        /// Turn `n` of `grownTurn`.
+        case work(Int)
+        /// A prompt as the agent records it: trimmed.
+        case prompt(text: String, ms: UInt64)
+    }
     /// `HERDR_MOCK_CHAT_GROWTH=<n>` (owner): omp keeps working, so each live (`after`) refresh
     /// finds `n` more turns, the way an agent left running for hours fills its transcript. The
     /// snapshot stress run (`SnapshotStress`) uses it; unset, the conversation stays as written.
     private static let growthPerRefresh = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_GROWTH"]
         .flatMap(Int.init) ?? 0
     static var grows: Bool { growthPerRefresh > 0 }
-    /// Turns added by `growthPerRefresh` so far.
+    /// Turns of work `growthPerRefresh` appended so far.
     private var grown = 0
 
     private init(audience: Audience) {
@@ -95,12 +103,15 @@ final class ChatMockConversation: @unchecked Sendable {
             return subagentTranscript(id: id, subagent: subagent)
         }
         let limit = max(1, min(params["limit"] as? Int ?? 20, 50))
-        let (turns, sentCount) = lock.withLock {
+        let (turns, sent) = lock.withLock {
             // A live refresh finds the agent's newest work (`HERDR_MOCK_CHAT_GROWTH`).
-            if Self.growthPerRefresh > 0, params["before"] == nil, params["after"] != nil {
-                grown += Self.growthPerRefresh
+            if audience == .owner, Self.growthPerRefresh > 0, params["before"] == nil, params["after"] != nil {
+                for _ in 0..<Self.growthPerRefresh {
+                    appended.append(.work(grown))
+                    grown += 1
+                }
             }
-            return (buildTurns(), prompted.count)
+            return buildTurns()
         }
         let start: Int
         let end: Int
@@ -117,9 +128,9 @@ final class ChatMockConversation: @unchecked Sendable {
                 return Self.error(id: id, code: "cursor_expired", message: "unknown cursor")
             }
             end = turns.count
-            // The sent prompts follow the agent's turns: the newest agent turn is the last
-            // one before them.
-            start = max(0, min(seen, turns.count - sentCount) - 1)
+            // Re-send from the newest agent turn before the cursor: sent prompts are not
+            // agent turns.
+            start = (0..<seen).last(where: { !sent.contains($0) }) ?? 0
         } else {
             end = turns.count
             start = max(0, end - limit)
@@ -292,14 +303,15 @@ final class ChatMockConversation: @unchecked Sendable {
     /// does, so the next page carries it as a new turn.
     func prompt(id: String, params: [String: Any]) -> String {
         let text = (params["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        lock.withLock { prompted.append((text: text, ms: Self.ms(Date()))) }
+        lock.withLock { appended.append(.prompt(text: text, ms: Self.ms(Date()))) }
         return Self.encode(id: id, result: ["type": "agent_prompted", "delivery": "submitted"])
     }
 
     // MARK: The conversation
 
-    /// Older filler turns first (so there is history to page in), then the mockup's turns.
-    private func buildTurns() -> [[[String: Any]]] {
+    /// Older filler turns first (so there is history to page in), then the mockup's turns,
+    /// then what was appended since, in order. Also the indexes of the sent prompts' turns.
+    private func buildTurns() -> (turns: [[[String: Any]]], sent: Set<Int>) {
         let fillerCount = 40
         var turns: [[[String: Any]]] = (0..<fillerCount).map { index in
             let at = Self.daysAgo(fillerCount - index + 1, hour: 11, minute: 15)
@@ -314,14 +326,20 @@ final class ChatMockConversation: @unchecked Sendable {
             ]
         }
         turns += audience == .owner ? ownerTurns() : guestTurns()
-        if audience == .owner { turns += (0..<grown).map(Self.grownTurn) }
-        for (index, sent) in prompted.enumerated() {
-            turns.append([Self.entry("sent\(index)u", sent.ms, ["kind": "user", "text": sent.text, "author": "owner"])])
+        var sent = Set<Int>()
+        for item in appended {
+            switch item {
+            case .work(let n):
+                turns.append(Self.grownTurn(n))
+            case .prompt(let text, let ms):
+                turns.append([Self.entry("sent\(sent.count)u", ms, ["kind": "user", "text": text, "author": "owner"])])
+                sent.insert(turns.count - 1)
+            }
         }
         if audience == .owner, let origins = Self.origins {
             turns = turns.map { turn in turn.map { Self.marked($0, origins: origins) } }
         }
-        return turns
+        return (turns, sent)
     }
 
     /// Turn `n` of the work `growthPerRefresh` adds: a prompt, a thought, four steps and a

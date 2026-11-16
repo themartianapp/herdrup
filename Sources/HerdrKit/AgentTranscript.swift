@@ -719,12 +719,17 @@ public struct AgentTranscriptPage: Decodable, Sendable, Equatable {
     public let recap: TranscriptRecap?
     /// The subagents omp's `task` tool spawned (running, and finished this turn); nil when none.
     public let subagents: [TranscriptSubagent]?
+    /// On an `after` page, the ids of the entries herdr re-sent from before the cursor (origin
+    /// marks, steps whose status changed) rather than appended since; every other entry is
+    /// new. nil from a herdr that does not say (see `TranscriptStore.mergeAfter`).
+    public let resent: [String]?
 
     public init(agent: String? = nil, paneID: String? = nil, sessionID: String? = nil,
                 entries: [TranscriptEntry], before: String? = nil, after: String? = nil,
                 pendingAsk: TranscriptPendingAsk? = nil, working: TranscriptWorking? = nil,
                 model: TranscriptModel? = nil, plan: [TranscriptPlanItem]? = nil,
-                recap: TranscriptRecap? = nil, subagents: [TranscriptSubagent]? = nil) {
+                recap: TranscriptRecap? = nil, subagents: [TranscriptSubagent]? = nil,
+                resent: [String]? = nil) {
         self.agent = agent
         self.paneID = paneID
         self.sessionID = sessionID
@@ -737,10 +742,11 @@ public struct AgentTranscriptPage: Decodable, Sendable, Equatable {
         self.plan = plan
         self.recap = recap
         self.subagents = subagents
+        self.resent = resent
     }
 
     enum CodingKeys: String, CodingKey {
-        case agent, entries, before, after, working, model, plan, recap, subagents
+        case agent, entries, before, after, working, model, plan, recap, subagents, resent
         case paneID = "pane_id"
         case sessionID = "session_id"
         case pendingAsk = "pending_ask"
