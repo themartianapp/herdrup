@@ -21,6 +21,7 @@ final class GuestGramInbox: ObservableObject {
         let shares: [GuestAccess]
     }
 
+    @MainActor
     private final class Grant {
         var access: GuestAccess
         let connection: GuestConnection
