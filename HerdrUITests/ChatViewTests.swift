@@ -353,6 +353,41 @@ final class ChatViewTests: XCTestCase {
         XCTAssertTrue(loaded, "scrolling to the top should load an older page (had \(first) turns)")
     }
 
+    /// Review of #672 (P2): `.background` unmounts the chat (`ScenePhase.mountsChat`) while Find
+    /// stays open in the pane. The remounted chat must still land once Find closes: before, its
+    /// landing task was keyed on `model.loaded` alone, returned early with Find open and never
+    /// reran, so it stayed unlanded (no older pages, no jump arrows) for good.
+    func testChatLandsWhenFindClosesAfterABackgroundRoundTrip() {
+        let app = launch("chatview")
+        openAgent("herdr-app", in: app)
+        let chat = app.descendants(matching: .any)["chat-view"].firstMatch
+        XCTAssertTrue(chat.waitForExistence(timeout: 10))
+        XCTAssertTrue(poll(8, every: 0.3) { self.turns(chat) > 0 }, "the newest page should load")
+
+        app.buttons["terminal-find"].tap()
+        XCTAssertTrue(app.textFields["terminal-find-field"].waitForExistence(timeout: 5))
+
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(app.wait(for: .runningBackground, timeout: 10))
+        app.activate()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+        XCTAssertTrue(chat.waitForExistence(timeout: 10), "the chat remounts on return")
+        XCTAssertTrue(app.textFields["terminal-find-field"].waitForExistence(timeout: 5), "Find survived")
+        XCTAssertTrue(poll(8, every: 0.3) { self.turns(chat) > 0 }, "the remounted chat reloads")
+
+        app.buttons["terminal-find"].tap()
+        XCTAssertTrue(app.buttons["chat-jump-previous-mine"].waitForExistence(timeout: 8),
+                      "the up arrow shows only once the chat has landed")
+        let first = turns(chat)
+        var loaded = false
+        for _ in 0..<12 where !loaded {
+            chat.swipeDown(velocity: .fast)
+            loaded = poll(2, every: 0.3) { self.turns(chat) > first }
+        }
+        XCTAssertTrue(loaded, "a landed chat loads an older page at the top (had \(first) turns)")
+        XCTAssertTrue(app.buttons["chat-jump-latest"].waitForExistence(timeout: 4), "the down arrow shows")
+    }
+
     /// The thought line and the steps line expand.
     func testThoughtAndStepsExpand() {
         let app = launch("chatview")

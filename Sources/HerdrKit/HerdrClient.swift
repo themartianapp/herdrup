@@ -2106,10 +2106,11 @@ public actor HerdrClient {
     /// that cannot deserialize the method reports `.unsupported` like a non-omp agent.
     public func agentTranscript(
         target: String, before: String? = nil, after: String? = nil, limit: UInt32? = nil,
-        subagent: String? = nil
+        subagent: String? = nil, heldFrom: String? = nil
     ) async throws -> AgentTranscriptPage {
         let params = AgentTranscriptParams(target: target, before: before, after: after,
-                                           limit: limit.map { min(max($0, 1), 50) }, subagent: subagent)
+                                           limit: limit.map { min(max($0, 1), 50) }, subagent: subagent,
+                                           heldFrom: heldFrom)
         // The newest page (no cursor) is what a chat opens on, so it is what a cold start
         // paints from; a page of older history or of appended entries is not.
         let keeper = before == nil && after == nil ? contentCache : nil
