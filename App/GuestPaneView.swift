@@ -24,6 +24,7 @@ struct GuestPaneView: View {
     }
 
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.scenePhase) private var scenePhase
     /// The shared agent's conversation for the Chat tab (#482).
     @StateObject private var chatModel: ChatModel
     /// The host serves `agent.transcript` to guests (its pong's `agent_transcript`).
@@ -137,7 +138,9 @@ struct GuestPaneView: View {
                     .opacity(showingTerminal ? 1 : 0)
                     .allowsHitTesting(showingTerminal)
                     .accessibilityHidden(!showingTerminal)
-                if showingChat {
+                // Not in the background (`ScenePhase.mountsChat`): the snapshots iOS takes
+                // there would lay the whole chat out again.
+                if showingChat, scenePhase.mountsChat {
                     ChatView(client: client, model: chatModel,
                              viewer: .guest(name: access.guestName, ownerName: access.ownerName),
                              eventsPaneID: nil, isActive: true, live: availability == .running,
