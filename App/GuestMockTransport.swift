@@ -587,6 +587,13 @@ struct GuestMockTransport: HerdrTransport {
                  "created_unix_ms": now - 20 * minute, "read": true,
                  "expired_file": ["name": "q4-baseline.png", "size": 873_472, "mime": "image/png", "sha256": "9c0d"]],
             ]
+            // `HERDR_MOCK_GUEST_GRAM_ONE_MS_PAGE`: the first page holds only the newest Gram, the
+            // rest are the older page, so the strict floor hides every row of the first page.
+            if ProcessInfo.processInfo.environment["HERDR_MOCK_GUEST_GRAM_ONE_MS_PAGE"] != nil {
+                olderPage = Array(messages.dropFirst())
+                messages = Array(messages.prefix(1))
+                return
+            }
             guard ProcessInfo.processInfo.environment["HERDR_MOCK_GUEST_OLDER_PAGE_FAILS_ONCE"] != nil else {
                 olderPage = []
                 return

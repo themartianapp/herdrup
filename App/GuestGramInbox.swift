@@ -197,6 +197,11 @@ final class GuestGramInbox: ObservableObject {
         }
     }
 
+    /// An older page of the selection's shares failed and none has landed since.
+    func pageFailed(_ selection: Selection) -> Bool {
+        ids(selection).contains { grants[$0]?.feed.pageError != nil }
+    }
+
     /// "Earlier": the next page of each share the merge names (those at its safe floor).
     func loadEarlier(_ selection: Selection) async throws {
         for id in merge(selection).grantsToPage {
@@ -208,7 +213,8 @@ final class GuestGramInbox: ObservableObject {
     /// The reader saw the feed: each share's shown unread Grams are read, for this guest only.
     func markShown(_ selection: Selection) async {
         for (id, shown) in merge(selection).shownUnreadByGrant {
-            guard let grant = grants[id] else { continue }
+            // The reader left (the caller's task was cancelled): mark nothing more.
+            guard !Task.isCancelled, let grant = grants[id] else { return }
             await grant.feed.markRead(shown, client: grant.connection.client)
         }
     }

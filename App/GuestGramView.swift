@@ -182,6 +182,8 @@ struct GuestGramConversation: View {
     @State private var fileError: String?
     /// A failed older page, shown ON the sentinel with a retry (as the owner's inbox does).
     @State private var pageError: String?
+    /// Retry taps on the floor pager, so each asks again.
+    @State private var floorAttempt = 0
     @State private var visibility = FeedVisibility()
     @State private var appearance = 0
     @State private var landed = false
@@ -228,9 +230,7 @@ struct GuestGramConversation: View {
             if let fileError { notice(fileError, id: "guest-gram-file-error") }
             if let failure = inbox.failure(selection) { notice(failure, id: "guest-gram-failure") }
             if rows.isEmpty && merge.hasMore {
-                // Everything held is at or under the safe floor: page until something shows.
-                ProgressView().tint(Palette.textDim).padding(.top, 60).frame(maxHeight: .infinity, alignment: .top)
-                    .task(id: "\(merge.floorUnixMs ?? 0)/\(merge.hiddenCount)") { try? await inbox.loadEarlier(selection) }
+                floorPager(merge)
             } else if rows.isEmpty {
                 ScrollView { empty.frame(maxWidth: .infinity) }
                     .refreshable { await inbox.refresh(selection) }
@@ -242,19 +242,17 @@ struct GuestGramConversation: View {
         }
         .background(Palette.ground)
         .gramFileViewer($preview)
-        .task {
+        // Keyed on visibility: leaving the tab cancels a refresh still out, so it can't mark
+        // a hidden feed read when it lands; coming back refreshes and marks what shows.
+        .task(id: active) {
             await inbox.refresh(selection)
-            // The reader may have left while the refresh was out.
-            if active { await inbox.markShown(selection) }
+            guard active, !Task.isCancelled else { return }
+            await inbox.markShown(selection)
         }
         // Viewed is read: whatever lands in the feed while it shows is marked read, and what
         // landed while it was hidden once it shows again. Never while another tab is up.
         .onChange(of: merge.items.map(\.id)) { _, _ in
             guard active else { return }
-            Task { await inbox.markShown(selection) }
-        }
-        .onChange(of: active) { _, now in
-            guard now else { return }
             Task { await inbox.markShown(selection) }
         }
         .onDisappear { openTask?.cancel() }
@@ -378,17 +376,60 @@ struct GuestGramConversation: View {
         visibility.pageRequested = true
         let before = inbox.merge(selection).items.count
         Task { @MainActor in
-            do {
-                try await inbox.loadEarlier(selection)
-            } catch {
-                pageError = "Couldn't load older messages."
-            }
+            await pageEarlier()
             visibility.pageRequested = false
             if inbox.merge(selection).items.count > before {
                 if let top { anchorID = top }
             } else {
                 visibility.pageArmed = true
             }
+        }
+    }
+
+    /// One "Earlier" for the merge's grants at the floor; a failure goes to `pageError`, which
+    /// the sentinel (or the floor pager) shows with Retry. The one paging path of the feed.
+    private func pageEarlier() async {
+        do {
+            try await inbox.loadEarlier(selection)
+        } catch {
+            pageError = "Couldn't load older messages."
+        }
+    }
+
+    /// Every held row is at or under the strict floor (a page that ended inside one
+    /// millisecond): page on until something shows, with the sentinel's failure and Retry. A
+    /// feed still failed from before (`GuestGramFeed.pageError`) waits for the tap.
+    private func floorPager(_ merge: GuestGramMerge) -> some View {
+        let failure = pageError ?? (inbox.pageFailed(selection) && floorAttempt == 0 ? "Couldn't load older messages." : nil)
+        return ScrollView {
+            Button {
+                pageError = nil
+                floorAttempt += 1
+            } label: {
+                HStack(spacing: 8) {
+                    if let failure {
+                        GramPageFailureLabel(message: failure)
+                    } else {
+                        ProgressView().controlSize(.small)
+                        Text("Loading older messages…")
+                    }
+                }
+                .font(Typography.app(12))
+                .foregroundStyle(Palette.textFaint)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+            }
+            .buttonStyle(.plain)
+            .disabled(failure == nil)
+            .accessibilityIdentifier("guest-gram-loading-older")
+            .padding(.top, 60)
+        }
+        .refreshable { await inbox.refresh(selection) }
+        .frame(maxHeight: .infinity)
+        // A new floor or a Retry tap asks again; a failure changes neither, so it waits.
+        .task(id: "\(merge.floorUnixMs ?? 0)/\(merge.hiddenCount)/\(floorAttempt)") {
+            guard failure == nil else { return }
+            await pageEarlier()
         }
     }
 

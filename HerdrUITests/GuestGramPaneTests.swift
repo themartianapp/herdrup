@@ -261,6 +261,25 @@ final class GuestGramPaneTests: XCTestCase {
 
     // MARK: One Gram across agents (#697)
 
+    /// A first page the strict floor hides entirely (one Gram, more to come) pages on by
+    /// itself; when that page fails, the screen says so with Retry instead of spinning, and
+    /// the tap loads it.
+    func testAFailedPageUnderTheFloorOffersRetry() {
+        let app = launch("guest", features: "gram", environment: [
+            "HERDR_MOCK_GUEST_GRAM_ONE_MS_PAGE": "1", "HERDR_MOCK_GUEST_OLDER_PAGE_FAILS_ONCE": "1",
+        ])
+        openGramTab(app)
+        let retry = element(app, "guest-gram-loading-older")
+        XCTAssertTrue(poll(10, every: 0.25) { retry.exists && retry.label.contains("Tap to retry") },
+                      "the failed page offers Retry: \(retry.exists ? retry.label : "none")")
+        XCTAssertFalse(element(app, "guest-gram-row-gm-4").exists, "the floor still hides the held Gram")
+        attach(app, "guest-gram-floor-page-failed")
+        retry.tap()
+        XCTAssertTrue(element(app, "guest-gram-row-gm-4").waitForExistence(timeout: 10), "Retry loads the page")
+        XCTAssertTrue(element(app, "guest-gram-row-gm-2").exists, "with the older Grams")
+        XCTAssertEqual(probe(app, "guest-forbidden-calls"), "")
+    }
+
     /// Two shared agents with Gram on one machine: the Gram tab's "All agents" row opens one
     /// feed with both agents' Grams under their names, and a Reply from one message's menu
     /// goes to that message's agent, though the composer's default is the newest one's.
@@ -292,7 +311,7 @@ final class GuestGramPaneTests: XCTestCase {
         let reply = app.buttons["Reply"].firstMatch
         XCTAssertTrue(reply.waitForExistence(timeout: 5), "a message's menu offers Reply")
         reply.tap()
-        XCTAssertEqual(to.value as? String, "enyo-ui · w2-4",
+        XCTAssertEqual(to.value as? String, "enyo-ui · Jerry · Jerry's Mac Studio · w2-4",
                        "Reply addresses the composer to the message's agent, told apart from the other enyo-ui")
         let composer = element(app, "guest-gram-composer")
         composer.tap()
