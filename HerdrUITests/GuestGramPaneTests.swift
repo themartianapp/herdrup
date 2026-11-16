@@ -271,8 +271,9 @@ final class GuestGramPaneTests: XCTestCase {
         gramTab.tap()
         let all = app.buttons["guest-gram-all"]
         XCTAssertTrue(all.waitForExistence(timeout: 10), "the inbox opens with the All agents row")
-        XCTAssertTrue(app.buttons["guest-gram-agent-llm-opt"].exists, "one row per shared agent")
-        XCTAssertTrue(app.buttons["guest-gram-agent-enyo-ui"].firstMatch.exists, "one row per shared agent")
+        XCTAssertTrue(app.buttons["guest-gram-agent-w1-3"].exists, "one row per shared agent")
+        XCTAssertTrue(app.buttons["guest-gram-agent-w2-4"].exists, "one row per shared agent")
+        XCTAssertTrue(app.buttons["guest-gram-agent-w2-9"].exists, "one row per shared agent")
         attach(app, "guest-gram-inbox")
         all.tap()
 
@@ -291,7 +292,8 @@ final class GuestGramPaneTests: XCTestCase {
         let reply = app.buttons["Reply"].firstMatch
         XCTAssertTrue(reply.waitForExistence(timeout: 5), "a message's menu offers Reply")
         reply.tap()
-        XCTAssertEqual(to.value as? String, "enyo-ui", "Reply addresses the composer to the message's agent")
+        XCTAssertEqual(to.value as? String, "enyo-ui · w2-4",
+                       "Reply addresses the composer to the message's agent, told apart from the other enyo-ui")
         let composer = element(app, "guest-gram-composer")
         composer.tap()
         composer.typeText("Ship it")
@@ -302,6 +304,37 @@ final class GuestGramPaneTests: XCTestCase {
         XCTAssertTrue(calls.contains("gram.post.to:enyo-ui@w2-4"), "the reply went to enyo-ui's share: \(calls)")
         XCTAssertFalse(calls.contains("gram.post.to:llm-opt"), "nothing went to llm-opt: \(calls)")
         attach(app, "guest-gram-all-agents-reply")
+    }
+
+    /// Only a Gram tab on screen marks what it shows read: a Gram that lands while the guest
+    /// is on Agents is fetched but stays unread until the Gram tab is back.
+    func testAHiddenGramTabDoesNotMarkArrivalsRead() {
+        let app = launch("guestmachine", features: "gram", environment: ["HERDR_MOCK_GUEST_GRAM_ARRIVAL": "1"])
+        let gramTab = app.tabBars.buttons["Gram"]
+        XCTAssertTrue(gramTab.waitForExistence(timeout: 15))
+        gramTab.tap()
+        let all = app.buttons["guest-gram-all"]
+        XCTAssertTrue(all.waitForExistence(timeout: 10))
+        all.tap()
+        pollLabel(app, "guest-host-calls", "the open feed marks what it shows") { $0.contains("gm-e2") }
+
+        app.tabBars.buttons["Agents"].tap()
+        let lists = probe(app, "guest-host-calls").components(separatedBy: "gram.list").count
+        let arrives = app.buttons["guest-fixture-gram-arrives"]
+        XCTAssertTrue(arrives.waitForExistence(timeout: 5))
+        arrives.tap()
+        pollLabel(app, "guest-host-calls", "the arrival is fetched") {
+            $0.components(separatedBy: "gram.list").count > lists
+        }
+        Thread.sleep(forTimeInterval: 3)
+        let hidden = probe(app, "guest-host-calls")
+        XCTAssertFalse(hidden.components(separatedBy: ";").contains { $0.hasPrefix("gram.mark_read") && $0.contains("gm-e3") },
+                       "a hidden Gram tab must not mark the arrival read: \(hidden)")
+
+        gramTab.tap()
+        pollLabel(app, "guest-host-calls", "back on the Gram tab, the arrival is read") {
+            $0.components(separatedBy: ";").contains { $0.hasPrefix("gram.mark_read") && $0.contains("gm-e3") }
+        }
     }
 
     // MARK: Attachments

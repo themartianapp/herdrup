@@ -124,7 +124,7 @@ struct GuestHomeView: View {
                     .tag(Tab.agents)
                     .tabItem { Label("Agents", systemImage: "square.grid.2x2.fill") }
                 if !inbox.shares.isEmpty {
-                    GuestGramTab(inbox: inbox)
+                    GuestGramTab(inbox: inbox, active: tab == .gram && !showingPane)
                         .tag(Tab.gram)
                         .tabItem { Label("Gram", systemImage: "bubble.left.and.bubble.right") }
                         .badge(inbox.unreadTotal)

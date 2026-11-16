@@ -35,6 +35,12 @@ struct SharedMachineHomeView: View {
     var body: some View {
         shell
             .onChange(of: store.machines, initial: true) { _, machines in inbox.sync(machines) }
+            // Shares on other machines have no Agents screen polling them: ask those without
+            // Gram again now and then, so an owner turning it on (or a host back online) shows.
+            .task { await inbox.rediscover() }
+            #if DEBUG
+            .overlay(alignment: .topLeading) { GuestGramProbes(hostID: access.endpoint.hostID) }
+            #endif
             // A Gram push from a share's host, or the guest's own attachment posted there:
             // that host's feeds reload.
             .onReceive(PushCenter.shared.$guestGramArrival) { arrival in
@@ -46,7 +52,7 @@ struct SharedMachineHomeView: View {
     @ViewBuilder
     private var shell: some View {
         if peers.count == 1, let only = peers.first {
-            GuestHomeView(access: only, connect: { try connect(only) }, inbox: inbox,
+            GuestHomeView(access: only, connect: { try inbox.connection(for: only) }, inbox: inbox,
                           onBack: onBack, onLeave: leftShare)
                 .id(only.id)
         } else {
@@ -75,7 +81,7 @@ struct SharedMachineHomeView: View {
                             }
                             .padding(.horizontal, 20).padding(.vertical, 10)
                             ForEach(peers) { peer in
-                                GuestHomeView(access: peer, connect: { try connect(peer) }, inbox: inbox,
+                                GuestHomeView(access: peer, connect: { try inbox.connection(for: peer) }, inbox: inbox,
                                               onOpenGram: { _ in tab = .gram },
                                               embedded: true, onBack: nil, onLeave: leftShare,
                                               statusBoard: statuses)
@@ -89,7 +95,7 @@ struct SharedMachineHomeView: View {
                 .tabItem { Label("Agents", systemImage: "square.grid.2x2.fill") }
 
                 if !inbox.shares.isEmpty {
-                    GuestGramTab(inbox: inbox)
+                    GuestGramTab(inbox: inbox, active: tab == .gram)
                         .tag(GuestHomeView.Tab.gram)
                         .tabItem { Label("Gram", systemImage: "bubble.left.and.bubble.right") }
                         .badge(inbox.unreadTotal)

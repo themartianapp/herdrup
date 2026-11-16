@@ -12,6 +12,8 @@ enum GuestPaneTab: Hashable { case chat, terminal }
 /// feed full screen; in a regular-width window the list stays beside the open feed.
 struct GuestGramTab: View {
     @ObservedObject var inbox: GuestGramInbox
+    /// The tab is the one on screen: only then does an open feed mark what it shows read.
+    let active: Bool
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.displayScale) private var displayScale
 
@@ -40,13 +42,10 @@ struct GuestGramTab: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("guest-gram-tab")
-        #if DEBUG
-        .overlay(alignment: .topLeading) { GuestGramProbes() }
-        #endif
     }
 
     private func conversation(_ selection: GuestGramSelectionKey, back: (() -> Void)?) -> some View {
-        GuestGramConversation(inbox: inbox, selection: selection, onBack: back)
+        GuestGramConversation(inbox: inbox, selection: selection, active: active, onBack: back)
             .id(selection)
     }
 
@@ -80,11 +79,11 @@ struct GuestGramTab: View {
                     }
                     ForEach(group.shares) { share in
                         let key = GuestGramSelectionKey.grant(share.id)
-                        row(key, identifier: "guest-gram-agent-\(share.agentName)", selected: selected == key) {
+                        row(key, identifier: "guest-gram-agent-\(share.agentTarget)", selected: selected == key) {
                             let newest = inbox.merge(key).items.last
                             let unread = inbox.unread(share.id)
                             return GramConversationRow(
-                                title: share.agentName,
+                                title: inbox.label(share.id),
                                 avatarNames: [share.agentName],
                                 systemImage: nil,
                                 preview: newest.map { preview($0.message, agent: share.agentName) }
@@ -121,9 +120,12 @@ struct GuestGramTab: View {
 }
 
 #if DEBUG
-/// For the UI tests, as `GuestPaneView`'s: the Gram and push calls the mock host answered
-/// (`guest-host-calls`), and what it refused a guest (`guest-forbidden-calls`).
-private struct GuestGramProbes: View {
+/// For the UI tests, over the whole guest shell (any tab), as `GuestPaneView`'s: the Gram and
+/// push calls the mock host answered (`guest-host-calls`), and what it refused a guest
+/// (`guest-forbidden-calls`). Under `HERDR_MOCK_GUEST_GRAM_ARRIVAL`, a fixture button lands a
+/// new Gram from enyo-ui and announces it as a push would.
+struct GuestGramProbes: View {
+    let hostID: String
     @State private var hostCalls = ""
     @State private var forbidden = ""
 
@@ -135,6 +137,17 @@ private struct GuestGramProbes: View {
                 .accessibilityIdentifier("guest-forbidden-calls").accessibilityLabel(forbidden)
         }
         .frame(width: 1, height: 1)
+        .overlay(alignment: .topLeading) {
+            if ProcessInfo.processInfo.environment["HERDR_MOCK_GUEST_GRAM_ARRIVAL"] != nil {
+                Button("Gram arrives") {
+                    GuestMockTransport.deliverGram()
+                    PushCenter.shared.guestGramArrived(hostID: hostID)
+                }
+                .buttonStyle(.bordered).fixedSize()
+                .offset(x: 12, y: 120)
+                .accessibilityIdentifier("guest-fixture-gram-arrives")
+            }
+        }
         .task {
             while !Task.isCancelled {
                 hostCalls = GuestMockTransport.hostCalls.joined(separator: ";")
@@ -157,6 +170,9 @@ typealias GuestGramSelectionKey = GuestGramInbox.Selection
 struct GuestGramConversation: View {
     @ObservedObject var inbox: GuestGramInbox
     let selection: GuestGramSelectionKey
+    /// On screen: the Gram tab is selected (and no agent page covers it). Only then is what
+    /// the feed shows marked read.
+    let active: Bool
     let onBack: (() -> Void)?
 
     @State private var downloadingID: String?
@@ -187,26 +203,19 @@ struct GuestGramConversation: View {
         let entry: GramFeedEntry
     }
 
-    /// The feed's rows, oldest first. A row is keyed by its message id, or by grant and id
-    /// where two hosts reuse one id.
+    /// The feed's rows, oldest first, always keyed by grant and message id
+    /// (`GuestGramMergedItem.id`): ids are not unique across hosts, and a row must keep its
+    /// identity (scroll anchor, unfolded text, download) whatever else pages in.
     private func rows(_ merge: GuestGramMerge) -> [Row] {
-        var counts: [String: Int] = [:]
-        for item in merge.items { counts[item.message.id, default: 0] += 1 }
-        let messages = merge.items.map { item -> GramMessage in
-            let gram = item.message.gramMessage(agent: inbox.agentName(item.grant))
-            guard counts[item.message.id, default: 0] > 1 else { return gram }
-            return GramMessage(id: item.id, direction: gram.direction, from: gram.from, to: gram.to,
-                               text: gram.text, createdUnixMs: gram.createdUnixMs, readByOwner: gram.readByOwner,
-                               file: gram.file, expiredFile: gram.expiredFile)
-        }
+        let messages = merge.items.map { $0.message.gramMessage(agent: inbox.agentName($0.grant)) }
         let entries = GramFeedEntry.entries(oldestFirst: messages)
-        return zip(merge.items, entries).map { Row(id: $1.id, item: $0, entry: $1) }
+        return zip(merge.items, entries).map { Row(id: $0.id, item: $0, entry: $1) }
     }
 
     private var title: String {
         switch selection {
         case .all: "All agents"
-        case .grant(let id): inbox.agentName(id)
+        case .grant(let id): inbox.label(id)
         }
     }
 
@@ -218,7 +227,11 @@ struct GuestGramConversation: View {
             header
             if let fileError { notice(fileError, id: "guest-gram-file-error") }
             if let failure = inbox.failure(selection) { notice(failure, id: "guest-gram-failure") }
-            if rows.isEmpty {
+            if rows.isEmpty && merge.hasMore {
+                // Everything held is at or under the safe floor: page until something shows.
+                ProgressView().tint(Palette.textDim).padding(.top, 60).frame(maxHeight: .infinity, alignment: .top)
+                    .task(id: "\(merge.floorUnixMs ?? 0)/\(merge.hiddenCount)") { try? await inbox.loadEarlier(selection) }
+            } else if rows.isEmpty {
                 ScrollView { empty.frame(maxWidth: .infinity) }
                     .refreshable { await inbox.refresh(selection) }
                     .frame(maxHeight: .infinity)
@@ -231,10 +244,17 @@ struct GuestGramConversation: View {
         .gramFileViewer($preview)
         .task {
             await inbox.refresh(selection)
-            await inbox.markShown(selection)
+            // The reader may have left while the refresh was out.
+            if active { await inbox.markShown(selection) }
         }
-        // Viewed is read: whatever lands in the feed while it shows is marked read.
+        // Viewed is read: whatever lands in the feed while it shows is marked read, and what
+        // landed while it was hidden once it shows again. Never while another tab is up.
         .onChange(of: merge.items.map(\.id)) { _, _ in
+            guard active else { return }
+            Task { await inbox.markShown(selection) }
+        }
+        .onChange(of: active) { _, now in
+            guard now else { return }
             Task { await inbox.markShown(selection) }
         }
         .onDisappear { openTask?.cancel() }
@@ -242,14 +262,18 @@ struct GuestGramConversation: View {
         .accessibilityIdentifier("guest-gram-list")
     }
 
+    /// Back in its capsule, leading; in an iPad window whose controls take the leading corner
+    /// Back joins the right-hand capsule instead (`SectionBackSlot`), as the guest home's.
     private var header: some View {
         SectionTopBar(title: title, leading: {
-            if let onBack {
-                SectionBackSlot(.leading) {
-                    SectionBarButton(icon: "chevron.left", label: "Gram", identifier: "guest-gram-back", action: onBack)
-                }
-            }
-        }) { EmptyView() }
+            if onBack != nil { SectionBackSlot(.leading) { backButton } }
+        }) {
+            if onBack != nil { SectionBackSlot(.trailing) { backButton } }
+        }
+    }
+
+    private var backButton: some View {
+        SectionBarButton(icon: "chevron.left", label: "Gram", identifier: "guest-gram-back") { onBack?() }
     }
 
     private func feed(_ rows: [Row], merge: GuestGramMerge) -> some View {
@@ -387,13 +411,13 @@ struct GuestGramConversation: View {
             if selection == .all, inbox.shares.count > 1 {
                 Menu {
                     ForEach(inbox.shares) { share in
-                        Button(share.agentName) { target = share.id }
+                        Button(inbox.label(share.id)) { target = share.id }
                     }
                 } label: {
                     HStack(spacing: 6) {
                         Text("To").foregroundStyle(Palette.textDim)
                         if let to { GramAvatar(name: inbox.agentName(to), size: 18) }
-                        Text(to.map(inbox.agentName) ?? "").foregroundStyle(Palette.text)
+                        Text(to.map(inbox.label) ?? "").foregroundStyle(Palette.text)
                         Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(Palette.textFaint)
                     }
@@ -402,10 +426,10 @@ struct GuestGramConversation: View {
                     .background(Capsule().fill(Palette.surfaceRaised))
                 }
                 .accessibilityIdentifier("guest-gram-to")
-                .accessibilityValue(to.map(inbox.agentName) ?? "")
+                .accessibilityValue(to.map(inbox.label) ?? "")
             }
             HStack(alignment: .bottom, spacing: 8) {
-                TextField(to.map { "Message \(inbox.agentName($0))" } ?? "Message", text: $draft, axis: .vertical)
+                TextField(to.map { "Message \(inbox.label($0))" } ?? "Message", text: $draft, axis: .vertical)
                     .font(Typography.app(15))
                     .lineLimit(1...5)
                     .focused($composerFocused)
@@ -444,7 +468,7 @@ struct GuestGramConversation: View {
                 try await inbox.send(text, to: to)
                 if draft.trimmingCharacters(in: .whitespacesAndNewlines) == text { draft = "" }
             } catch {
-                let agent = inbox.agentName(to)
+                let agent = inbox.label(to)
                 sendError = GuestError.classify(error).map { "Couldn't send to \(agent): \($0.description)" }
                     ?? "Couldn't send to \(agent): \(error.localizedDescription)"
             }
@@ -501,9 +525,8 @@ struct GuestGramConversation: View {
     private func open(_ item: GuestGramMergedItem) {
         guard downloadingID == nil, let file = item.message.file,
               let client = inbox.client(item.grant) else { return }
-        let rowID = rows(inbox.merge(selection)).first { $0.item.key == item.key }?.id ?? item.message.id
         let owner = inbox.access(item.grant)?.ownerName ?? "The owner"
-        downloadingID = rowID
+        downloadingID = item.id
         progress = nil
         fileError = nil
         openTask = Task {

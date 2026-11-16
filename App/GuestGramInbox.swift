@@ -60,35 +60,69 @@ final class GuestGramInbox: ObservableObject {
         for access in accesses {
             if let grant = grants[access.id] {
                 grant.access = access
-                continue
+            } else {
+                _ = try? connection(for: access)
             }
-            guard let connection = try? connect(access) else { continue }
-            let grant = Grant(access: access, connection: connection)
-            grants[access.id] = grant
-            grant.feed.onChange = { [weak self] in self?.revision += 1 }
-            // The features model publishes on the main thread (`GuestFeaturesModel.sink`).
-            grant.watch = connection.features.$current.sink { [weak self, weak grant] features in
-                MainActor.assumeIsolated {
-                    guard let self, let grant else { return }
-                    let gram = features?.gram == true
-                    guard gram != grant.gram else { return }
-                    grant.gram = gram
-                    self.publishShares()
-                    if gram { Task { await grant.feed.refresh(client: grant.connection.client) } }
-                }
-            }
-            // Any call's hello says what the host shares; a ping asks for nothing else.
-            Task { _ = try? await connection.client.serverCapabilities() }
         }
         publishShares()
+    }
+
+    /// The share's one connection, shared with its Agents row and agent page: their polling
+    /// (`agent.list` every few seconds) carries the host's hello features, so a host that
+    /// comes back online, or an owner who turns Gram on, shows here without a second probe.
+    func connection(for access: GuestAccess) throws -> GuestConnection {
+        if let grant = grants[access.id] { return grant.connection }
+        let connection = try connect(access)
+        let grant = Grant(access: access, connection: connection)
+        grants[access.id] = grant
+        grant.feed.onChange = { [weak self] in self?.revision += 1 }
+        // The features model publishes on the main thread (`GuestFeaturesModel.sink`).
+        grant.watch = connection.features.$current.sink { [weak self, weak grant] features in
+            MainActor.assumeIsolated {
+                guard let self, let grant else { return }
+                let gram = features?.gram == true
+                guard gram != grant.gram else { return }
+                grant.gram = gram
+                self.publishShares()
+                if gram { Task { await grant.feed.refresh(client: grant.connection.client) } }
+            }
+        }
+        // Any call's hello says what the host shares; a ping asks for nothing else.
+        Task { _ = try? await connection.client.serverCapabilities() }
+        return connection
+    }
+
+    /// How often a share without Gram (or whose host didn't answer) is asked again, for the
+    /// shares on other machines that no Agents screen polls.
+    static let rediscoverInterval: Duration = .seconds(30)
+
+    /// Asks every share without Gram what its host shares now, until cancelled.
+    func rediscover() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: Self.rediscoverInterval)
+            await discover(hostID: nil)
+        }
+    }
+
+    /// Pings the shares without Gram (on `hostID`, or all): their hello updates the features.
+    private func discover(hostID: String?) async {
+        for grant in order.compactMap({ grants[$0] }) where !grant.gram {
+            guard hostID == nil || grant.access.endpoint.hostID == hostID else { continue }
+            _ = try? await grant.connection.client.serverCapabilities()
+        }
     }
 
     private func publishShares() {
         let next = order.compactMap { id in grants[id].flatMap { $0.gram ? $0.access : nil } }
         if next != shares { shares = next }
+        labels = GuestAccess.recipientLabels(next)
         if case .grant(let id)? = selection, !next.contains(where: { $0.id == id }) { selection = nil }
         revision += 1
     }
+
+    /// Each share's agent as the Gram tab names it: unique where two agents share a name.
+    private(set) var labels: [GuestAccess.ID: String] = [:]
+    func label(_ id: GuestAccess.ID) -> String { labels[id] ?? agentName(id) }
 
     /// Rows grouped by owner and host, in share order. One group needs no label.
     var groups: [Group] {
@@ -138,21 +172,22 @@ final class GuestGramInbox: ObservableObject {
         return failures.isEmpty ? nil : failures.joined(separator: "\n")
     }
 
-    /// The All agents count and the tab's badge: the sum of every share's unread.
-    var unreadTotal: Int { merge(.all).unreadCount }
-    func unread(_ id: GuestAccess.ID) -> Int { merge(.all).unreadCount(grant: id) }
+    /// The All agents count and the tab's badge: the sum of every share's unread, read off
+    /// each feed (the counts don't depend on the merged order or the floor).
+    var unreadTotal: Int { shares.reduce(0) { $0 + unread($1.id) } }
+    func unread(_ id: GuestAccess.ID) -> Int {
+        guard let grant = grants[id], grant.gram else { return 0 }
+        return grant.feed.unreadCount
+    }
 
-    /// Reloads the newest page of every share with Gram, or those on `hostID`. A full
-    /// refresh also asks the shares without Gram again, in case their owner turned it on.
+    /// Reloads the newest page of every share with Gram, or those on `hostID` (a push). The
+    /// shares there without Gram are asked again too: a Gram push means their host shares it.
     func refresh(hostID: String? = nil) async {
-        for grant in order.compactMap({ grants[$0] }) {
+        for grant in order.compactMap({ grants[$0] }) where grant.gram {
             guard hostID == nil || grant.access.endpoint.hostID == hostID else { continue }
-            if grant.gram {
-                await grant.feed.refresh(client: grant.connection.client)
-            } else if hostID == nil {
-                _ = try? await grant.connection.client.serverCapabilities()
-            }
+            await grant.feed.refresh(client: grant.connection.client)
         }
+        await discover(hostID: hostID)
     }
 
     func refresh(_ selection: Selection) async {
@@ -178,11 +213,21 @@ final class GuestGramInbox: ObservableObject {
         }
     }
 
-    /// Posts `text` to the share's agent, then reloads that share.
+    /// Posts `text` to the share's agent under the name its host lists now (the guest posting
+    /// contract; the share's saved name can lag a rename on a machine whose Agents screen
+    /// isn't open), saving the rename, then reloads that share.
     func send(_ text: String, to id: GuestAccess.ID) async throws {
         guard let grant = grants[id] else { return }
-        try await grant.connection.client.guestGramPost(text: text, to: grant.access.agentName)
-        await grant.feed.refresh(client: grant.connection.client)
+        let client = grant.connection.client
+        let agents = try await client.agentList()
+        let listed = agents.first(where: grant.access.isSharedAgent)
+        if let renamed = grant.access.renamed(listing: agents) {
+            grant.access = renamed
+            SharedMachinesStore.shared.update(renamed)
+            publishShares()
+        }
+        try await client.guestGramPost(text: text, to: grant.access.liveAgentName(listed: listed))
+        await grant.feed.refresh(client: client)
     }
 
     func describe(_ error: Error, access: GuestAccess) -> String {

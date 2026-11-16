@@ -165,6 +165,12 @@ struct GuestMockTransport: HerdrTransport {
         return Self.allowlist.contains(method) && !(scenario == .oldHost && method == "pane.set_pty_size")
     }
 
+    /// A new unread Gram from the `guestmachine` mock's enyo-ui (`gm-e3`), for the test of
+    /// what a hidden Gram tab may mark read.
+    static func deliverGram() {
+        enyoGram.arrive(id: "gm-e3", from: "enyo-ui", text: "Pricing page shipped.")
+    }
+
     /// The app opened a downloaded Gram file (for the UI tests' probe).
     static func noteOpened(_ name: String) {
         hostRecorder.append("opened:\(name)")
@@ -611,6 +617,14 @@ struct GuestMockTransport: HerdrTransport {
                     return nil
                 }
                 return (olderPage, false)
+            }
+        }
+
+        /// A new unread Gram from the agent, newest.
+        func arrive(id: String, from: String, text: String) {
+            lock.withLock {
+                messages.insert(["id": id, "direction": "agent_to_owner", "from": from, "text": text,
+                                 "created_unix_ms": UInt64(Date().timeIntervalSince1970 * 1000), "read": false], at: 0)
             }
         }
 
