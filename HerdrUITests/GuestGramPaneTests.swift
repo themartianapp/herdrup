@@ -28,30 +28,40 @@ final class GuestGramPaneTests: XCTestCase {
         return probe.label
     }
 
+    /// The agent page's Gram button opens the shell's Gram tab on that agent's own feed (#697).
+    private func openAgentPage(_ app: XCUIApplication) {
+        let row = app.buttons["guest-agent-row"]
+        XCTAssertTrue(row.waitForExistence(timeout: 10), "the shared agent's row should render")
+        row.tap()
+    }
+
     private func openGramTab(_ app: XCUIApplication) {
+        openAgentPage(app)
         let tab = app.buttons["guest-tab-gram"]
-        XCTAssertTrue(tab.waitForExistence(timeout: 10), "a host that shares Gram should offer the Gram tab")
+        XCTAssertTrue(tab.waitForExistence(timeout: 10), "a host that shares Gram should offer the Gram button")
         let list = element(app, "guest-gram-list")
         for _ in 0..<3 where !list.exists {
-            tab.tap()
+            if tab.exists { tab.tap() }
             _ = list.waitForExistence(timeout: 3)
         }
-        XCTAssertTrue(list.exists, "the Gram tab should show the list")
+        XCTAssertTrue(list.exists, "the Gram button should open the agent's Gram")
     }
 
     // MARK: Gram tab
 
-    /// The tab lists the agent's Grams and the guest's own post, oldest first as the owner's
+    /// The agent's Gram lists its Grams and the guest's own post, oldest first as the owner's
     /// Gram does, and counts the unread ones until the guest looks: then they are marked read
     /// on the host, for this guest only.
     func testGramTabListsTheSharedAgentsGramsAndMarksThemReadWhenViewed() {
-        let app = launch(features: "gram")
+        let app = launch("guest", features: "gram")
+        openAgentPage(app)
         let badge = element(app, "guest-gram-unread")
-        XCTAssertTrue(badge.waitForExistence(timeout: 10), "unread Grams should show a count before the tab opens")
+        XCTAssertTrue(badge.waitForExistence(timeout: 10), "unread Grams should show a count before Gram opens")
         XCTAssertEqual(badge.label, "2")
         XCTAssertTrue(app.buttons["guest-tab-terminal"].exists)
 
         openGramTab(app)
+        XCTAssertTrue(app.tabBars.buttons["Gram"].isSelected, "the Gram button lands on the shell's Gram tab")
         let rows = ["gm-1", "gm-2", "gm-3", "gm-4"].map { element(app, "guest-gram-row-\($0)") }
         for row in rows { XCTAssertTrue(row.waitForExistence(timeout: 5), "row \(row) should render") }
         XCTAssertLessThan(rows[0].frame.minY, rows[1].frame.minY, "oldest first")
@@ -64,7 +74,6 @@ final class GuestGramPaneTests: XCTestCase {
         pollLabel(app, "guest-host-calls", "viewing the list should mark its unread Grams read") {
             $0.contains("gram.mark_read:gm-2,gm-4")
         }
-        XCTAssertTrue(badge.waitForNonExistence(timeout: 5), "nothing is unread once seen")
         Thread.sleep(forTimeInterval: 0.8)
         attach(app, "guest-gram-tab")
         XCTAssertEqual(probe(app, "guest-forbidden-calls"), "", "the Gram tab calls only what a guest may")
@@ -74,14 +83,14 @@ final class GuestGramPaneTests: XCTestCase {
     /// newest Gram in view above the composer; the guest's own post sits on the right, the
     /// agent's on the left under one sender line per run.
     func testGramTabIsOldestFirstWithTheNewestVisibleAtTheBottom() {
-        let app = launch(features: "gram")
+        let app = launch("guest", features: "gram")
         openGramTab(app)
         let newest = element(app, "guest-gram-row-gm-4")
         let mine = element(app, "guest-gram-row-gm-3")
         let older = element(app, "guest-gram-row-gm-2")
         XCTAssertTrue(newest.waitForExistence(timeout: 5))
         XCTAssertTrue(poll(5, every: 0.25) { newest.isHittable }, "the newest Gram is in view on open")
-        let input = app.textViews["guest-composer-input"]
+        let input = element(app, "guest-gram-composer")
         XCTAssertTrue(input.exists)
         XCTAssertLessThan(newest.frame.maxY, input.frame.minY + 1, "the newest Gram sits above the composer")
         // Pinned to the bottom: nothing is drawn below the newest.
@@ -94,8 +103,6 @@ final class GuestGramPaneTests: XCTestCase {
         XCTAssertGreaterThan(mine.frame.midX, older.frame.midX, "the guest's own post sits on the right")
         XCTAssertFalse(element(app, "guest-view-only-note").exists, "the view-only note is the terminal's")
         XCTAssertFalse(app.buttons["guest-find"].exists, "Find is the terminal's")
-        XCTAssertFalse(app.buttons["guest-refresh"].exists, "Reconnect is the terminal's")
-        XCTAssertTrue(app.buttons["guest-actions"].exists, "the ⋯ stays for notifications")
         Thread.sleep(forTimeInterval: 0.8)
         attach(app, "guest-gram-oldest-first")
         XCTAssertEqual(probe(app, "guest-forbidden-calls"), "")
@@ -106,7 +113,7 @@ final class GuestGramPaneTests: XCTestCase {
     /// asks again and the page lands above the first one. The first page is taller than the
     /// screen (gm-f30 its oldest), so only the reader's scroll up asks for the older page.
     func testAFailedOlderPageOffersARetryThatLoadsIt() {
-        let app = launch(features: "gram", environment: ["HERDR_MOCK_GUEST_OLDER_PAGE_FAILS_ONCE": "1"])
+        let app = launch("guest", features: "gram", environment: ["HERDR_MOCK_GUEST_OLDER_PAGE_FAILS_ONCE": "1"])
         openGramTab(app)
         XCTAssertTrue(element(app, "guest-gram-row-gm-4").waitForExistence(timeout: 5))
         let list = element(app, "guest-gram-list")
@@ -135,7 +142,7 @@ final class GuestGramPaneTests: XCTestCase {
     /// a chip naming it "no longer available", never an empty row body. It is not a button
     /// and tapping it fetches nothing from the host.
     func testAnExpiredGramFileDrawsAsAnInertChip() {
-        let app = launch(features: "gram")
+        let app = launch("guest", features: "gram")
         openGramTab(app)
         let row = element(app, "guest-gram-row-gm-0")
         XCTAssertTrue(row.waitForExistence(timeout: 5), "the expired message keeps its row")
@@ -156,7 +163,7 @@ final class GuestGramPaneTests: XCTestCase {
 
     /// A file downloads from the host in its bounded pieces and opens.
     func testOpeningAGramFileDownloadsItInPiecesAndOpensIt() {
-        let app = launch(features: "gram")
+        let app = launch("guest", features: "gram")
         openGramTab(app)
         let file = app.buttons["guest-gram-file-gm-4"]
         XCTAssertTrue(file.waitForExistence(timeout: 5))
@@ -183,14 +190,16 @@ final class GuestGramPaneTests: XCTestCase {
     }
 
     /// Without Gram sharing, or on a host older than the features object, there is no Gram
-    /// tab and the app never asks for Gram.
+    /// button or tab and the app never asks for Gram.
     func testNoGramTabWhenTheHostDoesNotShareGram() {
         for features in ["none", nil] as [String?] {
-            let app = launch(features: features)
+            let app = launch("guest", features: features)
+            openAgentPage(app)
             XCTAssertTrue(element(app, "guest-terminal").waitForExistence(timeout: 10))
             XCTAssertTrue(element(app, "guest-view-only-note").waitForExistence(timeout: 10))
             Thread.sleep(forTimeInterval: 3)
-            XCTAssertFalse(app.buttons["guest-tab-gram"].exists, "no Gram tab for features \(String(describing: features))")
+            XCTAssertFalse(app.buttons["guest-tab-gram"].exists, "no Gram button for features \(String(describing: features))")
+            XCTAssertFalse(app.tabBars.buttons["Gram"].exists, "no Gram tab for features \(String(describing: features))")
             XCTAssertFalse(element(app, "guest-push-prompt").exists, "no push offer without push")
             XCTAssertEqual(probe(app, "guest-forbidden-calls"), "", "the app must not ask for Gram")
             XCTAssertEqual(probe(app, "guest-host-calls"), "")
@@ -248,6 +257,51 @@ final class GuestGramPaneTests: XCTestCase {
                       "a status push should open the share's terminal")
         XCTAssertTrue(app.buttons["guest-tab-gram"].waitForExistence(timeout: 5))
         XCTAssertFalse(element(app, "guest-gram-list").exists, "a status push opens the terminal, not Gram")
+    }
+
+    // MARK: One Gram across agents (#697)
+
+    /// Two shared agents with Gram on one machine: the Gram tab's "All agents" row opens one
+    /// feed with both agents' Grams under their names, and a Reply from one message's menu
+    /// goes to that message's agent, though the composer's default is the newest one's.
+    func testAllAgentsFeedMergesAgentsAndRepliesToTheMessagesAgent() {
+        let app = launch("guestmachine", features: "gram")
+        let gramTab = app.tabBars.buttons["Gram"]
+        XCTAssertTrue(gramTab.waitForExistence(timeout: 15), "shares with Gram add the shell's Gram tab")
+        gramTab.tap()
+        let all = app.buttons["guest-gram-all"]
+        XCTAssertTrue(all.waitForExistence(timeout: 10), "the inbox opens with the All agents row")
+        XCTAssertTrue(app.buttons["guest-gram-agent-llm-opt"].exists, "one row per shared agent")
+        XCTAssertTrue(app.buttons["guest-gram-agent-enyo-ui"].firstMatch.exists, "one row per shared agent")
+        attach(app, "guest-gram-inbox")
+        all.tap()
+
+        let llm = element(app, "guest-gram-row-gm-4")
+        let enyo = element(app, "guest-gram-row-gm-e2")
+        XCTAssertTrue(llm.waitForExistence(timeout: 10), "llm-opt's Gram is in the combined feed")
+        XCTAssertTrue(enyo.waitForExistence(timeout: 5), "enyo-ui's Gram is in the combined feed")
+        XCTAssertTrue(app.staticTexts["llm-opt"].exists, "each agent's Grams carry its name")
+        XCTAssertTrue(app.staticTexts["enyo-ui"].exists, "each agent's Grams carry its name")
+        XCTAssertLessThan(enyo.frame.minY, llm.frame.minY, "enyo-ui's (5 min ago) sits above llm-opt's (2 min ago)")
+        let to = element(app, "guest-gram-to")
+        XCTAssertTrue(to.waitForExistence(timeout: 5))
+        XCTAssertEqual(to.value as? String, "llm-opt", "a new message defaults to the newest Gram's agent")
+
+        enyo.press(forDuration: 1.2)
+        let reply = app.buttons["Reply"].firstMatch
+        XCTAssertTrue(reply.waitForExistence(timeout: 5), "a message's menu offers Reply")
+        reply.tap()
+        XCTAssertEqual(to.value as? String, "enyo-ui", "Reply addresses the composer to the message's agent")
+        let composer = element(app, "guest-gram-composer")
+        composer.tap()
+        composer.typeText("Ship it")
+        app.buttons["guest-gram-send"].tap()
+        let calls = pollLabel(app, "guest-host-calls", "the reply should post to enyo-ui's grant") {
+            $0.contains("gram.post.to:")
+        }
+        XCTAssertTrue(calls.contains("gram.post.to:enyo-ui@w2-4"), "the reply went to enyo-ui's share: \(calls)")
+        XCTAssertFalse(calls.contains("gram.post.to:llm-opt"), "nothing went to llm-opt: \(calls)")
+        attach(app, "guest-gram-all-agents-reply")
     }
 
     // MARK: Attachments

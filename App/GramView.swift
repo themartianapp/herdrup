@@ -2933,8 +2933,8 @@ struct GramFeedRow<Row: View>: View {
 /// file as a file card, sharing one card with the text when the message has both. A file
 /// the store expired draws as a file card with nothing to open (`GramExpiredFileCard`).
 ///
-/// `viewer` says whose feed it is: the owner's inbox, or a guest's copy of the one agent
-/// shared with them (`GuestGramList`), which draws the same rows with less to do.
+/// `viewer` says whose feed it is: the owner's inbox, or a guest's Gram of the agents
+/// shared with them (`GuestGramConversation`), which draws the same rows with less to do.
 struct GramRow: View, Equatable {
     /// Who reads the feed, and so what a row offers.
     enum Viewer: Equatable {
@@ -2980,6 +2980,9 @@ struct GramRow: View, Equatable {
     var onDelete: () -> Void
     /// Opens (true) or folds (false) a text segment, by index.
     var onSetExpanded: (Int, Bool) -> Void
+    /// Answers this message from the menu: the guest's combined Gram (#697) addresses the
+    /// composer to the message's agent. Nil offers no Reply.
+    var onReply: (() -> Void)?
     /// The first message of a sender group: draws the sender line.
     var startsGroup = true
     /// The last message of a group: draws the avatar and the bubble tail.
@@ -3018,6 +3021,7 @@ struct GramRow: View, Equatable {
             && lhs.endsGroup == rhs.endsGroup
             && lhs.localMachine == rhs.localMachine
             && lhs.viewer == rhs.viewer
+            && (lhs.onReply == nil) == (rhs.onReply == nil)
             && (lhs.message.file?.isImage != true
                 || (lhs.feedLanded == rhs.feedLanded
                     && lhs.visibleTop == rhs.visibleTop
@@ -3132,6 +3136,9 @@ struct GramRow: View, Equatable {
             } else {
                 StableMenuItem("Save to Files", systemImage: "square.and.arrow.down", action: onSaveFile)
             }
+        }
+        if let onReply {
+            StableMenuItem("Reply", systemImage: "arrowshape.turn.up.left", action: onReply)
         }
         if !message.text.isEmpty {
             StableMenuItem("Copy", systemImage: "doc.on.doc") {

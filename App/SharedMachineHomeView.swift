@@ -2,31 +2,55 @@ import SwiftUI
 import HerdrKit
 
 /// One machine home, with each grant retaining its own authenticated connection,
-/// pane, Gram permissions, push routing, and leave action.
+/// pane, Gram permissions, push routing, and leave action. It holds the guest's one Gram
+/// inbox (#697) across every share on the phone, the Gram tab's.
 struct SharedMachineHomeView: View {
     let access: GuestAccess
     /// Opens a grant's connection; the relay unless a mock stands in.
-    var connect: (GuestAccess) throws -> GuestConnection = GuestConnection.open
+    let connect: (GuestAccess) throws -> GuestConnection
     let onBack: (() -> Void)?
     let onLeave: () -> Void
     @ObservedObject private var store = SharedMachinesStore.shared
+    @StateObject private var inbox: GuestGramInbox
     @State private var settingsAccess: GuestAccess?
     @State private var settingsConnection: GuestConnection?
     /// What each grant's row last read, so the Settings list tells apart agents that share
     /// a name.
     @State private var statuses = GuestShareStatusBoard()
+    @State private var tab: GuestHomeView.Tab = .agents
+
+    init(access: GuestAccess, connect: @escaping (GuestAccess) throws -> GuestConnection = GuestConnection.open,
+         onBack: (() -> Void)?, onLeave: @escaping () -> Void) {
+        self.access = access
+        self.connect = connect
+        self.onBack = onBack
+        self.onLeave = onLeave
+        _inbox = StateObject(wrappedValue: GuestGramInbox(connect: connect))
+    }
 
     private var peers: [GuestAccess] {
         store.groups.first { $0.id == SharedMachineGroup.Identity(access) }?.accesses ?? [access]
     }
 
     var body: some View {
+        shell
+            .onChange(of: store.machines, initial: true) { _, machines in inbox.sync(machines) }
+            // A Gram push from a share's host, or the guest's own attachment posted there:
+            // that host's feeds reload.
+            .onReceive(PushCenter.shared.$guestGramArrival) { arrival in
+                guard let arrival else { return }
+                Task { await inbox.refresh(hostID: arrival.hostID) }
+            }
+    }
+
+    @ViewBuilder
+    private var shell: some View {
         if peers.count == 1, let only = peers.first {
-            GuestHomeView(access: only, connect: { try connect(only) },
+            GuestHomeView(access: only, connect: { try connect(only) }, inbox: inbox,
                           onBack: onBack, onLeave: leftShare)
                 .id(only.id)
         } else {
-            TabView {
+            TabView(selection: $tab) {
                 VStack(spacing: 0) {
                     SectionTopBar(title: "Agents", leading: {
                         if let onBack {
@@ -51,7 +75,8 @@ struct SharedMachineHomeView: View {
                             }
                             .padding(.horizontal, 20).padding(.vertical, 10)
                             ForEach(peers) { peer in
-                                GuestHomeView(access: peer, connect: { try connect(peer) },
+                                GuestHomeView(access: peer, connect: { try connect(peer) }, inbox: inbox,
+                                              onOpenGram: { _ in tab = .gram },
                                               embedded: true, onBack: nil, onLeave: leftShare,
                                               statusBoard: statuses)
                             }
@@ -60,7 +85,15 @@ struct SharedMachineHomeView: View {
                     .scrollBounceBehavior(.basedOnSize)
                 }
                 .background(Palette.ground.ignoresSafeArea())
+                .tag(GuestHomeView.Tab.agents)
                 .tabItem { Label("Agents", systemImage: "square.grid.2x2.fill") }
+
+                if !inbox.shares.isEmpty {
+                    GuestGramTab(inbox: inbox)
+                        .tag(GuestHomeView.Tab.gram)
+                        .tabItem { Label("Gram", systemImage: "bubble.left.and.bubble.right") }
+                        .badge(inbox.unreadTotal)
+                }
 
                 NavigationStack {
                     List(peers) { peer in
@@ -82,6 +115,7 @@ struct SharedMachineHomeView: View {
                     }
                     .navigationTitle("Shared access")
                 }
+                .tag(GuestHomeView.Tab.settings)
                 .tabItem { Label("Settings", systemImage: "gearshape") }
             }
             .tint(Palette.text)
