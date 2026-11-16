@@ -122,4 +122,41 @@ final class GuestGramFeedTests: XCTestCase {
         XCTAssertEqual(feed.messages.map(\.id), ["m9", "m3"])
         XCTAssertFalse(feed.hasMore)
     }
+
+    /// Review 2 (#702): an older page that fails is kept as state, not only thrown, so a
+    /// conversation whose rows the strict floor all hides can offer Retry; the next page
+    /// that lands, or a refresh, clears it.
+    func testAFailedOlderPageIsKeptUntilAPageLands() async throws {
+        let first = #"{"id":"$ID","result":{"type":"guest_gram_list","has_more":true,"messages":[{"id":"z","direction":"agent_to_owner","from":"a","text":"z","created_unix_ms":500,"read":false}]}}"#
+        let older = #"{"id":"$ID","result":{"type":"guest_gram_list","has_more":false,"messages":[{"id":"y","direction":"agent_to_owner","from":"a","text":"y","created_unix_ms":500,"read":true}]}}"#
+        let failure = #"{"id":"$ID","error":{"code":"internal","message":"gram store busy"}}"#
+        let host = ScriptedHost([first, failure, older])
+        let client = HerdrClient(transport: host)
+        let feed = GuestGramFeed()
+        await feed.refresh(client: client)
+        var thrown: Error?
+        do { try await feed.loadMore(client: client) } catch { thrown = error }
+        XCTAssertNotNil(thrown, "the failure is thrown")
+        XCTAssertNotNil(feed.pageError, "and kept for a screen with no sentinel to show it")
+        XCTAssertNil(feed.lastError, "the list itself is fine")
+        XCTAssertFalse(GuestGramMerge(lanes: [feed.lane(grant: "a")]).hasMore == false, "still pageable: Retry can ask again")
+        try await feed.loadMore(client: client)
+        XCTAssertNil(feed.pageError, "a page that lands clears it")
+        XCTAssertEqual(GuestGramMerge(lanes: [feed.lane(grant: "a")]).items.map(\.id), ["a/y", "a/z"])
+    }
+
+    /// Answers each call with the next scripted line.
+    private final class ScriptedHost: HerdrTransport, @unchecked Sendable {
+        private var lines: [String]
+        private let lock = NSLock()
+        init(_ lines: [String]) { self.lines = lines }
+        func roundTrip(_ requestLine: String) async throws -> String {
+            let object = try JSONSerialization.jsonObject(with: Data(requestLine.utf8)) as? [String: Any]
+            let line = lock.withLock { lines.removeFirst() }
+            return line.replacingOccurrences(of: "$ID", with: object?["id"] as? String ?? "x")
+        }
+        func stream(_ requestLine: String) -> AsyncThrowingStream<String, Error> {
+            AsyncThrowingStream { $0.finish() }
+        }
+    }
 }

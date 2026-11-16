@@ -269,9 +269,37 @@ final class GuestGramMergeTests: XCTestCase {
         ]
         let labels = GuestAccess.recipientLabels(shares)
         XCTAssertEqual(shares.map { labels[$0.id] ?? "" }, [
-            "llm-opt", "enyo-ui · w2-4", "enyo-ui · w2-9", "docs · Jerry · Studio", "docs · Ana · Laptop",
+            "llm-opt", "enyo-ui · Jerry · Studio · w2-4", "enyo-ui · Jerry · Studio · w2-9",
+            "docs · Jerry · Studio", "docs · Ana · Laptop",
         ])
         XCTAssertEqual(Set(labels.values).count, shares.count)
+    }
+
+    /// Review 2: terminals are host-local, so two machines each holding two enyo-ui at the
+    /// same terminals must keep their owner and machine as well as the terminal.
+    func testRecipientLabelsStayUniqueAcrossMachinesWithDuplicates() {
+        func share(_ guest: String, owner: String, machine: String, host: String, target: String) -> GuestAccess {
+            GuestAccess(guestID: guest, guestName: "nike", machineLabel: machine, ownerName: owner,
+                        agentName: "enyo-ui", agentTarget: target,
+                        endpoint: RelayEndpoint(relay: URL(string: "https://relay.example")!, hostID: host,
+                                                hostPublicKey: Data(repeating: 1, count: 32)),
+                        acceptedAt: Date(timeIntervalSince1970: 0))
+        }
+        let shares = [
+            share("g1", owner: "Jerry", machine: "Studio", host: "h1", target: "w1-3"),
+            share("g2", owner: "Jerry", machine: "Studio", host: "h1", target: "w2-4"),
+            share("g3", owner: "Ana", machine: "Laptop", host: "h2", target: "w1-3"),
+            share("g4", owner: "Ana", machine: "Laptop", host: "h2", target: "w2-4"),
+            // Same owner and machine label on another host, same terminal: the host tells it apart.
+            share("g5", owner: "Ana", machine: "Laptop", host: "h3-abcdef", target: "w1-3"),
+        ]
+        let labels = GuestAccess.recipientLabels(shares)
+        XCTAssertEqual(shares.map { labels[$0.id] ?? "" }, [
+            "enyo-ui · Jerry · Studio · w1-3", "enyo-ui · Jerry · Studio · w2-4",
+            "enyo-ui · Ana · Laptop · w1-3 · h2", "enyo-ui · Ana · Laptop · w2-4",
+            "enyo-ui · Ana · Laptop · w1-3 · h3-abc",
+        ])
+        XCTAssertEqual(Set(labels.values).count, shares.count, "every recipient reads apart")
     }
 
     private static func pageLine(_ messages: [(String, UInt64)], hasMore: Bool) -> String {

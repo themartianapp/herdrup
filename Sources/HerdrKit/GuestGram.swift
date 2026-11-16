@@ -284,6 +284,10 @@ public final class GuestGramFeed {
     /// Why the newest refresh failed; nil after one succeeds. An older page's failure is
     /// thrown by `loadMore` instead.
     public private(set) var lastError: Error?
+    /// Why the last older page failed, until a page lands or a refresh replaces the list:
+    /// state for a view with nothing else on screen to show it (the strict floor hides
+    /// every row), as well as thrown by `loadMore`.
+    public private(set) var pageError: Error?
     public var onChange: (() -> Void)?
 
     private var gate = AgentRosterLoadGate()
@@ -325,6 +329,7 @@ public final class GuestGramFeed {
             if older.isEmpty { hasMore = page.hasMore }
             listVersion += 1
             lastError = nil
+            pageError = nil
         case .failure(let error):
             lastError = error
         }
@@ -335,7 +340,8 @@ public final class GuestGramFeed {
 
     /// The next older page. Dropped if a refresh replaced the list meanwhile. A failure is
     /// THROWN rather than kept in `lastError`, for the caller to show where the reader asked
-    /// for the page (the feed's top sentinel) with a retry, as the owner's inbox does.
+    /// for the page (the feed's top sentinel) with a retry, as the owner's inbox does; it is
+    /// also kept in `pageError` until a page lands or a refresh replaces the list.
     public func loadMore(client: HerdrClient) async throws {
         guard hasMore, !loadingMore, let last = messages.last else { return }
         loadingMore = true
@@ -346,12 +352,15 @@ public final class GuestGramFeed {
             page = try await client.guestGramList(limit: Self.pageSize, beforeID: last.id)
         } catch {
             guard listVersion == version, !(error is CancellationError) else { return }
+            pageError = error
+            onChange?()
             throw error
         }
         guard listVersion == version else { return }
         let known = Set(messages.map(\.id))
         messages += page.messages.filter { !known.contains($0.id) }
         hasMore = page.hasMore
+        pageError = nil
         onChange?()
     }
 

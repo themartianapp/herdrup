@@ -158,24 +158,30 @@ extension GuestGramFeed {
 }
 
 extension GuestAccess {
-    /// What the guest's Gram calls each share's agent: its name, made unique where two shares
-    /// carry the same one ("enyo-ui · Jerry · Mac Studio", then the agent's terminal).
+    /// What the guest's Gram calls each share's agent, unique across all of them. A name
+    /// held once stays bare. Within a group sharing a name, a label that still collides gains
+    /// one more part at a time: the owner and machine ("enyo-ui · Jerry · Studio"), then the
+    /// terminal ("… · w2-4"; host-local, so never without the machine), then the host id's
+    /// first 6 characters, then the grant's guest id.
     public static func recipientLabels(_ shares: [GuestAccess]) -> [GuestAccess.ID: String] {
+        func label(_ share: GuestAccess, level: Int) -> String {
+            let parts = [share.agentName, share.ownerName, share.machineLabel, share.agentTarget,
+                         String(share.endpoint.hostID.prefix(6)), share.guestID]
+            let count = [1, 3, 4, 5, 6][min(level, 4)]
+            return parts.prefix(count).joined(separator: " · ")
+        }
         var labels: [GuestAccess.ID: String] = [:]
         for (_, group) in Dictionary(grouping: shares, by: \.agentName) {
-            guard group.count > 1 else {
-                if let only = group.first { labels[only.id] = only.agentName }
-                continue
+            var levels = [GuestAccess.ID: Int](uniqueKeysWithValues: group.map { ($0.id, 0) })
+            for _ in 0..<5 {
+                let current = group.map { ($0, label($0, level: levels[$0.id] ?? 0)) }
+                var counts: [String: Int] = [:]
+                for (_, text) in current { counts[text, default: 0] += 1 }
+                let colliding = current.filter { counts[$0.1, default: 0] > 1 }
+                if colliding.isEmpty { break }
+                for (share, _) in colliding { levels[share.id, default: 0] += 1 }
             }
-            for share in group {
-                // Another owner or machine tells it apart; on one machine, its terminal does.
-                let sameContext = group.filter {
-                    $0.ownerName == share.ownerName && $0.machineLabel == share.machineLabel
-                }.count > 1
-                labels[share.id] = sameContext
-                    ? "\(share.agentName) · \(share.agentTarget)"
-                    : "\(share.agentName) · \(share.ownerName) · \(share.machineLabel)"
-            }
+            for share in group { labels[share.id] = label(share, level: levels[share.id] ?? 0) }
         }
         return labels
     }
