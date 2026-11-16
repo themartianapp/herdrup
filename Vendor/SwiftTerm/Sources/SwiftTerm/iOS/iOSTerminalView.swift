@@ -32,6 +32,25 @@ public extension Notification.Name {
     static let terminalViewMetaModifierReset = Notification.Name("SwiftTerm.TerminalView.metaModifierReset")
 }
 
+/// herdr: the display link's target, holding the view weakly so the link (which retains
+/// its target) cannot keep a released terminal view alive. See `setupDisplayUpdates`.
+@MainActor
+private final class DisplayLinkTarget: NSObject {
+    weak var view: TerminalView?
+
+    init(_ view: TerminalView) {
+        self.view = view
+    }
+
+    @objc func step(displaylink: CADisplayLink) {
+        guard let view else {
+            displaylink.invalidate()
+            return
+        }
+        view.step(displaylink: displaylink)
+    }
+}
+
 /**
  * TerminalView provides an AppKit/UIKit front-end to the `Terminal` terminal emulator.
  * It is up to a subclass to either wire the terminal emulator to a remote terminal
@@ -539,10 +558,19 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
 
     func setupDisplayUpdates ()
     {
-        link = CADisplayLink(target: self, selector: #selector(step))
-            
+        // herdr: a display link retains its target, and the run loop retains the link
+        // until it is invalidated. Aimed at the view itself, it kept every terminal view
+        // ever created alive - with its emulator and whole scrollback - for the life of
+        // the process once its host let go of it (#687). The weak target breaks that, and
+        // `deinit` takes the link off the run loop.
+        link = CADisplayLink(target: DisplayLinkTarget(self), selector: #selector(DisplayLinkTarget.step(displaylink:)))
+
         link.add(to: .current, forMode: .default)
         suspendDisplayUpdates()
+    }
+
+    deinit {
+        link?.invalidate()
     }
 
     private func setupProgressBar() {

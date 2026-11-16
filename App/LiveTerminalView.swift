@@ -86,7 +86,8 @@ struct LiveTerminalView: UIViewRepresentable {
     /// (another agent is fronted, or we're back on the list) stays subscribed and keeps the
     /// PTY width-lock for a short grace, then RELEASES it so it stops pinning a co-viewing
     /// desktop to this device's width while nobody's looking; it re-takes the lock when fronted
-    /// again. Only the lock lifecycle changes — the stream and the SwiftTerm view stay warm.
+    /// again. Left hidden past `Coordinator.parkGraceNanos` it is parked: its stream stops and
+    /// its scrollback shrinks, and fronting it re-seeds both from a fresh keyframe (#687).
     var isForeground: Bool = true
     /// Another surface (the Chat view) is drawn over this terminal, which stays mounted and
     /// sized under it. The terminal view is then hidden: on iOS 27 neither SwiftUI's
@@ -862,6 +863,17 @@ struct LiveTerminalView: UIViewRepresentable {
         /// Bumped whenever the stream commits geometry, so a completed paint can be
         /// matched to the grid it was painted at.
         private var streamGeometryRevision = 0
+        /// The widest grid the stream has applied. Scrollback rows widen with the grid and
+        /// never narrow back, so the scrollback budget is sized at this width.
+        private var widestCols = 0
+        /// The ring last asked for, before the budget lowered it (`scrollbackCap` or
+        /// `historyScrollbackCap`); nil until the first reset raises it.
+        private var ringTarget: Int?
+        /// Hidden past `parkGraceNanos`: the stream is stopped and the ring shrunk, and
+        /// showing the pane re-seeds it (`unpark`).
+        private var parked = false
+        /// Parks the pane once it has stayed hidden for the grace.
+        private var parkTask: Task<Void, Never>?
         /// A lease keepalive in flight. It is NOT a target change: the drain waits for
         /// it so the two never overlap on the wire.
         private var keepaliveTask: Task<Void, Never>?
@@ -1076,7 +1088,8 @@ struct LiveTerminalView: UIViewRepresentable {
 
         /// Rows per `pane.history` page.
         static let historyPageLines: UInt32 = 500
-        /// The scrollback a paging pane may grow to; reaching it ends paging.
+        /// The scrollback a paging pane may grow to; reaching it ends paging. A ceiling: a
+        /// wide grid reaches `scrollbackBudgetBytes` first (`scrollbackRing(_:cols:rows:)`).
         static let historyScrollbackCap = 20_000
         /// How long a page that failed in transit waits before the next scroll may retry it.
         static let historyRetryDelay: Duration = .seconds(2)
@@ -1290,7 +1303,12 @@ struct LiveTerminalView: UIViewRepresentable {
                 historyCursor = page.cursor
                 return
             }
-            let inserted = view.prependHistory(clean[...], maxScrollback: Self.historyScrollbackCap)
+            // The same budgeted cap the ring has (`applyScrollbackRing`): paging fills the
+            // ring and no further, so it cannot hold more than the budget either.
+            let terminal = view.getTerminal()
+            let cap = Self.scrollbackRing(Self.historyScrollbackCap,
+                                          cols: max(widestCols, terminal.cols), rows: terminal.rows)
+            let inserted = view.prependHistory(clean[...], maxScrollback: cap)
             // Nothing fit: the scrollback is at the cap, and paging ends. A page the cap cut
             // short kept its NEWEST rows, so its cursor no longer adjoins the top; that cannot
             // leave a gap, because the cut filled the scrollback and the next page inserts
@@ -1596,8 +1614,45 @@ struct LiveTerminalView: UIViewRepresentable {
         static let backfillLines: UInt32 = 1000            // server clamps `recent` to 1000 rows
         /// SwiftTerm scrollback ring, raised once per connect from its ~500 default. MUST stay
         /// >= backfillLines + live tail so a full backfill is retained (not truncated). A pane
-        /// whose keyframe offers older history grows to `historyScrollbackCap` instead.
+        /// whose keyframe offers older history grows to `historyScrollbackCap` instead. Both
+        /// are ceilings: `scrollbackRing(_:cols:rows:)` lowers them to `scrollbackBudgetBytes`.
         static let scrollbackCap = 4000
+
+        // MARK: scrollback memory budget (#687)
+        //
+        // A scrollback row holds a full-width array of 24-byte cells, so a row cap alone
+        // does not bound memory: 20,000 rows were 41 MB at 80 columns and 123 MB at an iPad
+        // Pro's 250. Each terminal's ring is sized in BYTES from the widest grid its rows
+        // have been laid out at, and a pane left hidden is parked: its stream stops and its
+        // ring shrinks, and showing it again re-seeds it from a fresh keyframe, as a
+        // reconnect does.
+
+        /// What one terminal's normal buffer (screen and scrollback) may hold.
+        static let scrollbackBudgetBytes = 40 << 20
+        /// The ring never goes below this, whatever the width: a full backfill and the
+        /// live tail under it. 2,000 rows at 300 columns are 15 MB.
+        static let minimumScrollback = 2 * Int(backfillLines)
+        /// The scrollback a parked pane keeps while it waits to be shown, capped to
+        /// `parkedScrollbackBudgetBytes`: enough to read while the re-seed is on its way.
+        static let parkedScrollback = Int(backfillLines)
+        static let parkedScrollbackBudgetBytes = 4 << 20
+        /// How long a pane stays hidden, stream running, before it is parked. Longer than
+        /// `TerminalSizeClaim.hiddenGraceNanos`, so a glance at another agent and back
+        /// stays instant, and the width it gave back has been answered by then.
+        static let parkGraceNanos: UInt64 = 60_000_000_000
+
+        /// The rows a ring of up to `lines` rows may hold for a `cols` × `rows` grid.
+        static func scrollbackRing(_ lines: Int, cols: Int, rows: Int) -> Int {
+            Terminal.scrollbackLines(budgetBytes: scrollbackBudgetBytes, cols: cols, rows: rows,
+                                     minimum: min(minimumScrollback, lines), maximum: lines)
+        }
+
+        /// The rows a parked pane keeps for a `cols` × `rows` grid.
+        static func parkedRing(cols: Int, rows: Int) -> Int {
+            Terminal.scrollbackLines(budgetBytes: parkedScrollbackBudgetBytes, cols: cols, rows: rows,
+                                     minimum: 0, maximum: parkedScrollback)
+        }
+
         /// Safety cap so a truly hung `read` can't stall the seed forever — NOT a tight budget.
         /// The read runs concurrently with the stream's fresh SSH connect (~1-2s), and the reset
         /// only arrives after that connect, so a generous cap adds little to first paint in the
@@ -2470,6 +2525,8 @@ struct LiveTerminalView: UIViewRepresentable {
             heartbeatTask = nil
             hiddenReleaseTask?.cancel()     // teardown releases right below
             hiddenReleaseTask = nil
+            parkTask?.cancel()
+            parkTask = nil
             reconnectTask?.cancel()         // cancel any pending backoff restart
             reconnectTask = nil
             backfillTask?.cancel()
@@ -2585,6 +2642,10 @@ struct LiveTerminalView: UIViewRepresentable {
                 // Enqueued after the repaint, as before: a proposal that repaint makes is tracked
                 // under `relockPending` and the re-lock then drives toward it.
                 if !sceneBackgrounded { reclaimGeometry() }
+                // Back inside the park grace: the stream never stopped. Past it: re-seed.
+                parkTask?.cancel()
+                parkTask = nil
+                if parked { unpark() }
             } else {
                 finishPresentation()
                 prediction.reset()
@@ -2601,6 +2662,10 @@ struct LiveTerminalView: UIViewRepresentable {
                 // So the lease is held, unrefreshed (`startHeartbeat` is foreground-gated), for
                 // the grace, and only a pane left hidden past it hands the width back. A pane
                 // in a backgrounded scene has released already.
+                //
+                // Parking does not wait on the scene: a pane hidden behind the front one holds
+                // its stream and scrollback only for `parkGraceNanos`, in the background too.
+                schedulePark()
                 guard !sceneBackgrounded else { return }
                 hiddenReleaseTask?.cancel()
                 let grace = Self.hiddenClaimGraceNanos
@@ -2638,6 +2703,62 @@ struct LiveTerminalView: UIViewRepresentable {
             } else if foreground {
                 reclaimGeometry()
             }
+        }
+
+        /// Sizes the scrollback ring to `target` rows, lowered to `scrollbackBudgetBytes` at
+        /// the widest grid the rows have been laid out at, and remembers `target` so a later
+        /// grid change re-sizes it. A smaller ring trims its oldest rows and frees them; a
+        /// pane that can page then holds a full ring, which takes no page, so no gap opens.
+        private func applyScrollbackRing(_ target: Int, in view: ReadOnlyTerminalView) {
+            ringTarget = target
+            let terminal = view.getTerminal()
+            widestCols = max(widestCols, terminal.cols)
+            let lines = Self.scrollbackRing(target, cols: widestCols, rows: terminal.rows)
+            if lines != terminal.options.scrollback { terminal.changeHistorySize(lines) }
+        }
+
+        /// Starts the grace after which a hidden pane is parked (see `parkGraceNanos`).
+        private func schedulePark() {
+            parkTask?.cancel()
+            let grace = Self.parkGraceNanos
+            parkTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: grace)
+                guard !Task.isCancelled, let self else { return }
+                self.parkTask = nil
+                self.park()
+            }
+        }
+
+        /// Hidden past the grace: stop the stream and free the scrollback down to
+        /// `parkedRing`. Nothing reconnects a parked pane; showing it does (`unpark`).
+        /// Internal, not private, so the unit tests can park without waiting out the grace.
+        func park() {
+            guard !stopped, !foreground, !parked, !sawExited, !paneGone, let view else { return }
+            parked = true
+            streamRunID &+= 1               // the cancelled stream's end is not a lost connection
+            streamTask?.cancel()
+            streamTask = nil
+            watchdogTask?.cancel()          // a parked stream is silent on purpose
+            watchdogTask = nil
+            reconnectTask?.cancel()
+            reconnectTask = nil
+            heartbeatTask?.cancel()
+            heartbeatTask = nil
+            backfillTask?.cancel()
+            backfillTask = nil
+            adoptHistoryCursor(nil)         // the re-seed brings the cursor for its own history
+            let terminal = view.getTerminal()
+            terminal.changeHistorySize(Self.parkedRing(cols: max(widestCols, terminal.cols),
+                                                       rows: terminal.rows))
+        }
+
+        /// Shown again after parking: give the ring back its budget and re-open the stream.
+        /// Its first keyframe replaces the screen and the history, as after a reconnect.
+        private func unpark() {
+            guard parked, !stopped, let view else { return }
+            parked = false
+            if let ringTarget { applyScrollbackRing(ringTarget, in: view) }
+            start()
         }
 
         /// Re-take this pane's PTY width-lock (a show, or the scene coming back).
@@ -2927,7 +3048,7 @@ struct LiveTerminalView: UIViewRepresentable {
                         // recompute maxLength down from options.scrollback) is an SPM-dependency
                         // internal not visible here; the swipe-up XCUITest, which resizes to the real
                         // sim grid, is the actual proof that history survives.
-                        view.getTerminal().changeHistorySize(Self.scrollbackCap)
+                        applyScrollbackRing(Self.scrollbackCap, in: view)
                     }
                     // Size the grid to the reset's geometry FIRST (was previously between clear+seed),
                     // so nothing later in THIS reset can truncate freshly-fed history.
@@ -2953,7 +3074,7 @@ struct LiveTerminalView: UIViewRepresentable {
                             // next rows in above a gap. At the cap a trim means a full ring, and a
                             // full ring takes no page.
                             if historyCursor != nil {
-                                view.getTerminal().changeHistorySize(Self.historyScrollbackCap)
+                                applyScrollbackRing(Self.historyScrollbackCap, in: view)
                             }
                             seedKeyframeHistory(history, rows: rows, into: view)
                         }
@@ -3077,6 +3198,10 @@ struct LiveTerminalView: UIViewRepresentable {
                 prediction.reset()
             }
             view.applyTerminalSize(cols: newCols, rows: newRows)
+            // A wider grid widens every row, so the same ring now costs more: re-size it
+            // to the budget. Rows also count against it, so any grid change re-sizes.
+            widestCols = max(widestCols, newCols)
+            if changed, let ringTarget { applyScrollbackRing(ringTarget, in: view) }
             // A live-anchored terminal now follows the container again, in the same
             // layout pass as this reflow.
             surface?.contentDidChange()

@@ -5583,6 +5583,53 @@ open class Terminal {
         changeScrollback(newScrollback)
     }
 
+    // MARK: - herdr: scrollback memory budget
+    //
+    // The scrollback ring is sized in rows, but a row's cost is its width: every row holds
+    // a full-width array of `CharData` cells. A row count that is harmless at 80 columns
+    // costs three times as much at 250, and an embedder that keeps several terminals alive
+    // needs a byte bound to know what they hold.
+
+    /// What a row costs beyond its cells: the `BufferLine` object (with allocation
+    /// rounding of both blocks) and the row's slot in the ring.
+    static let rowOverheadBytes = 160
+
+    /**
+     * herdr: bytes one normal-buffer row `cols` cells wide holds: its cells, the
+     * `BufferLine` around them, and its ring slot. Measured allocations come to
+     * `24 × cols + ~155` bytes (80 columns: 2,075 B; 200 columns: 4,953 B).
+     */
+    public static func rowBytes (cols: Int) -> Int
+    {
+        max (cols, 1) * MemoryLayout<CharData>.stride + rowOverheadBytes
+    }
+
+    /**
+     * herdr: the scrollback, in rows, that keeps a `cols` × `rows` normal buffer within
+     * `budgetBytes` (the screen's rows count against the budget too), clamped to
+     * `minimum...maximum`. Pass the widest `cols` the buffer has held: rows are never
+     * narrowed below the width they were widened to.
+     */
+    public static func scrollbackLines (budgetBytes: Int, cols: Int, rows: Int, minimum: Int, maximum: Int) -> Int
+    {
+        let fit = budgetBytes / rowBytes (cols: cols) - max (rows, 0)
+        return min (maximum, max (minimum, fit))
+    }
+
+    /// herdr: the bytes the normal buffer's rows hold now: every row its ring references,
+    /// screen and scrollback, including rows a trim left in place to be reused.
+    public var normalBufferBytes: Int
+    {
+        var total = 0
+        for case let line? in normalBuffer.lines.getArray () {
+            total += line.count * MemoryLayout<CharData>.stride + Terminal.rowOverheadBytes
+        }
+        return total
+    }
+
+    /// herdr: the rows the normal buffer holds, scrollback and screen.
+    public var normalBufferRowCount: Int { normalBuffer.lines.count }
+
     // MARK: - herdr: older history prepended above the scrollback
 
     /**
