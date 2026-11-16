@@ -364,6 +364,14 @@ public final class GuestGramFeed {
         onChange?()
     }
 
+    /// The reader asked to retry the failed older page: the failure clears so the view's
+    /// paging asks again (and keeps it again if that fails too).
+    public func clearPageError() {
+        guard pageError != nil else { return }
+        pageError = nil
+        onChange?()
+    }
+
     /// The guest is looking at the list: every unread Gram in it is now read, for this guest
     /// only. Flipped at once; restored if the host refuses, and then not re-sent until its
     /// backoff (`GuestGramReadMarks`) has passed.

@@ -261,6 +261,32 @@ final class GuestGramPaneTests: XCTestCase {
 
     // MARK: One Gram across agents (#697)
 
+    /// Review 3 (#702): a page that failed under the floor, then the conversation left and
+    /// reopened. The reopened feed's refresh clears the failure, and that alone must page
+    /// again: on fd1d1a5e the floor task had exited on the old failure and its id
+    /// (floor/hidden/attempts) didn't change when the refresh cleared it, so the screen kept
+    /// a disabled spinner with no rows forever.
+    func testReopeningAfterAFailedFloorPageLoadsTheRows() {
+        let app = launch("guest", features: "gram", environment: [
+            "HERDR_MOCK_GUEST_GRAM_ONE_MS_PAGE": "1", "HERDR_MOCK_GUEST_OLDER_PAGE_FAILS_ONCE": "1",
+        ])
+        openGramTab(app)
+        let pager = element(app, "guest-gram-loading-older")
+        XCTAssertTrue(poll(10, every: 0.25) { pager.exists && pager.label.contains("Tap to retry") },
+                      "the first older page fails under the floor")
+        let back = app.buttons["guest-gram-back"]
+        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        back.tap()
+        let row = app.buttons["guest-gram-agent-w1-3"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5), "back on the inbox list")
+        row.tap()
+        XCTAssertTrue(element(app, "guest-gram-row-gm-4").waitForExistence(timeout: 10),
+                      "reopened, the feed pages on by itself and shows its rows")
+        XCTAssertTrue(element(app, "guest-gram-row-gm-2").exists)
+        XCTAssertFalse(pager.exists && pager.label.contains("Loading older"), "no spinner left behind")
+        XCTAssertEqual(probe(app, "guest-forbidden-calls"), "")
+    }
+
     /// A first page the strict floor hides entirely (one Gram, more to come) pages on by
     /// itself; when that page fails, the screen says so with Retry instead of spinning, and
     /// the tap loads it.

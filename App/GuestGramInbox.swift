@@ -197,6 +197,12 @@ final class GuestGramInbox: ObservableObject {
         }
     }
 
+    /// Retry: the selection's failed older pages are asked again (their failure clears, and
+    /// the paging surfaces fetch).
+    func retryPaging(_ selection: Selection) {
+        for id in ids(selection) { grants[id]?.feed.clearPageError() }
+    }
+
     /// An older page of the selection's shares failed and none has landed since.
     func pageFailed(_ selection: Selection) -> Bool {
         ids(selection).contains { grants[$0]?.feed.pageError != nil }

@@ -180,10 +180,6 @@ struct GuestGramConversation: View {
     @State private var openTask: Task<Void, Never>?
     @State private var preview: GramPreview?
     @State private var fileError: String?
-    /// A failed older page, shown ON the sentinel with a retry (as the owner's inbox does).
-    @State private var pageError: String?
-    /// Retry taps on the floor pager, so each asks again.
-    @State private var floorAttempt = 0
     @State private var visibility = FeedVisibility()
     @State private var appearance = 0
     @State private var landed = false
@@ -296,7 +292,9 @@ struct GuestGramConversation: View {
                 onSentinelArrival: { loadOlder(top: rows.first?.id) },
                 sentinel: {
                     Button {
-                        pageError = nil
+                        // A tap retries the failed page: the feeds' failure clears, then a
+                        // fresh, reader-asked fetch.
+                        inbox.retryPaging(selection)
                         visibility.pageArmed = true
                         loadOlder(top: rows.first?.id)
                     } label: {
@@ -369,6 +367,13 @@ struct GuestGramConversation: View {
         .accessibilityIdentifier("guest-gram-row-\(row.item.message.id)")
     }
 
+    /// The failed older page of the selection's feeds, shown by both paging surfaces with
+    /// Retry: derived from the feeds (`GuestGramFeed.pageError`), so it clears the moment a
+    /// page lands or a refresh replaces a list, wherever that happened.
+    private var pageError: String? {
+        inbox.pageFailed(selection) ? "Couldn't load older messages." : nil
+    }
+
     private func loadOlder(top: String?) {
         guard landed, visibility.pageArmed, !visibility.anchoring, !visibility.pageRequested,
               pageError == nil, inbox.merge(selection).hasMore else { return }
@@ -386,25 +391,22 @@ struct GuestGramConversation: View {
         }
     }
 
-    /// One "Earlier" for the merge's grants at the floor; a failure goes to `pageError`, which
-    /// the sentinel (or the floor pager) shows with Retry. The one paging path of the feed.
+    /// One "Earlier" for the merge's grants at the floor. A failure stays in the feed that
+    /// failed (`GuestGramFeed.pageError`), which `pageError` reads.
     private func pageEarlier() async {
-        do {
-            try await inbox.loadEarlier(selection)
-        } catch {
-            pageError = "Couldn't load older messages."
-        }
+        try? await inbox.loadEarlier(selection)
     }
 
     /// Every held row is at or under the strict floor (a page that ended inside one
-    /// millisecond): page on until something shows, with the sentinel's failure and Retry. A
-    /// feed still failed from before (`GuestGramFeed.pageError`) waits for the tap.
+    /// millisecond): page on until something shows, with the sentinel's failure and Retry.
+    /// Keyed on the floor, the hidden count and whether a feed's page failed: a new floor
+    /// pages again, a failure waits, and the failure clearing (Retry, a page landing, or a
+    /// refresh replacing the list when the conversation is reopened) pages again.
     private func floorPager(_ merge: GuestGramMerge) -> some View {
-        let failure = pageError ?? (inbox.pageFailed(selection) && floorAttempt == 0 ? "Couldn't load older messages." : nil)
+        let failure = pageError
         return ScrollView {
             Button {
-                pageError = nil
-                floorAttempt += 1
+                inbox.retryPaging(selection)
             } label: {
                 HStack(spacing: 8) {
                     if let failure {
@@ -426,8 +428,7 @@ struct GuestGramConversation: View {
         }
         .refreshable { await inbox.refresh(selection) }
         .frame(maxHeight: .infinity)
-        // A new floor or a Retry tap asks again; a failure changes neither, so it waits.
-        .task(id: "\(merge.floorUnixMs ?? 0)/\(merge.hiddenCount)/\(floorAttempt)") {
+        .task(id: "\(merge.floorUnixMs ?? 0)/\(merge.hiddenCount)/\(failure != nil)") {
             guard failure == nil else { return }
             await pageEarlier()
         }

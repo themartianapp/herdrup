@@ -139,6 +139,12 @@ final class GuestGramFeedTests: XCTestCase {
         XCTAssertNotNil(thrown, "the failure is thrown")
         XCTAssertNotNil(feed.pageError, "and kept for a screen with no sentinel to show it")
         XCTAssertNil(feed.lastError, "the list itself is fine")
+        var changes = 0
+        feed.onChange = { changes += 1 }
+        feed.clearPageError()
+        XCTAssertNil(feed.pageError, "Retry clears it, so the view's paging asks again")
+        XCTAssertEqual(changes, 1, "and the view hears it")
+        feed.onChange = nil
         XCTAssertFalse(GuestGramMerge(lanes: [feed.lane(grant: "a")]).hasMore == false, "still pageable: Retry can ask again")
         try await feed.loadMore(client: client)
         XCTAssertNil(feed.pageError, "a page that lands clears it")
