@@ -83,11 +83,12 @@ final class ChatModel: ObservableObject {
     let store: TranscriptStore
     /// Which sheet the chat has open. Here, not in ChatView, so a sheet survives the chat's
     /// unmount in the background (`ChatPresentation`).
-    let presentation = ChatPresentation()
+    let presentation: ChatPresentation
 
     /// `subagent`: the model pages that subagent's own conversation (read-only) instead.
     init(target: String, subagent: String? = nil) {
         store = TranscriptStore(target: target, subagent: subagent)
+        presentation = ChatPresentation()
         store.onChange = { [weak self] in self?.sync() }
         #if DEBUG
         SnapshotStress.track(self)
