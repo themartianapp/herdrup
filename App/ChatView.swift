@@ -630,6 +630,8 @@ struct ChatView: View {
     /// The first scroll to the newest turn has landed: until then the top of the list is
     /// on screen for a moment and must not fetch older pages.
     @State private var landed = false
+    /// What the landing task waits on: the first page loaded and Find shut.
+    private struct LandingTrigger: Hashable { let loaded: Bool; let finding: Bool }
     /// The top of the list is within reach (40 pt) of the viewport's top.
     @State private var topVisible = false
     @State private var selectedSearchHit: String?
@@ -892,7 +894,11 @@ struct ChatView: View {
                 .conversationColumn()
             }
         }
-        .task(id: model.loaded) {
+        // Land once loaded and Find is shut. Keyed on both: a ChatView remounted after
+        // `.background` (`ScenePhase.mountsChat`) with Find still open starts unlanded, and
+        // only closing Find (not `model.loaded`) can let it land; the guard keeps it a no-op
+        // once landed. Shared by the owner and guest panes.
+        .task(id: LandingTrigger(loaded: model.loaded, finding: findRequest != nil)) {
             guard model.loaded, !landed, findRequest == nil else { return }
             for _ in 0..<8 {
                 scrollPosition.jumpToLatest()
