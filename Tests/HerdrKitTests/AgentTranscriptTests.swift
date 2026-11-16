@@ -888,6 +888,69 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertTrue(store.hasOlder)
     }
 
+    private static func timed(_ id: String, _ ms: UInt64?, _ kind: String = "reply",
+                              extra: String = #""text":"x","final":true"#) -> String {
+        let ts = ms.map { #""ts_ms":\#($0),"# } ?? ""
+        return #"{"id":"\#(id)",\#(ts)"kind":"\#(kind)",\#(extra)}"#
+    }
+
+    private static let guestPrompt = #""text":"old","author":"guest","origin":"other""#
+
+    func testAfterPageKeepsNewEntriesOlderThanTheWindowWhenTheWholeSessionIsHeld() async throws {
+        // #686: with the whole session held, nothing unknown is a replay. A reply behind the
+        // window through clock skew, or without ts_ms (decoded as 0), is new and kept.
+        let (client, _) = scripted { params in
+            params["after"] == nil
+                ? Self.page([Self.timed("u", 2000, "user", extra: #""text":"hi","author":"owner""#)], after: "a1")
+                : Self.page([Self.timed("r1", 1999), Self.timed("r2", nil)], after: "a2")
+        }
+        let store = TranscriptStore(target: "w1:p9Y")
+        await store.refresh(client: client)
+        XCTAssertFalse(store.hasOlder)
+        await store.refresh(client: client)
+        XCTAssertEqual(store.entries.map(\.id), ["u", "r1", "r2"])
+    }
+
+    func testAfterPageKeepsNewNonReplayEntriesOlderThanTheWindowWhileHistoryIsUnloaded() async throws {
+        // #686: with older history unloaded, only origin-marked user prompts are replays;
+        // a reply, turn end or owner prompt behind the window is new and kept.
+        let (client, _) = scripted { params in
+            params["after"] == nil
+                ? Self.page([Self.timed("u", 2000, "user", extra: #""text":"hi","author":"owner""#)],
+                            before: "b1", after: "a1")
+                : Self.page([
+                    Self.timed("r", 1999),
+                    Self.timed("e", 1500, "turn_end", extra: #""status":"done""#),
+                    Self.timed("p", 1000, "user", extra: #""text":"again","author":"owner""#),
+                    Self.timed("n", nil),
+                ], after: "a2")
+        }
+        let store = TranscriptStore(target: "w1:p9Y")
+        await store.refresh(client: client)
+        XCTAssertTrue(store.hasOlder)
+        await store.refresh(client: client)
+        XCTAssertEqual(store.entries.map(\.id), ["u", "r", "e", "p", "n"])
+    }
+
+    func testAfterPageStillDropsUnloadedOriginMarkedPromptReplays() async throws {
+        // Guards the #684 chat wall: an unknown marked prompt older than the oldest held,
+        // with history unloaded, is a replay an older page brings; a newer one is kept.
+        let (client, _) = scripted { params in
+            params["after"] == nil
+                ? Self.page([Self.timed("u", 2000, "user", extra: #""text":"hi","author":"owner""#)],
+                            before: "b1", after: "a1")
+                : Self.page([
+                    Self.timed("old", 1999, "user", extra: Self.guestPrompt),
+                    Self.timed("new", 2001, "user", extra: Self.guestPrompt),
+                ], after: "a2")
+        }
+        let store = TranscriptStore(target: "w1:p9Y")
+        await store.refresh(client: client)
+        await store.refresh(client: client)
+        XCTAssertEqual(store.entries.map(\.id), ["u", "new"])
+        XCTAssertTrue(store.hasOlder)
+    }
+
     func testLocalAnswerHidesTheButtonsUntilTheServerReportsIt() async {
         let ask = Self.entry("a1", "ask", extra: #""questions":[{"question":"Merge?","options":["Yes","No"],"multi":false}]"#)
         let pending = #"{"id":"a1","questions":[{"question":"Merge?","options":["Yes","No"],"multi":false}],"answerable":true}"#
