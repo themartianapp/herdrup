@@ -496,18 +496,24 @@ public final class TranscriptStore {
     ///
     /// When the pane's remembered non-owner prompts change, herdr re-sends every user entry
     /// before the cursor that is now marked `origin: "other"`, from the whole session, so a
-    /// copy served unmarked gets its mark. One this store does not hold and that is older
-    /// than the oldest it holds is history not loaded yet (an older page brings it, marked):
-    /// it is dropped, not appended after the newest turn as a wall of old prompts.
+    /// copy served unmarked gets its mark. Only such a replay is dropped: an unknown user
+    /// entry marked `origin: "other"`, with a timestamp older than the oldest held entry,
+    /// while older history is still unloaded (`hasOlder`). It is history an older page
+    /// brings, marked, not a new prompt to append after the newest turn as a wall of old
+    /// prompts. Every other unknown entry is new and appended whatever its timestamp: one
+    /// without `ts_ms` (decoded as 0) or behind the window through clock skew must not be
+    /// lost, since the after cursor moves past it. When the whole session is held, herdr
+    /// re-sends only entries already held, so nothing unknown is a replay.
     func mergeAfter(_ page: AgentTranscriptPage) {
         let outboxBefore = outbox
         var index: [String: Int] = [:]
         if !page.entries.isEmpty {
             for (position, entry) in entries.enumerated() { index[entry.id] = position }
         }
-        let oldestMs = entries.first?.tsMs
+        let oldestMs = hasOlder ? entries.first?.tsMs : nil
         let live = page.entries.filter { entry in
-            guard index[entry.id] == nil, let oldestMs else { return true }
+            guard index[entry.id] == nil, let oldestMs,
+                  case .user(_, _, .other) = entry.kind, entry.tsMs != 0 else { return true }
             return entry.tsMs >= oldestMs
         }
         outbox.reconcile(live, sessionID: page.sessionID ?? sessionID)
