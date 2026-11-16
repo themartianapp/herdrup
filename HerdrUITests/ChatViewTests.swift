@@ -818,9 +818,10 @@ final class ChatViewTests: XCTestCase {
                        "no 'waiting for the owner' without the host saying so")
         XCTAssertFalse(app.buttons["chat-ask-form-option-0"].isEnabled, "the chat cannot answer it")
         attach(app, "form-guest-needs-terminal")
+        let chat = app.descendants(matching: .any)["chat-view"].firstMatch
         app.buttons["chat-ask-terminal"].tap()
-        XCTAssertTrue(app.descendants(matching: .any)["guest-menu-keys"].waitForExistence(timeout: 8),
-                      "the Terminal offers the menu keys")
+        XCTAssertTrue(chat.waitForNonExistence(timeout: 6), "the button opens the Terminal, where the menu keys are")
+        XCTAssertTrue(app.buttons["guest-tab-terminal"].isSelected)
         XCTAssertFalse(app.staticTexts["NEEDS JERRY"].exists)
     }
 
