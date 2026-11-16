@@ -5651,30 +5651,35 @@ open class Terminal {
         }
     }
 
-    /// herdr: the top row of the normal buffer, held weakly. See `historyAdjoins(_:)`.
+    /// herdr: the top row of the normal buffer, held weakly, with the ring it is in and
+    /// that ring's eviction count when it was taken. See `historyAdjoins(_:)`.
     public struct HistoryTop {
         fileprivate weak var line: BufferLine?
+        fileprivate weak var ring: CircularBufferLineList?
+        fileprivate let evictions: Int
     }
 
     /// herdr: the oldest row the normal buffer holds now.
     public var historyTop: HistoryTop
     {
         let lines = normalBuffer.lines
-        return HistoryTop (line: lines.count > 0 ? lines [0] : nil)
+        return HistoryTop (line: lines.count > 0 ? lines [0] : nil, ring: lines, evictions: lines.evictions)
     }
 
     /**
      * herdr: whether `top` is still the oldest row the normal buffer holds, so older
      * history inserted now adjoins the history that was above it when `top` was taken.
-     * False once any row has left the top: output pushing rows out of a full ring (the
-     * row is recycled to the bottom), a smaller scrollback, a resize trim, an erase of
-     * the scrollback, or a buffer reset all replace the row at index 0.
+     * False once any row has left the top: output pushing rows out of a full ring, a
+     * smaller scrollback, a resize trim, an erase of the scrollback (each counted in the
+     * ring's `evictions`), or a buffer reset (a new ring). Identity alone is not enough: a
+     * full ring recycles the row leaving the top to the bottom, so one full rotation brings
+     * the same object back to index 0 holding other output. O(1).
      */
     public func historyAdjoins (_ top: HistoryTop) -> Bool
     {
-        guard let line = top.line else { return false }
+        guard let line = top.line, let ring = top.ring else { return false }
         let lines = normalBuffer.lines
-        return lines.count > 0 && lines [0] === line
+        return ring === lines && lines.evictions == top.evictions && lines.count > 0 && lines [0] === line
     }
 
     // MARK: - herdr: older history prepended above the scrollback

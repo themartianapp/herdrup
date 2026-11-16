@@ -171,6 +171,40 @@ struct ScrollbackBudgetTests {
         #expect (terminal.prependHistory (olderPage, maxScrollback: ring (cols: cols) + 100, adjoining: top) == 0)
     }
 
+    // Re-review of #694: a full ring RECYCLES its rows (`CircularBufferLineList.recycle`
+    // clears the row leaving the top and reuses the object at the bottom), so after one full
+    // rotation the anchored row object is at the top again. Identity alone then vouched for a
+    // cursor whose rows had all been pushed out, and a taller grid's re-budget opened room
+    // for its page above missing output. The app's numbers: 40 MiB, 80 × 24, cap 20,000.
+    @Test("a ring that rotated all the way round no longer adjoins its old top")
+    func fullRotationDetachesTop () {
+        let appBudget = 40 << 20
+        func appRing (_ height: Int) -> Int {
+            Terminal.scrollbackLines (budgetBytes: appBudget, cols: 80, rows: height, minimum: 2000, maximum: 20_000)
+        }
+        let (terminal, _) = TerminalTestHarness.makeTerminal (cols: 80, rows: 24, scrollback: appRing (24))
+        terminal.preservesScrollbackLayout = true
+        let capacity = appRing (24) + 24
+        #expect (capacity == 20_024)
+        for i in 0..<capacity {
+            terminal.feed (text: "row \(i)" + (i < capacity - 1 ? "\r\n" : ""))
+        }
+        let top = terminal.historyTop
+        #expect (text (terminal, 0) == "row 0")
+
+        // Exactly one full rotation: every row is pushed out once and the ring is back on
+        // the object it started with.
+        for i in 0..<capacity {
+            terminal.feed (text: "\r\nnew \(i)")
+        }
+        #expect (text (terminal, 0) == "new 0", "every original row has left")
+        #expect (!terminal.historyAdjoins (top), "the reused row object is not the row the cursor named")
+
+        terminal.resize (cols: 80, rows: 50, scrollback: appRing (50))
+        let inserted = terminal.prependHistory (olderPage, maxScrollback: appRing (50), adjoining: top)
+        #expect (inserted == 0, "the old cursor's page would land above the missing output")
+    }
+
     @Test("the budget never takes the ring below its minimum or above its maximum")
     func clamps () {
         #expect (Terminal.scrollbackLines (budgetBytes: 1 << 20, cols: 500, rows: rows, minimum: 2000, maximum: 20_000) == 2000)
