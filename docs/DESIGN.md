@@ -321,6 +321,23 @@ resizable, so it must show no handles and the whole width instead; a chat narrow
 wide must show whole once turned to tall, and its narrowed width must return held wide again. It writes
 `RESULTS.md` and before/after screenshots per pose.
 
+The macserve script shard `snapshot-stress` ([`Tools/ci/snapshot-stress.sh`](../Tools/ci/snapshot-stress.sh))
+guards against the background watchdog kill (0x8BADF00D, "scene-update watchdog transgression"). Going to the
+background, iOS snapshots the app in the other orientation and the other appearance, and each snapshot lays
+the whole SwiftUI tree out again on the main thread under a 10 s allowance. The shard plays hours of use in
+minutes over the `chatview` mock (`HERDR_SNAPSHOT_STRESS`, [`App/SnapshotStress.swift`](../App/SnapshotStress.swift)):
+agents whose transcripts keep growing, fronted again and again in Chat, Terminal and Gram. It records the
+footprint, the window's layer and view counts, live WKWebViews, chat rows held and drawn, and the main
+thread's longest block while the app turns to landscape and back and flips its appearance, then once it is
+sent to the background. It fails when the layers or footprint pass their limits, when the layers keep
+growing, or when any of those relayouts blocks the main thread for more than a second. It runs on demand
+(about 15 minutes).
+
+What keeps it green: a chat that follows its tail slides its drawn window back to the newest rows instead
+of growing it forever (`ChatView.slideWindowToTail`); only the front pane's chat is mounted, so a kept-alive
+pane holds its `ChatModel` but no drawn rows; and in the background no chat is mounted at all
+(`ScenePhase.mountsChat`), so the snapshots lay out a small tree.
+
 The shared native composer reconciles external text edits after the SwiftUI layout pass,
 using the current binding rather than a captured layout value. This preserves newer
 keystrokes while still applying dictation, mention completion, restored drafts, and send clears.

@@ -323,7 +323,10 @@ public final class TranscriptStore {
         }
         let version = generation
         do {
-            let page = try await client.agentTranscript(target: target, after: after, subagent: subagent)
+            // What this store holds, so marks herdr learns late reach scrolled-in history too.
+            let heldFrom = hasOlder ? beforeCursor : ""
+            let page = try await client.agentTranscript(target: target, after: after, subagent: subagent,
+                                                        heldFrom: heldFrom)
             guard version == generation else { return }
             if let session = page.sessionID, let known = sessionID, session != known {
                 // omp started a new session in this pane: the old cursor's history is not
@@ -490,23 +493,40 @@ public final class TranscriptStore {
     /// then the turns are not regrouped and `onChange` is not called, so the chat does not
     /// redraw for them. Only entries, the open question or whether omp works change the
     /// turns; the model, plan, recap and outbox only need the change notification.
+    ///
+    /// When the pane's remembered non-owner prompts change, herdr re-sends every user entry
+    /// before the cursor that is now marked `origin: "other"`, from the whole session, so a
+    /// copy served unmarked gets its mark. Only such a replay is dropped: an unknown user
+    /// entry marked `origin: "other"`, with a timestamp older than the oldest held entry,
+    /// while older history is still unloaded (`hasOlder`). It is history an older page
+    /// brings, marked, not a new prompt to append after the newest turn as a wall of old
+    /// prompts. Every other unknown entry is new and appended whatever its timestamp: one
+    /// without `ts_ms` (decoded as 0) or behind the window through clock skew must not be
+    /// lost, since the after cursor moves past it. When the whole session is held, herdr
+    /// re-sends only entries already held, so nothing unknown is a replay.
     func mergeAfter(_ page: AgentTranscriptPage) {
         let outboxBefore = outbox
-        outbox.reconcile(page.entries, sessionID: page.sessionID ?? sessionID)
-        var entriesChanged = false
+        var index: [String: Int] = [:]
         if !page.entries.isEmpty {
-            var index: [String: Int] = [:]
             for (position, entry) in entries.enumerated() { index[entry.id] = position }
-            for entry in page.entries {
-                if let position = index[entry.id] {
-                    guard entries[position] != entry else { continue }
-                    entries[position] = entry
-                } else {
-                    index[entry.id] = entries.count
-                    entries.append(entry)
-                }
-                entriesChanged = true
+        }
+        let oldestMs = hasOlder ? entries.first?.tsMs : nil
+        let live = page.entries.filter { entry in
+            guard index[entry.id] == nil, let oldestMs,
+                  case .user(_, _, .other) = entry.kind, entry.tsMs != 0 else { return true }
+            return entry.tsMs >= oldestMs
+        }
+        outbox.reconcile(live, sessionID: page.sessionID ?? sessionID)
+        var entriesChanged = false
+        for entry in live {
+            if let position = index[entry.id] {
+                guard entries[position] != entry else { continue }
+                entries[position] = entry
+            } else {
+                index[entry.id] = entries.count
+                entries.append(entry)
             }
+            entriesChanged = true
         }
         if let after = page.after { afterCursor = after }
         if let session = page.sessionID { sessionID = session }
