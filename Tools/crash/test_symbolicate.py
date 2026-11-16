@@ -36,6 +36,24 @@ class OutputPathTests(unittest.TestCase):
             self.assertIn("(244)", texts[0])
             self.assertIn("(245)", texts[1])
 
+    def test_a_name_like_a_clash_prefix_does_not_overwrite_another_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            inputs = []
+            for path, build in (("a/report.json", "244"), ("b/report.json", "245"), ("0-report.json", "246")):
+                path = tmp / path
+                path.parent.mkdir(exist_ok=True)
+                path.write_text(json.dumps(report(build)))
+                inputs.append(str(path))
+            (tmp / "no-dsyms").mkdir()
+            out = tmp / "out"
+            subprocess.run([sys.executable, str(SCRIPT), "--report", *inputs, "--dsyms", str(tmp / "no-dsyms"),
+                            "--out", str(out)], check=True, capture_output=True, text=True)
+            texts = sorted(path.read_text() for path in out.glob("*.txt"))
+            self.assertEqual(len(texts), 3, sorted(path.name for path in out.glob("*.txt")))
+            for text, build in zip(texts, ("244", "245", "246")):
+                self.assertIn(f"({build})", text)
+
 
 if __name__ == "__main__":
     unittest.main()

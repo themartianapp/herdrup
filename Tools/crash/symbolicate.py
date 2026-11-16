@@ -22,10 +22,12 @@ Examples:
   CRASH_ADMIN_TOKEN=... Tools/crash/symbolicate.py --prefix v1/2026-11-13/ --out /tmp/crashes
   Tools/crash/symbolicate.py --report r.json --dsyms ~/Downloads/dSYMs-245
 
-Writes <out>/reports/<key>.json and <out>/<key>.txt per report and prints each .txt. Stdlib
+Writes <out>/reports/<key>.json and <out>/<key>-<sha>.txt per report (<sha>: the report's content
+hash, so same-named reports never overwrite each other) and prints each .txt. Stdlib
 only; needs `gh` only to fetch dSYMs, and atos or llvm-symbolizer to symbolicate."""
 import argparse
 import datetime
+import hashlib
 import io
 import json
 import os
@@ -261,11 +263,11 @@ def fetch_dsyms(build, out, repo):
     return target
 
 
-def output_names(paths):
-    """A distinct `<stem>.txt` for each input; inputs whose stems clash get `<n>-<stem>.txt`, n
-    their position, so a/report.json and b/report.json don't overwrite each other."""
-    stems = [pathlib.Path(path).stem for path in paths]
-    return [f"{stem}.txt" if stems.count(stem) == 1 else f"{n}-{stem}.txt" for n, stem in enumerate(stems)]
+def output_name(path):
+    """`<stem>-<sha>.txt`, <sha> the first 12 hex digits of the report's SHA-256: a/report.json,
+    b/report.json and 0-report.json each get their own file whatever order they're passed in."""
+    path = pathlib.Path(path)
+    return f"{path.stem}-{hashlib.sha256(path.read_bytes()).hexdigest()[:12]}.txt"
 
 
 def main():
@@ -302,7 +304,8 @@ def main():
                 roots.append(fetched)
     dsyms = index_dsyms(roots)
 
-    for (path, report), name in zip(reports, output_names([path for path, _ in reports])):
+    for path, report in reports:
+        name = output_name(path)
         text = render(report, dsyms, tool)
         (args.out / name).write_text(text)
         print(f"== {path}\n{text}")
