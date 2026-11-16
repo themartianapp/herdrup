@@ -5583,6 +5583,105 @@ open class Terminal {
         changeScrollback(newScrollback)
     }
 
+    // MARK: - herdr: scrollback memory budget
+    //
+    // The scrollback ring is sized in rows, but a row's cost is its width: every row holds
+    // a full-width array of `CharData` cells. A row count that is harmless at 80 columns
+    // costs three times as much at 250, and an embedder that keeps several terminals alive
+    // needs a byte bound to know what they hold.
+
+    /// What a row costs beyond its cells: the `BufferLine` object (with allocation
+    /// rounding of both blocks) and the row's slot in the ring.
+    static let rowOverheadBytes = 160
+
+    /**
+     * herdr: bytes one normal-buffer row `cols` cells wide holds: its cells, the
+     * `BufferLine` around them, and its ring slot. Measured allocations come to
+     * `24 × cols + ~155` bytes (80 columns: 2,075 B; 200 columns: 4,953 B).
+     */
+    public static func rowBytes (cols: Int) -> Int
+    {
+        max (cols, 1) * MemoryLayout<CharData>.stride + rowOverheadBytes
+    }
+
+    /**
+     * herdr: the scrollback, in rows, that keeps a `cols` × `rows` normal buffer within
+     * `budgetBytes` (the screen's rows count against the budget too), clamped to
+     * `minimum...maximum`. Pass the widest `cols` the buffer has held: rows are never
+     * narrowed below the width they were widened to.
+     */
+    public static func scrollbackLines (budgetBytes: Int, cols: Int, rows: Int, minimum: Int, maximum: Int) -> Int
+    {
+        let fit = budgetBytes / rowBytes (cols: cols) - max (rows, 0)
+        return min (maximum, max (minimum, fit))
+    }
+
+    /// herdr: the bytes the normal buffer's rows hold now: every row its ring references,
+    /// screen and scrollback, including rows a trim left in place to be reused.
+    public var normalBufferBytes: Int
+    {
+        var total = 0
+        for case let line? in normalBuffer.lines.getArray () {
+            total += line.count * MemoryLayout<CharData>.stride + Terminal.rowOverheadBytes
+        }
+        return total
+    }
+
+    /// herdr: the rows the normal buffer holds, scrollback and screen.
+    public var normalBufferRowCount: Int { normalBuffer.lines.count }
+
+    /**
+     * herdr: resizes the grid and sets the scrollback in the order that drops no row the
+     * new scrollback keeps. The ring holds `scrollback + rows` rows, so applying either
+     * change alone can briefly shrink it: a height shrink under the old scrollback trims
+     * the oldest rows that a raised scrollback would then have room for again, which
+     * opens a gap at the top of the history. A raise goes first and a cut goes last, so
+     * the ring never shrinks below what both ends need.
+     */
+    public func resize (cols: Int, rows: Int, scrollback: Int)
+    {
+        if scrollback > options.scrollback {
+            changeScrollback (scrollback)
+            resize (cols: cols, rows: rows)
+        } else {
+            resize (cols: cols, rows: rows)
+            if scrollback != options.scrollback {
+                changeScrollback (scrollback)
+            }
+        }
+    }
+
+    /// herdr: the top row of the normal buffer, held weakly, with the ring it is in and
+    /// that ring's eviction count when it was taken. See `historyAdjoins(_:)`.
+    public struct HistoryTop {
+        fileprivate weak var line: BufferLine?
+        fileprivate weak var ring: CircularBufferLineList?
+        fileprivate let evictions: Int
+    }
+
+    /// herdr: the oldest row the normal buffer holds now.
+    public var historyTop: HistoryTop
+    {
+        let lines = normalBuffer.lines
+        return HistoryTop (line: lines.count > 0 ? lines [0] : nil, ring: lines, evictions: lines.evictions)
+    }
+
+    /**
+     * herdr: whether `top` is still the oldest row the normal buffer holds, so older
+     * history inserted now adjoins the history that was above it when `top` was taken.
+     * False once any row has left the top: output pushing rows out of a full ring, a
+     * smaller scrollback, a resize trim, an erase of the scrollback (each counted in the
+     * ring's `evictions`), or a buffer reset (a new ring). Identity alone is not enough: a
+     * full ring recycles the row leaving the top to the bottom, so one full rotation brings
+     * the same object back to index 0 holding other output. O(1).
+     */
+    public func historyAdjoins (_ top: HistoryTop) -> Bool
+    {
+        guard let line = top.line, let ring = top.ring else { return false }
+        let lines = normalBuffer.lines
+        return ring === lines && lines.evictions == top.evictions && lines.count > 0 && lines [0] === line
+    }
+
     // MARK: - herdr: older history prepended above the scrollback
 
     /**
@@ -5600,14 +5699,20 @@ open class Terminal {
      * the scrollback past `maxScrollback` are dropped from the OLDEST end of `bytes`, so
      * what is inserted always adjoins the current top row.
      *
+     * With `adjoining`, the rows are inserted only while that row is still the oldest
+     * one held (`historyAdjoins(_:)`): once a row has left the top, `bytes` -- the rows
+     * above it -- would land above a gap.
+     *
      * - Returns: how many rows were inserted: 0 on the alternate screen (it has no
-     *   scrollback) or at the cap, fewer than `bytes` holds when the cap cut it short.
+     *   scrollback), at the cap, or above a gap; fewer than `bytes` holds when the cap
+     *   cut it short.
      */
     @discardableResult
-    public func prependHistory (_ bytes: ArraySlice<UInt8>, maxScrollback: Int) -> Int
+    public func prependHistory (_ bytes: ArraySlice<UInt8>, maxScrollback: Int, adjoining top: HistoryTop? = nil) -> Int
     {
         let target = normalBuffer
         guard !isCurrentBufferAlternate, target.hasScrollback, !bytes.isEmpty else { return 0 }
+        if let top, !historyAdjoins (top) { return 0 }
         let room = maxScrollback + target.rows - target.lines.count
         guard room > 0 else { return 0 }
 

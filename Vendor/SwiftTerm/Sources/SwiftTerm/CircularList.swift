@@ -246,6 +246,13 @@ internal class CircularBufferLineList {
     }
 
     private var _count: Int
+
+    /// herdr: monotonic count of rows that have left the top of this list: pushed out of a
+    /// full ring (`push`, `recycle`, `splice`, `shiftElements`) or trimmed (`trimStart`).
+    /// `recycle` REUSES the row object, so a row's identity alone cannot tell whether it is
+    /// still the row it was; this count can (`Terminal.historyAdjoins`).
+    private(set) var evictions = 0
+
     var maxLength: Int {
         didSet {
             if maxLength != oldValue {
@@ -314,6 +321,7 @@ internal class CircularBufferLineList {
             if startIndex == array.count {
                 startIndex = 0
             }
+            evictions &+= 1
         } else {
             count = count + 1
         }
@@ -329,6 +337,7 @@ internal class CircularBufferLineList {
         let index = getCyclicIndex(count)
         startIndex += 1
         startIndex = startIndex % maxLength
+        evictions &+= 1
         let hadImages = array[index]?.images != nil
         array[index]?.clear(with: clearAttribute)
         onLineRecycled?(hadImages)
@@ -374,6 +383,7 @@ internal class CircularBufferLineList {
         if Int(count) + ic > array.count {
             let countToTrim = count + items.count - array.count
             startIndex = startIndex + countToTrim
+            evictions &+= countToTrim
             count = array.count
         } else {
             count = count + items.count
@@ -384,6 +394,7 @@ internal class CircularBufferLineList {
     {
         let c = count > self.count ? self.count : count
         startIndex = startIndex + c
+        evictions &+= c
         self.count -= count
     }
 
@@ -416,6 +427,7 @@ internal class CircularBufferLineList {
                 while self._count > maxLength {
                     self._count -= 1
                     startIndex += 1
+                    evictions &+= 1
                     // trimmed callback invoke
                 }
             }
