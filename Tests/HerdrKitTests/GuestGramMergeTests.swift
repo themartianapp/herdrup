@@ -11,8 +11,12 @@ final class GuestGramMergeTests: XCTestCase {
         var store: [GuestGramMessage]
         let pageSize: Int
 
+        /// herdr's order (`guest::gram::list`): a stable sort by time, newest first, so
+        /// equal timestamps come in reverse store order, not by id.
         func page(before cursor: String?) -> GuestGramPage {
-            let sorted = store.sorted { ($0.createdUnixMs, $0.id) > ($1.createdUnixMs, $1.id) }
+            let sorted = store.enumerated()
+                .sorted { ($0.element.createdUnixMs, $0.offset) > ($1.element.createdUnixMs, $1.offset) }
+                .map(\.element)
             let start = cursor.flatMap { id in sorted.firstIndex { $0.id == id }.map { $0 + 1 } } ?? 0
             let slice = Array(sorted[start...].prefix(pageSize))
             return GuestGramPage(messages: slice, hasMore: start + slice.count < sorted.count)
@@ -70,7 +74,7 @@ final class GuestGramMergeTests: XCTestCase {
         guard let oldestShown = items.first?.message.createdUnixMs else { return }
         for (host, lane) in zip(client.hosts, client.lanes) {
             let held = Set(lane.messages.map(\.id))
-            let missing = host.store.filter { !held.contains($0.id) && $0.createdUnixMs > oldestShown }
+            let missing = host.store.filter { !held.contains($0.id) && $0.createdUnixMs >= oldestShown }
             XCTAssertEqual(missing.map(\.id), [], "\(host.grant) is missing messages inside the shown range",
                            file: file, line: line)
         }
@@ -108,19 +112,21 @@ final class GuestGramMergeTests: XCTestCase {
         let b = Host(grant: "b", store: (0..<3).map { Self.gram("b\($0)", 95 + UInt64($0) * 30) }, pageSize: 5)
         let c = Host(grant: "c", store: (0..<6).map { Self.gram("c\($0)", 101 + UInt64($0) * 15) }, pageSize: 2)
         var client = Client(hosts: [a, b, c])
-        // a holds 170...190 (more), b all of 95, 125, 155, c 161 and 176 (more): floor 170.
+        // a holds 170...190 (more), b all of 95, 125, 155, c 161 and 176 (more): floor 170,
+        // and only what is strictly newer shows (a's 170 itself waits on its millisecond).
         XCTAssertEqual(client.merge.floorUnixMs, 170)
-        XCTAssertEqual(client.merge.items.map(\.id), ["a/a7", "c/c5", "a/a8", "a/a9"],
-                       "b's 155 and c's 161 are held but under the floor")
+        XCTAssertEqual(client.merge.items.map(\.id), ["c/c5", "a/a8", "a/a9"],
+                       "b's 155, c's 161 and a's own 170 are held but not shown")
         XCTAssertEqual(client.merge.grantsToPage, ["a"], "only the grant at the floor pages")
-        XCTAssertEqual(client.merge.hiddenCount, 4)
+        XCTAssertEqual(client.merge.hiddenCount, 5)
         assertSafe(client)
         client.earlier()
         assertSafe(client)
         // a now holds down to 140; c's oldest held, 161, is the floor.
         XCTAssertEqual(client.merge.floorUnixMs, 161)
         XCTAssertEqual(client.merge.grantsToPage, ["c"])
-        XCTAssertFalse(client.merge.items.contains { $0.message.createdUnixMs < 161 })
+        XCTAssertEqual(client.merge.items.first?.id, "a/a7")
+        XCTAssertFalse(client.merge.items.contains { $0.message.createdUnixMs <= 161 })
     }
 
     /// Equal timestamps order by id byte-wise, then grant; a shared id on two hosts is two messages.
@@ -163,14 +169,14 @@ final class GuestGramMergeTests: XCTestCase {
         XCTAssertEqual(merge.unreadCount(grant: "a"), 2)
         XCTAssertEqual(merge.unreadCount(grant: "b"), 1)
         XCTAssertEqual(merge.unreadCount(grant: "c"), 0)
-        // a's oldest held is 50, so the floor is 50: all shows.
-        XCTAssertEqual(merge.shownUnreadByGrant, ["a": ["a1", "a2"], "b": ["b1"]])
+        // a's oldest held is 50, so the floor is 50: a1 waits on its millisecond.
+        XCTAssertEqual(merge.shownUnreadByGrant, ["a": ["a2"], "b": ["b1"]])
         let hidden = GuestGramMerge(lanes: [
-            GuestGramLane(grant: "a", messages: [Self.gram("a2", 300)], hasMore: true),
+            GuestGramLane(grant: "a", messages: [Self.gram("a3", 400), Self.gram("a2", 300)], hasMore: true),
             GuestGramLane(grant: "b", messages: [Self.gram("b1", 200)], hasMore: false),
         ])
-        XCTAssertEqual(hidden.shownUnreadByGrant, ["a": ["a2"]], "b1 is under the floor, not shown, not marked")
-        XCTAssertEqual(hidden.unreadCount, 2)
+        XCTAssertEqual(hidden.shownUnreadByGrant, ["a": ["a3"]], "b1 is under the floor, not shown, not marked")
+        XCTAssertEqual(hidden.unreadCount, 3)
     }
 
     /// A reply goes to its message's grant; a new message to the newest incoming one's, else the first.
@@ -187,5 +193,104 @@ final class GuestGramMergeTests: XCTestCase {
         let quiet = GuestGramMerge(lanes: [GuestGramLane(grant: "q", messages: [], hasMore: false),
                                            GuestGramLane(grant: "r", messages: [], hasMore: false)])
         XCTAssertEqual(quiet.defaultTarget, "q")
+    }
+
+    // MARK: Review 1 (#702)
+
+    /// The reviewer's probe: a page can end inside a group sharing one millisecond, and the
+    /// host orders that group by its store, not by id. Neither the timestamp alone nor the
+    /// full (time, id, grant) key bounds what a paging grant may still be missing there, so
+    /// nothing at the floor's millisecond shows until it is complete: "Earlier" only ever
+    /// adds above.
+    func testAPageEndingInsideOneMillisecondNeverInsertsBelowShownRows() {
+        let scenarios: [(a: [GuestGramMessage], b: [GuestGramMessage])] = [
+            // The probe: a holds z@500 with more to come (y@500); exhausted b holds a@500.
+            (a: [Self.gram("y", 500), Self.gram("z", 500)], b: [Self.gram("a", 500)]),
+            // Against a full-key floor: a's first page ends at c@500, its next holds q@500,
+            // and b's k@500 sorts between them.
+            (a: [Self.gram("q", 500), Self.gram("c", 500)], b: [Self.gram("k", 500)]),
+            // The same with a newer row on top that may show at once.
+            (a: [Self.gram("q", 500), Self.gram("c", 500), Self.gram("top", 900)], b: [Self.gram("k", 500)]),
+        ]
+        for (index, scenario) in scenarios.enumerated() {
+            var client = Client(hosts: [Host(grant: "a", store: scenario.a, pageSize: 1),
+                                        Host(grant: "b", store: scenario.b, pageSize: 5)])
+            var previous = client.merge.items.map(\.id)
+            assertSafe(client)
+            while client.merge.hasMore {
+                client.earlier()
+                assertSafe(client)
+                let now = client.merge.items.map(\.id)
+                XCTAssertEqual(Array(now.suffix(previous.count)), previous,
+                               "scenario \(index): Earlier only adds above (\(previous) -> \(now))")
+                previous = now
+            }
+            XCTAssertEqual(client.merge.items.count, scenario.a.count + scenario.b.count, "scenario \(index)")
+        }
+    }
+
+    /// A grant whose first page hasn't landed is unknown, not exhausted: the combined feed
+    /// shows (and marks) nothing until every grant's first answer sets the range. Production
+    /// `GuestGramFeed`s, as the review's probe.
+    @MainActor
+    func testAGrantStillLoadingWithholdsTheCombinedRange() async {
+        let fast = GuestGramFeed()
+        let slow = GuestGramFeed()
+        await fast.refresh(client: HerdrClient(transport: PageHost(Self.pageLine([("old", 100)], hasMore: false))))
+        let early = GuestGramMerge(lanes: [fast.lane(grant: "fast"), slow.lane(grant: "slow")])
+        XCTAssertEqual(early.items.map(\.id), [], "nothing shows while slow is unknown")
+        XCTAssertEqual(early.shownUnreadByGrant, [:], "and nothing is marked read")
+        XCTAssertFalse(early.hasMore, "the loading grant is refreshing, not paging")
+        XCTAssertEqual(early.unreadCount, 1, "the counts don't wait")
+
+        await slow.refresh(client: HerdrClient(transport: PageHost(Self.pageLine([("new", 1_000)], hasMore: true))))
+        let later = GuestGramMerge(lanes: [fast.lane(grant: "fast"), slow.lane(grant: "slow")])
+        XCTAssertFalse(later.items.contains { $0.id == "fast/old" }, "old@100 is below slow's unfetched range")
+        XCTAssertEqual(later.grantsToPage, ["slow"])
+    }
+
+    /// Same-named agents read apart in the recipient picker: by owner and machine across
+    /// hosts, by terminal on one machine; a unique name stays bare.
+    func testRecipientLabelsTellSameNamedAgentsApart() {
+        func share(_ guest: String, _ name: String, owner: String, machine: String, host: String,
+                   target: String) -> GuestAccess {
+            GuestAccess(guestID: guest, guestName: "nike", machineLabel: machine, ownerName: owner,
+                        agentName: name, agentTarget: target,
+                        endpoint: RelayEndpoint(relay: URL(string: "https://relay.example")!, hostID: host,
+                                                hostPublicKey: Data(repeating: 1, count: 32)),
+                        acceptedAt: Date(timeIntervalSince1970: 0))
+        }
+        let shares = [
+            share("g1", "llm-opt", owner: "Jerry", machine: "Studio", host: "h1", target: "w1"),
+            share("g2", "enyo-ui", owner: "Jerry", machine: "Studio", host: "h1", target: "w2-4"),
+            share("g3", "enyo-ui", owner: "Jerry", machine: "Studio", host: "h1", target: "w2-9"),
+            share("g4", "docs", owner: "Jerry", machine: "Studio", host: "h1", target: "w3"),
+            share("g5", "docs", owner: "Ana", machine: "Laptop", host: "h2", target: "w3"),
+        ]
+        let labels = GuestAccess.recipientLabels(shares)
+        XCTAssertEqual(shares.map { labels[$0.id] ?? "" }, [
+            "llm-opt", "enyo-ui · w2-4", "enyo-ui · w2-9", "docs · Jerry · Studio", "docs · Ana · Laptop",
+        ])
+        XCTAssertEqual(Set(labels.values).count, shares.count)
+    }
+
+    private static func pageLine(_ messages: [(String, UInt64)], hasMore: Bool) -> String {
+        let items = messages.map { id, ms in
+            #"{"id":"\#(id)","direction":"agent_to_owner","from":"agent","text":"\#(id)","created_unix_ms":\#(ms),"read":false}"#
+        }
+        return #"{"id":"$ID","result":{"type":"guest_gram_list","has_more":\#(hasMore),"messages":[\#(items.joined(separator: ","))]}}"#
+    }
+
+    /// A host that answers every call with one `gram.list` page.
+    private struct PageHost: HerdrTransport {
+        let line: String
+        init(_ line: String) { self.line = line }
+        func roundTrip(_ requestLine: String) async throws -> String {
+            let object = try JSONSerialization.jsonObject(with: Data(requestLine.utf8)) as? [String: Any]
+            return line.replacingOccurrences(of: "$ID", with: object?["id"] as? String ?? "x")
+        }
+        func stream(_ requestLine: String) -> AsyncThrowingStream<String, Error> {
+            AsyncThrowingStream { $0.finish() }
+        }
     }
 }
