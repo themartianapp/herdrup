@@ -359,7 +359,13 @@ public final class GuestGramFeed {
     /// only. Flipped at once; restored if the host refuses, and then not re-sent until its
     /// backoff (`GuestGramReadMarks`) has passed.
     public func markAllRead(client: HerdrClient, now: Date = Date()) async {
-        let ids = marks.begin(unread: messages.filter(\.isUnread).map(\.id), now: now)
+        await markRead(messages.filter(\.isUnread).map(\.id), client: client, now: now)
+    }
+
+    /// Marks only `shown` read: what the combined inbox (#697) drew of this grant.
+    public func markRead(_ shown: [String], client: HerdrClient, now: Date = Date()) async {
+        let unread = Set(messages.filter(\.isUnread).map(\.id))
+        let ids = marks.begin(unread: shown.filter(unread.contains), now: now)
         guard !ids.isEmpty else { return }
         setRead(ids, true)
         do {
