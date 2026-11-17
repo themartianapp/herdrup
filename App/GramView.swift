@@ -1342,7 +1342,7 @@ struct GramView: View {
     /// field, the paperclip, the mic and saved prompts, with send taking the saved-prompts
     /// place once there is something to send; same paddings. Mirrored rather than shared:
     /// the terminal's controls are woven into its own send, Ctrl and collapse state in
-    /// HerdrApp.swift, so a common builder would have to change the terminal's behaviour.
+    /// TerminalPaneContent.swift, so a common builder would have to change the terminal's behaviour.
     ///
     /// The recipient is in the text (mock D): "@name" sends to one agent, no "@" goes to the
     /// shared queue (`GramMention`, `draftAddress`). While an "@" is being typed at the caret,

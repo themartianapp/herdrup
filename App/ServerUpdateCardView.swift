@@ -29,7 +29,7 @@ struct ServerUpdateCardView: View {
             }
             .padding(.top, 16).padding(.horizontal, 18).padding(.bottom, 18)
             .frame(maxWidth: .infinity, alignment: .leading)
-            // `settingsGroup()` is private to HerdrApp.swift: the same group, drawn here.
+            // The same group as `settingsGroup(outline: true)` (LayoutHelpers.swift), drawn here.
             .background(Palette.surface)
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.group))
             .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.group).stroke(Palette.hairlineQuiet, lineWidth: 1))

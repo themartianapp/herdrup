@@ -5,7 +5,7 @@ import HerdrKit
 /// Holds the Gram inbox OUTSIDE the Gram page's lifetime.
 ///
 /// The page cannot own the list. On iPad it is constructed inside the detail column's
-/// `switch selectedTab` (`HerdrApp.swift`), so switching sections destroys the view and
+/// `switch selectedTab` (`TerminalHomeView.swift`), so switching sections destroys the view and
 /// every `@State` it holds — Agents -> Gram -> Agents -> Gram re-fetched the entire
 /// store (~870 messages, ~900 KB) each time and showed a spinner while it did.
 ///

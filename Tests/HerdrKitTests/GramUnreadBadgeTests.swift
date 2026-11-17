@@ -1,7 +1,7 @@
 import XCTest
 @testable import HerdrKit
 
-/// The off-tab Gram badge poller (HerdrApp.swift) counts an `unread_only` answer with
+/// The off-tab Gram badge poller (TerminalHomeView.swift) counts an `unread_only` answer with
 /// `GramListAnswer.unreadBadgeCount`. A paging daemon answers with one page plus the
 /// store-wide `unread_count`; counting the page's messages undercounts the badge.
 final class GramUnreadBadgeTests: XCTestCase {
