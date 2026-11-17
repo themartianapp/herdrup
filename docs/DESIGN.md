@@ -214,6 +214,23 @@ cancelled. macserve does not skip docs-only or version-only pull requests;
 [`Tools/ci/ci_scope.py`](../Tools/ci/ci_scope.py) still records that decision in the
 *Scope* job.
 
+**The `smoke` shard is the fast tier's.** macserve's two-tier matrix will run it on every push,
+drafts included, on an iPhone 18 Pro from the head's one prebuilt app, while the four shards
+above become the full tier, which runs only on the final head before merge. Until macserve's
+policy names it, macserve ignores it. It lists 30 selectors (36 tests, about 7.4 minutes of
+test time at #694's durations) on the critical paths: launch and onboarding, pairing and the
+live connection, the agent list, the terminal (type, scroll, resize, drop, the memory budget),
+Chat (open, send, older pages, landing after a background round trip, an ask card, the question
+sheet), Gram (open at the newest, post, open a file), the guest pane and guest Gram, Settings,
+the server-update card, and the Gram and Chat width handles, which check the compact layout on
+iPhone and the split columns on iPad. It includes a test from each class with a real
+regression in history (`GuestGramPaneTests` and `AgentAvatarUITests` on #702,
+`TerminalMemoryTests` for #687, `ChatViewTests` and the question sheet for #686 and #711) and
+leaves out the known flakes (#685, #705, the iPad width readout and Duo draft) and the
+four-minute `PagingTests`. Smoke is a subset: `test_macserve_shards.py` checks that each smoke
+selector's class also runs in an iPhone shard, so a green smoke never stands in for the full
+tier, which still gates the merge.
+
 **Running a shard on any Mac.** [`Tools/ci/ui-shard.sh`](../Tools/ci/ui-shard.sh) runs the
 same shards round by round, with measured per-round budgets, an infrastructure-only rerun
 and receipts in `TestReceipts/` (it needs no Homebrew: `xcbeautify` and GNU `timeout` are
