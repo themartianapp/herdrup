@@ -294,19 +294,26 @@ final class GuestPaneTests: XCTestCase {
         XCTAssertFalse(app.descendants(matching: .any)["guest-note"].exists, "the keys should not fail")
     }
 
-    /// A host older than guest answers refuses the guest's menu key: back to waiting for the
-    /// owner, with the banner and pill that say so and no keys.
-    func testBlockedAgentOnAnOlderHostWaitsForTheOwner() {
+    /// A refused menu key from a host that never took one says nothing about who may answer
+    /// (herdrup#714: herdr refused a guest's keys in an omp form it could not tell was still
+    /// open). The keys stay, nothing hands the question to the owner, and the guest hears
+    /// the key wasn't taken.
+    func testARefusedMenuKeyKeepsTheKeysAndDoesNotWaitForTheOwner() {
         let app = XCUIApplication.launched(mock: "guestblocked", environment: ["HERDR_MOCK_GUEST_OWNER_ANSWERS": "1"])
 
         let keys = app.descendants(matching: .any)["guest-menu-keys"]
-        XCTAssertTrue(keys.exists(within: 10), "the keys show until the host refuses one")
+        XCTAssertTrue(keys.exists(within: 10), "the menu keys should show")
         app.buttons["Enter"].tap()
-        XCTAssertTrue(app.staticTexts["llm-opt is asking a question only Jerry can answer"].exists(within: 10), "the owner banner should render")
-        XCTAssertTrue(app.staticTexts["NEEDS JERRY"].exists)
-        XCTAssertFalse(keys.exists, "no menu keys once the host keeps answers for the owner")
-        XCTAssertFalse(app.descendants(matching: .any)["guest-note"].exists, "the refusal is not an error")
-        attach(app, "guest-blocked-owner-answers")
+        XCTAssertTrue(poll(6, every: 0.3) { self.forbiddenCalls(app).contains("pane.send_keys") },
+                      "the host refuses the key: \(forbiddenCalls(app))")
+        let note = app.staticTexts["guest-note"]
+        XCTAssertTrue(note.exists(within: 6), "the guest hears the key wasn't taken")
+        XCTAssertEqual(note.label, "That key wasn't taken. Try again in a moment.")
+        XCTAssertTrue(keys.exists, "the keys stay")
+        XCTAssertFalse(app.staticTexts["llm-opt is asking a question only Jerry can answer"].exists,
+                       "a refused key must not hand the question to the owner")
+        XCTAssertFalse(app.staticTexts["NEEDS JERRY"].exists)
+        attach(app, "guest-blocked-key-refused")
     }
 
     /// A host that took one of the guest's keys refuses the next during the pause after a
