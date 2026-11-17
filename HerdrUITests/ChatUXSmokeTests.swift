@@ -656,17 +656,13 @@ final class ChatUXSmokeTests: XCTestCase {
     }
 
     /// The row render count once the chat has stopped drawing: two probe reads 0.6 s apart
-    /// (more than the probe's 250 ms poll) that agree. A baseline taken while the keyboard or
-    /// a layout is still redrawing rows would charge those rows to what the test does next.
+    /// (more than the probe's 250 ms poll) that agree (`waitForStable`). A baseline taken
+    /// while the keyboard or a layout is still redrawing rows would charge those rows to what
+    /// the test does next.
     private func settledRowRenders(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) -> Int {
-        var last = rowRenders(app)
-        let settled = poll(10, every: 0.6) {
-            let now = rowRenders(app)
-            defer { last = now }
-            return now == last && now >= 0
-        }
-        XCTAssertTrue(settled, "the chat kept drawing rows: \(last)", file: file, line: line)
-        return last
+        let renders = waitForStable(timeout: 10, interval: 0.6, accept: { $0 >= 0 }) { rowRenders(app) }
+        XCTAssertTrue(renders.stable, "the chat kept drawing rows: \(renders.value)", file: file, line: line)
+        return renders.value
     }
 
     /// TestFlight build 221 lagged on every keystroke in a long agent session: the page

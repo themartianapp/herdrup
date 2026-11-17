@@ -182,15 +182,13 @@ final class GramColumnTests: XCTestCase {
         // many ticks must not re-run their bodies. One pass of the drawn rows is the bound;
         // per-tick invalidation would be many times that.
         // Wait for the first pass to finish drawing (the feed reports its rows and the render
-        // count holds still across reads) so the baseline is not inflated by a pass still running.
+        // count holds still across two reads 0.6 s apart, over two of the probe's 250 ms ticks:
+        // `waitForStable`) so the baseline is not inflated by a pass still running.
         var drawnRows = 0
-        var lastRenders = -2
-        _ = poll(10, every: 0.3) {
+        _ = waitForStable(timeout: 10, interval: 0.6, accept: { (_: Int) in drawnRows > 0 }) {
             drawnRows = Int((element(app, "gram-feed-messages").value as? String)?
                 .split(separator: " ").first ?? "") ?? 0
-            let renders = rowRenders(app)
-            defer { lastRenders = renders }
-            return drawnRows > 0 && renders == lastRenders
+            return rowRenders(app)
         }
         XCTAssertGreaterThan(drawnRows, 0, "the feed reports how many messages it draws")
         let rendersBeforeDrag = rowRenders(app)

@@ -106,13 +106,9 @@ class TerminalInteractionTestCase: XCTestCase {
             .press(forDuration: 0.05,
                    thenDragTo: anchor.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.5)))
         // Let any deceleration finish: the caller judges reachability by frame geometry, and
-        // a cap read while the bar still glides can be tapped where it no longer is.
-        var last = anchor.frame
-        _ = poll(2, every: 0.1) {
-            let now = anchor.frame
-            defer { last = now }
-            return now == last
-        }
+        // a cap read while the bar still glides can be tapped where it no longer is. Three
+        // equal frames 0.15 s apart (`waitForStable`): a glide spans at least that.
+        _ = waitForStable(timeout: 2, interval: 0.15, matches: 2) { anchor.frame }
     }
 
 

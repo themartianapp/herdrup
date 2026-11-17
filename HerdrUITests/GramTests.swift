@@ -462,17 +462,10 @@ final class GramTests: XCTestCase {
     }
 
     /// The row-render count once it holds still: two reads 0.6 s apart (over two of the
-    /// probe's 250 ms ticks) agree. Waits out an opening or a keyboard landing without a
-    /// fixed pause; on timeout it returns the last read.
+    /// probe's 250 ms ticks) agree (`waitForStable`). Waits out an opening or a keyboard
+    /// landing without a fixed pause; on timeout it returns the last read.
     private func settledRowRenders(_ app: XCUIApplication, timeout: TimeInterval = 10) -> Int {
-        var last = rowRenders(app)
-        var current = last
-        _ = poll(timeout, every: 0.6) {
-            current = rowRenders(app)
-            defer { last = current }
-            return current == last
-        }
-        return current
+        waitForStable(timeout: timeout, interval: 0.6) { rowRenders(app) }.value
     }
 
     /// Scrolling a feed of pictures re-renders only the rows that change. Twelve image messages
@@ -574,14 +567,7 @@ final class GramTests: XCTestCase {
     /// on open (the first page fits), iPhone none; then two reads 0.6 s apart agree.
     private func settledListPages(_ app: XCUIApplication, timeout: TimeInterval = 10) -> Int {
         let opening = hasSidebar ? 1 : 0
-        var last = -2
-        var current = -1
-        _ = poll(timeout, every: 0.6) {
-            current = listPages(app)
-            defer { last = current }
-            return current >= opening && current == last
-        }
-        return current
+        return waitForStable(timeout: timeout, interval: 0.6, accept: { $0 >= opening }) { listPages(app) }.value
     }
 
     /// A search covers the loaded messages and fetches nothing by itself: "Digest" matches g6
@@ -1173,25 +1159,15 @@ final class GramTests: XCTestCase {
         let feedFrame = feed.frame
         let headerBottom = header.exists ? header.frame.maxY : feedFrame.minY
         // `element` is a nested query (seconds per resolve on CI), so each look resolves it as
-        // few times as it can: the frame read that proves the scroll came to rest is the one
-        // judged, and hittability is asked only once that frame is in the band.
-        var swipes = 0
-        var last: CGRect?
-        for _ in 0..<60 {
+        // few times as it can: two frame reads 0.25 s apart that agree prove the scroll came
+        // to rest (`waitForStable`), and hittability is asked only once that frame is in the band.
+        for swipe in 0...12 {
             if element.exists {
-                let frame = element.frame
-                if frame != last {
-                    // First look, or still moving: look again before judging or scrolling on.
-                    last = frame
-                    Thread.sleep(forTimeInterval: 0.2)   // Kept: the interval between two frame reads.
-                    continue
-                }
+                let frame = waitForStable(timeout: 3, interval: 0.25) { element.frame }.value
                 if frame.minY >= headerBottom, frame.maxY <= feedFrame.maxY, element.isHittable { return }
             }
-            guard swipes < 12 else { return }
-            swipes += 1
+            guard swipe < 12 else { return }
             if older { feed.swipeDown(velocity: .slow) } else { feed.swipeUp(velocity: .slow) }
-            last = nil
         }
     }
 

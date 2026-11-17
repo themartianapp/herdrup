@@ -16,6 +16,33 @@ func poll(_ timeout: TimeInterval, every interval: TimeInterval, _ condition: ()
     return condition()
 }
 
+/// The value `sample` reads once it has held still: `matches` consecutive comparisons, each
+/// between two reads at least `interval` apart, found it equal (and `accept` true). `stable`
+/// is false when `timeout` passed first; `value` is then the last read, for the message.
+///
+/// EVERY COMPARISON SPANS A REAL INTERVAL. Two reads taken back to back agree while a change
+/// is still on its way: a DEBUG counter that publishes every 250 ms reads the same twice
+/// before pending renders land, a decelerating frame reads the same twice within one
+/// accessibility snapshot. So the first read is followed by a sleep, never compared at once.
+/// Pick `interval` at least the probe's publish period (≥ 0.3 s for the render counters);
+/// for frames, equal reads spanning ≥ 0.25 s (`matches: 2` at 0.15 s, or one match at 0.25 s
+/// where each read is a slow query). Like `poll`, it judges a read started before the deadline.
+func waitForStable<Value: Equatable>(timeout: TimeInterval, interval: TimeInterval, matches: Int = 1,
+                                     accept: (Value) -> Bool = { _ in true },
+                                     _ sample: () -> Value) -> (value: Value, stable: Bool) {
+    let deadline = Date().addingTimeInterval(timeout)
+    var last = sample()
+    var agreed = 0
+    while true {
+        Thread.sleep(forTimeInterval: interval)
+        let now = sample()
+        agreed = now == last && accept(now) ? agreed + 1 : 0
+        last = now
+        if agreed >= matches { return (now, true) }
+        if Date() >= deadline { return (now, false) }
+    }
+}
+
 extension XCTestCase {
     /// Polls the label of the element identified `id` until `condition` holds, and returns
     /// it. Otherwise FAILS THE TEST with the last label read, so the failure shows what the
@@ -72,14 +99,8 @@ extension XCUIElement {
     }
 
     /// iPadOS animates a restored or resized window into place; frames read during that
-    /// animation, and taps aimed with them, are wrong.
+    /// animation, and taps aimed with them, are wrong. Two reads 0.3 s apart agree, or 6 s.
     func waitForSettledFrame() {
-        var last = frame
-        for _ in 0..<20 {
-            Thread.sleep(forTimeInterval: 0.3)
-            let now = frame
-            if now == last { return }
-            last = now
-        }
+        _ = waitForStable(timeout: 6, interval: 0.3) { frame }
     }
 }

@@ -389,13 +389,10 @@ final class GuestPaneTests: XCTestCase {
         XCTAssertTrue(terminal.exists(within: 10))
         let topRow = app.descendants(matching: .any)["terminal-top-row-probe"]
         XCTAssertTrue(topRow.exists(within: 10))
-        // Wait for the seeded screen to hold still for a beat before reading it as the live one.
-        var previous = ""
-        XCTAssertTrue(poll(10, every: 0.5) {
-            let now = topRow.label
-            defer { previous = now }
-            return !now.isEmpty && now == previous
-        }, "the top row should settle once the stream seeds: \(topRow.label)")
+        // Wait for the seeded screen to hold still for a beat (two reads 0.5 s apart agree)
+        // before reading it as the live one.
+        XCTAssertTrue(waitForStable(timeout: 10, interval: 0.5, accept: { !$0.isEmpty }) { topRow.label }.stable,
+                      "the top row should settle once the stream seeds: \(topRow.label)")
         let latest = app.buttons["guest-latest"]
         XCTAssertFalse(latest.exists, "no pill at the tail")
         let live = topRow.label
