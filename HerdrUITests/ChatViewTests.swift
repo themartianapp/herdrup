@@ -676,6 +676,22 @@ final class ChatViewTests: XCTestCase {
         XCTAssertEqual(formStep(app), "5 OF 6", "on the refused field's step")
     }
 
+    /// herdr's Markdown context: the comparison table draws as a table inside the card (not
+    /// the plain text's " · " rows), on the first step only.
+    func testFormContextTableDrawsAsATable() {
+        let app = launchForm(["HERDR_MOCK_CHAT_FORM_CONTEXT": "table"])
+        let card = app.descendants(matching: .any)["chat-ask-form"]
+        let table = card.descendants(matching: .any)["chat-markdown-table"]
+        XCTAssertTrue(table.waitForExistence(timeout: 8), "the context's table is a table in the card")
+        XCTAssertTrue(table.staticTexts["Sales / acquisitions"].exists, "the header cell is its own text")
+        XCTAssertFalse(card.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "five choices")).firstMatch.exists,
+                       "the Markdown replaces the plain intro")
+        attach(app, "form-context-table")
+        app.buttons["chat-ask-form-next"].tap()
+        waitForStep("2 OF 6", in: app)
+        XCTAssertFalse(table.exists, "the context belongs to the first step")
+    }
+
     /// A server without `ask_form`: the steps read-only, and Answer in Terminal.
     func testFormOnAServerWithoutTheCapabilityIsReadOnly() {
         let app = launchForm(["HERDR_MOCK_CHAT_FORM_CAPABILITY": "0"])
