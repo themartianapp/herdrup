@@ -150,10 +150,6 @@ public actor CitadelTransport: HerdrTransport, MachineFederationTransport, Sessi
 
     // MARK: - connection
 
-    private func connectedClient() async throws -> SSHClient {
-        try await connection.connectedClient()
-    }
-
     /// Conservative ceiling on the full command line, well under the kernel's
     /// MAX_ARG_STRLEN (~131072 on a 4-KiB-page Linux host; the reviewer measured
     /// E2BIG at exactly 131072). It bounds the WHOLE string `herdrCommand` builds,
@@ -461,7 +457,7 @@ public actor CitadelTransport: HerdrTransport, MachineFederationTransport, Sessi
     /// is what an older herdr without sessions does: callers treat that as "default only".
     public func listSessions() async throws -> [HerdrSession] {
         let command = Self.herdrCommand(["session", "list", "--json"])
-        let output = try await connectedClient().executeCommandStream(command)
+        let output = try await backend.execute(command)
         var stdout = Data()
         do {
             for try await chunk in output {
@@ -488,7 +484,7 @@ public actor CitadelTransport: HerdrTransport, MachineFederationTransport, Sessi
             throw TransportError.machineCommandFailed(stderr: "Invalid saved-machine profile ID")
         }
         let command = Self.herdrCommand(["machine", enabled ? "federate" : "unfederate", profileID])
-        let output = try await connectedClient().executeCommandStream(command)
+        let output = try await backend.execute(command)
         var stderr = ""
         var received = 0
         do {
