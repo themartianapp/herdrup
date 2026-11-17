@@ -3,7 +3,8 @@ import Foundation
 import NIOCore
 
 /// A streaming upload channel for ONE gram attachment. Holds a single SSH
-/// exec channel running `herdr remote-api-bridge` for the upload's lifetime and writes
+/// exec channel running `herdr remote-api-bridge` for the upload's lifetime (placed like
+/// every stream: on the shared connection when it has room, `SharedFirstLink`) and writes
 /// newline-delimited chunk frames to the daemon's `gram.upload.stream`, instead
 /// of one `herdr api-bridge` exec per chunk.
 ///
@@ -66,8 +67,7 @@ public actor GramUploadChannel {
         let error: Body?
     }
 
-    private let makeConnection: @Sendable () async throws -> SSHClient
-    private let command: String
+    private let link: RequestChannelLink
     private let openLine: String
     private static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
@@ -80,7 +80,7 @@ public actor GramUploadChannel {
 
     private var framesCont: AsyncStream<ByteBuffer>.Continuation?
     private var runner: Task<Void, Never>?
-    private var client: SSHClient?
+    private var stdout = LineAccumulator()
     private var seq: UInt64 = 0
     private var live = false
 
@@ -108,6 +108,14 @@ public actor GramUploadChannel {
     /// to ~4 × 700 KB of encoded frames.
     static let maxFramesInFlight = 4
 
+    /// The most bytes handed to the channel in one write. The upload shares its SSH
+    /// connection with requests and other streams, and one TCP connection is one
+    /// queue: a whole ~700 KB frame written at once would put every request behind it
+    /// (5 s on a 1 Mbit uplink). Each write is awaited before the next, so another
+    /// channel's write waits behind at most this much of the upload. 32 KiB is
+    /// OpenSSH's maximum packet, so a slice is one SSH packet.
+    static let maxWriteBytes = 32 * 1024
+
     /// How long [`closeAndWait`] may wait for the SSH session to go away before the
     /// runner is cancelled. Injectable for the same reason
     /// `CitadelTransport.connectTimeoutNanoseconds` is: an unstructured race is only
@@ -115,13 +123,11 @@ public actor GramUploadChannel {
     private let closeGrace: UInt64
 
     init(
-        makeConnection: @escaping @Sendable () async throws -> SSHClient,
-        command: String,
+        link: RequestChannelLink,
         openLine: String,
         closeGrace: UInt64 = GramUploadChannel.defaultCloseGraceNanoseconds
     ) {
-        self.makeConnection = makeConnection
-        self.command = command
+        self.link = link
         self.openLine = openLine
         self.closeGrace = closeGrace
     }
@@ -129,6 +135,18 @@ public actor GramUploadChannel {
     /// Generous for a live link (the frames are already acked, so this is only
     /// channel teardown) and short enough that a dead link cannot hold the UI.
     static let defaultCloseGraceNanoseconds: UInt64 = 5 * 1_000_000_000
+
+    /// `buffer` cut into consecutive writes of at most `maxWriteBytes`. The daemon reads
+    /// a byte stream, so a frame line split across writes arrives whole.
+    static func slices(of buffer: ByteBuffer) -> [ByteBuffer] {
+        var rest = buffer
+        var slices: [ByteBuffer] = []
+        slices.reserveCapacity(rest.readableBytes / maxWriteBytes + 1)
+        while let slice = rest.readSlice(length: min(maxWriteBytes, rest.readableBytes)), slice.readableBytes > 0 {
+            slices.append(slice)
+        }
+        return slices
+    }
 
     /// Encodes one frame line. A static seam so the property that makes 512 KiB
     /// frames legal — a slash-heavy chunk stays inside the daemon's 1 MiB frame
@@ -181,7 +199,7 @@ public actor GramUploadChannel {
 
         try Task.checkCancellation()
         unacked.append(frameSeq)
-        framesCont.yield(buffer)
+        for slice in Self.slices(of: buffer) { framesCont.yield(slice) }
         try await awaitAcks(untilAtMost: Self.maxFramesInFlight - 1)
     }
 
@@ -267,30 +285,19 @@ public actor GramUploadChannel {
             // `try?`: a cancelled sleep must still fall through to the teardown, or a
             // cancelled caller would hang on the gate forever.
             try? await Task.sleep(nanoseconds: grace)
-            runner.cancel()
             // Cancellation does NOT interrupt the runner's await on the SSH channel's
-            // close promise, so without this the parent connection is never closed:
-            // the actor would keep an `SSHClient`, a socket and a live Task for the
-            // kernel's whole retransmit budget, and — because the FIN is never even
-            // attempted — the daemon would see a channel that is open but silent,
-            // which is exactly the input that pins its single-writer claim. Same
-            // pattern as `CitadelTransport.close()`: tear the connection down locally
-            // rather than wait on a per-channel promise.
-            await self.closeConnection()
+            // close promise. On a connection of its own the link closes that
+            // connection on cancel (`SharedFirstLink`), which fails the promise. On the
+            // shared connection it must not: the other streams and every request live
+            // there. The channel then stays half-closed until the peer answers or the
+            // connection drops, and this returns on the deadline regardless.
+            runner.cancel()
             await gate.signal()
         }
         await gate.wait()
     }
 
     private var closeGraceNanoseconds: UInt64 { closeGrace }
-
-    /// Closes the upload's own SSH connection and forgets it. Idempotent: the field
-    /// is cleared, so a later `run` tail close is a no-op rather than a double close.
-    private func closeConnection() async {
-        guard let client else { return }
-        self.client = nil
-        try? await client.close()
-    }
 
     /// One-shot rendezvous: whichever of the two observers finishes first releases
     /// the waiter, and the other's later signal is dropped.
@@ -324,51 +331,27 @@ public actor GramUploadChannel {
 
     // MARK: - internals
 
-    @available(macOS 15.0, *)
     private func run(_ frameStream: AsyncStream<ByteBuffer>) async {
-        // The connection is closed through `closeConnection()` on every exit — a
-        // throw from `withExec` (dropped link, failed channel open, mid-upload write
-        // error) included. Leaking it would strand one TCP session, one sshd session
-        // and one remote `api-bridge` process PER FILE, since each upload mints its
-        // own connection. One teardown path also means the expiry branch in
-        // `closeAndWait` and this tail cannot double-close.
+        // The link ends when the frame stream finishes (`close`), when the daemon
+        // closes its side, or when the channel or its connection fails; either way
+        // nothing more can be acked, so the actor is torn down here. The reader inside
+        // the link is the ONLY observer of the remote side: a daemon that closes the
+        // channel with an ack outstanding must still end a `sendChunk` parked on that
+        // ack, or the composer stays `sending` until the app is force-quit.
         do {
-            let client = try await makeConnection()
-            self.client = client
-            try await client.withExec(command) { [weak self] inbound, stdin in
-                let reader = Task { [weak self] in
-                    var accumulator = LineAccumulator()
-                    do {
-                        for try await chunk in inbound {
-                            guard case .stdout(let bytes) = chunk else { continue }
-                            for line in accumulator.append(bytes) {
-                                await self?.handleLine(line)
-                            }
-                        }
-                    } catch {
-                        // stdout closed/errored.
-                    }
-                    // The reader is the ONLY observer of the remote side, so it must
-                    // tear the actor down itself. Nothing else can: the writer loop
-                    // below is parked on `frameStream`, which only `markDead`/`close`
-                    // finish, and the caller's `defer`-close cannot run while it is
-                    // suspended in `sendChunk` awaiting an ack. Without this, a daemon
-                    // that closes the channel with an ack outstanding deadlocks the
-                    // upload permanently — the composer stays `sending` and
-                    // undismissable until the app is force-quit.
-                    await self?.markDead()
-                }
-                defer { reader.cancel() }
-                for await buffer in frameStream {
-                    try await stdin.write(buffer)
-                }
+            try await link.run(stdin: frameStream) { [weak self] chunk in
+                await self?.receive(chunk)
             }
         } catch {
-            // makeConnection / withExec failed before or during the channel.
+            // The channel failed to open, or dropped mid-upload.
         }
-        await closeConnection()
         settleOpen(.failure(ChannelError.closedBeforeAck))
         markDead()
+    }
+
+    private func receive(_ chunk: ExecCommandOutput) {
+        guard case .stdout(let bytes) = chunk else { return }
+        for line in stdout.append(bytes) { handleLine(line) }
     }
 
     /// One stdout line from the daemon. Internal so tests can play the daemon's
