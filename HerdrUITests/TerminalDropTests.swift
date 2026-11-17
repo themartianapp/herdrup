@@ -26,8 +26,16 @@ final class TerminalDropTests: TerminalInteractionTestCase {
     /// snippet, dropped in ONE drag on the terminal: both files stage as composer chips
     /// under their own names and start uploading at once, exactly as on the composer bar;
     /// the text lands nowhere. Send then posts those uploads without uploading again.
+    ///
+    /// WITH ANIMATIONS: the app stages a drop's files one after another, so the PDF's load
+    /// starts only once the note has staged, after `performDrop` returned, while the drop
+    /// session that vends it stays open for the system's drop animation. With animations off
+    /// (`HERDR_NO_ANIMATIONS=1`) the session ended first and the PDF could not be read
+    /// ("Couldn't add that attachment.", #716 on iPhone and iPad). This test is about staging,
+    /// so it runs with the drop as users see it; a first file slow enough to outlast the
+    /// animation would hit the same failure, and that is the app's to fix, not this test's.
     func testFilesDroppedOnTheTerminalStageInTheComposerAndUploadEarly() {
-        launch("control")
+        launch("control", environment: ["HERDR_NO_ANIMATIONS": "0"])
         let reply = app.textViews["terminal-reply-input"]
         XCTAssertTrue(reply.exists(within: 10))
         XCTAssertEqual(probe()["dropTargets"] as? Int, 0)

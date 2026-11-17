@@ -112,8 +112,21 @@ class TerminalInteractionTestCase: XCTestCase {
     }
 
 
+    /// Taps the terminal once any keyboard transition has come to rest, then waits for focus.
+    ///
+    /// A TAP DURING THE KEYBOARD'S HIDE SWEEP IS LOST. testExplicitKeycapAndKeyboardDismissalDisarm
+    /// taps here right after "Collapse keyboard": with XCTest's one-second existence wait in
+    /// front of it the tap landed 2.2 s after the collapse (#694's log) and focused; with the
+    /// polling wait it landed 0.47 s after, inside the 441 ms keyboard-hide resize the receipt
+    /// records, and the terminal never took focus (#716, runs j_811c0a13 and j_edd06db1). So
+    /// the tap waits for what that second used to cover: the software keyboard's frame (or
+    /// its absence) unchanged over 0.3 s, and the pane uncovered with its grid held for 0.5 s
+    /// by the app's own measure (`stableMs`, longer than that 441 ms sweep).
     func focusTerminal() {
         XCTAssertTrue(terminal.exists(within: 5))
+        let keyboard = app.keyboards.firstMatch
+        _ = waitForStable(timeout: 5, interval: 0.15, matches: 2) { keyboard.exists ? keyboard.frame : .zero }
+        wait { ($0["covered"] as? Bool) == false && ($0["stableMs"] as? Int ?? 0) >= 500 }
         terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)).tap()
         wait { ($0["focused"] as? Bool) == true }
     }
