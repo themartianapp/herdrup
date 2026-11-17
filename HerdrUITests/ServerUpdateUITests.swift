@@ -23,11 +23,11 @@ final class ServerUpdateUITests: XCTestCase {
     /// Opens Settings › Machines (the iPad split shows Machines by default).
     private func openMachines(_ app: XCUIApplication) {
         let tab = settingsTab(app)
-        XCTAssertTrue(tab.waitForExistence(timeout: 15), "no Settings tab")
+        XCTAssertTrue(tab.exists(within: 15), "no Settings tab")
         tab.tap()
         if !isPad {
             let machines = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Machines'")).firstMatch
-            XCTAssertTrue(machines.waitForExistence(timeout: 10), "no Machines row")
+            XCTAssertTrue(machines.exists(within: 10), "no Machines row")
             machines.tap()
         }
     }
@@ -42,7 +42,7 @@ final class ServerUpdateUITests: XCTestCase {
 
     private func waitForTitle(_ app: XCUIApplication, _ text: String, timeout: TimeInterval = 30) -> Bool {
         let predicate = NSPredicate(format: "label == %@", text)
-        return title(app).waitForExistence(timeout: 2)
+        return title(app).exists(within: 2)
             && XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: predicate, object: title(app))],
                                 timeout: timeout) == .completed
     }
@@ -84,7 +84,7 @@ final class ServerUpdateUITests: XCTestCase {
     private func confirmUpdate(_ app: XCUIApplication, button: String = "Update") {
         app.buttons["server-update-button"].tap()
         let confirm = app.alerts.buttons[button]
-        XCTAssertTrue(confirm.waitForExistence(timeout: 5), "no confirmation")
+        XCTAssertTrue(confirm.exists(within: 5), "no confirmation")
         record(app, "confirm")
         confirm.tap()
     }
@@ -94,7 +94,7 @@ final class ServerUpdateUITests: XCTestCase {
     func testAvailableShowsBadgeAndCard() {
         let app = launch("available")
         let tab = settingsTab(app)
-        XCTAssertTrue(tab.waitForExistence(timeout: 15))
+        XCTAssertTrue(tab.exists(within: 15))
         let badged = waitForBadge(app)
         record(app, "badge")
         XCTAssertTrue(badged, "the Settings tab should carry a red 1")
@@ -106,7 +106,7 @@ final class ServerUpdateUITests: XCTestCase {
         // version line names the running build — where the retired staged-build card used
         // to be.
         let hero = app.descendants(matching: .any)["settings-machine-hero"].firstMatch
-        XCTAssertTrue(hero.waitForExistence(timeout: 10), "no machine hero")
+        XCTAssertTrue(hero.exists(within: 10), "no machine hero")
         XCTAssertTrue(poll(10, every: 0.5) { hero.label.contains("herdr 0.9.3") },
                       "the hero should carry the daemon version line (got \(hero.label))")
         XCTAssertGreaterThan(card(app).frame.minY, hero.frame.maxY,
@@ -185,7 +185,7 @@ final class ServerUpdateUITests: XCTestCase {
         let handoff = app.buttons["Copy command: herdr update --handoff"]
         XCTAssertTrue(handoff.exists)
         handoff.tap()
-        XCTAssertTrue(app.buttons["Copied"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Copied"].exists(within: 5))
         record(app, "old")
     }
 
@@ -199,7 +199,7 @@ final class ServerUpdateUITests: XCTestCase {
         XCTAssertTrue(waitForTitle(app, "Update didn't finish", timeout: 30))
         app.buttons["server-update-retry"].tap()
         let reason = app.staticTexts["mac-mini couldn't reach the update server."]
-        XCTAssertTrue(reason.waitForExistence(timeout: 15), "Try again should say why nothing was installed")
+        XCTAssertTrue(reason.exists(within: 15), "Try again should say why nothing was installed")
         XCTAssertTrue(card(app).exists, "the card must stay")
         // The failed-check reason is already visible. Read the retained state now;
         // a second two-second waiter can expire while XCTest retrieves its label.
@@ -227,7 +227,7 @@ final class ServerUpdateUITests: XCTestCase {
     func testGuestSeesNothing() {
         let app = launch("guest")
         let tab = settingsTab(app)
-        XCTAssertTrue(tab.waitForExistence(timeout: 15))
+        XCTAssertTrue(tab.exists(within: 15))
         sleep(3)
         XCTAssertFalse(settingsTabHasBadge(app), "no badge for a non-owner")
         openMachines(app)

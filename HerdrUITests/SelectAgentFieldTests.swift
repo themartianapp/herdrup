@@ -13,7 +13,7 @@ final class SelectAgentFieldTests: XCTestCase {
         }
         let app = XCUIApplication.launched(mock: "list")
         let label = app.staticTexts["Select an agent"]
-        XCTAssertTrue(label.waitForExistence(timeout: 30))
+        XCTAssertTrue(label.exists(within: 30))
         // Let the field's pointer autopilot and typing wake a few hundred cells.
         Thread.sleep(forTimeInterval: 5)
 

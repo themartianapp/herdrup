@@ -37,7 +37,7 @@ final class AgentRosterScrollTests: XCTestCase {
         let app = XCUIApplication.launched(mock: "rosterstress")
 
         let scroll = app.scrollViews["agent-roster-scroll"]
-        XCTAssertTrue(scroll.waitForExistence(timeout: 5), "agent roster scroll view did not appear")
+        XCTAssertTrue(scroll.exists(within: 5), "agent roster scroll view did not appear")
         // Query the actual row Buttons. Their Text children exist in the accessibility
         // tree but are not independently hittable because the parent owns the gesture.
         let topMarker = app.buttons["agent-row-stress:top"]
@@ -51,7 +51,7 @@ final class AgentRosterScrollTests: XCTestCase {
         let activePhaseTwo = app.staticTexts["scroll-refresh-phase-2-marker"]
         let phaseOneRedistributionRow = app.buttons["agent-row-stress:p000"]
         let phaseTwoRedistributionRow = app.buttons["agent-row-stress:p001"]
-        XCTAssertTrue(topMarker.waitForExistence(timeout: 5), "stress roster did not load")
+        XCTAssertTrue(topMarker.exists(within: 5), "stress roster did not load")
         if !topMarker.waitForHittable(timeout: initialRosterLayoutTimeout) {
             // The first cold launch can expose the hierarchy before its initial scroll
             // offset is usable. Establish the test's top-of-list precondition with real
@@ -68,7 +68,7 @@ final class AgentRosterScrollTests: XCTestCase {
             )
         }
         XCTAssertTrue(
-            eagerStackReceipt.waitForExistence(timeout: 3),
+            eagerStackReceipt.exists(within: 3),
             "stress scenario did not render the eager Mac roster stack"
         )
         XCTAssertFalse(deferredMarker.exists, "deferred marker appeared before scrolling began")
@@ -76,11 +76,11 @@ final class AgentRosterScrollTests: XCTestCase {
         XCTAssertFalse(activePhaseOne.exists || activePhaseTwo.exists, "roster phase changed before scrolling began")
         XCTAssertEqual(agentCount(scroll), 84, "stable rendered roster cardinality was wrong")
         XCTAssertTrue(
-            phaseOneRedistributionRow.waitForExistence(timeout: 3),
+            phaseOneRedistributionRow.exists(within: 3),
             "phase-one receipt row did not resolve in the stable roster"
         )
         XCTAssertTrue(
-            phaseTwoRedistributionRow.waitForExistence(timeout: 3),
+            phaseTwoRedistributionRow.exists(within: 3),
             "phase-two receipt row did not resolve in the stable roster"
         )
         XCTAssertEqual(
@@ -94,7 +94,7 @@ final class AgentRosterScrollTests: XCTestCase {
             "phase-two receipt row did not begin in working"
         )
         XCTAssertFalse(coalescingViolation.exists, "roster published while scrolling before the gesture began")
-        XCTAssertTrue(armStress.waitForExistence(timeout: 3), "roster stress arm control was absent")
+        XCTAssertTrue(armStress.exists(within: 3), "roster stress arm control was absent")
         armStress.tap()
         // THE STRESS IS ARMED, OR NOTHING BELOW MEANS ANYTHING. An arm tap the system
         // gesture gate cancelled (CI 39116174699) left the driver serving the stable
@@ -111,7 +111,7 @@ final class AgentRosterScrollTests: XCTestCase {
             topMarker.waitForNotHittable(timeout: rosterSettleTimeout),
             "upward swipes did not move the initial row off-screen within \(rosterSettleTimeout)s"
         )
-        XCTAssertTrue(bottomMarker.waitForExistence(timeout: 3), "bottom marker was absent from the roster")
+        XCTAssertTrue(bottomMarker.exists(within: 3), "bottom marker was absent from the roster")
         XCTAssertTrue(
             bottomMarker.waitForHittable(timeout: rosterSettleTimeout),
             "upward swipes did not reach different visible content within \(rosterSettleTimeout)s"
@@ -131,7 +131,7 @@ final class AgentRosterScrollTests: XCTestCase {
             "downward swipes did not return to the original visible content within \(rosterSettleTimeout)s"
         )
         XCTAssertTrue(
-            deferredMarker.waitForExistence(timeout: 3),
+            deferredMarker.exists(within: 3),
             "scroll-time snapshot was not promoted after returning to idle"
         )
         XCTAssertTrue(
@@ -140,9 +140,9 @@ final class AgentRosterScrollTests: XCTestCase {
         )
         XCTAssertFalse(stablePhase.exists, "stable pre-scroll phase survived scroll-time promotion")
         let activePhase: Int
-        if activePhaseOne.waitForExistence(timeout: rosterSettleTimeout) {
+        if activePhaseOne.exists(within: rosterSettleTimeout) {
             activePhase = 1
-        } else if activePhaseTwo.waitForExistence(timeout: rosterSettleTimeout) {
+        } else if activePhaseTwo.exists(within: rosterSettleTimeout) {
             activePhase = 2
         } else {
             activePhase = 0
@@ -156,10 +156,10 @@ final class AgentRosterScrollTests: XCTestCase {
         let redistributed: Bool
         switch activePhase {
         case 1:
-            redistributed = phaseOneRedistributionRow.waitForExistence(timeout: rosterSettleTimeout)
+            redistributed = phaseOneRedistributionRow.exists(within: rosterSettleTimeout)
                 && (phaseOneRedistributionRow.value as? String) == "working"
         case 2:
-            redistributed = phaseTwoRedistributionRow.waitForExistence(timeout: rosterSettleTimeout)
+            redistributed = phaseTwoRedistributionRow.exists(within: rosterSettleTimeout)
                 && (phaseTwoRedistributionRow.value as? String) == "needs you"
         default:
             redistributed = false

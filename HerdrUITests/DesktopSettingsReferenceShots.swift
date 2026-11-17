@@ -16,9 +16,9 @@ final class DesktopSettingsReferenceShots: DesktopReferenceCaptureCase {
         let (app, device) = try launch("settings", served: "settings-machines",
                                        sha256: Self.settingsMachinesSHA256)
         let (index, detail, detailViewport) = try openReferenceSettings(app)
-        XCTAssertTrue(detail.staticTexts["atlas-mini"].waitForExistence(timeout: 20),
+        XCTAssertTrue(detail.staticTexts["atlas-mini"].exists(within: 20),
                       "machine.status must load, rather than capturing the empty fallback")
-        XCTAssertTrue(detail.staticTexts["reachable · 2 agents"].waitForExistence(timeout: 20),
+        XCTAssertTrue(detail.staticTexts["reachable · 2 agents"].exists(within: 20),
                       "the reachable saved profile must match both agent machine IDs")
         requireSettingsVisible(app.buttons["settings-machine-card"], in: index.frame)
         requireSettingsVisible(app.descendants(matching: .any)["settings-machine-hero"], in: detailViewport)
@@ -75,7 +75,7 @@ final class DesktopSettingsReferenceShots: DesktopReferenceCaptureCase {
         let (app, device) = try launch("settings", served: "settings-machines",
                                        sha256: Self.settingsMachinesSHA256)
         let (index, detail, detailViewport) = try openReferenceSettings(app)
-        XCTAssertTrue(detail.staticTexts["reachable · 2 agents"].waitForExistence(timeout: 20))
+        XCTAssertTrue(detail.staticTexts["reachable · 2 agents"].exists(within: 20))
         let footer = index.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "herdrup mobile ")).firstMatch
         for _ in 0..<12 where !footer.isHittable { index.swipeUp() }
         for _ in 0..<3 { index.swipeUp() }

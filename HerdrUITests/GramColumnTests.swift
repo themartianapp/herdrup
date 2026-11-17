@@ -13,7 +13,7 @@ final class GramColumnTests: XCTestCase {
     private func launchGram(environment: [String: String] = [:]) -> XCUIApplication {
         let app = XCUIApplication.launched(mock: "list", environment: environment)
         let tab = app.buttons["Gram"].firstMatch
-        XCTAssertTrue(tab.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(tab.exists(within: 10), app.debugDescription)
         tab.tap()
         return app
     }
@@ -44,7 +44,7 @@ final class GramColumnTests: XCTestCase {
     /// How many times a Gram row's body has run (`gram-row-renders`, DEBUG mock runs).
     private func rowRenders(_ app: XCUIApplication) -> Int {
         let probe = element(app, "gram-row-renders")
-        XCTAssertTrue(probe.waitForExistence(timeout: 5), "the DEBUG row-render probe should be present")
+        XCTAssertTrue(probe.exists(within: 5), "the DEBUG row-render probe should be present")
         return Int(probe.label) ?? -1
     }
 
@@ -75,7 +75,7 @@ final class GramColumnTests: XCTestCase {
     /// Measured on clientloop's code + file card (`g2`), which fills its whole cap.
     private func assertAgentBubbleFollowsColumn(_ app: XCUIApplication, atMinimum: Bool, _ moment: String) {
         let bubble = element(app, "gram-bubble-g2")
-        XCTAssertTrue(bubble.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(bubble.exists(within: 5), app.debugDescription)
         let column = element(app, "gram-column").frame.width
         if atMinimum {
             let width = settle({ bubble.frame.width }, until: { $0 <= 520.5 })
@@ -93,16 +93,16 @@ final class GramColumnTests: XCTestCase {
         let app = launchGram()
         let feed = app.scrollViews["gram-feed"]
         let column = element(app, "gram-column")
-        XCTAssertTrue(column.waitForExistence(timeout: 10), app.debugDescription)
-        XCTAssertTrue(feed.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(column.exists(within: 10), app.debugDescription)
+        XCTAssertTrue(feed.exists(within: 5), app.debugDescription)
         let left = element(app, "gram-width-handle-left")
         let right = element(app, "gram-width-handle-right")
         if UIDevice.current.userInterfaceIdiom == .pad {
-            XCTAssertTrue(right.waitForExistence(timeout: 5), app.debugDescription)
+            XCTAssertTrue(right.exists(within: 5), app.debugDescription)
             XCTAssertTrue(left.exists, app.debugDescription)
             // Gram's own width (the feed's scroll view runs on under the floating sidebar).
             let area = element(app, "gram-width-area")
-            XCTAssertTrue(area.waitForExistence(timeout: 5), app.debugDescription)
+            XCTAssertTrue(area.exists(within: 5), app.debugDescription)
             XCTAssertEqual(right.label, "Gram width")
             XCTAssertTrue((right.value as? String)?.hasSuffix("points") == true
                           || (right.value as? String)?.contains("points,") == true,
@@ -147,17 +147,17 @@ final class GramColumnTests: XCTestCase {
         let feed = app.scrollViews["gram-feed"]
         let column = element(app, "gram-column")
         let right = element(app, "gram-width-handle-right")
-        XCTAssertTrue(right.waitForExistence(timeout: 10), app.debugDescription)
-        XCTAssertTrue(feed.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(right.exists(within: 10), app.debugDescription)
+        XCTAssertTrue(feed.exists(within: 5), app.debugDescription)
         // Gram's own width (the feed's scroll view runs on under the floating sidebar).
         let area = element(app, "gram-width-area")
-        XCTAssertTrue(area.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(area.exists(within: 5), app.debugDescription)
         var available = settle(within: 8, { area.frame.width }, until: { $0 > 1000 })
         // An earlier class may leave the app in a smaller window (iPadOS restores its size):
         // minimising the sidebar gives Gram the window's width.
         if available < 780 {
             let minimise = app.buttons.matching(NSPredicate(format: "label == %@", "Minimise sidebar")).firstMatch
-            XCTAssertTrue(minimise.waitForExistence(timeout: 5), "Gram only \(available) pt wide: \(app.debugDescription)")
+            XCTAssertTrue(minimise.exists(within: 5), "Gram only \(available) pt wide: \(app.debugDescription)")
             minimise.tap()
             minimisedSidebar = true
             available = settle(within: 8, { area.frame.width }, until: { $0 >= 780 })
@@ -215,7 +215,7 @@ final class GramColumnTests: XCTestCase {
         let againFeed = element(again, "gram-width-area")
         let againColumn = element(again, "gram-column")
         let againRight = element(again, "gram-width-handle-right")
-        XCTAssertTrue(againRight.waitForExistence(timeout: 10), again.debugDescription)
+        XCTAssertTrue(againRight.exists(within: 10), again.debugDescription)
         let kept = settle({ againColumn.frame.width }, until: { abs($0 - 720) < 0.5 })
         XCTAssertEqual(kept, 720, accuracy: 0.5, "the chosen width survives a relaunch")
         assertComposerMatchesColumn(again, "After relaunch")

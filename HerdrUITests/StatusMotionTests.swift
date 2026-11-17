@@ -11,7 +11,7 @@ final class StatusMotionTests: XCTestCase {
     /// (its label; polled every 250 ms, so read it after a pause).
     private func moving(_ app: XCUIApplication) -> Int {
         let probe = app.descendants(matching: .any)["status-motion"].firstMatch
-        XCTAssertTrue(probe.waitForExistence(timeout: 5), "the DEBUG status-motion probe should be present")
+        XCTAssertTrue(probe.exists(within: 5), "the DEBUG status-motion probe should be present")
         return Int(probe.label) ?? -1
     }
 
@@ -19,8 +19,10 @@ final class StatusMotionTests: XCTestCase {
         let app = XCUIApplication.launched(mock: "list", environment: [
             // The open pane's blinking caret never lets XCUITest's idle wait finish (60 s a tap).
             "HERDR_STEADY_CARET": "1",
+            // These tests photograph the shapes moving.
+            "HERDR_NO_ANIMATIONS": "0",
         ])
-        XCTAssertTrue(app.staticTexts["herdr-app"].firstMatch.waitForExistence(timeout: 15),
+        XCTAssertTrue(app.staticTexts["herdr-app"].firstMatch.exists(within: 15),
                       "the roster should list the working agent")
         return app
     }
@@ -45,7 +47,7 @@ final class StatusMotionTests: XCTestCase {
     /// dot's frame swells with its pulse (7.0–9.4 pt in run 42376372751) while its opacity
     /// changes inside any of those frames. A stuck shape's pixels stay identical.
     private func moves(_ shape: XCUIElement) -> Bool {
-        XCTAssertTrue(shape.waitForExistence(timeout: 10), "the status shape should be on screen")
+        XCTAssertTrue(shape.exists(within: 10), "the status shape should be on screen")
         usleep(250_000)
         let frame = shape.frame
         let first = XCUIScreen.main.screenshot()
@@ -102,7 +104,7 @@ final class StatusMotionTests: XCTestCase {
     /// screen, `terminalSurface` was found anyway, `moving` counted the roster's ring as the
     /// pane's dot, and the dot photographed was the hidden pane's: background only.
     private func paneInFront(_ app: XCUIApplication) -> Bool {
-        app.tabBars.firstMatch.waitForNonExistence(timeout: 10)
+        app.tabBars.firstMatch.gone(within: 10)
     }
 
     /// The owner's report (build 203): Agents → Gram → Agents left the working ring stuck.
@@ -129,7 +131,7 @@ final class StatusMotionTests: XCTestCase {
         let app = launchList()
         let row = app.staticTexts["herdr-app"].firstMatch
         row.tap()
-        XCTAssertTrue(app.terminalSurface.waitForExistence(timeout: 10),
+        XCTAssertTrue(app.terminalSurface.exists(within: 10),
                       "the pane should open")
         XCTAssertTrue(moves(dot(app)), "the working pane's dot pulses")
 
@@ -155,14 +157,16 @@ final class StatusMotionTests: XCTestCase {
             // The open pane's blinking caret never lets XCUITest's idle wait finish (60 s a tap).
             // The status shapes' SwiftUI animations do not hold it up.
             "HERDR_STEADY_CARET": "1",
+            // The shapes must move on screen (`moves`).
+            "HERDR_NO_ANIMATIONS": "0",
         ])
         let row = app.staticTexts["herdr-app"].firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 15), "the roster should list the working agent")
+        XCTAssertTrue(row.exists(within: 15), "the roster should list the working agent")
         sleep(1)
         XCTAssertEqual(moving(app), 1, "the working row's ring turns on the roster")
 
         row.tap()
-        XCTAssertTrue(app.terminalSurface.waitForExistence(timeout: 10),
+        XCTAssertTrue(app.terminalSurface.exists(within: 10),
                       "the pane should open")
         sleep(1)
         // iPad / Mac keep the roster beside the pane: its ring and the pane's dot. iPhone covers

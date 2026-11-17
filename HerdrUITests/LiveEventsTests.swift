@@ -13,7 +13,7 @@ final class LiveEventsTests: XCTestCase {
     func testStatusEventUpdatesTheRowWithoutReloadingTheList() {
         let app = XCUIApplication.launched(mock: "liveevents")
         let remote = row(app, "build/w1:p2")
-        XCTAssertTrue(remote.waitForExistence(timeout: 15), "the federated row should be listed")
+        XCTAssertTrue(remote.exists(within: 15), "the federated row should be listed")
         XCTAssertEqual(remote.value as? String, "working")
         let before = waitForSettledSubscription(app)
 
@@ -32,7 +32,7 @@ final class LiveEventsTests: XCTestCase {
     func testLaggedLineReloadsTheListAndADroppedStreamReconnects() {
         let app = XCUIApplication.launched(mock: "liveevents")
         let lead = row(app, "w1:p1")
-        XCTAssertTrue(lead.waitForExistence(timeout: 15), "the local row should be listed")
+        XCTAssertTrue(lead.exists(within: 15), "the local row should be listed")
         XCTAssertEqual(lead.value as? String, "working")
         let before = waitForSettledSubscription(app)
 
@@ -52,7 +52,7 @@ final class LiveEventsTests: XCTestCase {
     func testOlderDaemonKeepsTheFiveSecondPoll() {
         let app = XCUIApplication.launched(mock: "liveevents-legacy")
         let remote = row(app, "build/w1:p2")
-        XCTAssertTrue(remote.waitForExistence(timeout: 15), "the federated row should be listed")
+        XCTAssertTrue(remote.exists(within: 15), "the federated row should be listed")
         XCTAssertTrue(poll(5, every: 0.25) { counters(app).list >= 1 })
         let before = counters(app).list
 

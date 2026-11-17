@@ -21,7 +21,7 @@ final class ChatViewTests: XCTestCase {
 
     private func openAgent(_ name: String, in app: XCUIApplication) {
         let row = app.staticTexts[name].firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 12), "the home should list \(name)")
+        XCTAssertTrue(row.exists(within: 12), "the home should list \(name)")
         row.tap()
     }
 
@@ -52,11 +52,11 @@ final class ChatViewTests: XCTestCase {
         let app = launch("chatview", ["HERDR_MOCK_CHAT_ORIGINS": "some"])
         openAgent("herdr-app", in: app)
         let chat = app.descendants(matching: .any)["chat-view"].firstMatch
-        XCTAssertTrue(chat.waitForExistence(timeout: 10))
+        XCTAssertTrue(chat.exists(within: 10))
         XCTAssertTrue(poll(8, every: 0.3) { self.turns(chat) > 0 }, "the newest page should load")
         let first = turns(chat)
         let up = app.buttons["chat-jump-previous-mine"]
-        XCTAssertTrue(up.waitForExistence(timeout: 8), "an owner turn is above (or older pages remain)")
+        XCTAssertTrue(up.exists(within: 8), "an owner turn is above (or older pages remain)")
 
         let target = app.staticTexts["Synthetic question 37: is check 37 green?"].firstMatch
         let skipped = ["Synthetic question 40: is check 40 green?", "Synthetic question 39: is check 39 green?",
@@ -80,7 +80,7 @@ final class ChatViewTests: XCTestCase {
                            "never a jump to \(text)")
         }
         attach(app, "chat-previous-mine")
-        XCTAssertTrue(app.buttons["chat-jump-latest"].waitForExistence(timeout: 4), "the down arrow comes back")
+        XCTAssertTrue(app.buttons["chat-jump-latest"].exists(within: 4), "the down arrow comes back")
     }
 
     /// Review 18e5a606c8b8d005 F1: on the iPad the corner up arrow lies in the column's right
@@ -91,12 +91,12 @@ final class ChatViewTests: XCTestCase {
         let app = launch("chatview", ["HERDR_MOCK_CHAT_ORIGINS": "some"])
         openAgent("herdr-app", in: app)
         let chat = app.descendants(matching: .any)["chat-view"].firstMatch
-        XCTAssertTrue(chat.waitForExistence(timeout: 10))
+        XCTAssertTrue(chat.exists(within: 10))
         XCTAssertTrue(poll(8, every: 0.3) { self.turns(chat) > 0 }, "the newest page should load")
         let up = app.buttons["chat-jump-previous-mine"]
-        XCTAssertTrue(up.waitForExistence(timeout: 8))
+        XCTAssertTrue(up.exists(within: 8))
         let handle = app.descendants(matching: .any)["chat-width-handle-right"].firstMatch
-        XCTAssertTrue(handle.waitForExistence(timeout: 5))
+        XCTAssertTrue(handle.exists(within: 5))
         // The case under test: the arrow's centre is inside the handle's band.
         XCTAssertTrue(handle.frame.contains(CGPoint(x: up.frame.midX, y: up.frame.midY)),
                       "precondition: the arrow (\(up.frame)) sits in the resize band (\(handle.frame))")
@@ -123,10 +123,10 @@ final class ChatViewTests: XCTestCase {
         let app = launch("chatview")
         openAgent("herdr-app", in: app)
         let chat = app.descendants(matching: .any)["chat-view"].firstMatch
-        XCTAssertTrue(chat.waitForExistence(timeout: 10))
+        XCTAssertTrue(chat.exists(within: 10))
         XCTAssertTrue(poll(8, every: 0.3) { self.turns(chat) > 0 }, "the newest page should load")
         let up = app.buttons["chat-jump-previous-mine"]
-        XCTAssertTrue(up.waitForExistence(timeout: 8))
+        XCTAssertTrue(up.exists(within: 8))
         func atTop(_ text: String) -> Bool {
             let element = app.staticTexts[text].firstMatch
             return element.exists && !element.frame.isEmpty
@@ -143,7 +143,7 @@ final class ChatViewTests: XCTestCase {
 
         app.buttons["terminal-find"].tap()
         let field = app.textFields["terminal-find-field"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(field.exists(within: 5))
         field.tap()
         field.typeText("CI running again")
         expectation(for: NSPredicate(format: "label == %@", "1/1"), evaluatedWith: app.staticTexts["terminal-find-count"])
@@ -151,7 +151,7 @@ final class ChatViewTests: XCTestCase {
         app.buttons["terminal-find"].tap()
         XCTAssertTrue(poll(5, every: 0.3) { !atTop(q38) }, "search moved the chat away from question 38")
 
-        XCTAssertTrue(up.waitForExistence(timeout: 5))
+        XCTAssertTrue(up.exists(within: 5))
         up.tap()
         let landed = poll(6, every: 0.3) {
             atTop("Synthetic question 40: is check 40 green?") || atTop("Synthetic question 39: is check 39 green?")
@@ -169,11 +169,11 @@ final class ChatViewTests: XCTestCase {
         let app = launch("chatview", ["HERDR_MOCK_CHAT_ORIGINS": "some", "HERDR_MOCK_CHAT_OLDER_DELAY": "8"])
         openAgent("herdr-app", in: app)
         let chat = app.descendants(matching: .any)["chat-view"].firstMatch
-        XCTAssertTrue(chat.waitForExistence(timeout: 10))
+        XCTAssertTrue(chat.exists(within: 10))
         XCTAssertTrue(poll(8, every: 0.3) { self.turns(chat) > 0 }, "the newest page should load")
         let loaded = turns(chat)
         let up = app.buttons["chat-jump-previous-mine"]
-        XCTAssertTrue(up.waitForExistence(timeout: 8))
+        XCTAssertTrue(up.exists(within: 8))
         // The newest prompt may be above the screen (a tap lands on it first); the next tap then
         // fetches the older page. Find opens only once that fetch is under way (review 18e590a31540072c).
         var loading = false
@@ -185,7 +185,7 @@ final class ChatViewTests: XCTestCase {
 
         app.buttons["terminal-find"].tap()
         let field = app.textFields["terminal-find-field"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(field.exists(within: 5))
         field.tap()
         field.typeText("zebra quartz")
         // Past the typing pause, so the search has run (and found nothing to move to).
@@ -208,10 +208,10 @@ final class ChatViewTests: XCTestCase {
         let app = launch("chatview", ["HERDR_MOCK_CHAT_ORIGINS": "none"])
         openAgent("herdr-app", in: app)
         let chat = app.descendants(matching: .any)["chat-view"].firstMatch
-        XCTAssertTrue(chat.waitForExistence(timeout: 10))
+        XCTAssertTrue(chat.exists(within: 10))
         XCTAssertTrue(poll(8, every: 0.3) { self.turns(chat) > 0 }, "the newest page should load")
         let up = app.buttons["chat-jump-previous-mine"]
-        XCTAssertTrue(up.waitForExistence(timeout: 8), "older pages remain, so the arrow shows")
+        XCTAssertTrue(up.exists(within: 8), "older pages remain, so the arrow shows")
         var hidden = false
         for _ in 0..<3 where !hidden {
             if up.exists { up.tap() }
@@ -228,19 +228,19 @@ final class ChatViewTests: XCTestCase {
         openAgent("herdr-app", in: app)
 
         let chat = app.descendants(matching: .any)["chat-view"].firstMatch
-        XCTAssertTrue(chat.waitForExistence(timeout: 10), "an omp agent should open in Chat")
+        XCTAssertTrue(chat.exists(within: 10), "an omp agent should open in Chat")
         XCTAssertTrue(app.buttons["chat-switch-chat"].isSelected, "Chat should be the selected segment")
-        XCTAssertTrue(app.descendants(matching: .any)["chat-ask"].waitForExistence(timeout: 8),
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask"].exists(within: 8),
                       "the pending question should show as a card")
         attach(app, "chat-owner")
 
         app.buttons["chat-switch-terminal"].tap()
-        XCTAssertTrue(chat.waitForNonExistence(timeout: 6), "Terminal should hide the chat")
+        XCTAssertTrue(chat.gone(within: 6), "Terminal should hide the chat")
         XCTAssertTrue(app.buttons["chat-switch-terminal"].isSelected)
         attach(app, "chat-owner-terminal")
 
         app.buttons["chat-switch-chat"].tap()
-        XCTAssertTrue(chat.waitForExistence(timeout: 6), "Chat should come back")
+        XCTAssertTrue(chat.exists(within: 6), "Chat should come back")
     }
 
     /// Leaving Chat while it still scrolls tears its scroll observer down mid-scroll. The
@@ -252,15 +252,15 @@ final class ChatViewTests: XCTestCase {
         let app = launch("chatview")
         openAgent("herdr-app", in: app)
         let chat = app.descendants(matching: .any)["chat-view"].firstMatch
-        XCTAssertTrue(chat.waitForExistence(timeout: 10), "an omp agent should open in Chat")
+        XCTAssertTrue(chat.exists(within: 10), "an omp agent should open in Chat")
         XCTAssertTrue(poll(8, every: 0.3) { self.turns(chat) > 0 }, "the newest page should load")
         for round in 0..<4 {
             if round.isMultiple(of: 2) { chat.swipeDown(velocity: .fast) } else { chat.swipeUp(velocity: .fast) }
             app.buttons["chat-switch-terminal"].tap()
             XCTAssertEqual(app.state, .runningForeground, "leaving Chat mid-scroll must not crash (round \(round))")
-            XCTAssertTrue(chat.waitForNonExistence(timeout: 6), "Terminal should hide the chat")
+            XCTAssertTrue(chat.gone(within: 6), "Terminal should hide the chat")
             app.buttons["chat-switch-chat"].tap()
-            XCTAssertTrue(chat.waitForExistence(timeout: 6), "Chat should come back (round \(round))")
+            XCTAssertTrue(chat.exists(within: 6), "Chat should come back (round \(round))")
         }
         XCTAssertEqual(app.state, .runningForeground)
     }
@@ -269,7 +269,7 @@ final class ChatViewTests: XCTestCase {
     func testClaudeAgentHasNoSwitch() {
         let app = launch("chatview", still: false)
         openAgent("keephair", in: app)
-        XCTAssertTrue(app.terminalSurface.waitForExistence(timeout: 10), "a Claude agent opens its terminal")
+        XCTAssertTrue(app.terminalSurface.exists(within: 10), "a Claude agent opens its terminal")
         XCTAssertFalse(app.buttons["chat-switch-chat"].exists, "only omp agents get the switch")
         XCTAssertFalse(app.descendants(matching: .any)["chat-view"].firstMatch.exists)
     }
@@ -284,11 +284,11 @@ final class ChatViewTests: XCTestCase {
             "transcript_unsupported,transcript_unsupported,transcript_unavailable"])
         openAgent("herdr-app", in: app)
         let chatSwitch = app.buttons["chat-switch-chat"]
-        XCTAssertTrue(app.terminalSurface.waitForExistence(timeout: 10), "the pane opens")
-        XCTAssertTrue(chatSwitch.waitForExistence(timeout: 30),
+        XCTAssertTrue(app.terminalSurface.exists(within: 10), "the pane opens")
+        XCTAssertTrue(chatSwitch.exists(within: 30),
                       "Chat should come back once the agent's transcript can be read")
         let chat = app.descendants(matching: .any)["chat-view"].firstMatch
-        XCTAssertTrue(chat.waitForExistence(timeout: 10), "an omp agent opens in Chat")
+        XCTAssertTrue(chat.exists(within: 10), "an omp agent opens in Chat")
         XCTAssertTrue(poll(15, every: 0.5) { self.turns(chat) > 0 },
                       "the conversation loads; turns=\(turns(chat))")
         attach(app, "chat-after-startup")
@@ -299,12 +299,12 @@ final class ChatViewTests: XCTestCase {
     func testSettingsDefaultDecidesWhereOmpOpens() {
         let app = launch("chatview")
         let settings = app.buttons["Settings"].firstMatch
-        XCTAssertTrue(settings.waitForExistence(timeout: 10))
+        XCTAssertTrue(settings.exists(within: 10))
         settings.tap()
         // Preferences › "omp agents open in" is an inline menu picker on the root list
         // (proposal B, #572): the iPhone root and the iPad sidebar alike.
         let picker = app.buttons["settings-omp-opens-in"]
-        XCTAssertTrue(picker.waitForExistence(timeout: 6), "Settings should offer the omp default")
+        XCTAssertTrue(picker.exists(within: 6), "Settings should offer the omp default")
         var scrolls = 0
         while !app.frame.contains(picker.frame), scrolls < 6 {
             app.swipeUp()
@@ -332,7 +332,7 @@ final class ChatViewTests: XCTestCase {
         let terminalFirst = launch("chatview", ["HERDR_MOCK_CHAT_OPENS_IN": "terminal"])
         openAgent("herdr-app", in: terminalFirst)
         let terminal = terminalFirst.buttons["chat-switch-terminal"]
-        XCTAssertTrue(terminal.waitForExistence(timeout: 10), "an omp agent still offers the switch")
+        XCTAssertTrue(terminal.exists(within: 10), "an omp agent still offers the switch")
         XCTAssertTrue(terminal.isSelected, "with Terminal the default, the page opens in the terminal")
         XCTAssertFalse(terminalFirst.descendants(matching: .any)["chat-view"].firstMatch.exists)
     }
@@ -342,7 +342,7 @@ final class ChatViewTests: XCTestCase {
         let app = launch("chatview")
         openAgent("herdr-app", in: app)
         let chat = app.descendants(matching: .any)["chat-view"].firstMatch
-        XCTAssertTrue(chat.waitForExistence(timeout: 10))
+        XCTAssertTrue(chat.exists(within: 10))
         XCTAssertTrue(poll(8, every: 0.3) { self.turns(chat) > 0 }, "the newest page should load")
         let first = turns(chat)
         var loaded = false
@@ -361,22 +361,22 @@ final class ChatViewTests: XCTestCase {
         let app = launch("chatview")
         openAgent("herdr-app", in: app)
         let chat = app.descendants(matching: .any)["chat-view"].firstMatch
-        XCTAssertTrue(chat.waitForExistence(timeout: 10))
+        XCTAssertTrue(chat.exists(within: 10))
         XCTAssertTrue(poll(8, every: 0.3) { self.turns(chat) > 0 }, "the newest page should load")
 
         app.buttons["terminal-find"].tap()
-        XCTAssertTrue(app.textFields["terminal-find-field"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.textFields["terminal-find-field"].exists(within: 5))
 
         XCUIDevice.shared.press(.home)
         XCTAssertTrue(app.wait(for: .runningBackground, timeout: 10))
         app.activate()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-        XCTAssertTrue(chat.waitForExistence(timeout: 10), "the chat remounts on return")
-        XCTAssertTrue(app.textFields["terminal-find-field"].waitForExistence(timeout: 5), "Find survived")
+        XCTAssertTrue(chat.exists(within: 10), "the chat remounts on return")
+        XCTAssertTrue(app.textFields["terminal-find-field"].exists(within: 5), "Find survived")
         XCTAssertTrue(poll(8, every: 0.3) { self.turns(chat) > 0 }, "the remounted chat reloads")
 
         app.buttons["terminal-find"].tap()
-        XCTAssertTrue(app.buttons["chat-jump-previous-mine"].waitForExistence(timeout: 8),
+        XCTAssertTrue(app.buttons["chat-jump-previous-mine"].exists(within: 8),
                       "the up arrow shows only once the chat has landed")
         let first = turns(chat)
         var loaded = false
@@ -385,7 +385,7 @@ final class ChatViewTests: XCTestCase {
             loaded = poll(2, every: 0.3) { self.turns(chat) > first }
         }
         XCTAssertTrue(loaded, "a landed chat loads an older page at the top (had \(first) turns)")
-        XCTAssertTrue(app.buttons["chat-jump-latest"].waitForExistence(timeout: 4), "the down arrow shows")
+        XCTAssertTrue(app.buttons["chat-jump-latest"].exists(within: 4), "the down arrow shows")
     }
 
     /// The thought line and the steps line expand.
@@ -393,21 +393,21 @@ final class ChatViewTests: XCTestCase {
         let app = launch("chatview")
         openAgent("herdr-app", in: app)
         let chat = app.descendants(matching: .any)["chat-view"].firstMatch
-        XCTAssertTrue(chat.waitForExistence(timeout: 10))
+        XCTAssertTrue(chat.exists(within: 10))
         chat.swipeDown(velocity: .slow)
 
         guard let thought = visibleButton("chat-thought", in: app) else {
             return XCTFail("a work group on screen should show its thought")
         }
         thought.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["chat-thought-open"].waitForExistence(timeout: 4),
+        XCTAssertTrue(app.descendants(matching: .any)["chat-thought-open"].exists(within: 4),
                       "tapping the thought should show it whole")
 
         guard let steps = visibleButton("chat-steps", in: app) else {
             return XCTFail("a work group on screen should summarise its steps")
         }
         steps.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["chat-steplist"].waitForExistence(timeout: 4),
+        XCTAssertTrue(app.descendants(matching: .any)["chat-steplist"].exists(within: 4),
                       "tapping the steps line should list them")
         attach(app, "chat-expanded")
     }
@@ -417,9 +417,9 @@ final class ChatViewTests: XCTestCase {
         let app = launch("chatview")
         openAgent("herdr-app", in: app)
         let option = app.buttons["chat-ask-option-0"]
-        XCTAssertTrue(option.waitForExistence(timeout: 10), "the owner should get answer buttons")
+        XCTAssertTrue(option.exists(within: 10), "the owner should get answer buttons")
         option.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-chosen"].waitForExistence(timeout: 8),
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-chosen"].exists(within: 8),
                       "the card should show the answer")
         XCTAssertFalse(app.buttons["chat-ask-option-0"].exists, "an answered question offers no buttons")
     }
@@ -429,10 +429,10 @@ final class ChatViewTests: XCTestCase {
         let app = launch("chatview", ["HERDR_MOCK_CHAT_ANSWER": "ask_ui_not_found"])
         openAgent("herdr-app", in: app)
         let option = app.buttons["chat-ask-option-0"]
-        XCTAssertTrue(option.waitForExistence(timeout: 10))
+        XCTAssertTrue(option.exists(within: 10))
         option.tap()
         let terminal = app.buttons["chat-ask-terminal"]
-        XCTAssertTrue(terminal.waitForExistence(timeout: 8), "a refusal should offer Answer in Terminal")
+        XCTAssertTrue(terminal.exists(within: 8), "a refusal should offer Answer in Terminal")
         terminal.tap()
         XCTAssertTrue(app.buttons["chat-switch-terminal"].isSelected, "Answer in Terminal should switch to it")
     }
@@ -445,9 +445,9 @@ final class ChatViewTests: XCTestCase {
         // prompt. Not `still`: an idle herdr-app would sit in the collapsed Idle section.
         let app = launch("chatview", ["HERDR_MOCK_CHAT_ANSWERED": "Yes, merge and deploy"], still: false)
         openAgent("herdr-app", in: app)
-        XCTAssertTrue(app.descendants(matching: .any)["chat-view"].firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.descendants(matching: .any)["chat-view"].firstMatch.exists(within: 10))
         let field = app.textViews["terminal-reply-input"]
-        XCTAssertTrue(field.waitForExistence(timeout: 8))
+        XCTAssertTrue(field.exists(within: 8))
         field.tap()
         field.typeText("Ship the fix ")
         let send = try XCTUnwrap(visibleButton("terminal-send-button", in: app), "the reply should be sendable")
@@ -455,21 +455,21 @@ final class ChatViewTests: XCTestCase {
 
         // The composer clears on the tap itself (Send gives way to Saved Prompts), whatever
         // the send motion is still drawing.
-        XCTAssertTrue(send.waitForNonExistence(timeout: 5), "the composer should clear when Send is tapped")
+        XCTAssertTrue(send.gone(within: 5), "the composer should clear when Send is tapped")
 
         // The placeholder (with its receipt) shows first; the transcript's copy replaces it.
         let sent = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Ship the fix"))
-        XCTAssertTrue(sent.firstMatch.waitForExistence(timeout: 10), "the chat should show the sent message")
+        XCTAssertTrue(sent.firstMatch.exists(within: 10), "the chat should show the sent message")
         XCTAssertTrue(sent.firstMatch.waitForHittable(timeout: 5),
                       "the chat should follow the sent message to the bottom, on screen")
         // The bubble's identifier also reaches its receipt text, so wait on the bubble itself.
         let placeholder = app.descendants(matching: .any).matching(identifier: "chat-outgoing-message").firstMatch
-        XCTAssertTrue(placeholder.waitForNonExistence(timeout: 15),
+        XCTAssertTrue(placeholder.gone(within: 15),
                       "the local placeholder should be matched and removed: \(placeholder.exists ? placeholder.label : "")")
         for label in ["Sending…", "Accepted by agent", "Confirmation pending", "Not seen in chat · check Terminal"] {
             XCTAssertFalse(app.staticTexts[label].exists, "no \"\(label)\" placeholder may be left")
         }
-        XCTAssertTrue(sent.firstMatch.waitForExistence(timeout: 5), "the transcript should show the sent message")
+        XCTAssertTrue(sent.firstMatch.exists(within: 5), "the transcript should show the sent message")
         XCTAssertEqual(sent.count, 1, "the message should show once, not twice")
     }
 
@@ -480,7 +480,7 @@ final class ChatViewTests: XCTestCase {
     private func launchForm(_ environment: [String: String] = [:]) -> XCUIApplication {
         let app = launch("chatview", environment.merging(["HERDR_MOCK_CHAT_FORM": "1"]) { given, _ in given })
         openAgent("herdr-app", in: app)
-        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-form"].waitForExistence(timeout: 10),
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-form"].exists(within: 10),
                       "the form ask should show as the stepper")
         return app
     }
@@ -525,8 +525,8 @@ final class ChatViewTests: XCTestCase {
         app.buttons["chat-ask-form-other"].tap()
         let other = app.textViews["chat-ask-form-other-field"].exists
             ? app.textViews["chat-ask-form-other-field"] : app.textFields["chat-ask-form-other-field"]
-        XCTAssertTrue(other.waitForExistence(timeout: 5), "Other opens its text field")
-        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "and the keyboard")
+        XCTAssertTrue(other.exists(within: 5), "Other opens its text field")
+        XCTAssertTrue(app.keyboards.firstMatch.exists(within: 5), "and the keyboard")
         XCTAssertFalse(app.buttons["chat-ask-form-next"].isEnabled, "an empty Other cannot move on")
         other.typeText("Both: a dashboard row and email to demo@lenscale.ai")
         XCTAssertTrue(app.buttons["chat-ask-form-next"].isEnabled)
@@ -560,7 +560,7 @@ final class ChatViewTests: XCTestCase {
 
         app.buttons["chat-ask-form-submit"].tap()
         let answered = app.descendants(matching: .any)["chat-ask-form-answered"]
-        XCTAssertTrue(answered.waitForExistence(timeout: 10), "Submit shows the answered summary")
+        XCTAssertTrue(answered.exists(within: 10), "Submit shows the answered summary")
         XCTAssertTrue(answered.label.contains("You answered 6 of 6"), answered.label)
         XCTAssertTrue(app.descendants(matching: .any)["chat-ask-form-answer-3"].label
             .contains("I'll pick first; the build waits"), "the changed field reached the server")
@@ -580,7 +580,7 @@ final class ChatViewTests: XCTestCase {
         XCTAssertTrue(app.buttons["chat-switch-terminal"].isSelected)
         sleep(1)
         app.buttons["chat-switch-chat"].tap()
-        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-form"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-form"].exists(within: 8))
         waitForStep("2 OF 6", in: app, "the step is kept")
         app.buttons["chat-ask-form-back"].tap()
         waitForStep("1 OF 6", in: app)
@@ -597,7 +597,7 @@ final class ChatViewTests: XCTestCase {
         // reveal, so the chat stays where it is put).
         let card = app.descendants(matching: .any)["chat-ask-form"]
         let toneRow = app.buttons["chat-ask-form-review-6"]
-        XCTAssertTrue(toneRow.waitForExistence(timeout: 5), "the review lists the optional radio")
+        XCTAssertTrue(toneRow.exists(within: 5), "the review lists the optional radio")
         for _ in 0..<4 where !toneRow.isHittable { card.swipeUp(velocity: .slow) }
         XCTAssertTrue(toneRow.isHittable, "the optional radio's review row should come on screen")
         XCTAssertTrue(toneRow.label.contains("No answer"), toneRow.label)
@@ -606,7 +606,7 @@ final class ChatViewTests: XCTestCase {
         app.buttons["chat-ask-form-other"].tap()
         let other = app.textViews["chat-ask-form-other-field"].exists
             ? app.textViews["chat-ask-form-other-field"] : app.textFields["chat-ask-form-other-field"]
-        XCTAssertTrue(other.waitForExistence(timeout: 5), "Other opens its text field")
+        XCTAssertTrue(other.exists(within: 5), "Other opens its text field")
         other.typeText("x")
         other.typeText(XCUIKeyboardKey.delete.rawValue)
         XCTAssertTrue(app.buttons["chat-ask-form-next"].isEnabled, "an emptied Other leaves the field unanswered")
@@ -617,7 +617,7 @@ final class ChatViewTests: XCTestCase {
         let submit = app.buttons["chat-ask-form-submit"]
         for _ in 0..<4 where !submit.isHittable { card.swipeUp(velocity: .slow) }
         submit.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-form-answered"].waitForExistence(timeout: 10),
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-form-answered"].exists(within: 10),
                       "the form submits with the field left out")
     }
 
@@ -629,7 +629,7 @@ final class ChatViewTests: XCTestCase {
         waitForStep("REVIEW", in: app)
         app.buttons["chat-ask-form-submit"].tap()
         let terminal = app.buttons["chat-ask-terminal"]
-        XCTAssertTrue(terminal.waitForExistence(timeout: 8), "ask_form_moved offers Answer in Terminal")
+        XCTAssertTrue(terminal.exists(within: 8), "ask_form_moved offers Answer in Terminal")
         terminal.tap()
         XCTAssertTrue(app.buttons["chat-switch-terminal"].isSelected)
     }
@@ -640,7 +640,7 @@ final class ChatViewTests: XCTestCase {
         app.buttons["chat-ask-form-review-all"].tap()
         app.buttons["chat-ask-form-submit"].tap()
         let error = app.staticTexts["chat-ask-form-error"]
-        XCTAssertTrue(error.waitForExistence(timeout: 8), "the refused field shows herdr's reason")
+        XCTAssertTrue(error.exists(within: 8), "the refused field shows herdr's reason")
         XCTAssertEqual(formStep(app), "5 OF 6", "on the refused field's step")
     }
 
@@ -648,7 +648,7 @@ final class ChatViewTests: XCTestCase {
     func testFormOnAServerWithoutTheCapabilityIsReadOnly() {
         let app = launchForm(["HERDR_MOCK_CHAT_FORM_CAPABILITY": "0"])
         let terminal = app.buttons["chat-ask-terminal"]
-        XCTAssertTrue(terminal.waitForExistence(timeout: 8), "an older server answers in the Terminal")
+        XCTAssertTrue(terminal.exists(within: 8), "an older server answers in the Terminal")
         XCTAssertFalse(app.buttons["chat-ask-form-option-0"].isEnabled, "the options are read-only")
         XCTAssertFalse(app.buttons["chat-ask-form-submit"].exists)
         attach(app, "form-no-capability")
@@ -664,7 +664,7 @@ final class ChatViewTests: XCTestCase {
     func testReadOnlyFormStepsToItsTextareaAndTheTerminal() {
         let app = launchForm(["HERDR_MOCK_CHAT_FORM_TEXTAREA": "1", "HERDR_MOCK_CHAT_FORM_CAPABILITY": "0"])
         let terminal = app.buttons["chat-ask-terminal"]
-        XCTAssertTrue(terminal.waitForExistence(timeout: 8), "a read-only form answers in the Terminal")
+        XCTAssertTrue(terminal.exists(within: 8), "a read-only form answers in the Terminal")
         XCTAssertEqual(formStep(app), "1 OF 7")
         XCTAssertFalse(app.buttons["chat-ask-form-option-0"].isEnabled, "the options are read-only")
         for step in 2...7 {
@@ -676,7 +676,7 @@ final class ChatViewTests: XCTestCase {
         }
         XCTAssertEqual(app.staticTexts["chat-ask-form-title"].firstMatch.label, "Anything else for the build")
         let value = app.staticTexts["chat-ask-form-text"].firstMatch
-        XCTAssertTrue(value.waitForExistence(timeout: 5), "the textarea shows read-only")
+        XCTAssertTrue(value.exists(within: 5), "the textarea shows read-only")
         XCTAssertTrue(value.label.contains("Keep the 1 Nov palette.") && value.label.contains("No stock photos"),
                       "the textarea shows omp's prefilled value: \(value.label)")
         XCTAssertFalse(app.buttons["chat-ask-form-next"].isEnabled, "the last field has no Next")
@@ -693,13 +693,13 @@ final class ChatViewTests: XCTestCase {
         app.buttons["chat-ask-form-review-all"].tap()
         waitForStep("REVIEW", in: app)
         let notesRow = app.buttons["chat-ask-form-review-6"]
-        XCTAssertTrue(notesRow.waitForExistence(timeout: 5), "the review lists the textarea")
+        XCTAssertTrue(notesRow.exists(within: 5), "the review lists the textarea")
         XCTAssertTrue(notesRow.label.contains("Keep the 1 Nov palette."), "the review shows the prefill: \(notesRow.label)")
         notesRow.tap()
         waitForStep("7 OF 7", in: app)
         let text = app.textViews["chat-ask-form-text"].exists ? app.textViews["chat-ask-form-text"]
             : app.textFields["chat-ask-form-text"]
-        XCTAssertTrue(text.waitForExistence(timeout: 5), "an answerable textarea is editable")
+        XCTAssertTrue(text.exists(within: 5), "an answerable textarea is editable")
         XCTAssertTrue((text.value as? String ?? "").contains("No stock photos"), "the editor holds the prefill")
         text.tap()
         text.typeText("\nNo new fonts either.")
@@ -707,10 +707,10 @@ final class ChatViewTests: XCTestCase {
         waitForStep("REVIEW", in: app, "the edited textarea returns to the review")
         app.buttons["chat-ask-form-submit"].tap()
         let error = app.staticTexts["chat-ask-form-error"]
-        XCTAssertTrue(error.waitForExistence(timeout: 8), "the refused textarea shows herdr's reason")
+        XCTAssertTrue(error.exists(within: 8), "the refused textarea shows herdr's reason")
         XCTAssertTrue(error.label.contains("answer in the terminal"), error.label)
         XCTAssertEqual(formStep(app), "7 OF 7", "the refusal opens the textarea's step")
-        XCTAssertTrue(app.buttons["chat-ask-terminal"].waitForExistence(timeout: 5),
+        XCTAssertTrue(app.buttons["chat-ask-terminal"].exists(within: 5),
                       "a value only the Terminal can enter offers it")
         sleep(1)
         attach(app, "form-textarea-too-long")
@@ -721,7 +721,7 @@ final class ChatViewTests: XCTestCase {
         let app = launch("chatview", ["HERDR_MOCK_CHAT_FORM": "1", "HERDR_MOCK_CHAT_FORM_STATUS": "timed_out"], still: false)
         openAgent("herdr-app", in: app)
         let ended = app.staticTexts["chat-ask-form-ended"]
-        XCTAssertTrue(ended.waitForExistence(timeout: 10))
+        XCTAssertTrue(ended.exists(within: 10))
         XCTAssertEqual(ended.label, "Timed out · recommendations used")
         XCTAssertFalse(app.buttons["chat-ask-form-option-0"].exists)
         attach(app, "form-timed-out")
@@ -735,25 +735,25 @@ final class ChatViewTests: XCTestCase {
     func testGuestChatTabAnswersTheQuestion() {
         let app = launch("guestchat")
         let tab = app.buttons["guest-tab-chat"]
-        XCTAssertTrue(tab.waitForExistence(timeout: 12), "the guest should get a Chat tab")
+        XCTAssertTrue(tab.exists(within: 12), "the guest should get a Chat tab")
         XCTAssertTrue(tab.isSelected, "Chat should be the guest's first tab")
         XCTAssertTrue(app.buttons["guest-tab-terminal"].exists)
         let chat = app.descendants(matching: .any)["chat-view"].firstMatch
-        XCTAssertTrue(chat.waitForExistence(timeout: 8))
+        XCTAssertTrue(chat.exists(within: 8))
         let option = app.buttons["chat-ask-option-0"]
-        XCTAssertTrue(option.waitForExistence(timeout: 8), "a guest answers with the owner's buttons")
+        XCTAssertTrue(option.exists(within: 8), "a guest answers with the owner's buttons")
         XCTAssertFalse(app.descendants(matching: .any)["chat-ask-waiting"].exists,
                        "an answerable question does not wait for the owner")
         XCTAssertFalse(app.descendants(matching: .any)["chat-note"].exists, "guests see no note cards")
         attach(app, "chat-guest")
 
         app.buttons["guest-tab-terminal"].tap()
-        XCTAssertTrue(chat.waitForNonExistence(timeout: 6))
+        XCTAssertTrue(chat.gone(within: 6))
         tab.tap()
-        XCTAssertTrue(chat.waitForExistence(timeout: 6))
+        XCTAssertTrue(chat.exists(within: 6))
 
         app.buttons["chat-ask-option-0"].tap()
-        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-chosen"].waitForExistence(timeout: 8),
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-chosen"].exists(within: 8),
                       "the answered question shows the choice")
         let hostCalls = app.descendants(matching: .any)["guest-host-calls"]
         XCTAssertTrue(poll(6, every: 0.3) { hostCalls.label.contains("agent.answer:Yes, post them") },
@@ -768,8 +768,8 @@ final class ChatViewTests: XCTestCase {
     func testGuestChatWaitsForTheOwnerOnAnOlderHost() {
         let app = launch("guestchat", ["HERDR_MOCK_GUEST_OWNER_ANSWERS": "1"])
         let chat = app.descendants(matching: .any)["chat-view"].firstMatch
-        XCTAssertTrue(chat.waitForExistence(timeout: 12))
-        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-waiting"].waitForExistence(timeout: 8),
+        XCTAssertTrue(chat.exists(within: 12))
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-waiting"].exists(within: 8),
                       "the guest sees the question waiting for the owner")
         XCTAssertFalse(app.buttons["chat-ask-option-0"].exists, "this host keeps answers for the owner")
         attach(app, "chat-guest-owner-answers")
@@ -778,9 +778,9 @@ final class ChatViewTests: XCTestCase {
     /// A guest whose host keeps answers for the owner: the form read-only, waiting for them.
     func testGuestFormWaitsForTheOwner() {
         let app = launch("guestchat", ["HERDR_MOCK_CHAT_FORM": "1", "HERDR_MOCK_GUEST_OWNER_ANSWERS": "1"])
-        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-form"].waitForExistence(timeout: 12))
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-form"].exists(within: 12))
         let waiting = app.descendants(matching: .any)["chat-ask-waiting"]
-        XCTAssertTrue(waiting.waitForExistence(timeout: 8), "the guest sees the form waiting for the owner")
+        XCTAssertTrue(waiting.exists(within: 8), "the guest sees the form waiting for the owner")
         XCTAssertTrue(waiting.label.contains("WAITING FOR JERRY TO ANSWER"), waiting.label)
         XCTAssertFalse(app.buttons["chat-ask-form-option-0"].isEnabled, "the guest cannot answer")
         XCTAssertFalse(app.buttons["chat-ask-form-submit"].exists)
@@ -799,14 +799,14 @@ final class ChatViewTests: XCTestCase {
     func testGuestChatLoadsWhilePaused() {
         let app = launch("guestpaused", ["HERDR_MOCK_GUEST_CHAT": "1"])
         let tab = app.buttons["guest-tab-chat"]
-        XCTAssertTrue(tab.waitForExistence(timeout: 12), "a paused omp share keeps its Chat tab")
+        XCTAssertTrue(tab.exists(within: 12), "a paused omp share keeps its Chat tab")
         XCTAssertTrue(tab.isSelected, "Chat should be the guest's first tab")
         let chat = app.descendants(matching: .any)["chat-view"].firstMatch
-        XCTAssertTrue(chat.waitForExistence(timeout: 8))
+        XCTAssertTrue(chat.exists(within: 8))
         XCTAssertTrue(poll(8, every: 0.3) { self.turns(chat) > 0 },
                       "a paused agent's chat should load its turns (turns=\(turns(chat)))")
         XCTAssertFalse(app.descendants(matching: .any)["chat-loading"].exists, "no endless spinner")
-        XCTAssertTrue(app.descendants(matching: .any)["chat-ask"].waitForExistence(timeout: 8),
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask"].exists(within: 8),
                       "the conversation's question shows")
         XCTAssertFalse(app.descendants(matching: .any)["chat-ask-waiting"].exists,
                        "an answerable question does not wait for the owner")
@@ -816,7 +816,7 @@ final class ChatViewTests: XCTestCase {
     /// A host that predates guest transcripts: no Chat tab, the terminal as before.
     func testGuestHasNoChatTabOnAnOlderHost() {
         let app = launch("guestpane")
-        XCTAssertTrue(app.otherElements["guest-terminal"].waitForExistence(timeout: 12))
+        XCTAssertTrue(app.otherElements["guest-terminal"].exists(within: 12))
         XCTAssertFalse(app.buttons["guest-tab-chat"].exists, "no capability, no Chat tab")
         XCTAssertFalse(app.descendants(matching: .any)["chat-view"].firstMatch.exists)
     }
@@ -829,14 +829,14 @@ final class ChatViewTests: XCTestCase {
     func testScreenshotOwnChat() {
         let app = launch("chatview", still: false)
         openAgent("herdr-app", in: app)
-        XCTAssertTrue(app.descendants(matching: .any)["chat-ask"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask"].exists(within: 10))
         sleep(2)
         attach(app, "shot-own")
     }
 
     func testScreenshotSharedChat() {
         let app = launch("guestchat", ["HERDR_MOCK_GUEST_FEATURES": "gram"], still: false)
-        XCTAssertTrue(app.buttons["chat-ask-option-0"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["chat-ask-option-0"].exists(within: 15))
         sleep(2)
         attach(app, "shot-guest")
     }

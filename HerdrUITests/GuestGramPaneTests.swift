@@ -24,17 +24,17 @@ final class GuestGramPaneTests: XCTestCase {
 
     private func probe(_ app: XCUIApplication, _ id: String) -> String {
         let probe = element(app, id)
-        XCTAssertTrue(probe.waitForExistence(timeout: 5), "the DEBUG probe \(id) should exist")
+        XCTAssertTrue(probe.exists(within: 5), "the DEBUG probe \(id) should exist")
         return probe.label
     }
 
     private func openGramTab(_ app: XCUIApplication) {
         let tab = app.buttons["guest-tab-gram"]
-        XCTAssertTrue(tab.waitForExistence(timeout: 10), "a host that shares Gram should offer the Gram tab")
+        XCTAssertTrue(tab.exists(within: 10), "a host that shares Gram should offer the Gram tab")
         let list = element(app, "guest-gram-list")
         for _ in 0..<3 where !list.exists {
             tab.tap()
-            _ = list.waitForExistence(timeout: 3)
+            _ = list.exists(within: 3)
         }
         XCTAssertTrue(list.exists, "the Gram tab should show the list")
     }
@@ -47,13 +47,13 @@ final class GuestGramPaneTests: XCTestCase {
     func testGramTabListsTheSharedAgentsGramsAndMarksThemReadWhenViewed() {
         let app = launch(features: "gram")
         let badge = element(app, "guest-gram-unread")
-        XCTAssertTrue(badge.waitForExistence(timeout: 10), "unread Grams should show a count before the tab opens")
+        XCTAssertTrue(badge.exists(within: 10), "unread Grams should show a count before the tab opens")
         XCTAssertEqual(badge.label, "2")
         XCTAssertTrue(app.buttons["guest-tab-terminal"].exists)
 
         openGramTab(app)
         let rows = ["gm-1", "gm-2", "gm-3", "gm-4"].map { element(app, "guest-gram-row-\($0)") }
-        for row in rows { XCTAssertTrue(row.waitForExistence(timeout: 5), "row \(row) should render") }
+        for row in rows { XCTAssertTrue(row.exists(within: 5), "row \(row) should render") }
         XCTAssertLessThan(rows[0].frame.minY, rows[1].frame.minY, "oldest first")
         XCTAssertLessThan(rows[2].frame.minY, rows[3].frame.minY, "oldest first")
         XCTAssertTrue(app.staticTexts["Here's the Q5 table: decode is up 36% over Q4, prefill flat."].exists)
@@ -64,7 +64,7 @@ final class GuestGramPaneTests: XCTestCase {
         pollLabel(app, "guest-host-calls", "viewing the list should mark its unread Grams read") {
             $0.contains("gram.mark_read:gm-2,gm-4")
         }
-        XCTAssertTrue(badge.waitForNonExistence(timeout: 5), "nothing is unread once seen")
+        XCTAssertTrue(badge.gone(within: 5), "nothing is unread once seen")
         Thread.sleep(forTimeInterval: 0.8)
         attach(app, "guest-gram-tab")
         XCTAssertEqual(probe(app, "guest-forbidden-calls"), "", "the Gram tab calls only what a guest may")
@@ -79,7 +79,7 @@ final class GuestGramPaneTests: XCTestCase {
         let newest = element(app, "guest-gram-row-gm-4")
         let mine = element(app, "guest-gram-row-gm-3")
         let older = element(app, "guest-gram-row-gm-2")
-        XCTAssertTrue(newest.waitForExistence(timeout: 5))
+        XCTAssertTrue(newest.exists(within: 5))
         XCTAssertTrue(poll(5, every: 0.25) { newest.isHittable }, "the newest Gram is in view on open")
         let input = app.textViews["guest-composer-input"]
         XCTAssertTrue(input.exists)
@@ -108,7 +108,7 @@ final class GuestGramPaneTests: XCTestCase {
     func testAFailedOlderPageOffersARetryThatLoadsIt() {
         let app = launch(features: "gram", environment: ["HERDR_MOCK_GUEST_OLDER_PAGE_FAILS_ONCE": "1"])
         openGramTab(app)
-        XCTAssertTrue(element(app, "guest-gram-row-gm-4").waitForExistence(timeout: 5))
+        XCTAssertTrue(element(app, "guest-gram-row-gm-4").exists(within: 5))
         let list = element(app, "guest-gram-list")
         let sentinel = element(app, "guest-gram-loading-older")
         let retry = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Tap to retry")).firstMatch
@@ -117,14 +117,14 @@ final class GuestGramPaneTests: XCTestCase {
         for _ in 0..<12 where !(sentinel.exists && sentinel.isHittable) && !retry.exists {
             list.swipeDown()
         }
-        XCTAssertTrue(retry.waitForExistence(timeout: 8),
+        XCTAssertTrue(retry.exists(within: 8),
                       "the failed page should offer a retry, not spin; sentinel says \(sentinel.exists ? sentinel.label : "nothing")")
         XCTAssertFalse(element(app, "guest-gram-row-gm-older-1").exists, "the failed page drew nothing")
         attach(app, "guest-gram-older-page-failed")
 
         retry.tap()
         let older = element(app, "guest-gram-row-gm-older-1")
-        XCTAssertTrue(older.waitForExistence(timeout: 8), "the retry should load the older page")
+        XCTAssertTrue(older.exists(within: 8), "the retry should load the older page")
         XCTAssertLessThan(older.frame.minY, element(app, "guest-gram-row-gm-f30").frame.minY,
                           "the older page sits above the first one")
         XCTAssertFalse(retry.exists, "the failure clears once the page loads")
@@ -138,12 +138,12 @@ final class GuestGramPaneTests: XCTestCase {
         let app = launch(features: "gram")
         openGramTab(app)
         let row = element(app, "guest-gram-row-gm-0")
-        XCTAssertTrue(row.waitForExistence(timeout: 5), "the expired message keeps its row")
+        XCTAssertTrue(row.exists(within: 5), "the expired message keeps its row")
         let list = element(app, "guest-gram-list")
         // The oldest message sits at the top of the bottom-pinned feed.
         for _ in 0..<4 where !row.isHittable { list.swipeDown() }
         let chip = element(app, "guest-gram-expired-gm-0")
-        XCTAssertTrue(chip.waitForExistence(timeout: 3), "the row should show the expired file")
+        XCTAssertTrue(chip.exists(within: 3), "the row should show the expired file")
         XCTAssertEqual(chip.label, "q4-baseline.png, no longer available")
         XCTAssertNotEqual(chip.elementType, .button, "an expired file is not a button")
         XCTAssertFalse(app.buttons["guest-gram-file-gm-0"].exists, "nothing offers it to open")
@@ -159,7 +159,7 @@ final class GuestGramPaneTests: XCTestCase {
         let app = launch(features: "gram")
         openGramTab(app)
         let file = app.buttons["guest-gram-file-gm-4"]
-        XCTAssertTrue(file.waitForExistence(timeout: 5))
+        XCTAssertTrue(file.exists(within: 5))
         file.tap()
 
         // The viewer covers the pane; its probe reappears once the viewer is dismissed.
@@ -187,8 +187,8 @@ final class GuestGramPaneTests: XCTestCase {
     func testNoGramTabWhenTheHostDoesNotShareGram() {
         for features in ["none", nil] as [String?] {
             let app = launch(features: features)
-            XCTAssertTrue(element(app, "guest-terminal").waitForExistence(timeout: 10))
-            XCTAssertTrue(element(app, "guest-view-only-note").waitForExistence(timeout: 10))
+            XCTAssertTrue(element(app, "guest-terminal").exists(within: 10))
+            XCTAssertTrue(element(app, "guest-view-only-note").exists(within: 10))
             Thread.sleep(forTimeInterval: 3)
             XCTAssertFalse(app.buttons["guest-tab-gram"].exists, "no Gram tab for features \(String(describing: features))")
             XCTAssertFalse(element(app, "guest-push-prompt").exists, "no push offer without push")
@@ -205,7 +205,7 @@ final class GuestGramPaneTests: XCTestCase {
     func testTurningOnPushRegistersThisDeviceWithTheHost() {
         let app = launch(features: "gram,push")
         let prompt = element(app, "guest-push-prompt")
-        XCTAssertTrue(prompt.waitForExistence(timeout: 10), "the first open should explain notifications")
+        XCTAssertTrue(prompt.exists(within: 10), "the first open should explain notifications")
         XCTAssertEqual(probe(app, "guest-host-calls").contains("notifications.register_device"), false,
                        "nothing registers before the guest says yes")
         attach(app, "guest-push-prompt")
@@ -215,7 +215,7 @@ final class GuestGramPaneTests: XCTestCase {
             $0.contains("notifications.register_device:device_token=mock-apns-token-guest,platform=apns,"
                 + "notify_needs_input=true,notify_dies=true,notify_finishes=true,notify_gram=true")
         }
-        XCTAssertTrue(prompt.waitForNonExistence(timeout: 5), "the explanation goes once answered")
+        XCTAssertTrue(prompt.gone(within: 5), "the explanation goes once answered")
         XCTAssertEqual(probe(app, "guest-forbidden-calls"), "")
     }
 
@@ -223,7 +223,7 @@ final class GuestGramPaneTests: XCTestCase {
     func testPushWithoutGramRegistersStatusKindsOnly() {
         let app = launch(features: "push")
         let enable = app.buttons["guest-push-enable"]
-        XCTAssertTrue(enable.waitForExistence(timeout: 10))
+        XCTAssertTrue(enable.exists(within: 10))
         enable.tap()
         pollLabel(app, "guest-host-calls", "Turn on should register the device") {
             $0.contains("notify_needs_input=true,notify_dies=true,notify_finishes=true,notify_gram=false")
@@ -238,15 +238,15 @@ final class GuestGramPaneTests: XCTestCase {
             #"{"aps":{"alert":{"title":"llm-opt","body":"New Gram"}},"herdr_guest":{"host_id":"AAECAwQFBgcICQoLDA0ODw","guest_id":"g-7f2c","kind":"\#(kind)","gram_id":"gm-4"}}"#
         }
         var app = launch("guest", features: "gram", environment: ["HERDR_MOCK_PUSH_TAP": payload("gram")])
-        XCTAssertTrue(element(app, "guest-gram-list").waitForExistence(timeout: 15),
+        XCTAssertTrue(element(app, "guest-gram-list").exists(within: 15),
                       "a Gram push should open the share's Gram tab")
-        XCTAssertTrue(element(app, "guest-gram-row-gm-4").waitForExistence(timeout: 5))
+        XCTAssertTrue(element(app, "guest-gram-row-gm-4").exists(within: 5))
         app.terminate()
 
         app = launch("guest", features: "gram", environment: ["HERDR_MOCK_PUSH_TAP": payload("status")])
-        XCTAssertTrue(element(app, "guest-terminal").waitForExistence(timeout: 15),
+        XCTAssertTrue(element(app, "guest-terminal").exists(within: 15),
                       "a status push should open the share's terminal")
-        XCTAssertTrue(app.buttons["guest-tab-gram"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["guest-tab-gram"].exists(within: 5))
         XCTAssertFalse(element(app, "guest-gram-list").exists, "a status push opens the terminal, not Gram")
     }
 
@@ -257,7 +257,7 @@ final class GuestGramPaneTests: XCTestCase {
     func testSendWaitsForAnAcceptedDropToFinishStaging() {
         let app = launch(features: nil, environment: ["HERDR_MOCK_DELAYED_DROP": "1"])
         let input = app.textViews["guest-composer-input"]
-        XCTAssertTrue(input.waitForExistence(timeout: 10))
+        XCTAssertTrue(input.exists(within: 10))
         input.tap()
         input.typeText("summarise this")
         app.buttons["guest-fixture-drop-file"].tap()
@@ -271,7 +271,7 @@ final class GuestGramPaneTests: XCTestCase {
         app.buttons["guest-fixture-send-shortcut"].tap()
         finish.tap()
         let chip = app.buttons["Remove delayed-report.pdf"]
-        XCTAssertTrue(chip.waitForExistence(timeout: 10))
+        XCTAssertTrue(chip.exists(within: 10))
         XCTAssertTrue(poll(10, every: 0.25) { send.isEnabled })
         send.tap()
         let calls = pollLabel(app, "guest-host-calls", "the complete draft should be delivered",
@@ -346,14 +346,14 @@ final class GuestGramPaneTests: XCTestCase {
     /// agent's prompt, checks the composer cleared without a note, and returns the host's calls.
     private func sendWithAttachment(_ app: XCUIApplication, text: String) -> [String] {
         let paperclip = app.buttons["guest-attach-button"]
-        XCTAssertTrue(paperclip.waitForExistence(timeout: 10))
+        XCTAssertTrue(paperclip.exists(within: 10))
         XCTAssertTrue(poll(10, every: 0.25) { paperclip.isEnabled }, "the composer should open")
         paperclip.tap()
         let file = app.buttons["composer-attach-file"]
-        XCTAssertTrue(file.waitForExistence(timeout: 5), "the paperclip should open the attach sheet")
+        XCTAssertTrue(file.exists(within: 5), "the paperclip should open the attach sheet")
         file.tap()
         let chip = app.staticTexts["picked-notes.txt"]
-        XCTAssertTrue(chip.waitForExistence(timeout: 10), "the picked file should stage a chip")
+        XCTAssertTrue(chip.exists(within: 10), "the picked file should stage a chip")
         // The bytes go up as soon as the file is picked (herdrup#523 item 11), but nothing
         // reaches the agent until Send.
         let staged = pollLabel(app, "guest-host-calls", "the picked file should upload before Send",
@@ -367,13 +367,13 @@ final class GuestGramPaneTests: XCTestCase {
             input.typeText(text)
         }
         let send = app.buttons["guest-send-button"]
-        XCTAssertTrue(send.waitForExistence(timeout: 5), "a staged file should be sendable")
+        XCTAssertTrue(send.exists(within: 5), "a staged file should be sendable")
         send.tap()
 
         let calls = pollLabel(app, "guest-host-calls", "the agent should be prompted with the file",
                               timeout: 15) { $0.contains("agent.prompt:") }
         XCTAssertTrue(poll(10, every: 0.25) { !chip.exists }, "the chip should clear once delivered")
-        XCTAssertTrue(app.staticTexts["Message llm-opt as plotarmordev"].waitForExistence(timeout: 5),
+        XCTAssertTrue(app.staticTexts["Message llm-opt as plotarmordev"].exists(within: 5),
                       "a delivered message clears the composer")
         let note = element(app, "guest-note")
         XCTAssertFalse(note.exists, "the send should not fail: \(note.exists ? note.label : "")")

@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        UITestMotion.applyAtLaunch()
         UNUserNotificationCenter.current().delegate = self
         // A cold launch FROM a notification tap is delivered to `userNotificationCenter(_:didReceive:)`
         // as well (the delegate is set above, synchronously, before the launch tap is dispatched), so

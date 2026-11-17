@@ -36,6 +36,21 @@ extension XCTestCase {
     }
 }
 
+/// `waitForExistence(timeout:)` and `waitForNonExistence(timeout:)` without their blind first
+/// second. XCTest's waiter first checks ONE SECOND after the call, so every wait cost at least a
+/// second even for an element already on screen: #694's iphone-terminal shard spent 498 s in 480
+/// such waits. These check at once, then every 0.2 s, and judge a read still in flight at the
+/// deadline (`poll`). Same condition, same timeout.
+extension XCUIElement {
+    func exists(within timeout: TimeInterval) -> Bool {
+        poll(timeout, every: 0.2) { exists }
+    }
+
+    func gone(within timeout: TimeInterval) -> Bool {
+        poll(timeout, every: 0.2) { !exists }
+    }
+}
+
 /// Hittability under a continuously re-sorting roster is a state to WAIT for, not to
 /// sample. XCTest has `waitForExistence` but no hittable equivalent, so these poll it
 /// the same way — bounded, and failing by returning false so the caller's message,

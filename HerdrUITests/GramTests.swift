@@ -23,7 +23,7 @@ final class GramTests: XCTestCase {
     private func launchGram(environment: [String: String] = [:]) -> XCUIApplication {
         let app = XCUIApplication.launched(mock: "list", environment: environment)
         let tab = app.buttons["Gram"].firstMatch
-        XCTAssertTrue(tab.waitForExistence(timeout: 10))
+        XCTAssertTrue(tab.exists(within: 10))
         tab.tap()
         return app
     }
@@ -33,15 +33,15 @@ final class GramTests: XCTestCase {
     private func openSearchField(_ app: XCUIApplication) -> XCUIElement {
         let field = app.textFields["gram-search-field"]
         if hasSidebar {
-            XCTAssertTrue(field.waitForExistence(timeout: 5), "the sidebar should hold the Gram search")
+            XCTAssertTrue(field.exists(within: 5), "the sidebar should hold the Gram search")
             XCTAssertFalse(app.buttons["gram-search"].exists,
                            "with the sidebar's field the page shows no search toggle of its own")
         } else {
             let toggle = app.buttons["gram-search"]
-            XCTAssertTrue(toggle.waitForExistence(timeout: 5), "the header should offer search")
+            XCTAssertTrue(toggle.exists(within: 5), "the header should offer search")
             XCTAssertTrue(toggle.isHittable, "the newest message must not cover the search control")
             toggle.tap()
-            XCTAssertTrue(field.waitForExistence(timeout: 5), "the search button should reveal the search field")
+            XCTAssertTrue(field.exists(within: 5), "the search button should reveal the search field")
         }
         return field
     }
@@ -65,7 +65,7 @@ final class GramTests: XCTestCase {
 
         // A canned agent->owner message's sender label should appear: the bare agent name,
         // its machine ("· hetzner-1") a separate span.
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 5),
+        XCTAssertTrue(app.staticTexts["clientloop"].exists(within: 5),
                       "an agent->owner message should render its sender")
         // With unread messages the feed opens where they begin (owner 2026-10-29): the
         // "3 unread" rule above g4, on screen below the floating header. This pinned the
@@ -80,7 +80,7 @@ final class GramTests: XCTestCase {
     func testGramOpensAtTheNewestWhenNothingIsUnread() {
         let app = launchGram(environment: ["HERDR_MOCK_GRAM_READ": "1"])
         let newest = app.descendants(matching: .any)["gram-bubble-g1"]
-        XCTAssertTrue(newest.waitForExistence(timeout: 10), "the newest message should be laid out")
+        XCTAssertTrue(newest.exists(within: 10), "the newest message should be laid out")
         XCTAssertTrue(waitForPredicate(NSPredicate(format: "hittable == true"), object: newest, timeout: 5),
                       "the feed should open showing the newest message")
         XCTAssertFalse(app.descendants(matching: .any)["gram-unread-rule"].exists,
@@ -94,7 +94,7 @@ final class GramTests: XCTestCase {
     func testGramOpensAtTheFirstUnreadMessageBelowTheHeader() {
         let app = launchGram(environment: ["HERDR_MOCK_GRAM_NEWER": "1"])
         let newest = app.descendants(matching: .any)["gram-bubble-gn14"]
-        XCTAssertTrue(newest.waitForExistence(timeout: 10), "the newer messages should load")
+        XCTAssertTrue(newest.exists(within: 10), "the newer messages should load")
         let rule = assertOpensAtTheUnreadRule(app, count: 3)
         let header = app.buttons["gram-header-pill"]
         XCTAssertLessThan(rule.frame.minY - header.frame.maxY, 120,
@@ -113,8 +113,8 @@ final class GramTests: XCTestCase {
         let feed = app.scrollViews["gram-feed"]
         let header = app.buttons["gram-header-pill"]
         let rule = app.descendants(matching: .any)["gram-unread-rule"]
-        XCTAssertTrue(rule.waitForExistence(timeout: 10), "the unread rule should draw", file: file, line: line)
-        XCTAssertTrue(header.waitForExistence(timeout: 5), "the floating header shows the Gram pill", file: file, line: line)
+        XCTAssertTrue(rule.exists(within: 10), "the unread rule should draw", file: file, line: line)
+        XCTAssertTrue(header.exists(within: 5), "the floating header shows the Gram pill", file: file, line: line)
         XCTAssertEqual(rule.label, "\(count) unread", file: file, line: line)
         let landed = poll(5, every: 0.25) {
             rule.isHittable && rule.frame.minY >= header.frame.maxY && rule.frame.maxY <= feed.frame.maxY
@@ -136,22 +136,22 @@ final class GramTests: XCTestCase {
 
         // The sender that should disappear is present before any filter: the pre-state the
         // filter acts on. Without this the later disappearance would prove nothing.
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 10),
+        XCTAssertTrue(app.staticTexts["clientloop"].exists(within: 10),
                       "the newest agent->owner message should render before filtering")
 
         let field = openSearchField(app)
         field.tap()
         field.typeText("Digest")
 
-        XCTAssertTrue(app.staticTexts["trend-scout"].waitForExistence(timeout: 3),
+        XCTAssertTrue(app.staticTexts["trend-scout"].exists(within: 3),
                       "the matching message should survive the filter")
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForNonExistence(timeout: 5),
+        XCTAssertTrue(app.staticTexts["clientloop"].gone(within: 5),
                       "a message matching nothing in the search should be filtered out")
 
         // A filter that matches nothing: the "No matches" state, NOT a blank list.
         field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 6))
         field.typeText("zzzz")
-        XCTAssertTrue(app.staticTexts["No matches"].waitForExistence(timeout: 5),
+        XCTAssertTrue(app.staticTexts["No matches"].exists(within: 5),
                       "a filter matching no message should say so")
 
         // Clearing the field restores the full list, back at the newest message: the deletes
@@ -162,7 +162,7 @@ final class GramTests: XCTestCase {
         // keyboard up the feed is short, so clientloop's label is checked for existence and the
         // newest bubble for being on screen.
         field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 4))
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 5),
+        XCTAssertTrue(app.staticTexts["clientloop"].exists(within: 5),
                       "clearing the search should bring the filtered-out messages back")
         let newest = app.descendants(matching: .any)["gram-bubble-g1"]
         let onScreen = NSPredicate(format: "hittable == true")
@@ -173,7 +173,7 @@ final class GramTests: XCTestCase {
         // list silently short with nothing on screen to explain it - the failure mode a
         // dismissible search box invites. Re-filter first so the close has work to undo.
         field.typeText("zzzz")
-        XCTAssertTrue(app.staticTexts["No matches"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["No matches"].exists(within: 5))
         if hasSidebar {
             // The sidebar field stays; its Clear button is the way back.
             app.buttons["Clear search"].firstMatch.tap()
@@ -181,7 +181,7 @@ final class GramTests: XCTestCase {
             app.buttons["gram-search"].tap()
             XCTAssertFalse(field.exists, "closing should dismiss the field")
         }
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 5),
+        XCTAssertTrue(app.staticTexts["clientloop"].exists(within: 5),
                       "clearing or closing search should restore the unfiltered list")
     }
 
@@ -189,7 +189,7 @@ final class GramTests: XCTestCase {
     /// search nor anything beside it offers dictation.
     func testGramSearchFieldHasNoMic() {
         let app = launchGram()
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["clientloop"].exists(within: 10))
         let field = openSearchField(app)
 
         XCTAssertFalse(app.buttons["gram-search-mic"].exists, "the Gram search has no mic")
@@ -242,12 +242,12 @@ final class GramTests: XCTestCase {
     /// Waits for the mock inbox, opens Read all (iPhone: in the pill's sheet), checks it has
     /// a count to clear, taps `first` if given (a button beside it), then taps Read all once.
     private func tapReadAll(_ app: XCUIApplication, after first: XCUIElement? = nil) -> XCUIElement {
-        XCTAssertTrue(app.descendants(matching: .any)["gram-bubble-gn14"].waitForExistence(timeout: 10),
+        XCTAssertTrue(app.descendants(matching: .any)["gram-bubble-gn14"].exists(within: 10),
                       "the Gram page should load the mock inbox")
         let readAll = app.buttons["Read all"].firstMatch
         if !hasSidebar {
             let pill = app.buttons["gram-header-pill"]
-            XCTAssertTrue(pill.waitForExistence(timeout: 5), "the header should show the Gram pill")
+            XCTAssertTrue(pill.exists(within: 5), "the header should show the Gram pill")
             XCTAssertEqual(pill.label, "Gram")
             pill.tap()
         }
@@ -271,19 +271,19 @@ final class GramTests: XCTestCase {
         try XCTSkipIf(hasSidebar, "iPad/Mac name the Saved section in the sidebar")
         let app = launchGram()
         let pill = app.buttons["gram-header-pill"]
-        XCTAssertTrue(pill.waitForExistence(timeout: 10), "the header should show the Gram pill")
+        XCTAssertTrue(pill.exists(within: 10), "the header should show the Gram pill")
         XCTAssertEqual(pill.label, "Gram")
 
         let savedToggle = app.buttons["gram-saved-toggle"]
-        XCTAssertTrue(savedToggle.waitForExistence(timeout: 5))
+        XCTAssertTrue(savedToggle.exists(within: 5))
         savedToggle.tap()
-        XCTAssertTrue(app.staticTexts["No saved messages yet"].waitForExistence(timeout: 5),
+        XCTAssertTrue(app.staticTexts["No saved messages yet"].exists(within: 5),
                       "the bookmark toggle should show the (empty) Saved list")
         XCTAssertEqual(pill.label, "Saved", "the pill should name the Saved list")
         XCTAssertTrue(pill.staticTexts["Saved"].exists, "the pill should read \"Saved ›\"")
 
         savedToggle.tap()
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["clientloop"].exists(within: 5))
         XCTAssertEqual(pill.label, "Gram", "back on the inbox the pill reads Gram again")
     }
 
@@ -298,15 +298,15 @@ final class GramTests: XCTestCase {
         let app = launchGram(environment: ["HERDR_MOCK_GRAM_PAGED": "1"])
 
         let feed = app.scrollViews["gram-feed"]
-        XCTAssertTrue(feed.waitForExistence(timeout: 10), "the Gram feed should load")
-        XCTAssertTrue(app.staticTexts["Great, ship it."].waitForExistence(timeout: 5),
+        XCTAssertTrue(feed.exists(within: 10), "the Gram feed should load")
+        XCTAssertTrue(app.staticTexts["Great, ship it."].exists(within: 5),
                       "the first page should load")
         func label(_ prefix: String) -> XCUIElement {
             app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", prefix)).firstMatch
         }
         // The loaded-message count rides on the feed's message stack (`gram-feed-messages`).
         let messages = app.otherElements["gram-feed-messages"]
-        XCTAssertTrue(messages.waitForExistence(timeout: 5), "the feed should report its message count")
+        XCTAssertTrue(messages.exists(within: 5), "the feed should report its message count")
         if !hasSidebar {
             // The phone's first page overfills the screen: opening fetches nothing.
             XCTAssertTrue(waitForCount(messages, 12, timeout: 2), "opening should not load an older page; feed says \(messages.value ?? "nil")")
@@ -322,7 +322,7 @@ final class GramTests: XCTestCase {
         XCTAssertTrue(paged, "reaching the top should load the older page (12 + 24 messages); feed says \(messages.value ?? "nil")")
 
         let previousTop = label("Picked up the deploy ticket.")
-        XCTAssertTrue(previousTop.waitForExistence(timeout: 3) && previousTop.isHittable,
+        XCTAssertTrue(previousTop.exists(within: 3) && previousTop.isHittable,
                       "the message that was on top should stay on screen after the older page lands")
 
         // Let a chained fetch, if any, land: the count must stay at exactly one page.
@@ -345,17 +345,17 @@ final class GramTests: XCTestCase {
         try XCTSkipIf(hasSidebar, "the window fits the iPad screen: revealed at once")
         let app = launchGram(environment: ["HERDR_MOCK_GRAM_PAGED": "1", "HERDR_GRAM_RENDER_WINDOW": "6"])
         let feed = app.scrollViews["gram-feed"]
-        XCTAssertTrue(feed.waitForExistence(timeout: 10), "the Gram feed should load")
-        XCTAssertTrue(app.staticTexts["Great, ship it."].waitForExistence(timeout: 5),
+        XCTAssertTrue(feed.exists(within: 10), "the Gram feed should load")
+        XCTAssertTrue(app.staticTexts["Great, ship it."].exists(within: 5),
                       "the first page should load")
         let messages = app.otherElements["gram-feed-messages"]
-        XCTAssertTrue(messages.waitForExistence(timeout: 5))
+        XCTAssertTrue(messages.exists(within: 5))
         XCTAssertEqual(messages.value as? String, "12 messages", "one page is loaded")
         let oldest = app.descendants(matching: .any)["gram-bubble-g9"]
         XCTAssertFalse(oldest.exists, "the oldest loaded message is outside the drawn window")
 
         for _ in 0..<8 where !oldest.exists { feed.swipeDown(velocity: .slow); Thread.sleep(forTimeInterval: 0.5) }
-        XCTAssertTrue(oldest.waitForExistence(timeout: 3), "reaching the top should draw the older loaded messages")
+        XCTAssertTrue(oldest.exists(within: 3), "reaching the top should draw the older loaded messages")
         // The revealed rows push the sentinel off screen again: no fetch. Wait past the anchor
         // restore (up to ~0.7 s) and the mock's round trip, so a page fetched after the reveal
         // would have landed.
@@ -376,24 +376,24 @@ final class GramTests: XCTestCase {
         let app = launchGram(environment: ["HERDR_MOCK_GRAM_PAGED": "1", "HERDR_MOCK_GRAM_READ": "1"])
 
         let feed = app.scrollViews["gram-feed"]
-        XCTAssertTrue(feed.waitForExistence(timeout: 10), "the Gram feed should load")
+        XCTAssertTrue(feed.exists(within: 10), "the Gram feed should load")
         let messages = app.otherElements["gram-feed-messages"]
-        XCTAssertTrue(messages.waitForExistence(timeout: 5), "the feed should report its message count")
+        XCTAssertTrue(messages.exists(within: 5), "the feed should report its message count")
         XCTAssertTrue(waitForCount(messages, 12, timeout: 5), "the first page only; feed says \(messages.value ?? "nil")")
         let newest = app.staticTexts["Great, ship it."]
-        XCTAssertTrue(newest.waitForExistence(timeout: 5) && newest.isHittable,
+        XCTAssertTrue(newest.exists(within: 5) && newest.isHittable,
                       "the feed opens at the newest message")
 
         let tabs = app.tabBars.firstMatch
         let agentsTab = tabs.buttons["Agents"]
-        XCTAssertTrue(agentsTab.waitForExistence(timeout: 5))
+        XCTAssertTrue(agentsTab.exists(within: 5))
         agentsTab.tap()
-        XCTAssertTrue(newest.waitForNonExistence(timeout: 5) || !newest.isHittable,
+        XCTAssertTrue(newest.gone(within: 5) || !newest.isHittable,
                       "the Agents tab should cover Gram")
         let gramTab = tabs.buttons["Gram"]
-        XCTAssertTrue(gramTab.waitForExistence(timeout: 5))
+        XCTAssertTrue(gramTab.exists(within: 5))
         gramTab.tap()
-        XCTAssertTrue(newest.waitForExistence(timeout: 5) && newest.isHittable,
+        XCTAssertTrue(newest.exists(within: 5) && newest.isHittable,
                       "back on Gram, the feed is still at the newest message")
         XCTAssertTrue(waitForCount(messages, 12, timeout: 2), "coming back loads nothing; feed says \(messages.value ?? "nil")")
 
@@ -405,7 +405,7 @@ final class GramTests: XCTestCase {
         XCTAssertTrue(paged, "after a tab round trip, reaching the top should still load the older page; feed says \(messages.value ?? "nil")")
         let previousTop = app.staticTexts.matching(
             NSPredicate(format: "label BEGINSWITH %@", "Picked up the deploy ticket.")).firstMatch
-        XCTAssertTrue(previousTop.waitForExistence(timeout: 3) && previousTop.isHittable,
+        XCTAssertTrue(previousTop.exists(within: 3) && previousTop.isHittable,
                       "the message that was on top should stay on screen after the older page lands")
         Thread.sleep(forTimeInterval: 2)
         XCTAssertEqual(messages.value as? String, "36 messages", "exactly one older page should load")
@@ -419,13 +419,13 @@ final class GramTests: XCTestCase {
     func testTappingTheSelectedGramTabGoesToTheNewestMessage() {
         let app = launchGram(environment: ["HERDR_MOCK_GRAM_PAGED": "1"])
         let feed = app.scrollViews["gram-feed"]
-        XCTAssertTrue(feed.waitForExistence(timeout: 10), "the Gram feed should load")
+        XCTAssertTrue(feed.exists(within: 10), "the Gram feed should load")
         func onScreen(_ element: XCUIElement) -> Bool {
             element.exists && element.isHittable
                 && element.frame.minY >= feed.frame.minY && element.frame.maxY <= feed.frame.maxY
         }
         let newest = app.staticTexts["Great, ship it."]
-        XCTAssertTrue(newest.waitForExistence(timeout: 5), "the newest message should be laid out")
+        XCTAssertTrue(newest.exists(within: 5), "the newest message should be laid out")
         // g2–g4 are unread: the feed opens at them (this asserted the newest before, 2026-10-29).
         assertOpensAtTheUnreadRule(app, count: 3)
 
@@ -455,7 +455,7 @@ final class GramTests: XCTestCase {
     /// polled every 250 ms, so read it after a pause).
     private func rowRenders(_ app: XCUIApplication) -> Int {
         let probe = app.descendants(matching: .any)["gram-row-renders"].firstMatch
-        XCTAssertTrue(probe.waitForExistence(timeout: 5), "the DEBUG row-render probe should be present")
+        XCTAssertTrue(probe.exists(within: 5), "the DEBUG row-render probe should be present")
         return Int(probe.label) ?? -1
     }
 
@@ -469,9 +469,9 @@ final class GramTests: XCTestCase {
         // Nothing unread (`HERDR_MOCK_GRAM_READ`): the feed opens at the newest picture.
         let app = launchGram(environment: ["HERDR_MOCK_GRAM_IMAGES": "12", "HERDR_MOCK_GRAM_READ": "1"])
         let feed = app.scrollViews["gram-feed"]
-        XCTAssertTrue(feed.waitForExistence(timeout: 10), "the Gram feed should load")
+        XCTAssertTrue(feed.exists(within: 10), "the Gram feed should load")
         let newest = app.descendants(matching: .any)["gram-bubble-gt12"]
-        XCTAssertTrue(newest.waitForExistence(timeout: 10) && newest.isHittable, "the feed opens at the newest message")
+        XCTAssertTrue(newest.exists(within: 10) && newest.isHittable, "the feed opens at the newest message")
         // Let the opening settle: the landing, the pictures on screen fetching and decoding.
         Thread.sleep(forTimeInterval: 3)
         let before = rowRenders(app)
@@ -488,9 +488,9 @@ final class GramTests: XCTestCase {
     /// ten keystrokes re-rendered all ten rows (about 100).
     func testTypingInTheComposerDoesNotReRenderTheRows() {
         let app = launchGram()
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["clientloop"].exists(within: 10))
         let field = app.textViews["gram-composer-input"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(field.exists(within: 5))
         field.tap()
         // The keyboard is up and the feed has settled under it.
         Thread.sleep(forTimeInterval: 2)
@@ -510,16 +510,16 @@ final class GramTests: XCTestCase {
     func testSavedOpensAtTheNewestAndRevealsOlderOnesAtTheTop() {
         let app = launchGram(environment: ["HERDR_MOCK_GRAM_SAVED": "30", "HERDR_GRAM_RENDER_WINDOW": "20"])
         let toggle = app.buttons["gram-saved-toggle"]
-        XCTAssertTrue(toggle.waitForExistence(timeout: 10))
+        XCTAssertTrue(toggle.exists(within: 10))
         toggle.tap()
         let feed = app.scrollViews["gram-saved-feed"]
-        XCTAssertTrue(feed.waitForExistence(timeout: 5), "the Saved feed should show")
+        XCTAssertTrue(feed.exists(within: 5), "the Saved feed should show")
         let newest = app.descendants(matching: .any)["gram-saved-gs30"]
         let onScreen = NSPredicate(format: "hittable == true")
         XCTAssertTrue(waitForPredicate(onScreen, object: newest, timeout: 5),
                        "Saved should open at the newest saved message, on screen")
         let drawn = app.otherElements["gram-saved-messages"]
-        XCTAssertTrue(drawn.waitForExistence(timeout: 5))
+        XCTAssertTrue(drawn.exists(within: 5))
         XCTAssertEqual(drawn.value as? String, "20 of 30 saved", "only the newest window is drawn")
         XCTAssertFalse(app.descendants(matching: .any)["gram-saved-gs10"].exists,
                        "a saved message older than the window is not drawn until the reader scrolls up")
@@ -536,7 +536,7 @@ final class GramTests: XCTestCase {
         }
         XCTAssertTrue(revealed, "reaching the top should draw the older saved messages; says \(drawn.value ?? "nil")")
         let previousTop = app.descendants(matching: .any)["gram-saved-gs11"]
-        XCTAssertTrue(previousTop.waitForExistence(timeout: 3) && previousTop.isHittable,
+        XCTAssertTrue(previousTop.exists(within: 3) && previousTop.isHittable,
                       "the saved message that was on top should stay on screen after the reveal")
         let oldest = app.descendants(matching: .any)["gram-saved-gs1"]
         for _ in 0..<10 where !oldest.isHittable { feed.swipeDown(velocity: .slow) }
@@ -549,7 +549,7 @@ final class GramTests: XCTestCase {
     /// answered (its label; polled every 250 ms).
     private func listPages(_ app: XCUIApplication) -> Int {
         let probe = app.descendants(matching: .any)["gram-list-pages"].firstMatch
-        XCTAssertTrue(probe.waitForExistence(timeout: 5), "the DEBUG list-pages probe should be present")
+        XCTAssertTrue(probe.exists(within: 5), "the DEBUG list-pages probe should be present")
         return Int(probe.label) ?? -1
     }
 
@@ -558,14 +558,14 @@ final class GramTests: XCTestCase {
     /// for every page), even though older history is available.
     func testSearchMatchingRecentMessagesFetchesNoOlderPage() {
         let app = launchGram(environment: ["HERDR_MOCK_GRAM_PAGED": "1"])
-        XCTAssertTrue(app.staticTexts["Great, ship it."].waitForExistence(timeout: 10), "the feed opens")
+        XCTAssertTrue(app.staticTexts["Great, ship it."].exists(within: 10), "the feed opens")
         // iPad/Mac: the first page fits, so opening loads one older page. Let that land first.
         Thread.sleep(forTimeInterval: 3)
         let before = listPages(app)
         let field = openSearchField(app)
         field.tap()
         field.typeText("Digest")
-        XCTAssertTrue(app.staticTexts["trend-scout"].waitForExistence(timeout: 5), "the match shows")
+        XCTAssertTrue(app.staticTexts["trend-scout"].exists(within: 5), "the match shows")
         Thread.sleep(forTimeInterval: 3)
         XCTAssertEqual(listPages(app), before, "a search must not fetch older pages the reader did not ask for")
     }
@@ -577,14 +577,14 @@ final class GramTests: XCTestCase {
     func testReachingTheTopOfSearchResultsFindsOlderMatches() {
         let app = launchGram(environment: ["HERDR_MOCK_GRAM_PAGED": "1"])
         let feed = app.scrollViews["gram-feed"]
-        XCTAssertTrue(app.staticTexts["Great, ship it."].waitForExistence(timeout: 10), "the feed opens")
+        XCTAssertTrue(app.staticTexts["Great, ship it."].exists(within: 10), "the feed opens")
         Thread.sleep(forTimeInterval: 3)
         let pagesBefore = listPages(app)
         let field = openSearchField(app)
         field.tap()
         field.typeText("vetrina")
         let matches = app.otherElements["gram-feed-messages"]
-        XCTAssertTrue(matches.waitForExistence(timeout: 5))
+        XCTAssertTrue(matches.exists(within: 5))
         Thread.sleep(forTimeInterval: 2)
         XCTAssertEqual(listPages(app), pagesBefore, "typing the query fetches nothing")
         let shown = matches.value as? String ?? ""
@@ -593,7 +593,7 @@ final class GramTests: XCTestCase {
 
         for _ in 0..<10 where !older.exists {
             feed.swipeDown(velocity: .slow)
-            _ = older.waitForExistence(timeout: 2)
+            _ = older.exists(within: 2)
         }
         XCTAssertTrue(older.exists, "reaching the top of the results should fetch older pages until a match lands")
         XCTAssertGreaterThan(listPages(app), pagesBefore, "the older match came from an older page")
@@ -606,26 +606,26 @@ final class GramTests: XCTestCase {
     /// history loaded, a query matching nothing is plain "No matches".
     func testNoRecentMatchesOffersToSearchOlderMessages() {
         let app = launchGram(environment: ["HERDR_MOCK_GRAM_PAGED": "1"])
-        XCTAssertTrue(app.staticTexts["Great, ship it."].waitForExistence(timeout: 10), "the feed opens")
+        XCTAssertTrue(app.staticTexts["Great, ship it."].exists(within: 10), "the feed opens")
         Thread.sleep(forTimeInterval: 3)
         let pagesBefore = listPages(app)
         let field = openSearchField(app)
         field.tap()
         field.typeText("kickoff")
-        XCTAssertTrue(app.staticTexts["No matches in recent messages"].waitForExistence(timeout: 5),
+        XCTAssertTrue(app.staticTexts["No matches in recent messages"].exists(within: 5),
                       "no loaded match, older history left: say what was searched")
         Thread.sleep(forTimeInterval: 1)
         XCTAssertEqual(listPages(app), pagesBefore, "the empty state fetches nothing by itself")
         let searchOlder = app.buttons["gram-search-older"]
-        XCTAssertTrue(searchOlder.waitForExistence(timeout: 3))
+        XCTAssertTrue(searchOlder.exists(within: 3))
         searchOlder.tap()
         let match = app.descendants(matching: .any)["gram-bubble-gx1"]
-        XCTAssertTrue(match.waitForExistence(timeout: 10), "Search older messages should find the older match")
+        XCTAssertTrue(match.exists(within: 10), "Search older messages should find the older match")
         XCTAssertGreaterThan(listPages(app), pagesBefore)
 
         field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 7))
         field.typeText("zzzz")
-        XCTAssertTrue(app.staticTexts["No matches"].waitForExistence(timeout: 5),
+        XCTAssertTrue(app.staticTexts["No matches"].exists(within: 5),
                       "with every page loaded, no match is the whole answer")
         XCTAssertFalse(app.buttons["gram-search-older"].exists, "and there is nothing older to search")
     }
@@ -635,11 +635,11 @@ final class GramTests: XCTestCase {
     /// line becomes "Show less", which folds it back.
     func testReadMoreExpandsALongMessageAndShowLessFoldsIt() {
         let app = launchGram()
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["clientloop"].exists(within: 10))
 
         let readMore = app.buttons["gram-read-more"].firstMatch
         let showLess = app.buttons["gram-show-less"].firstMatch
-        XCTAssertTrue(readMore.waitForExistence(timeout: 5), "a long report should fold with Read more")
+        XCTAssertTrue(readMore.exists(within: 5), "a long report should fold with Read more")
         XCTAssertFalse(showLess.exists, "a folded report offers Read more, not Show less")
         // The feed opens at the first unread message, which is this report.
         for _ in 0..<3 where !readMore.isHittable { app.swipeDown() }
@@ -654,7 +654,7 @@ final class GramTests: XCTestCase {
         let folded = bubble.frame
 
         readMore.tap()
-        XCTAssertTrue(showLess.waitForExistence(timeout: 3), "an expanded message offers Show less")
+        XCTAssertTrue(showLess.exists(within: 3), "an expanded message offers Show less")
         XCTAssertFalse(readMore.exists, "an expanded message has no Read more")
         Thread.sleep(forTimeInterval: 0.4)   // the expand animates (0.2 s)
         // Three more 20 pt lines (the 15/20 body): the whole report, all 11 lines.
@@ -667,7 +667,7 @@ final class GramTests: XCTestCase {
 
         for _ in 0..<3 where !showLess.isHittable { app.swipeDown() }
         showLess.tap()
-        XCTAssertTrue(readMore.waitForExistence(timeout: 3), "Show less folds the report back to Read more")
+        XCTAssertTrue(readMore.exists(within: 3), "Show less folds the report back to Read more")
         XCTAssertFalse(showLess.exists, "a folded report has no Show less")
         Thread.sleep(forTimeInterval: 0.4)
         XCTAssertEqual(bubble.frame.height, folded.height, accuracy: 2, "Show less folds back to 8 lines")
@@ -678,7 +678,7 @@ final class GramTests: XCTestCase {
     /// any). The label, not the value: on the iPhone tab the value reads the tab's badge.
     private func waitForPostCall(_ app: XCUIApplication, containing expected: String) -> String {
         let probe = app.descendants(matching: .any)["gram-post-calls"].firstMatch
-        XCTAssertTrue(probe.waitForExistence(timeout: 5), "the DEBUG post probe should be present")
+        XCTAssertTrue(probe.exists(within: 5), "the DEBUG post probe should be present")
         let recorded = NSPredicate(format: "label CONTAINS %@", expected)
         let landed = waitForPredicate(recorded, object: probe, timeout: 5)
         XCTAssertTrue(landed, "the mock should record \"\(expected)\"; probe says \(probe.label)")
@@ -690,15 +690,15 @@ final class GramTests: XCTestCase {
     /// with the leading mention taken off the text.
     func testAtMentionPicksAnAgentAndSendsToItAlone() {
         let app = launchGram()
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["clientloop"].exists(within: 10))
         let field = app.textViews["gram-composer-input"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(field.exists(within: 5))
         field.tap()
 
         let list = app.descendants(matching: .any)["gram-mention-list"]
         XCTAssertFalse(list.exists, "no list before an @")
         field.typeText("@")
-        XCTAssertTrue(list.waitForExistence(timeout: 3), "typing @ lists the agents")
+        XCTAssertTrue(list.exists(within: 3), "typing @ lists the agents")
         XCTAssertTrue(app.staticTexts["Send to one agent"].exists, "the list says what picking does")
         XCTAssertTrue(app.staticTexts["No @ and it goes to the shared queue."].exists,
                       "the list reminds that no @ means the shared queue")
@@ -712,16 +712,16 @@ final class GramTests: XCTestCase {
         XCTAssertTrue(relayedClientloop.exists, "the relayed clientloop is listed too, not merged into the local one")
 
         field.typeText("vet")
-        XCTAssertTrue(clientloop.waitForNonExistence(timeout: 3), "\"vet\" filters clientloop out")
+        XCTAssertTrue(clientloop.gone(within: 3), "\"vet\" filters clientloop out")
         XCTAssertTrue(vetrina.exists, "\"vet\" keeps vetrina")
 
         vetrina.tap()
-        XCTAssertTrue(list.waitForNonExistence(timeout: 3), "picking an agent closes the list")
+        XCTAssertTrue(list.gone(within: 3), "picking an agent closes the list")
         XCTAssertEqual(field.value as? String, "@vetrina ", "picking completes the mention")
 
         field.typeText("Ship the drop")
         let send = app.buttons["gram-send-button"]
-        XCTAssertTrue(send.waitForExistence(timeout: 3) && send.isEnabled)
+        XCTAssertTrue(send.exists(within: 3) && send.isEnabled)
         send.tap()
 
         let calls = waitForPostCall(app, containing: "to=vetrina text=Ship the drop")
@@ -735,17 +735,17 @@ final class GramTests: XCTestCase {
     /// "@vetrina " with nothing after it has no message: Send shows but stays disabled.
     func testAMentionWithNoMessageCannotBeSent() {
         let app = launchGram()
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["clientloop"].exists(within: 10))
         let field = app.textViews["gram-composer-input"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(field.exists(within: 5))
         field.tap()
         field.typeText("@vet")
         let vetrina = app.buttons["gram-mention-vetrina"]
-        XCTAssertTrue(vetrina.waitForExistence(timeout: 3))
+        XCTAssertTrue(vetrina.exists(within: 3))
         vetrina.tap()
         XCTAssertEqual(field.value as? String, "@vetrina ")
         let send = app.buttons["gram-send-button"]
-        XCTAssertTrue(send.waitForExistence(timeout: 3), "a mention is content: send takes the saved-prompts place")
+        XCTAssertTrue(send.exists(within: 3), "a mention is content: send takes the saved-prompts place")
         XCTAssertFalse(send.isEnabled, "a mention alone has no message to send")
     }
 
@@ -753,18 +753,18 @@ final class GramTests: XCTestCase {
     /// picking the relayed one from the list sends to its full sender ID, never the local one.
     func testASharedNameSendsToTheAgentPicked() {
         let app = launchGram()
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["clientloop"].exists(within: 10))
         let field = app.textViews["gram-composer-input"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(field.exists(within: 5))
         field.tap()
         // No space after the name, so autocorrect has nothing to act on.
         field.typeText("@clientloop")
         let send = app.buttons["gram-send-button"]
-        XCTAssertTrue(send.waitForExistence(timeout: 3))
+        XCTAssertTrue(send.exists(within: 3))
         XCTAssertFalse(send.isEnabled, "a typed name two agents share picks neither")
 
         let relayed = app.buttons["gram-mention-\(Self.relayedClientloop)"]
-        XCTAssertTrue(relayed.waitForExistence(timeout: 3), "the list offers both clientloops")
+        XCTAssertTrue(relayed.exists(within: 3), "the list offers both clientloops")
         XCTAssertTrue(app.buttons["gram-mention-clientloop"].exists)
         XCTAssertTrue(relayed.label.contains("clientloop · hetzner-1"),
                       "a shared name is told apart by its machine; row reads \(relayed.label)")
@@ -782,24 +782,24 @@ final class GramTests: XCTestCase {
     /// agent's full sender ID, though a local agent has the same name.
     func testTheAgentsSheetSendsToTheExactAgent() {
         let app = launchGram()
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["clientloop"].exists(within: 10))
         let field = app.textViews["gram-composer-input"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(field.exists(within: 5))
         field.tap()
         field.typeText("Status please")
 
         let pill = app.buttons["gram-header-pill"]
-        XCTAssertTrue(pill.waitForExistence(timeout: 5))
+        XCTAssertTrue(pill.exists(within: 5))
         pill.tap()
         let row = app.buttons["gram-recipient-\(Self.relayedClientloop)"]
-        XCTAssertTrue(row.waitForExistence(timeout: 5), "the sheet lists the relayed clientloop by its sender ID")
+        XCTAssertTrue(row.exists(within: 5), "the sheet lists the relayed clientloop by its sender ID")
         row.tap()
-        XCTAssertTrue(row.waitForNonExistence(timeout: 5), "choosing an agent closes the sheet")
+        XCTAssertTrue(row.gone(within: 5), "choosing an agent closes the sheet")
         XCTAssertEqual(field.value as? String, "@clientloop Status please",
                        "the sheet puts the agent's mention at the start")
 
         let send = app.buttons["gram-send-button"]
-        XCTAssertTrue(send.waitForExistence(timeout: 3) && send.isEnabled)
+        XCTAssertTrue(send.exists(within: 3) && send.isEnabled)
         send.tap()
         _ = waitForPostCall(app, containing: "to=\(Self.relayedClientloop) text=Status please")
     }
@@ -809,27 +809,27 @@ final class GramTests: XCTestCase {
     /// federated agent of a degraded peer (which `gram.post` would refuse) stay off the list.
     func testAnAgentThatNeverWroteCanBeAddressed() {
         let app = launchGram()
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["clientloop"].exists(within: 10))
         let field = app.textViews["gram-composer-input"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(field.exists(within: 5))
         field.tap()
         field.typeText("@")
         let list = app.descendants(matching: .any)["gram-mention-list"]
-        XCTAssertTrue(list.waitForExistence(timeout: 3), "typing @ lists the agents")
+        XCTAssertTrue(list.exists(within: 3), "typing @ lists the agents")
         let jarvis = app.buttons["gram-mention-jarvis"]
-        XCTAssertTrue(jarvis.waitForExistence(timeout: 5), "a board agent with no grams is offered")
+        XCTAssertTrue(jarvis.exists(within: 5), "a board agent with no grams is offered")
         XCTAssertFalse(app.buttons["gram-mention-huurjacht"].exists, "an archived agent is not offered")
         XCTAssertFalse(app.buttons["gram-mention-mcb-air"].exists, "a degraded peer's agent is not offered")
 
         field.typeText("ja")
-        XCTAssertTrue(jarvis.waitForExistence(timeout: 3))
+        XCTAssertTrue(jarvis.exists(within: 3))
         jarvis.tap()
-        XCTAssertTrue(list.waitForNonExistence(timeout: 3), "picking an agent closes the list")
+        XCTAssertTrue(list.gone(within: 3), "picking an agent closes the list")
         XCTAssertEqual(field.value as? String, "@jarvis ", "picking completes the mention")
 
         field.typeText("Run the tests")
         let send = app.buttons["gram-send-button"]
-        XCTAssertTrue(send.waitForExistence(timeout: 3) && send.isEnabled)
+        XCTAssertTrue(send.exists(within: 3) && send.isEnabled)
         send.tap()
         _ = waitForPostCall(app, containing: "to=jarvis text=Run the tests")
     }
@@ -838,32 +838,32 @@ final class GramTests: XCTestCase {
     /// stays off and the composer says why.
     func testAnUnknownLeadingMentionBlocksSend() {
         let app = launchGram()
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["clientloop"].exists(within: 10))
         let field = app.textViews["gram-composer-input"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(field.exists(within: 5))
         field.tap()
         // No space after the name, so autocorrect has nothing to act on.
         field.typeText("@nobody")
         let hint = app.staticTexts["gram-composer-hint"]
-        XCTAssertTrue(hint.waitForExistence(timeout: 3), "the composer says why it cannot send")
+        XCTAssertTrue(hint.exists(within: 3), "the composer says why it cannot send")
         XCTAssertEqual(hint.label, "No agent called @nobody in Gram")
         let send = app.buttons["gram-send-button"]
-        XCTAssertTrue(send.waitForExistence(timeout: 3))
+        XCTAssertTrue(send.exists(within: 3))
         XCTAssertFalse(send.isEnabled, "an @name matching no agent must not fall back to the queue")
     }
 
     /// No "@" in the text: the post goes to the shared queue, text unchanged.
     func testSendingWithoutAMentionPostsToTheQueue() {
         let app = launchGram()
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["clientloop"].exists(within: 10))
         let field = app.textViews["gram-composer-input"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(field.exists(within: 5))
         field.tap()
         field.typeText("Please review the docs")
         XCTAssertFalse(app.descendants(matching: .any)["gram-mention-list"].exists,
                        "no @, no agent list")
         let send = app.buttons["gram-send-button"]
-        XCTAssertTrue(send.waitForExistence(timeout: 3))
+        XCTAssertTrue(send.exists(within: 3))
         send.tap()
         _ = waitForPostCall(app, containing: "to=queue text=Please review the docs")
     }
@@ -873,25 +873,25 @@ final class GramTests: XCTestCase {
     /// already resumed; the Gram composer re-uploaded everything unsent).
     func testARetriedAttachmentPostsTheUploadItAlreadyHas() {
         let app = launchGram(environment: ["HERDR_MOCK_PICKED_FILE": "1", "HERDR_MOCK_GRAM_POST_FAIL": "1"])
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["clientloop"].exists(within: 10))
         let paperclip = app.buttons["gram-attach-button"]
-        XCTAssertTrue(paperclip.waitForExistence(timeout: 5))
+        XCTAssertTrue(paperclip.exists(within: 5))
         paperclip.tap()
         let file = app.buttons["composer-attach-file"]
-        XCTAssertTrue(file.waitForExistence(timeout: 5), "the paperclip should open the attach sheet")
+        XCTAssertTrue(file.exists(within: 5), "the paperclip should open the attach sheet")
         file.tap()
         let chip = app.staticTexts["picked-notes.txt"]
-        XCTAssertTrue(chip.waitForExistence(timeout: 10), "the picked file should stage a chip")
+        XCTAssertTrue(chip.exists(within: 10), "the picked file should stage a chip")
         let field = app.textViews["gram-composer-input"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(field.exists(within: 5))
         field.tap()
         field.typeText("Notes attached")
         let send = app.buttons["gram-send-button"]
-        XCTAssertTrue(send.waitForExistence(timeout: 3))
+        XCTAssertTrue(send.exists(within: 3))
         send.tap()
 
         _ = waitForPostCall(app, containing: "text=Notes attached file=picked-notes.txt@")
-        XCTAssertTrue(app.staticTexts["The gram store is busy."].waitForExistence(timeout: 5),
+        XCTAssertTrue(app.staticTexts["The gram store is busy."].exists(within: 5),
                       "the refused post should say why")
         XCTAssertTrue(chip.exists, "the unsent file stays staged for the retry")
 
@@ -912,15 +912,15 @@ final class GramTests: XCTestCase {
     func testOldestMessageClearsTheFloatingHeaderAtTheTop() {
         let app = launchGram()
         let feed = app.scrollViews["gram-feed"]
-        XCTAssertTrue(feed.waitForExistence(timeout: 10), "the Gram feed should load")
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 10))
+        XCTAssertTrue(feed.exists(within: 10), "the Gram feed should load")
+        XCTAssertTrue(app.staticTexts["clientloop"].exists(within: 10))
 
         let oldest = app.staticTexts.matching(
             NSPredicate(format: "label BEGINSWITH %@", "Picked up the deploy ticket.")).firstMatch
         let oldestBubble = app.descendants(matching: .any)["gram-bubble-g9"]
         for _ in 0..<6 { feed.swipeDown(velocity: .fast) }
         Thread.sleep(forTimeInterval: 0.6)   // let the scroll settle
-        XCTAssertTrue(oldest.waitForExistence(timeout: 3) && oldest.isHittable,
+        XCTAssertTrue(oldest.exists(within: 3) && oldest.isHittable,
                       "at the top, the oldest loaded message is on screen and hittable")
 
         let pill = app.buttons["gram-header-pill"]
@@ -944,7 +944,7 @@ final class GramTests: XCTestCase {
     func testTappingAFileCardOpensIt() {
         let app = launchGram()
         let card = attachmentCard(app, message: "g2")
-        XCTAssertTrue(card.waitForExistence(timeout: 10), "the zip should draw as a file card")
+        XCTAssertTrue(card.exists(within: 10), "the zip should draw as a file card")
         for _ in 0..<3 where !card.isHittable { app.swipeUp() }
         XCTAssertEqual(card.label, "Open amigo-poc-scaffold.zip", "the card is one button that opens the file")
         let bubble = app.descendants(matching: .any)["gram-bubble-g2"]
@@ -956,7 +956,7 @@ final class GramTests: XCTestCase {
 
         card.tap()
         let probe = app.descendants(matching: .any)["gram-opened-file"].firstMatch
-        XCTAssertTrue(probe.waitForExistence(timeout: 5), "the DEBUG opened-file probe should be present")
+        XCTAssertTrue(probe.exists(within: 5), "the DEBUG opened-file probe should be present")
         let opened = NSPredicate(format: "label BEGINSWITH %@", "opened:")
         XCTAssertTrue(waitForPredicate(opened, object: probe, timeout: 10),
                        "tapping the card should download the file and hand it to a viewer; probe says \(probe.label)")
@@ -967,12 +967,12 @@ final class GramTests: XCTestCase {
     func testLongPressingAFileCardOffersSaveToFiles() {
         let app = launchGram()
         let card = attachmentCard(app, message: "g2")
-        XCTAssertTrue(card.waitForExistence(timeout: 10), "the zip should draw as a file card")
+        XCTAssertTrue(card.exists(within: 10), "the zip should draw as a file card")
         for _ in 0..<3 where !card.isHittable { app.swipeUp() }
 
         card.press(forDuration: 1.2)
         let save = app.buttons["Save to Files"].firstMatch
-        XCTAssertTrue(save.waitForExistence(timeout: 5), "the card's menu should offer Save to Files")
+        XCTAssertTrue(save.exists(within: 5), "the card's menu should offer Save to Files")
         XCTAssertTrue(app.buttons["Delete"].firstMatch.exists, "the same menu keeps the message's actions")
     }
 
@@ -984,7 +984,7 @@ final class GramTests: XCTestCase {
     func testAnExpiredAttachmentDrawsAsAnInertCard() {
         let app = launchGram()
         let bubble = app.descendants(matching: .any)["gram-bubble-g12"]
-        XCTAssertTrue(bubble.waitForExistence(timeout: 10), "the file-only expired message should draw")
+        XCTAssertTrue(bubble.exists(within: 10), "the file-only expired message should draw")
         let card = bubble.descendants(matching: .any)["gram-attachment-expired"].firstMatch
         reveal(card, in: app, older: true)
         XCTAssertTrue(card.exists && card.isHittable, "the expired file should draw as a card on screen")
@@ -1001,7 +1001,7 @@ final class GramTests: XCTestCase {
                           "the file-only message is the card alone, with no empty bubble beside it")
 
         let withText = app.descendants(matching: .any)["gram-bubble-g11"]
-        XCTAssertTrue(withText.waitForExistence(timeout: 5))
+        XCTAssertTrue(withText.exists(within: 5))
         let textCard = withText.descendants(matching: .any)["gram-attachment-expired"].firstMatch
         XCTAssertTrue(textCard.exists, "the expired file draws under its message's text")
         XCTAssertEqual(textCard.label, "trend-export.csv, no longer available")
@@ -1019,7 +1019,7 @@ final class GramTests: XCTestCase {
         XCTAssertFalse(probe(app, "gram-opened-file").label.hasPrefix("opened:"), "tapping it opens nothing")
 
         card.press(forDuration: 1.2)
-        XCTAssertTrue(app.buttons["Delete"].firstMatch.waitForExistence(timeout: 5),
+        XCTAssertTrue(app.buttons["Delete"].firstMatch.exists(within: 5),
                       "the message's own menu stays")
         XCTAssertFalse(app.buttons["Save to Files"].exists, "an expired file has nothing to save")
         XCTAssertFalse(app.buttons["Open"].exists, "an expired file has nothing to open")
@@ -1032,28 +1032,28 @@ final class GramTests: XCTestCase {
     func testASavedCopyStopsOfferingAFileTheStoreExpired() {
         let app = launchGram(environment: ["HERDR_MOCK_GRAM_EXPIRE_SAVED": "1"])
         let card = attachmentCard(app, message: "g2")
-        XCTAssertTrue(card.waitForExistence(timeout: 10), "precondition: the zip is a live file card")
+        XCTAssertTrue(card.exists(within: 10), "precondition: the zip is a live file card")
         for _ in 0..<3 where !card.isHittable { app.swipeUp() }
         card.press(forDuration: 1.2)
         let save = app.buttons["Save"].firstMatch
-        XCTAssertTrue(save.waitForExistence(timeout: 5), "the message menu offers Save")
+        XCTAssertTrue(save.exists(within: 5), "the message menu offers Save")
         save.tap()
 
         // The next poll answers g2 with its file expired; the inbox redraws it as such.
         let bubble = app.descendants(matching: .any)["gram-bubble-g2"]
         let inboxExpired = bubble.descendants(matching: .any)["gram-attachment-expired"].firstMatch
-        XCTAssertTrue(inboxExpired.waitForExistence(timeout: 15), "the mock should expire the saved message's file")
+        XCTAssertTrue(inboxExpired.exists(within: 15), "the mock should expire the saved message's file")
 
         let toggle = app.buttons["gram-saved-toggle"]
-        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+        XCTAssertTrue(toggle.exists(within: 5))
         toggle.tap()
         // The one saved message: its row folds into the feed's element, so look in the feed.
         let saved = app.scrollViews["gram-saved-feed"]
-        XCTAssertTrue(saved.waitForExistence(timeout: 5), "the Saved feed should show")
-        XCTAssertTrue(saved.staticTexts["hetzner-1/clientloop"].waitForExistence(timeout: 5),
+        XCTAssertTrue(saved.exists(within: 5), "the Saved feed should show")
+        XCTAssertTrue(saved.staticTexts["hetzner-1/clientloop"].exists(within: 5),
                       "Saved should hold the copy of g2")
         let chip = saved.descendants(matching: .any)["gram-attachment-expired"].firstMatch
-        XCTAssertTrue(chip.waitForExistence(timeout: 3), "the saved copy should show the file as expired")
+        XCTAssertTrue(chip.exists(within: 3), "the saved copy should show the file as expired")
         XCTAssertEqual(chip.label, "amigo-poc-scaffold.zip, no longer available")
         XCTAssertNotEqual(chip.elementType, .button, "an expired file is not a button")
         XCTAssertEqual(saved.buttons.matching(NSPredicate(format: "label CONTAINS %@", "amigo-poc-scaffold.zip")).count, 0,
@@ -1065,7 +1065,7 @@ final class GramTests: XCTestCase {
         XCTAssertTrue(waitForGetFileCalls(calls, "g2", 0, timeout: 0.5),
                       "tapping the expired chip fetches nothing; probe says \(calls.label)")
         chip.press(forDuration: 1.2)
-        XCTAssertFalse(app.buttons["Open"].waitForExistence(timeout: 2), "an expired file has nothing to open")
+        XCTAssertFalse(app.buttons["Open"].exists(within: 2), "an expired file has nothing to open")
         XCTAssertFalse(app.buttons["Save to Files…"].exists, "an expired file has nothing to save")
     }
 
@@ -1077,21 +1077,21 @@ final class GramTests: XCTestCase {
         // Nothing unread (`HERDR_MOCK_GRAM_READ`), so the feed opens at g1, the newest.
         let app = launchGram(environment: ["HERDR_REDRAW_ON_TOUCH": "1", "HERDR_MOCK_GRAM_READ": "1"])
         let bubble = app.descendants(matching: .any)["gram-bubble-g1"]
-        XCTAssertTrue(bubble.waitForExistence(timeout: 10), "the newest message should draw")
+        XCTAssertTrue(bubble.exists(within: 10), "the newest message should draw")
         let badge = bubble.descendants(matching: .any)["gram-saved-badge"]
         XCTAssertFalse(badge.exists, "precondition: not saved")
 
         bubble.press(forDuration: 1.2)
         let save = app.buttons["Save"].firstMatch
-        XCTAssertTrue(save.waitForExistence(timeout: 5), "the message menu offers Save")
+        XCTAssertTrue(save.exists(within: 5), "the message menu offers Save")
         save.tap()
-        XCTAssertTrue(badge.waitForExistence(timeout: 3), "a saved message shows its badge")
+        XCTAssertTrue(badge.exists(within: 3), "a saved message shows its badge")
 
         bubble.press(forDuration: 1.2)
         let unsave = app.buttons["Unsave"].firstMatch
-        XCTAssertTrue(unsave.waitForExistence(timeout: 5), "a saved message's menu offers Unsave")
+        XCTAssertTrue(unsave.exists(within: 5), "a saved message's menu offers Unsave")
         unsave.tap()
-        XCTAssertTrue(badge.waitForNonExistence(timeout: 3), "unsaving removes the badge")
+        XCTAssertTrue(badge.gone(within: 3), "unsaving removes the badge")
     }
 
     /// A DEBUG probe element by identifier (its state is in its label).
@@ -1148,7 +1148,7 @@ final class GramTests: XCTestCase {
     func testImageCardShowsAPreviewWithoutOpening() {
         let app = launchGram()
         let card = attachmentCard(app, message: "g3")
-        XCTAssertTrue(card.waitForExistence(timeout: 10), "the image should draw as an image card")
+        XCTAssertTrue(card.exists(within: 10), "the image should draw as an image card")
         XCTAssertEqual(card.label, "Open vetrina-live.png, 412 KB")
         reveal(card, in: app, older: true)
         let preview = probe(app, "gram-image-preview-g3")
@@ -1162,7 +1162,7 @@ final class GramTests: XCTestCase {
     func testOpeningAPreviewedImageDoesNotFetchItAgain() {
         let app = launchGram()
         let card = attachmentCard(app, message: "g3")
-        XCTAssertTrue(card.waitForExistence(timeout: 10), "the image should draw as an image card")
+        XCTAssertTrue(card.exists(within: 10), "the image should draw as an image card")
         reveal(card, in: app, older: true)
         XCTAssertTrue(waitForLabel(probe(app, "gram-image-preview-g3"), matching: "preview", timeout: 8),
                       "the preview should land first")
@@ -1187,13 +1187,13 @@ final class GramTests: XCTestCase {
     func testClosingTheHtmlViewerKeepsTheCachedFile() {
         let app = launchGram(environment: ["HERDR_MOCK_GRAM_HTML": "1"])
         let card = attachmentCard(app, message: "gh1")
-        XCTAssertTrue(card.waitForExistence(timeout: 10), "the HTML file should draw as a file card")
+        XCTAssertTrue(card.exists(within: 10), "the HTML file should draw as a file card")
         for _ in 0..<3 where !card.isHittable { app.swipeUp() }
         let done = app.buttons["Done"].firstMatch
         let gone = NSPredicate(format: "exists == false")
         for open in 1...2 {
             card.tap()
-            XCTAssertTrue(done.waitForExistence(timeout: 10),
+            XCTAssertTrue(done.exists(within: 10),
                           "open \(open): the report should show in the web viewer")
             done.tap()
             XCTAssertTrue(waitForPredicate(gone, object: done, timeout: 5),
@@ -1216,7 +1216,7 @@ final class GramTests: XCTestCase {
         let app = launchGram(environment: ["HERDR_MOCK_GRAM_NEWER": "1", "HERDR_MOCK_GRAM_READ": "1",
                                            "HERDR_GRAM_RENDER_WINDOW": "200"])
         let newest = app.descendants(matching: .any)["gram-bubble-gn14"]
-        XCTAssertTrue(newest.waitForExistence(timeout: 10), "the newer messages should load")
+        XCTAssertTrue(newest.exists(within: 10), "the newer messages should load")
         let landed = NSPredicate(format: "hittable == true")
         XCTAssertTrue(waitForPredicate(landed, object: newest, timeout: 5), "the feed opens at the newest message")
         let card = attachmentCard(app, message: "g3")
@@ -1245,7 +1245,7 @@ final class GramTests: XCTestCase {
         // preview landed before the precondition check. The test ends when the zip opens.
         let app = launchGram(environment: ["HERDR_MOCK_GRAM_FILE_DELAY": "g3=600"])
         let image = attachmentCard(app, message: "g3")
-        XCTAssertTrue(image.waitForExistence(timeout: 10), "the image should draw as an image card")
+        XCTAssertTrue(image.exists(within: 10), "the image should draw as an image card")
         reveal(image, in: app, older: true)
         let calls = probe(app, "gram-get-file-calls")
         XCTAssertTrue(waitForGetFileCalls(calls, "g3", 1, timeout: 5),
@@ -1275,7 +1275,7 @@ final class GramTests: XCTestCase {
         // the file, not the ring (failed that way on two CI runs at 20 s).
         let app = launchGram(environment: ["HERDR_MOCK_GRAM_FILE_DELAY": "g2=60"])
         let file = attachmentCard(app, message: "g2")
-        XCTAssertTrue(file.waitForExistence(timeout: 10), "the zip should draw as a file card")
+        XCTAssertTrue(file.exists(within: 10), "the zip should draw as a file card")
         reveal(file, in: app, older: false)
         file.tap()
         let downloading = NSPredicate(format: "value BEGINSWITH %@", "Downloading")
@@ -1288,7 +1288,7 @@ final class GramTests: XCTestCase {
         // The phone's tab bar, or the iPad's sidebar (where the page is rebuilt per section).
         let sections: XCUIElement = hasSidebar ? app : app.tabBars.firstMatch
         let agents = sections.buttons["Agents"].firstMatch
-        XCTAssertTrue(agents.waitForExistence(timeout: 5))
+        XCTAssertTrue(agents.exists(within: 5))
         agents.tap()
         let covered = NSPredicate(format: "exists == false OR hittable == false")
         XCTAssertTrue(waitForPredicate(covered, object: file, timeout: 5), "Agents should cover Gram")
@@ -1296,7 +1296,7 @@ final class GramTests: XCTestCase {
         Thread.sleep(forTimeInterval: 2)
         sections.buttons["Gram"].firstMatch.tap()
 
-        XCTAssertTrue(file.waitForExistence(timeout: 10), "back on Gram, the zip's card is drawn")
+        XCTAssertTrue(file.exists(within: 10), "back on Gram, the zip's card is drawn")
         XCTAssertTrue(waitForPredicate(downloading, object: file, timeout: 5),
                       "back on Gram, the download's ring is on the card again; value \(file.value ?? "nil")")
         let opened = probe(app, "gram-opened-file")
@@ -1320,21 +1320,21 @@ final class GramTests: XCTestCase {
 
         let gram = app.buttons["gram-conversation-gram"]
         let saved = app.buttons["gram-conversation-saved"]
-        XCTAssertTrue(gram.waitForExistence(timeout: 10), "the sidebar should list the Gram conversation")
+        XCTAssertTrue(gram.exists(within: 10), "the sidebar should list the Gram conversation")
         XCTAssertTrue(saved.exists, "the sidebar should list the Saved conversation")
         XCTAssertTrue(gram.isSelected, "Gram is the conversation shown at first")
         XCTAssertFalse(saved.isSelected)
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 10),
+        XCTAssertTrue(app.staticTexts["clientloop"].exists(within: 10),
                       "the Gram feed shows the mock inbox")
 
         saved.tap()
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForNonExistence(timeout: 5),
+        XCTAssertTrue(app.staticTexts["clientloop"].gone(within: 5),
                       "selecting Saved should replace the Gram feed")
         XCTAssertTrue(saved.isSelected, "Saved should read as selected")
         XCTAssertFalse(gram.isSelected)
 
         gram.tap()
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 5),
+        XCTAssertTrue(app.staticTexts["clientloop"].exists(within: 5),
                       "selecting Gram should bring the feed back")
         XCTAssertTrue(gram.isSelected)
     }
@@ -1345,16 +1345,16 @@ final class GramTests: XCTestCase {
     func testFullSoftwareKeyboardCanBeDismissedFromComposer() throws {
         let app = launchGram()
         let field = app.textViews["gram-composer-input"]
-        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        XCTAssertTrue(field.exists(within: 10))
         field.tap()
         let keyboard = app.keyboards.firstMatch
-        guard keyboard.waitForExistence(timeout: 5), keyboard.frame.height >= 150 else {
+        guard keyboard.exists(within: 5), keyboard.frame.height >= 150 else {
             throw XCTSkip("no full software keyboard on this destination; nothing to dismiss")
         }
         let collapse = app.buttons["Collapse keyboard"].firstMatch
-        XCTAssertTrue(collapse.waitForExistence(timeout: 5), "a visible software keyboard must be dismissible")
+        XCTAssertTrue(collapse.exists(within: 5), "a visible software keyboard must be dismissible")
         collapse.tap()
-        XCTAssertTrue(keyboard.waitForNonExistence(timeout: 5), "the collapse button puts the keyboard away")
+        XCTAssertTrue(keyboard.gone(within: 5), "the collapse button puts the keyboard away")
     }
 
     /// A reader at the newest message who starts typing stays there, as in Messages: the
@@ -1364,12 +1364,12 @@ final class GramTests: XCTestCase {
     func testReaderAtTheBottomStaysThereWhenTheKeyboardComesUp() throws {
         let app = launchGram(environment: ["HERDR_MOCK_GRAM_READ": "1"])
         let newest = app.descendants(matching: .any)["gram-bubble-g1"]
-        XCTAssertTrue(newest.waitForExistence(timeout: 10))
+        XCTAssertTrue(newest.exists(within: 10))
         XCTAssertTrue(newest.isHittable, "the feed opens at the newest message")
         let field = app.textViews["gram-composer-input"]
         field.tap()
         let keyboard = app.keyboards.firstMatch
-        guard keyboard.waitForExistence(timeout: 5), keyboard.frame.height >= 150 else {
+        guard keyboard.exists(within: 5), keyboard.frame.height >= 150 else {
             throw XCTSkip("no software keyboard on this destination: the feed does not shrink")
         }
         field.typeText("ok")
@@ -1385,11 +1385,11 @@ final class GramTests: XCTestCase {
 
         let field = app.textViews["gram-composer-input"]
         let send = app.buttons["gram-send-button"]
-        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        XCTAssertTrue(field.exists(within: 10))
 
         field.tap()
         field.typeText("one")
-        XCTAssertTrue(send.waitForExistence(timeout: 5))
+        XCTAssertTrue(send.exists(within: 5))
         Thread.sleep(forTimeInterval: 0.6)
         let oneLine = field.frame
         let sendBottom = send.frame.maxY
@@ -1415,7 +1415,7 @@ final class GramTests: XCTestCase {
         // The pull-to-expand editor: the handle appears at three lines, a tap opens a
         // taller editor above a fixed send button, and a second tap closes it.
         let handle = app.descendants(matching: .any)["composer-expand-handle"].firstMatch
-        XCTAssertTrue(handle.waitForExistence(timeout: 3), "three lines offer the expand handle")
+        XCTAssertTrue(handle.exists(within: 3), "three lines offer the expand handle")
         handle.tap()
         Thread.sleep(forTimeInterval: 0.8)
         XCTAssertGreaterThan(field.frame.height, threeLines.height + 20, "tapping the handle opens the editor")

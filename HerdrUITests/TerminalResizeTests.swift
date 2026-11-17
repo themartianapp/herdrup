@@ -19,11 +19,11 @@ class TerminalInteractionTestCase: XCTestCase {
 
     func launch(_ mode: String, environment: [String: String] = [:]) {
         fixtureMode = mode
-        app = XCUIApplication()
-        app.launchEnvironment = environment
+        app = XCUIApplication.forUITest()
+        app.launchEnvironment.merge(environment) { _, new in new }
         app.launchEnvironment["HERDR_SCREENSHOT_MOCK"] = mode
         app.launch()
-        XCTAssertTrue(app.staticTexts["terminal-interaction-probe"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["terminal-interaction-probe"].exists(within: 15))
         wait {
             ($0["opens"] as? Int) == 1 && ($0["requests"] as? Int ?? 0) > 0
                 && ($0["covered"] as? Bool) == false && $0["top"] != nil
@@ -110,7 +110,7 @@ class TerminalInteractionTestCase: XCTestCase {
 
 
     func focusTerminal() {
-        XCTAssertTrue(terminal.waitForExistence(timeout: 5))
+        XCTAssertTrue(terminal.exists(within: 5))
         terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)).tap()
         wait { ($0["focused"] as? Bool) == true }
     }
@@ -135,7 +135,7 @@ class TerminalInteractionTestCase: XCTestCase {
         // silently drop the keystroke after a responder transition.
         if probe()["physicalKeyboard"] as? Bool != true, !app.keyboards.element.exists {
             terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)).tap()
-            XCTAssertTrue(app.keyboards.element.waitForExistence(timeout: 10),
+            XCTAssertTrue(app.keyboards.element.exists(within: 10),
                           "direct input needs the software keyboard. \(elementDump())")
         }
         app.typeText(text)
@@ -590,7 +590,7 @@ final class TerminalResizeTests: TerminalInteractionTestCase {
         app.activate()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30),
                       "the app did not return to the foreground")
-        XCTAssertTrue(app.staticTexts["terminal-interaction-probe"].waitForExistence(timeout: 30),
+        XCTAssertTrue(app.staticTexts["terminal-interaction-probe"].exists(within: 30),
                       "the probe never came back after reactivation")
         let after = wait { self.claimCount("claims", pane: "ix:a", in: $0) > claimsBefore }
         XCTAssertGreaterThanOrEqual(claimCount("inactiveReleases", pane: "ix:a", in: after), 1,

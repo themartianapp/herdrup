@@ -157,6 +157,7 @@ struct RootView: View {
             liveContent
             #endif
         }
+        .uiTestMotion()
         .preferredColorScheme(.dark)
         .environment(\.gramDownloads, gramDownloads)
         .fullScreenCover(item: $invites.pending) { pending in

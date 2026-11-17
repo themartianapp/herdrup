@@ -5,7 +5,7 @@ final class AgentListChromeTests: XCTestCase {
     func testBackReturnsFromAgentsToMachines() {
         let app = XCUIApplication.launched(mock: "list")
         let back = app.buttons[UIDevice.current.userInterfaceIdiom == .pad ? "agents-back" : "Back"].firstMatch
-        XCTAssertTrue(back.waitForExistence(timeout: 10))
+        XCTAssertTrue(back.exists(within: 10))
         if UIDevice.current.userInterfaceIdiom == .pad {
             let window = app.windows.firstMatch
             // iPadOS can restore a compact window from an earlier launch. Resize only
@@ -19,7 +19,7 @@ final class AgentListChromeTests: XCTestCase {
         }
         XCTAssertTrue(back.isHittable)
         back.tap()
-        XCTAssertTrue(app.staticTexts["connect to your machine"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["connect to your machine"].exists(within: 5))
     }
 
     /// iPad: Back leads in full screen (no window controls on the left), joins the
@@ -36,7 +36,7 @@ final class AgentListChromeTests: XCTestCase {
         let back = app.buttons["agents-back"].firstMatch
         let title = app.staticTexts["Agents"].firstMatch
         let newAgent = app.buttons["New agent"].firstMatch
-        XCTAssertTrue(back.waitForExistence(timeout: 10))
+        XCTAssertTrue(back.exists(within: 10))
 
         let startedFullScreen = window.frame.minX == 0 && window.frame.minY == 0
         if startedFullScreen {
@@ -46,7 +46,7 @@ final class AgentListChromeTests: XCTestCase {
                 .press(forDuration: 0.3, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.84, dy: 0.82)))
         }
         XCTAssertTrue(window.frame.minX > 0 || window.frame.minY > 0, "must be in a window")
-        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        XCTAssertTrue(back.exists(within: 5))
         window.waitForSettledFrame()
         attach(app, "ipad-window-back-right")
         XCTAssertGreaterThan(back.frame.minX, title.frame.maxX, "window: Back joins the right-hand capsule")
@@ -59,7 +59,7 @@ final class AgentListChromeTests: XCTestCase {
         let refresh = app.buttons["Refresh"].firstMatch
         for _ in 0..<3 where !refresh.exists {
             app.buttons["Gram"].firstMatch.tap()
-            _ = refresh.waitForExistence(timeout: 3)
+            _ = refresh.exists(within: 3)
         }
         XCTAssertTrue(refresh.exists, "Gram should open with its header")
         refresh.waitForSettledFrame()   // the section switch may still be animating
@@ -106,14 +106,14 @@ final class AgentListChromeTests: XCTestCase {
     func testSearchFiltersAndClears() {
         let app = XCUIApplication.launched(mock: "list")
         let search = app.textFields["agent-search"]
-        XCTAssertTrue(search.waitForExistence(timeout: 10))
+        XCTAssertTrue(search.exists(within: 10))
         XCTAssertFalse(app.buttons["Clear search"].exists, "nothing to clear yet")
         search.tap()
         search.typeText("jarvis")
         XCTAssertTrue(app.staticTexts["jarvis"].exists)
         XCTAssertFalse(app.staticTexts["vetrina"].exists)
         app.buttons["Clear search"].tap()
-        XCTAssertTrue(app.staticTexts["vetrina"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["vetrina"].exists(within: 5))
         XCTAssertFalse(app.buttons["Clear search"].exists)
     }
 
@@ -123,12 +123,12 @@ final class AgentListChromeTests: XCTestCase {
         for section in ["Agents", "Gram", "Settings"] {
             if section != "Agents" { app.buttons[section].firstMatch.tap() }
             let hide = app.buttons["Minimise sidebar"].firstMatch
-            XCTAssertTrue(hide.waitForExistence(timeout: 10), section)
+            XCTAssertTrue(hide.exists(within: 10), section)
             hide.tap()
             let restore = app.buttons["Expand sidebar"].firstMatch
-            XCTAssertTrue(restore.waitForExistence(timeout: 5), section)
+            XCTAssertTrue(restore.exists(within: 5), section)
             restore.tap()
-            XCTAssertTrue(hide.waitForExistence(timeout: 5), section)
+            XCTAssertTrue(hide.exists(within: 5), section)
         }
     }
 }

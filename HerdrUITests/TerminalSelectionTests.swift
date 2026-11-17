@@ -186,7 +186,7 @@ final class TerminalSelectionTests: XCTestCase {
         // `terminal-selection-probe` is published by the app under the same mock env var and
         // reports sel/len/rows/cols/resizes, so the diagnosis now comes from SwiftTerm.
         let probe = app.descendants(matching: .any)["terminal-selection-probe"]
-        let reading = probe.waitForExistence(timeout: 5) ? (probe.label) : "PROBE ABSENT"
+        let reading = probe.exists(within: 5) ? (probe.label) : "PROBE ABSENT"
 
         // THE STATE ASSERTIONS, in order of how badly a failure would mislead.
         XCTAssertTrue(reading.contains("sel=1"),
@@ -279,7 +279,7 @@ final class TerminalSelectionTests: XCTestCase {
 
         // Secondary only: Copy SHOULD be offered, but its presence alone proves nothing, since
         // an empty-but-active selection also offers it.
-        XCTAssertTrue(app.menuItems["Copy"].waitForExistence(timeout: 5),
+        XCTAssertTrue(app.menuItems["Copy"].exists(within: 5),
                       "a word is highlighted but Copy is not offered, so the selection cannot be acted on")
 
         // (5) DESELECTION still works, so the fix did not simply disable it.
@@ -404,7 +404,7 @@ final class TerminalSelectionTests: XCTestCase {
         let app = XCUIApplication.launched(mock: "scroll")
 
         let probe = app.descendants(matching: .any)["terminal-selection-probe"]
-        XCTAssertTrue(probe.waitForExistence(timeout: 20),
+        XCTAssertTrue(probe.exists(within: 20),
                       "the terminal never came up, so nothing below is about the chevron")
 
         // Two stages for the same reason the other test uses two: tap 1 raises the keyboard and
@@ -425,7 +425,7 @@ final class TerminalSelectionTests: XCTestCase {
         XCTAssertTrue(beforeReading.contains("fr=1"),
                       "premise: the terminal does not hold the responder, so there is nothing for the chevron to resign. probe[\(beforeReading)]")
 
-        XCTAssertTrue(app.keyboards.element.waitForExistence(timeout: 10),
+        XCTAssertTrue(app.keyboards.element.exists(within: 10),
                       "premise: the software keyboard must be visible")
         let chevron = app.buttons["Collapse keyboard"]
         // Only a full software keyboard is dismissible. With a hardware keyboard iOS shows a
@@ -433,13 +433,13 @@ final class TerminalSelectionTests: XCTestCase {
         // it can say "attached" while the full keyboard is on screen.
         let fullKeyboard = app.keyboards.element.frame.height >= 150
         if !fullKeyboard {
-            XCTAssertFalse(chevron.waitForExistence(timeout: 2),
+            XCTAssertFalse(chevron.exists(within: 2),
                            "a hardware keyboard's shortcut bar must not offer dismissal")
             print("Selection dismissal: only a shortcut bar is shown; hidden control verified. Dismissal was not exercised. probe[\(beforeReading)]")
             return
         }
         print("Selection dismissal: full software keyboard; exercising dismissal with selection. probe[\(beforeReading)]")
-        XCTAssertTrue(chevron.waitForExistence(timeout: 5),
+        XCTAssertTrue(chevron.exists(within: 5),
                       "the chevron is absent while the keyboard is up with a selection held — which IS the original defect: no affordance to dismiss with")
         chevron.tap()
 
@@ -491,7 +491,7 @@ final class TerminalSelectionTests: XCTestCase {
         let app = XCUIApplication.launched(mock: "scroll")
 
         let probe = app.descendants(matching: .any)["terminal-selection-probe"]
-        XCTAssertTrue(probe.waitForExistence(timeout: 20), "the terminal never came up")
+        XCTAssertTrue(probe.exists(within: 20), "the terminal never came up")
 
         // PREMISE: start from an UNFOCUSED pane, so any fr=1 below is this test's own doing. A
         // pane that already held the responder would pass the assertion for the wrong reason.
@@ -553,7 +553,7 @@ final class TerminalSelectionTests: XCTestCase {
             // product verdict, which is the same class of error as a test that passes vacuously.
             Thread.sleep(forTimeInterval: 1.2)
             let chevron = app.buttons["Collapse keyboard"].firstMatch
-            if probe.exists, probe.label.contains("fr=1"), chevron.waitForExistence(timeout: 2) {
+            if probe.exists, probe.label.contains("fr=1"), chevron.exists(within: 2) {
                 chevron.tap()
                 Thread.sleep(forTimeInterval: 1.0)
             }
@@ -608,7 +608,7 @@ final class TerminalSelectionTests: XCTestCase {
         let app = XCUIApplication.launched(mock: "busyscroll")
 
         let probe = app.descendants(matching: .any)["terminal-selection-probe"]
-        XCTAssertTrue(probe.waitForExistence(timeout: 20), "the terminal never came up")
+        XCTAssertTrue(probe.exists(within: 20), "the terminal never came up")
         XCTAssertTrue(probe.label.contains("fr=0"),
                       "premise: the terminal already holds the responder before any tap. probe[\(probe.label)]")
 

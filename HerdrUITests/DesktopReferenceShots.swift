@@ -17,14 +17,14 @@ final class DesktopReferenceShots: DesktopReferenceCaptureCase {
 
     func testLoading() throws {
         let (app, device) = try launch("loading")
-        XCTAssertTrue(app.activityIndicators.firstMatch.waitForExistence(timeout: 20),
+        XCTAssertTrue(app.activityIndicators.firstMatch.exists(within: 20),
                       "the sidebar should show its spinner while agent.list has not answered")
         capture(app, device: device, state: "loading")
     }
 
     func testEmpty() throws {
         let (app, device) = try launch("empty")
-        XCTAssertTrue(app.staticTexts["no agents"].waitForExistence(timeout: 20),
+        XCTAssertTrue(app.staticTexts["no agents"].exists(within: 20),
                       "an empty agent.list should say so")
         capture(app, device: device, state: "empty")
     }
@@ -64,9 +64,9 @@ final class DesktopReferenceShots: DesktopReferenceCaptureCase {
     func testFolders() throws {
         let (app, device) = try launch("folders", served: "folders")
         let herdr = element(app, "agent-folder-herdr"), enyo = element(app, "agent-folder-enyo")
-        XCTAssertTrue(herdr.waitForExistence(timeout: 20), "the folders document should load")
-        XCTAssertTrue(enyo.waitForExistence(timeout: 10), "Enyo should be listed")
-        XCTAssertTrue(row(app, "w1:p1").waitForExistence(timeout: 10), "vetrina should be listed")
+        XCTAssertTrue(herdr.exists(within: 20), "the folders document should load")
+        XCTAssertTrue(enyo.exists(within: 10), "Enyo should be listed")
+        XCTAssertTrue(row(app, "w1:p1").exists(within: 10), "vetrina should be listed")
         XCTAssertTrue(row(app, "w1:p1").label.contains("starred"), "vetrina should show its star, got \(row(app, "w1:p1").label)")
         XCTAssertEqual(herdr.value as? String, "collapsed, 1 waiting, 0 stopped", "folders start closed")
         herdr.tap()
@@ -74,7 +74,7 @@ final class DesktopReferenceShots: DesktopReferenceCaptureCase {
         XCTAssertTrue(poll(10, every: 0.25) { (herdr.value as? String)?.hasPrefix("expanded") == true },
                       "tapping Herdr should open it")
         for pane in ["w1:p2", "w1:p3"] {
-            XCTAssertTrue(row(app, pane).waitForExistence(timeout: 10), "open Herdr should show \(pane)")
+            XCTAssertTrue(row(app, pane).exists(within: 10), "open Herdr should show \(pane)")
         }
         XCTAssertTrue((enyo.value as? String)?.hasPrefix("collapsed") == true, "Enyo should stay closed")
         XCTAssertFalse(row(app, "w2:p1").exists, "closed Enyo should hide enyo-review")
@@ -85,7 +85,7 @@ final class DesktopReferenceShots: DesktopReferenceCaptureCase {
     func testAvatars() throws {
         let (app, device) = try launch("avatars", served: "avatars")
         for pane in ["w1:p1", "w1:p2", "w1:p3"] {
-            XCTAssertTrue(row(app, pane).waitForExistence(timeout: 20), "\(pane) should be listed")
+            XCTAssertTrue(row(app, pane).exists(within: 20), "\(pane) should be listed")
         }
         XCTAssertTrue(avatar(app, in: row(app, "w1:p1"), "image", named: "Photo"), "atlas should show its picture")
         XCTAssertTrue(avatar(app, in: row(app, "w1:p2"), "cub", named: "Cub"), "nova should show the Cub mascot")
@@ -96,8 +96,8 @@ final class DesktopReferenceShots: DesktopReferenceCaptureCase {
     /// Session pills: default (this one), personal and work running, work with 2 waiting.
     func testSessions() throws {
         let (app, device) = try launch("sessions", served: "sessions")
-        XCTAssertTrue(row(app, "w1:p1").waitForExistence(timeout: 20), "the roster should load")
-        XCTAssertTrue(app.buttons["work, 2 need you"].waitForExistence(timeout: 20),
+        XCTAssertTrue(row(app, "w1:p1").exists(within: 20), "the roster should load")
+        XCTAssertTrue(app.buttons["work, 2 need you"].exists(within: 20),
                       "work's pill should count its 2 waiting agents")
         XCTAssertTrue(app.buttons["personal"].exists, "personal should have a pill with no count")
         XCTAssertTrue(app.buttons["default"].exists, "the default session should have a pill")
@@ -111,11 +111,11 @@ final class DesktopReferenceShots: DesktopReferenceCaptureCase {
     func testFederated() throws {
         let (app, device) = try launch("federated", served: "federated")
         for pane in ["w1:p1", "air/w1:p2", "studio/w1:p4", "nas/w2:p1"] {
-            XCTAssertTrue(row(app, pane).waitForExistence(timeout: 20), "\(pane) should be listed")
+            XCTAssertTrue(row(app, pane).exists(within: 20), "\(pane) should be listed")
         }
         XCTAssertTrue(row(app, "air/w1:p2").label.contains("mcb-air/scout"),
                       "a federated agent is named by its machine label, got \(row(app, "air/w1:p2").label)")
-        XCTAssertTrue(element(app, "agent-row-stale-marker").waitForExistence(timeout: 10),
+        XCTAssertTrue(element(app, "agent-row-stale-marker").exists(within: 10),
                       "the degraded peer's row should be marked stale")
         capture(app, device: device, state: "federated")
     }
@@ -124,7 +124,7 @@ final class DesktopReferenceShots: DesktopReferenceCaptureCase {
     /// sight and the pill under the top bar counts them.
     func testNeedsYouPill() throws {
         let (app, device) = try launch("needs-you", served: "needs-you")
-        XCTAssertTrue(row(app, "w1:p1").waitForExistence(timeout: 20), "the roster should load")
+        XCTAssertTrue(row(app, "w1:p1").exists(within: 20), "the roster should load")
         let pill = element(app, "needs-you-pill")
         XCTAssertFalse(pill.exists, "no pill while the waiting rows are on screen")
         // The end of the list, not a drag distance: the one scroll position every run, and
@@ -136,7 +136,7 @@ final class DesktopReferenceShots: DesktopReferenceCaptureCase {
         for _ in 0..<12 where !(last.exists && last.isHittable) { roster.swipeUp() }
         for _ in 0..<3 { roster.swipeUp() }
         XCTAssertTrue(last.waitForHittable(timeout: 5), "the last row should be on screen")
-        XCTAssertTrue(pill.waitForExistence(timeout: 5), "the pill should show once the waiting rows are out of sight")
+        XCTAssertTrue(pill.exists(within: 5), "the pill should show once the waiting rows are out of sight")
         XCTAssertEqual(pill.label, "3 agents need you")
         capture(app, device: device, state: "needs-you-pill")
     }
@@ -144,12 +144,12 @@ final class DesktopReferenceShots: DesktopReferenceCaptureCase {
     /// The minimised sidebar: the rail's needs-you and working counts.
     func testNeedsYouRail() throws {
         let (app, device) = try launch("needs-you", served: "needs-you")
-        XCTAssertTrue(row(app, "w1:p1").waitForExistence(timeout: 20), "the roster should load")
+        XCTAssertTrue(row(app, "w1:p1").exists(within: 20), "the roster should load")
         let toggle = app.buttons["terminal-sidebar-toggle"]
         XCTAssertTrue(toggle.waitForHittable(timeout: 10), "the sidebar's Minimise button should be on screen")
         toggle.tap()
         let count = app.descendants(matching: .any)["3 need you"]
-        XCTAssertTrue(count.waitForExistence(timeout: 10), "the rail should count 3 agents that need you")
+        XCTAssertTrue(count.exists(within: 10), "the rail should count 3 agents that need you")
         XCTAssertTrue(app.descendants(matching: .any)["20 working"].exists, "the rail should count 20 working")
         capture(app, device: device, state: "needs-you-rail")
     }
@@ -184,9 +184,9 @@ final class DesktopReferenceShots: DesktopReferenceCaptureCase {
     /// unreachable studio/render, working (web, infra), then Idle and Archived closed.
     private func assertDefaultRoster(_ app: XCUIApplication) {
         let roster = app.descendants(matching: .any)["agent-roster-scroll"]
-        XCTAssertTrue(roster.waitForExistence(timeout: 20), "the roster should load")
+        XCTAssertTrue(roster.exists(within: 20), "the roster should load")
         for pane in ["w1:p1", "w1:p2", "studio/w1:p4", "w1:p3", "w2:p1"] {
-            XCTAssertTrue(row(app, pane).waitForExistence(timeout: 10), "\(pane) should be listed")
+            XCTAssertTrue(row(app, pane).exists(within: 10), "\(pane) should be listed")
         }
         XCTAssertTrue(app.buttons["Idle, 2"].exists, "Idle should be a closed row of two")
         XCTAssertEqual(app.buttons["Idle, 2"].value as? String, "collapsed")
@@ -198,13 +198,13 @@ final class DesktopReferenceShots: DesktopReferenceCaptureCase {
 
     private func expand(_ app: XCUIApplication, _ label: String, showing rows: [XCUIElement]) {
         let toggle = app.buttons[label]
-        XCTAssertTrue(toggle.waitForExistence(timeout: 10), "\(label) should be listed")
+        XCTAssertTrue(toggle.exists(within: 10), "\(label) should be listed")
         toggle.tap()
         // One more tap if the first never reached the row (seen once on the 11-inch, run
         // 40685403456): the row reports its state, so a second tap cannot close it again.
-        if !rows[0].waitForExistence(timeout: 3), toggle.value as? String == "collapsed" { toggle.tap() }
+        if !rows[0].exists(within: 3), toggle.value as? String == "collapsed" { toggle.tap() }
         for row in rows {
-            XCTAssertTrue(row.waitForExistence(timeout: 10), "opening \(label) should show its agents")
+            XCTAssertTrue(row.exists(within: 10), "opening \(label) should show its agents")
         }
         XCTAssertEqual(toggle.value as? String, "expanded")
     }

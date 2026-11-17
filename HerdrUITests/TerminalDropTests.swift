@@ -17,8 +17,8 @@ final class TerminalDropTests: TerminalInteractionTestCase {
     /// there long enough for the drop target to light up before letting go.
     private func drag(_ identifier: String, file: StaticString = #filePath, line: UInt = #line) {
         let from = source(identifier)
-        XCTAssertTrue(from.waitForExistence(timeout: 10), "the fixture drag source should exist", file: file, line: line)
-        XCTAssertTrue(terminal.waitForExistence(timeout: 10), "the terminal should be on screen", file: file, line: line)
+        XCTAssertTrue(from.exists(within: 10), "the fixture drag source should exist", file: file, line: line)
+        XCTAssertTrue(terminal.exists(within: 10), "the terminal should be on screen", file: file, line: line)
         from.press(forDuration: 1.5, thenDragTo: terminal, withVelocity: .slow, thenHoldForDuration: 1.5)
     }
 
@@ -29,7 +29,7 @@ final class TerminalDropTests: TerminalInteractionTestCase {
     func testFilesDroppedOnTheTerminalStageInTheComposerAndUploadEarly() {
         launch("control")
         let reply = app.textViews["terminal-reply-input"]
-        XCTAssertTrue(reply.waitForExistence(timeout: 10))
+        XCTAssertTrue(reply.exists(within: 10))
         XCTAssertEqual(probe()["dropTargets"] as? Int, 0)
 
         drag("fixture-drag-files")
@@ -37,9 +37,9 @@ final class TerminalDropTests: TerminalInteractionTestCase {
         let note = app.staticTexts["terminal-action-note"]
         let noteChip = app.staticTexts["dragged-note.txt"]
         let pdfChip = app.staticTexts["dragged-report.pdf"]
-        XCTAssertTrue(noteChip.waitForExistence(timeout: 15),
+        XCTAssertTrue(noteChip.exists(within: 15),
                       "the dropped file url should stage as a chip — note=\(note.exists ? note.label : "none") receipt=\(probe())")
-        XCTAssertTrue(pdfChip.waitForExistence(timeout: 10),
+        XCTAssertTrue(pdfChip.exists(within: 10),
                       "the dropped PDF should stage its own chip — note=\(note.exists ? note.label : "none")")
         attach("terminal-drop-staged")
         XCTAssertGreaterThanOrEqual(probe()["dropTargets"] as? Int ?? 0, 1,
@@ -56,7 +56,7 @@ final class TerminalDropTests: TerminalInteractionTestCase {
                        "the dragged text must not reach the terminal: \(uploaded)")
 
         let send = app.buttons["terminal-send-button"]
-        XCTAssertTrue(send.waitForExistence(timeout: 5), "dropped files should be sendable without text")
+        XCTAssertTrue(send.exists(within: 5), "dropped files should be sendable without text")
         send.tap()
         let delivered = wait { ($0["prompts"] as? Int) == 1 && ($0["gramPosts"] as? Int) == 2 }
         XCTAssertEqual(delivered["uploadedBytes"] as? Int, uploaded["uploadedBytes"] as? Int,
@@ -72,7 +72,7 @@ final class TerminalDropTests: TerminalInteractionTestCase {
     func testATextDragOnTheTerminalIsNotADrop() {
         launch("control")
         let reply = app.textViews["terminal-reply-input"]
-        XCTAssertTrue(reply.waitForExistence(timeout: 10))
+        XCTAssertTrue(reply.exists(within: 10))
 
         drag("fixture-drag-text")
 

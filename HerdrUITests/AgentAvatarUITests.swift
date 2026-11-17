@@ -61,21 +61,21 @@ final class AgentAvatarUITests: XCTestCase {
     func testAnAgentWithoutAChoiceShowsItsInitialTile() {
         let app = XCUIApplication.launched(mock: "list")
         let jarvis = app.descendants(matching: .any)["agent-row-w1:p1"]
-        XCTAssertTrue(jarvis.waitForExistence(timeout: 10))
+        XCTAssertTrue(jarvis.exists(within: 10))
         XCTAssertTrue(row(jarvis, shows: "initial", named: "Initial J", in: app),
                       "an agent with no avatar shows its initial tile, got \(jarvis.label)")
         XCTAssertFalse(jarvis.label.contains("Herdy"), "Herdy is a mascot to pick, not the default")
         XCTAssertFalse(jarvis.label.contains("Bot"))
         // An older mock daemon (no agent_avatar) offers no Avatar… entry.
         jarvis.press(forDuration: 1.0)
-        XCTAssertTrue(app.buttons["Rename"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Rename"].exists(within: 5))
         XCTAssertFalse(app.buttons["Avatar…"].exists, "the menu must hide Avatar… without server support")
     }
 
     func testChoosingBotChangesTheRowPersistsAndShowsInGram() {
         var app = XCUIApplication.launched(mock: "list", environment: ["HERDR_MOCK_AVATARS": "reset"])
         var vetrina = app.descendants(matching: .any)["agent-row-w1:p2"]
-        XCTAssertTrue(vetrina.waitForExistence(timeout: 10))
+        XCTAssertTrue(vetrina.exists(within: 10))
         XCTAssertTrue(row(vetrina, shows: "initial", named: "Initial V", in: app), "vetrina starts on the default")
 
         // Long-press → Avatar… → Bot. The capability probe lands with the first load.
@@ -83,7 +83,7 @@ final class AgentAvatarUITests: XCTestCase {
         for _ in 0..<5 where !opened {
             vetrina.press(forDuration: 1.0)
             let item = app.buttons["Avatar…"]
-            if item.waitForExistence(timeout: 3) {
+            if item.exists(within: 3) {
                 item.tap()
                 opened = true
             } else {
@@ -92,16 +92,16 @@ final class AgentAvatarUITests: XCTestCase {
             }
         }
         XCTAssertTrue(opened, "the owner's row menu should offer Avatar…")
-        XCTAssertTrue(app.staticTexts["Guests you share this agent with will see this picture."].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Guests you share this agent with will see this picture."].exists(within: 5))
         // The default option previews vetrina's own initial tile, and is the current choice.
         let useDefault = app.descendants(matching: .any)["agent-avatar-use-default"]
-        XCTAssertTrue(useDefault.waitForExistence(timeout: 5), "the sheet should offer the default")
+        XCTAssertTrue(useDefault.exists(within: 5), "the sheet should offer the default")
         XCTAssertTrue(useDefault.label.contains("Initial V"), "the default previews vetrina's initial, got \(useDefault.label)")
         XCTAssertTrue(useDefault.isSelected, "an agent with no choice is on the default")
         let bot = app.descendants(matching: .any)["agent-avatar-choice-bot"]
-        XCTAssertTrue(bot.waitForExistence(timeout: 5))
+        XCTAssertTrue(bot.exists(within: 5))
         bot.tap()
-        XCTAssertTrue(avatar(app, "bot").waitForExistence(timeout: 5), "the sheet's preview should show Bot")
+        XCTAssertTrue(avatar(app, "bot").exists(within: 5), "the sheet's preview should show Bot")
         app.buttons["agent-avatar-done"].tap()
         XCTAssertTrue(row(vetrina, shows: "bot", in: app), "the row should show Bot, got \(vetrina.label)")
 
@@ -109,23 +109,23 @@ final class AgentAvatarUITests: XCTestCase {
         app.terminate()
         app = XCUIApplication.launched(mock: "list", environment: ["HERDR_MOCK_AVATARS": "keep"])
         vetrina = app.descendants(matching: .any)["agent-row-w1:p2"]
-        XCTAssertTrue(vetrina.waitForExistence(timeout: 10))
+        XCTAssertTrue(vetrina.exists(within: 10))
         XCTAssertTrue(row(vetrina, shows: "bot", in: app), "Bot should survive a relaunch, got \(vetrina.label)")
         attach(app, "agent-avatars-list")
 
         // Gram is name-keyed: vetrina's bubbles wear the same mascot.
         let gram = app.buttons["Gram"].firstMatch
-        XCTAssertTrue(gram.waitForExistence(timeout: 10))
+        XCTAssertTrue(gram.exists(within: 10))
         gram.tap()
         // g1 is the owner's reply; g3 is vetrina's newest message (MockWireFixtures.gramList).
         let fromVetrina = app.descendants(matching: .any)["gram-bubble-g3"]
-        XCTAssertTrue(fromVetrina.waitForExistence(timeout: 10))
+        XCTAssertTrue(fromVetrina.exists(within: 10))
         XCTAssertEqual(avatar(worn: fromVetrina, expecting: "bot", in: app), "bot",
                        "a Gram bubble from vetrina should show Bot")
         // hetzner-1's clientloop is not the local clientloop (Tri): the roster has no agent of
         // that name on that machine, so its bubble wears the default.
         let relayed = app.descendants(matching: .any)["gram-bubble-g2"]
-        XCTAssertTrue(relayed.waitForExistence(timeout: 5))
+        XCTAssertTrue(relayed.exists(within: 5))
         XCTAssertEqual(avatar(worn: relayed, expecting: "initial", in: app), "initial",
                        "a relayed sender with no roster entry shows its initial tile")
         attach(app, "agent-avatars-gram")
@@ -134,20 +134,20 @@ final class AgentAvatarUITests: XCTestCase {
     func testAGuestSeesTheOwnersMascotAndCannotEditIt() {
         let app = XCUIApplication.launched(mock: "guest")
         let shared = app.buttons["guest-agent-row"]
-        XCTAssertTrue(shared.waitForExistence(timeout: 10))
+        XCTAssertTrue(shared.exists(within: 10))
         XCTAssertTrue(row(shared, shows: "pip", in: app), "the guest should see the owner's Pip, got \(shared.label)")
 
         shared.tap()
         // The guest pane's ⋯ (GuestPaneView), not the owner's `terminal-actions`.
         let actions = app.buttons["guest-actions"]
-        XCTAssertTrue(actions.waitForExistence(timeout: 10), "the guest pane should offer ⋯")
+        XCTAssertTrue(actions.exists(within: 10), "the guest pane should offer ⋯")
         actions.tap()
         // The menu is open once one of its known entries shows; only then does the missing
         // Avatar… entry mean anything. Increase by its label too: on iOS 27 it loses its
         // identifier inside the Text size section (`menuEntry`).
         let entries = app.buttons.matching(NSPredicate(format: "identifier IN %@ OR label == %@",
                                                        ["guest-font-increase", "guest-notifications"], "Increase"))
-        XCTAssertTrue(entries.firstMatch.waitForExistence(timeout: 5), "the guest ⋯ menu should open")
+        XCTAssertTrue(entries.firstMatch.exists(within: 5), "the guest ⋯ menu should open")
         XCTAssertFalse(app.buttons["agent-avatar-edit"].exists, "guests have no Avatar… entry")
         XCTAssertFalse(app.buttons["Avatar…"].exists)
         XCTAssertEqual(app.descendants(matching: .any)["guest-forbidden-calls"].label, "",

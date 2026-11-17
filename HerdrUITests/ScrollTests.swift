@@ -17,7 +17,7 @@ final class ScrollTests: XCTestCase {
     func testTerminalScrollsWhenSwiped() {
         let app = XCUIApplication.launched(mock: "scroll")
         let viewport = app.terminalSurface
-        XCTAssertTrue(viewport.waitForExistence(timeout: 10))
+        XCTAssertTrue(viewport.exists(within: 10))
 
         // Let the app launch and the mock stream feed all 200 lines into the real
         // SwiftTerm view (async), so there is scrollback to move.
@@ -60,7 +60,7 @@ final class ScrollTests: XCTestCase {
     func testJumpToLatestReturnsTheOwnerTerminalToItsTail() {
         let app = XCUIApplication.launched(mock: "scroll")
         let viewport = app.terminalSurface
-        XCTAssertTrue(viewport.waitForExistence(timeout: 10))
+        XCTAssertTrue(viewport.exists(within: 10))
         Thread.sleep(forTimeInterval: 3.0)
         let latest = app.buttons["terminal-jump-latest"]
         XCTAssertFalse(latest.exists, "no jump button at the tail")
@@ -73,7 +73,7 @@ final class ScrollTests: XCTestCase {
             high.press(forDuration: 0.05, thenDragTo: low)
             Thread.sleep(forTimeInterval: 0.2)
         }
-        XCTAssertTrue(latest.waitForExistence(timeout: 5), "scrolled into history, the jump button should show")
+        XCTAssertTrue(latest.exists(within: 5), "scrolled into history, the jump button should show")
         XCTAssertEqual(latest.label, "Jump to latest output")
         Thread.sleep(forTimeInterval: 1.0)
         let history = viewport.screenshot()
@@ -81,7 +81,7 @@ final class ScrollTests: XCTestCase {
         XCTAssertGreaterThan(pixelDiffFraction(tail, history), 0.10, "the swipe should have moved into history")
 
         latest.tap()
-        XCTAssertTrue(latest.waitForNonExistence(timeout: 5), "back at the tail, the button goes")
+        XCTAssertTrue(latest.gone(within: 5), "back at the tail, the button goes")
         Thread.sleep(forTimeInterval: 1.0)
         let back = viewport.screenshot()
         attach(back, "03-after-jump")
@@ -98,7 +98,7 @@ final class ScrollTests: XCTestCase {
     func testClaudeCodeScrollsViaWheel() {
         let app = XCUIApplication.launched(mock: "ccscroll")
         let viewport = app.terminalSurface
-        XCTAssertTrue(viewport.waitForExistence(timeout: 10))
+        XCTAssertTrue(viewport.exists(within: 10))
         Thread.sleep(forTimeInterval: 3.0)   // launch + enter alt-screen/mouse + render
 
         // Static baseline (cursor hidden by the seed): untouched frames ~identical.
@@ -137,7 +137,7 @@ final class ScrollTests: XCTestCase {
     func testBackfillMakesHistoryScrollable() {
         let app = XCUIApplication.launched(mock: "backfill")
         let viewport = app.terminalSurface
-        XCTAssertTrue(viewport.waitForExistence(timeout: 10))
+        XCTAssertTrue(viewport.exists(within: 10))
         Thread.sleep(forTimeInterval: 3.0)   // launch + backfill read + reset seed feed
 
         // Static baseline (cursor hidden by the fixture): untouched frames ~identical.
@@ -176,7 +176,7 @@ final class ScrollTests: XCTestCase {
     func testReconnectKeyframeRestoresHistory() throws {
         let app = XCUIApplication.launched(mock: "keyframehistory")
         let viewport = app.terminalSurface
-        XCTAssertTrue(viewport.waitForExistence(timeout: 10))
+        XCTAssertTrue(viewport.exists(within: 10))
         // The rows are read from the emulator, not off screenshots. Vision OCR was the oracle
         // here and it flaked on screenshots that plainly show the history: run 41616977089
         // (job 125925583153) and run 41352546958 (job 124985668107, first run and diagnostic
@@ -247,9 +247,9 @@ final class ScrollTests: XCTestCase {
     /// (answered=1). GREEN: the first keyframe cancels it while it is held (answered=0).
     func testKeyframeHistoryCancelsHistoryRead() {
         let app = XCUIApplication.launched(mock: "keyframehistoryread")
-        XCTAssertTrue(app.terminalSurface.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.terminalSurface.exists(within: 10))
         let probe = app.descendants(matching: .any)["keyframe-history-reads"]
-        XCTAssertTrue(probe.waitForExistence(timeout: 10), "keyframe-history-reads probe missing")
+        XCTAssertTrue(probe.exists(within: 10), "keyframe-history-reads probe missing")
 
         // Past the 3 s hold, then until every requested read has ended one way or the other.
         Thread.sleep(forTimeInterval: 4)
@@ -274,9 +274,9 @@ final class ScrollTests: XCTestCase {
     func testScrollingToTheTopPagesOlderHistory() {
         let app = XCUIApplication.launched(mock: "historypaging")
         let viewport = app.terminalSurface
-        XCTAssertTrue(viewport.waitForExistence(timeout: 10))
+        XCTAssertTrue(viewport.exists(within: 10))
         let probe = app.descendants(matching: .any)["history-paging-requests"]
-        XCTAssertTrue(probe.waitForExistence(timeout: 10), "history-paging-requests probe missing")
+        XCTAssertTrue(probe.exists(within: 10), "history-paging-requests probe missing")
         Thread.sleep(forTimeInterval: 2.0)
         XCTAssertTrue(probe.label.hasPrefix("requests=0"), "paged before any scroll (\(probe.label))")
 
@@ -290,7 +290,7 @@ final class ScrollTests: XCTestCase {
         // The first page lands keeping the reader's rows, 500 rows below the new top; jump
         // back to the top rather than swipe through them. Taps while it is held do nothing.
         let top = app.buttons["history-scroll-top"]
-        XCTAssertTrue(top.waitForExistence(timeout: 5), "history-scroll-top action missing")
+        XCTAssertTrue(top.exists(within: 5), "history-scroll-top action missing")
         let chained = poll(20, every: 0.2) {
             if probe.label.contains("hc-1501") { return true }
             top.tap()
@@ -312,14 +312,14 @@ final class ScrollTests: XCTestCase {
     /// seed has settled, and with no scroll before it; landing at the top must page.
     func testReachingTheTopWithoutADragPagesOlderHistory() {
         let app = XCUIApplication.launched(mock: "historypaging")
-        XCTAssertTrue(app.terminalSurface.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.terminalSurface.exists(within: 10))
         let probe = app.descendants(matching: .any)["history-paging-requests"]
-        XCTAssertTrue(probe.waitForExistence(timeout: 10), "history-paging-requests probe missing")
+        XCTAssertTrue(probe.exists(within: 10), "history-paging-requests probe missing")
         Thread.sleep(forTimeInterval: 2.0)
         XCTAssertTrue(probe.label.hasPrefix("requests=0"), "paged before any scroll (\(probe.label))")
 
         let top = app.buttons["history-scroll-top"]
-        XCTAssertTrue(top.waitForExistence(timeout: 5), "history-scroll-top action missing")
+        XCTAssertTrue(top.exists(within: 5), "history-scroll-top action missing")
         top.tap()
         XCTAssertTrue(poll(10, every: 0.1) { probe.label.contains("hc-2001") },
                       "reaching the top without a drag requested nothing (\(probe.label))")
@@ -332,11 +332,11 @@ final class ScrollTests: XCTestCase {
     func testLoadEarlierCapsulePagesOlderHistory() {
         let app = XCUIApplication.launched(mock: "historypaging",
                                            environment: ["HERDR_MOCK_HISTORY_KEYFRAME_ROWS": "5"])
-        XCTAssertTrue(app.terminalSurface.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.terminalSurface.exists(within: 10))
         let probe = app.descendants(matching: .any)["history-paging-requests"]
-        XCTAssertTrue(probe.waitForExistence(timeout: 10), "history-paging-requests probe missing")
+        XCTAssertTrue(probe.exists(within: 10), "history-paging-requests probe missing")
         let loadEarlier = app.buttons["terminal-load-earlier"]
-        XCTAssertTrue(loadEarlier.waitForExistence(timeout: 10), "the load-earlier capsule was not offered")
+        XCTAssertTrue(loadEarlier.exists(within: 10), "the load-earlier capsule was not offered")
         XCTAssertEqual(loadEarlier.label, "Load earlier output")
         XCTAssertTrue(probe.label.hasPrefix("requests=0"), "paged before anyone asked (\(probe.label))")
 

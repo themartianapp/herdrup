@@ -191,11 +191,12 @@ struct LiveTerminalView: UIViewRepresentable {
     /// The host's own copy of the stuck-stream threshold, so it judges staleness by the
     /// same rule the watchdog reconnects on rather than a second, drifting number.
     static var streamStuckTimeout: TimeInterval { Coordinator.streamStuckTimeout }
-    /// DEBUG builds take `HERDR_STEADY_CARET` for UI tests that tap with a pane on screen: a
-    /// blinking caret never lets XCUITest's "wait for the app to idle" finish (60 s a tap).
+    /// DEBUG builds take `HERDR_STEADY_CARET` (and `UITestMotion.off`) for UI tests that tap
+    /// with a pane on screen: a blinking caret never lets XCUITest's "wait for the app to
+    /// idle" finish (60 s a tap).
     private static let steadyCaret: Bool = {
         #if DEBUG
-        return ProcessInfo.processInfo.environment["HERDR_STEADY_CARET"] != nil
+        return ProcessInfo.processInfo.environment["HERDR_STEADY_CARET"] != nil || UITestMotion.off
         #else
         return false
         #endif

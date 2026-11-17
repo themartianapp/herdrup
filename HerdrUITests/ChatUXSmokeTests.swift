@@ -22,11 +22,11 @@ final class ChatUXSmokeTests: XCTestCase {
         let agent = app.staticTexts["herdr-app"].firstMatch
         if !agent.exists {
             let idle = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Idle")).firstMatch
-            if idle.waitForExistence(timeout: 5) { idle.tap() }
+            if idle.exists(within: 5) { idle.tap() }
         }
-        XCTAssertTrue(agent.waitForExistence(timeout: 12), app.debugDescription)
+        XCTAssertTrue(agent.exists(within: 12), app.debugDescription)
         agent.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["chat-view"].firstMatch.waitForExistence(timeout: 12), app.debugDescription)
+        XCTAssertTrue(app.descendants(matching: .any)["chat-view"].firstMatch.exists(within: 12), app.debugDescription)
         return app
     }
 
@@ -65,7 +65,7 @@ final class ChatUXSmokeTests: XCTestCase {
         let app = launch()
         let chat = app.descendants(matching: .any)["chat-view"].firstMatch
         let model = app.staticTexts["chat-model"]
-        XCTAssertTrue(model.waitForExistence(timeout: 12), app.debugDescription)
+        XCTAssertTrue(model.exists(within: 12), app.debugDescription)
         XCTAssertTrue(model.label.contains("fixture-model"))
         XCTAssertEqual(model.label, "Model: fixture, fixture-model, effort high",
                        "the model line names omp's effort (fixture-model · high)")
@@ -89,8 +89,8 @@ final class ChatUXSmokeTests: XCTestCase {
         record(app, "Chat-only larger text through existing size controls")
 
         app.buttons["terminal-refresh"].tap()
-        XCTAssertTrue(app.staticTexts["Refreshing chat…"].waitForExistence(timeout: 5), app.debugDescription)
-        XCTAssertTrue(app.staticTexts["Up to date"].waitForExistence(timeout: 15), app.debugDescription)
+        XCTAssertTrue(app.staticTexts["Refreshing chat…"].exists(within: 5), app.debugDescription)
+        XCTAssertTrue(app.staticTexts["Up to date"].exists(within: 15), app.debugDescription)
         XCTAssertTrue(app.staticTexts["Review the table"].exists)
         app.buttons["Dismiss refresh result"].tap()
         let modelVisible = NSPredicate(format: "hittable == true")
@@ -118,7 +118,7 @@ final class ChatUXSmokeTests: XCTestCase {
     func testPlanCardCollapsesToTheCurrentWork() {
         let app = launch(plan: "six")
         let toggle = app.buttons["chat-plan-toggle"]
-        XCTAssertTrue(toggle.waitForExistence(timeout: 12), app.debugDescription)
+        XCTAssertTrue(toggle.exists(within: 12), app.debugDescription)
         XCTAssertEqual(toggle.label, "To-do, 2 of 6 done")
         let rows = ["one", "two", "three", "four", "five", "six"].map { app.staticTexts["Plan item \($0)"] }
         XCTAssertEqual(rows.map(\.exists), [false, false, true, true, true, false],
@@ -131,16 +131,16 @@ final class ChatUXSmokeTests: XCTestCase {
         record(app, "Collapsed TODO shows the current work and +3 more")
 
         toggle.tap()
-        XCTAssertTrue(rows[0].waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(rows[0].exists(within: 5), app.debugDescription)
         XCTAssertEqual(rows.map(\.exists), Array(repeating: true, count: 6))
         XCTAssertFalse(more.exists, "expanded, nothing is hidden")
         record(app, "Expanded TODO shows every item")
 
         toggle.tap()
-        XCTAssertTrue(rows[0].waitForNonExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(rows[0].gone(within: 5), app.debugDescription)
         XCTAssertTrue(more.exists)
         more.tap()
-        XCTAssertTrue(rows[5].waitForExistence(timeout: 5), "+3 more expands too: \(app.debugDescription)")
+        XCTAssertTrue(rows[5].exists(within: 5), "+3 more expands too: \(app.debugDescription)")
         XCTAssertEqual(rows.map(\.exists), Array(repeating: true, count: 6))
     }
 
@@ -150,7 +150,7 @@ final class ChatUXSmokeTests: XCTestCase {
     func testSubagentsCardShowsRunningRowsAndOpensASubagentTranscript() {
         let app = launch(subagents: true)
         let toggle = app.buttons["chat-subagents-toggle"]
-        XCTAssertTrue(toggle.waitForExistence(timeout: 12), app.debugDescription)
+        XCTAssertTrue(toggle.exists(within: 12), app.debugDescription)
         XCTAssertEqual(toggle.label, "Subagents, 2 running")
         let rows = app.descendants(matching: .any).matching(identifier: "chat-subagent-row")
         XCTAssertEqual(rows.count, 2, "finished subagents start folded: \(app.debugDescription)")
@@ -180,18 +180,18 @@ final class ChatUXSmokeTests: XCTestCase {
 
         rows.element(boundBy: 1).tap()
         let conversation = app.staticTexts["AppHeadReview fixture conversation."]
-        XCTAssertTrue(conversation.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(conversation.exists(within: 10), app.debugDescription)
         XCTAssertTrue(app.buttons["chat-subagent-done"].exists)
         record(app, "A subagent's own conversation, read-only")
         app.buttons["chat-subagent-done"].tap()
-        XCTAssertTrue(conversation.waitForNonExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(conversation.gone(within: 5), app.debugDescription)
         XCTAssertTrue(toggle.exists)
     }
 
     func testFinishedPlanShowsOnlyItsHeader() {
         let app = launch(plan: "done")
         let toggle = app.buttons["chat-plan-toggle"]
-        XCTAssertTrue(toggle.waitForExistence(timeout: 12), app.debugDescription)
+        XCTAssertTrue(toggle.exists(within: 12), app.debugDescription)
         XCTAssertEqual(toggle.label, "To-do, 3 of 3 done")
         XCTAssertEqual(toggle.value as? String, "All done")
         let rows = ["one", "two", "three"].map { app.staticTexts["Plan item \($0)"] }
@@ -200,7 +200,7 @@ final class ChatUXSmokeTests: XCTestCase {
         record(app, "Finished TODO collapses to its header")
 
         toggle.tap()
-        XCTAssertTrue(rows[0].waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(rows[0].exists(within: 5), app.debugDescription)
         XCTAssertEqual(rows.map(\.exists), [true, true, true])
     }
 
@@ -216,9 +216,9 @@ final class ChatUXSmokeTests: XCTestCase {
     /// Identifier queries keep each poll cheap for the app.
     private func waitForDiagramToSettle(_ app: XCUIApplication, _ tag: String) {
         let block = app.descendants(matching: .any).matching(identifier: tag).firstMatch
-        XCTAssertTrue(block.waitForExistence(timeout: 12), app.debugDescription)
+        XCTAssertTrue(block.exists(within: 12), app.debugDescription)
         let placeholder = app.descendants(matching: .any).matching(identifier: "\(tag)-placeholder").firstMatch
-        _ = placeholder.waitForNonExistence(timeout: 2 * (30 + 20) + 5)
+        _ = placeholder.gone(within: 2 * (30 + 20) + 5)
     }
 
     /// Why `tag`'s block shows its code instead (the error caption's DEBUG value,
@@ -236,7 +236,7 @@ final class ChatUXSmokeTests: XCTestCase {
         let app = launch(mermaid: true, environment: ["HERDR_CHAT_UX_STATIC": "1"])
         waitForDiagramToSettle(app, "chat-mermaid")
         let image = app.buttons["chat-mermaid-image"].firstMatch
-        XCTAssertTrue(image.waitForExistence(timeout: 5),
+        XCTAssertTrue(image.exists(within: 5),
                       "The diagram must finish rendering offscreen \(renderFailure(app, "chat-mermaid")): \(app.debugDescription)")
         XCTAssertFalse(app.staticTexts["chat-mermaid-error"].exists, "The fixture diagram is valid mermaid")
         XCTAssertGreaterThan(image.frame.width, 40, "\(image.frame)")
@@ -254,11 +254,11 @@ final class ChatUXSmokeTests: XCTestCase {
 
         image.tap()
         let viewer = app.descendants(matching: .any)["chat-mermaid-viewer"].firstMatch
-        XCTAssertTrue(viewer.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(viewer.exists(within: 10), app.debugDescription)
         XCTAssertGreaterThan(viewer.frame.height, 100, "\(viewer.frame)")
         record(app, "Mermaid viewer full screen")
         app.buttons["chat-mermaid-viewer-done"].tap()
-        XCTAssertTrue(viewer.waitForNonExistence(timeout: 10))
+        XCTAssertTrue(viewer.gone(within: 10))
 
         // The chat follows its tail, so the block's header can sit under the top bar: bring
         // it into view the way a reader would.
@@ -269,14 +269,14 @@ final class ChatUXSmokeTests: XCTestCase {
         }
         XCTAssertTrue(toggle.isHittable, "\(toggle.frame)")
         toggle.tap()
-        XCTAssertTrue(code.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(code.exists(within: 5), app.debugDescription)
         XCTAssertFalse(app.buttons["chat-mermaid-image"].exists)
         toggle.tap()
-        XCTAssertTrue(app.buttons["chat-mermaid-image"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["chat-mermaid-image"].exists(within: 5))
 
         app.buttons["terminal-find"].tap()
         let field = app.textFields["terminal-find-field"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(field.exists(within: 5))
         field.tap()
         field.typeText("Render offscreen")
         expectation(for: NSPredicate(format: "label == %@", "1/1"), evaluatedWith: app.staticTexts["terminal-find-count"])
@@ -287,7 +287,7 @@ final class ChatUXSmokeTests: XCTestCase {
         app.terminate()
         let relaunched = launch(mermaid: true, environment: ["HERDR_CHAT_UX_STATIC": "1"])
         let cachedImage = relaunched.buttons["chat-mermaid-image"].firstMatch
-        XCTAssertTrue(cachedImage.waitForExistence(timeout: 30), relaunched.debugDescription)
+        XCTAssertTrue(cachedImage.exists(within: 30), relaunched.debugDescription)
         XCTAssertEqual(cachedImage.value as? String, drawn + "disk")
         XCTAssertEqual(cachedImage.frame.width, shownSize.width, accuracy: 0.5)
         XCTAssertEqual(cachedImage.frame.height, shownSize.height, accuracy: 0.5)
@@ -308,7 +308,7 @@ final class ChatUXSmokeTests: XCTestCase {
         let app = launch(svg: true, environment: ["HERDR_CHAT_UX_STATIC": "1"])
         waitForDiagramToSettle(app, "chat-svg")
         let image = app.buttons["chat-svg-image"].firstMatch
-        XCTAssertTrue(image.waitForExistence(timeout: 5),
+        XCTAssertTrue(image.exists(within: 5),
                       "The SVG must finish rendering offscreen \(renderFailure(app, "chat-svg")): \(app.debugDescription)")
         XCTAssertGreaterThan(image.frame.width, 100, "\(image.frame)")
         // 900 × 360 drawn to the column: the aspect is the SVG's own.
@@ -320,7 +320,7 @@ final class ChatUXSmokeTests: XCTestCase {
         XCTAssertFalse(source.exists, "The SVG's source must not be drawn as code")
 
         let broken = app.staticTexts["chat-svg-error"]
-        XCTAssertTrue(broken.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(broken.exists(within: 10), app.debugDescription)
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "<rect width=\"4\">")).firstMatch.exists,
                       "A malformed SVG falls back to its code")
 
@@ -331,17 +331,17 @@ final class ChatUXSmokeTests: XCTestCase {
         record(app, "SVG reply drawn as an image")
         image.tap()
         let viewer = app.descendants(matching: .any)["chat-svg-viewer"].firstMatch
-        XCTAssertTrue(viewer.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(viewer.exists(within: 10), app.debugDescription)
         record(app, "SVG viewer full screen")
         app.buttons["chat-svg-viewer-done"].tap()
-        XCTAssertTrue(viewer.waitForNonExistence(timeout: 10))
+        XCTAssertTrue(viewer.gone(within: 10))
 
         let toggle = app.buttons["chat-svg-toggle"].firstMatch
         for _ in 0..<4 where !toggle.isHittable {
             chat.swipeDown(velocity: .slow)
         }
         toggle.tap()
-        XCTAssertTrue(source.waitForExistence(timeout: 5), "Show code reveals the SVG's source")
+        XCTAssertTrue(source.exists(within: 5), "Show code reveals the SVG's source")
         XCTAssertFalse(app.buttons["chat-svg-image"].exists)
     }
 
@@ -357,7 +357,7 @@ final class ChatUXSmokeTests: XCTestCase {
         let app = launch(svg: true, environment: ["HERDR_CHAT_UX_STATIC": "1"])
         waitForDiagramToSettle(app, "chat-svg")
         let image = app.buttons["chat-svg-image"].firstMatch
-        XCTAssertTrue(image.waitForExistence(timeout: 5),
+        XCTAssertTrue(image.exists(within: 5),
                       "The SVG must finish rendering offscreen \(renderFailure(app, "chat-svg")): \(app.debugDescription)")
         let chat = element(app, "chat-view")
         let narrow = image.frame.width
@@ -394,12 +394,12 @@ final class ChatUXSmokeTests: XCTestCase {
         let app = launch(environment: ["HERDR_CHAT_UX_STATIC": "1"])
         let header = app.buttons.matching(NSPredicate(format: "identifier == %@ AND label CONTAINS %@",
                                                       "chat-thought", "Check the table")).firstMatch
-        XCTAssertTrue(header.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(header.exists(within: 10), app.debugDescription)
         let chat = app.descendants(matching: .any)["chat-view"].firstMatch
         // The reply line, measured while the chat sits at its tail (it is on screen there),
         // before the thought opens above it and pushes it down under the composer.
         let reply = app.staticTexts["A complete fixture response."].firstMatch
-        XCTAssertTrue(reply.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(reply.exists(within: 5), app.debugDescription)
         for _ in 0..<4 where !reply.isHittable {
             chat.swipeUp(velocity: .slow)
         }
@@ -413,14 +413,14 @@ final class ChatUXSmokeTests: XCTestCase {
         }
         header.tap()
         let open = app.descendants(matching: .any)["chat-thought-open"].firstMatch
-        XCTAssertTrue(open.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(open.exists(within: 5), app.debugDescription)
 
         let lead = app.staticTexts["Check the table"].firstMatch
         let paragraph = app.staticTexts["Use wrapped cells and literal code."].firstMatch
         let item = app.staticTexts["Preserve Unicode: café"].firstMatch
         let code = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Find literal")).firstMatch
         for element in [lead, paragraph, item, code] {
-            XCTAssertTrue(element.waitForExistence(timeout: 5), app.debugDescription)
+            XCTAssertTrue(element.exists(within: 5), app.debugDescription)
         }
         // The chat's top edge fades content out under the bar (26 pt), the composer card
         // covers its bottom, and the jump-to-latest button floats just above the composer.
@@ -514,11 +514,11 @@ final class ChatUXSmokeTests: XCTestCase {
         let app = launch()
         app.buttons["terminal-find"].tap()
         let field = app.textFields["terminal-find-field"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(field.exists(within: 5), app.debugDescription)
         field.tap()
         field.typeText(".*[x]")
         let result = app.staticTexts["chat-search-result"].firstMatch
-        XCTAssertTrue(result.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(result.exists(within: 5), app.debugDescription)
         XCTAssertTrue(result.label.contains(".*[x]"))
         XCTAssertTrue(app.descendants(matching: .any)["chat-view"].firstMatch.exists)
         XCTAssertTrue(app.otherElements["chat-thought-open"].exists || app.descendants(matching: .any)["chat-thought-open"].exists)
@@ -527,9 +527,9 @@ final class ChatUXSmokeTests: XCTestCase {
         XCTAssertFalse(app.staticTexts["chat-search-result"].exists)
         let chat = app.descendants(matching: .any)["chat-view"].firstMatch
         chat.swipeDown(velocity: .fast)
-        XCTAssertTrue(app.buttons["chat-jump-latest"].waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(app.buttons["chat-jump-latest"].exists(within: 5), app.debugDescription)
         app.buttons["chat-jump-latest"].tap()
-        XCTAssertTrue(app.staticTexts["chat-model"].waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(app.staticTexts["chat-model"].exists(within: 5), app.debugDescription)
         record(app, "Tail position immediately after jumping")
         let modelVisible = NSPredicate(format: "hittable == true")
         expectation(for: modelVisible, evaluatedWith: app.staticTexts["chat-model"])
@@ -539,13 +539,13 @@ final class ChatUXSmokeTests: XCTestCase {
         record(app, "Centered clear-glass jump returns to latest without a composer fade")
 
         app.buttons["terminal-refresh"].tap()
-        XCTAssertTrue(app.staticTexts["Refreshing chat…"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Up to date"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["Refreshing chat…"].exists(within: 5))
+        XCTAssertTrue(app.staticTexts["Up to date"].exists(within: 15))
         XCTAssertTrue(app.staticTexts["Incoming café update after refresh."].isHittable)
         XCTAssertTrue(app.staticTexts["chat-model"].isHittable, "New content must retain the tail while following")
 
         app.textViews["terminal-reply-input"].tap()
-        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.keyboards.firstMatch.exists(within: 5))
         expectation(for: modelVisible, evaluatedWith: app.staticTexts["chat-model"])
         waitForExpectations(timeout: 5)
         record(app, "Following latest keeps the final line above the keyboard and composer")
@@ -555,8 +555,8 @@ final class ChatUXSmokeTests: XCTestCase {
         let incoming = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Incoming update ")).firstMatch
         let previousUpdate = incoming.label
         app.buttons["terminal-refresh"].tap()
-        XCTAssertTrue(app.staticTexts["Refreshing chat…"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Up to date"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["Refreshing chat…"].exists(within: 5))
+        XCTAssertTrue(app.staticTexts["Up to date"].exists(within: 15))
         XCTAssertNotEqual(incoming.label, previousUpdate, "The refresh must deliver changed reply content before checking reader position")
         XCTAssertFalse(app.staticTexts["chat-model"].isHittable, "An incoming reply must not pull the reader out of history")
         XCTAssertTrue(app.buttons["chat-jump-latest"].isHittable)
@@ -567,7 +567,7 @@ final class ChatUXSmokeTests: XCTestCase {
         let app = launch()
         app.buttons["terminal-find"].tap()
         let field = app.textFields["terminal-find-field"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(field.exists(within: 5))
         field.tap()
         field.typeText("café")
         let count = app.staticTexts["terminal-find-count"]
@@ -580,11 +580,11 @@ final class ChatUXSmokeTests: XCTestCase {
         app.buttons["terminal-find-previous"].tap()
         XCTAssertEqual(count.label, "2/2")
         app.buttons["terminal-refresh"].tap()
-        XCTAssertTrue(app.staticTexts["Up to date"].waitForExistence(timeout: 15), app.debugDescription)
+        XCTAssertTrue(app.staticTexts["Up to date"].exists(within: 15), app.debugDescription)
         XCTAssertEqual(count.label, "2/3", "The new reply must add one match without moving the selected table match")
         app.buttons["terminal-refresh"].tap()
-        XCTAssertTrue(app.staticTexts["Refreshing chat…"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Up to date"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["Refreshing chat…"].exists(within: 5))
+        XCTAssertTrue(app.staticTexts["Up to date"].exists(within: 15))
         XCTAssertEqual(count.label, "2/3", "A no-change refresh must not duplicate the incoming reply")
         record(app, "Unicode search counts an incoming reply and preserves selection through a no-change refresh")
         app.buttons["terminal-find"].tap()
@@ -630,7 +630,7 @@ final class ChatUXSmokeTests: XCTestCase {
         let app = launch()
         app.buttons["terminal-find"].tap()
         let field = app.textFields["terminal-find-field"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(field.exists(within: 5))
         field.tap()
         field.typeText("Synthetic question")
         let count = app.staticTexts["terminal-find-count"]
@@ -642,7 +642,7 @@ final class ChatUXSmokeTests: XCTestCase {
         waitForSearchCount(app, "38/40", timeout: 10)
         XCTAssertFalse(app.buttons["Load older"].exists)
         app.buttons["terminal-refresh"].tap()
-        XCTAssertTrue(app.staticTexts["Up to date"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["Up to date"].exists(within: 15))
         XCTAssertEqual(count.label, "38/40", "Refresh must retain paged history and the same selected prompt")
         record(app, "Loaded-history search expands to all forty prompts and preserves selection across refresh")
     }
@@ -651,7 +651,7 @@ final class ChatUXSmokeTests: XCTestCase {
     /// polled every 250 ms, so read it after a pause).
     private func rowRenders(_ app: XCUIApplication) -> Int {
         let probe = app.descendants(matching: .any)["chat-row-renders"].firstMatch
-        XCTAssertTrue(probe.waitForExistence(timeout: 5), "the row render probe should be on screen")
+        XCTAssertTrue(probe.exists(within: 5), "the row render probe should be on screen")
         return Int(probe.label) ?? -1
     }
 
@@ -662,12 +662,12 @@ final class ChatUXSmokeTests: XCTestCase {
     /// elapsed times) on screen too.
     func testTypingInTheComposerDoesNotReRenderTheTranscript() {
         let app = launch(longSession: true, subagents: true)
-        XCTAssertTrue(app.staticTexts["A complete fixture response."].waitForExistence(timeout: 12), app.debugDescription)
-        XCTAssertTrue(app.buttons["chat-subagents-toggle"].waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(app.staticTexts["A complete fixture response."].exists(within: 12), app.debugDescription)
+        XCTAssertTrue(app.buttons["chat-subagents-toggle"].exists(within: 5), app.debugDescription)
         let field = app.textViews["terminal-reply-input"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(field.exists(within: 5))
         field.tap()
-        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.keyboards.firstMatch.exists(within: 5))
         // The keyboard is up and the chat has settled over it.
         Thread.sleep(forTimeInterval: 2)
         let before = rowRenders(app)
@@ -711,7 +711,7 @@ final class ChatUXSmokeTests: XCTestCase {
         let number: UInt32 = 0xFF9E64, type: UInt32 = 0x0DB9D7
         let app = launch(longSession: true, environment: ["HERDR_CHAT_UX_COLOURS": "1"])
         let heading = app.staticTexts["Why the list jumps"]
-        XCTAssertTrue(heading.waitForExistence(timeout: 12), app.debugDescription)
+        XCTAssertTrue(heading.exists(within: 12), app.debugDescription)
         bringIntoView(heading, in: app, "the heading")
 
         // The steps line just above the reply opens to rows that each name their tool.
@@ -721,7 +721,7 @@ final class ChatUXSmokeTests: XCTestCase {
         toggle.tap()
         let read = app.descendants(matching: .any).matching(NSPredicate(
             format: "identifier == 'chat-step' AND label == %@", "read, Reading the sort in AgentList.swift")).firstMatch
-        XCTAssertTrue(read.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(read.exists(within: 5), app.debugDescription)
         for label in ["search, Searching for scrollPosition", "edit, Anchoring the list on the visible row",
                       "bash, Running the scroll tests"] {
             XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(
@@ -734,7 +734,7 @@ final class ChatUXSmokeTests: XCTestCase {
 
         bringIntoView(heading, in: app, "the heading")
         let swift = app.staticTexts.matching(NSPredicate(format: "identifier == 'gram-code-text' AND label CONTAINS 'resort'")).firstMatch
-        XCTAssertTrue(swift.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(swift.exists(within: 5), app.debugDescription)
         bringIntoView(swift, in: app, "the Swift block")
         let window = app.windows.firstMatch.frame
         // Highlighting runs off the main thread: give it a moment to land.
@@ -757,7 +757,7 @@ final class ChatUXSmokeTests: XCTestCase {
 
         let bash = app.staticTexts.matching(NSPredicate(format: "identifier == 'gram-code-text' AND label CONTAINS 'git status'")).firstMatch
         let plain = app.staticTexts.matching(NSPredicate(format: "identifier == 'gram-code-text' AND label CONTAINS 'plain notes'")).firstMatch
-        XCTAssertTrue(plain.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(plain.exists(within: 5), app.debugDescription)
         bringIntoView(plain, in: app, "the plain block")
         bringIntoView(bash, in: app, "the bash block")
         for _ in 0..<10 {
@@ -779,9 +779,9 @@ final class ChatUXSmokeTests: XCTestCase {
 
         // Typing over highlighted code draws no transcript row.
         let field = app.textViews["terminal-reply-input"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(field.exists(within: 5))
         field.tap()
-        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.keyboards.firstMatch.exists(within: 5))
         Thread.sleep(forTimeInterval: 2)
         let before = rowRenders(app)
         field.typeText("colours stay put while typing")
@@ -796,7 +796,7 @@ final class ChatUXSmokeTests: XCTestCase {
         let app = launch(large: true)
         app.buttons["terminal-find"].tap()
         let field = app.textFields["terminal-find-field"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(field.exists(within: 5))
         field.tap()
         field.typeText("e")
         let capped = { (index: Int) in "Match \(index) of 500 or more matches" }
@@ -826,17 +826,17 @@ final class ChatUXSmokeTests: XCTestCase {
         let app = launch(pendingQuestion: true)
         app.buttons["terminal-find"].tap()
         let field = app.textFields["terminal-find-field"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(field.exists(within: 5), app.debugDescription)
         field.tap()
         field.typeText("Merge #305")
-        XCTAssertTrue(app.staticTexts["chat-search-result"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["chat-search-result"].firstMatch.exists(within: 5))
         app.buttons["terminal-find"].tap()
         guard let open = app.buttons.matching(identifier: "chat-question-open").allElementsBoundByIndex.first(where: \.isHittable) else {
             return XCTFail(app.debugDescription)
         }
         open.tap()
         let context = app.buttons["Show context"]
-        XCTAssertTrue(context.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(context.exists(within: 5), app.debugDescription)
         record(app, "Question-first content-sized sheet")
         context.tap()
         XCTAssertTrue(app.buttons["Done"].exists)
@@ -846,21 +846,21 @@ final class ChatUXSmokeTests: XCTestCase {
             return XCTFail("The pending question must remain answerable after toggling context: \(app.debugDescription)")
         }
         option.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-chosen"].firstMatch.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-chosen"].firstMatch.exists(within: 10), app.debugDescription)
         XCTAssertTrue(app.buttons["Done"].exists, "Answering must not dismiss the question sheet")
         record(app, "Question answer persists in the open content-sized sheet")
         app.buttons["Done"].tap()
         record(app, "Agent surface immediately after closing the question sheet")
-        XCTAssertTrue(app.descendants(matching: .any)["chat-view"].firstMatch.waitForExistence(timeout: 5), app.debugDescription)
-        XCTAssertTrue(app.buttons["chat-note-done"].waitForNonExistence(timeout: 5), "Done must close only the question sheet")
+        XCTAssertTrue(app.descendants(matching: .any)["chat-view"].firstMatch.exists(within: 5), app.debugDescription)
+        XCTAssertTrue(app.buttons["chat-note-done"].gone(within: 5), "Done must close only the question sheet")
     }
 
     func testRefreshFailureKeepsLoadedConversation() {
         let app = launch(failingRefresh: true)
-        XCTAssertTrue(app.staticTexts["Review the table"].waitForExistence(timeout: 12), app.debugDescription)
+        XCTAssertTrue(app.staticTexts["Review the table"].exists(within: 12), app.debugDescription)
         app.buttons["terminal-refresh"].tap()
         let failure = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Refresh failed:")).firstMatch
-        XCTAssertTrue(failure.waitForExistence(timeout: 15), app.debugDescription)
+        XCTAssertTrue(failure.exists(within: 15), app.debugDescription)
         XCTAssertTrue(app.staticTexts["Review the table"].exists)
         record(app, "Refresh failure remains visible without removing loaded chat")
     }
@@ -889,7 +889,7 @@ final class ChatUXSmokeTests: XCTestCase {
                          file: StaticString = #filePath, line: UInt = #line) -> XCUIElement {
         element.press(forDuration: 1.2)
         let button = app.buttons[entry].firstMatch
-        XCTAssertTrue(button.waitForExistence(timeout: 5), "the message menu offers \(entry): \(app.debugDescription)",
+        XCTAssertTrue(button.exists(within: 5), "the message menu offers \(entry): \(app.debugDescription)",
                       file: file, line: line)
         return button
     }
@@ -905,7 +905,7 @@ final class ChatUXSmokeTests: XCTestCase {
         // thought header below it and expanded the thought, so no menu opened.
         let app = launch(copyFixture: true, environment: ["HERDR_CHAT_UX_STATIC": "1"])
         let paragraph = app.staticTexts["Copy this reply, then paste it."].firstMatch
-        XCTAssertTrue(paragraph.waitForExistence(timeout: 12), app.debugDescription)
+        XCTAssertTrue(paragraph.exists(within: 12), app.debugDescription)
         bringIntoView(paragraph, in: app, "the reply")
         XCTAssertNil(copiedText(app), "precondition: nothing copied yet")
 
@@ -923,28 +923,28 @@ final class ChatUXSmokeTests: XCTestCase {
         record(app, "Reply message menu")
         copy.tap()
         waitForCopied(app, "Copy this reply, then paste it.\n\nlet copied = true\nprint(copied)")
-        XCTAssertTrue(app.buttons["Copy as Markdown"].waitForNonExistence(timeout: 5), "the menu closes after Copy")
+        XCTAssertTrue(app.buttons["Copy as Markdown"].gone(within: 5), "the menu closes after Copy")
 
         openMenu(app, on: paragraph, entry: "Copy as Markdown").tap()
         waitForCopied(app, "Copy **this** reply, then *paste* it.\n\n```swift\nlet copied = true\nprint(copied)\n```")
-        XCTAssertTrue(app.buttons["Select Text"].waitForNonExistence(timeout: 5), "the menu closes after Copy as Markdown")
+        XCTAssertTrue(app.buttons["Select Text"].gone(within: 5), "the menu closes after Copy as Markdown")
 
         openMenu(app, on: paragraph, entry: "Select Text").tap()
         let textView = app.textViews["chat-select-text"]
-        XCTAssertTrue(textView.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(textView.exists(within: 5), app.debugDescription)
         let selectable = textView.value as? String ?? ""
         XCTAssertTrue(selectable.contains("Copy this reply, then paste it."), "the sheet shows the reply: \(selectable)")
         XCTAssertTrue(selectable.contains("let copied = true\nprint(copied)"), "the sheet shows the code: \(selectable)")
         XCTAssertFalse(selectable.contains("**"), "the sheet shows the reply as read, not its markdown: \(selectable)")
         record(app, "Select Text sheet with the reply")
         app.buttons["chat-select-text-done"].tap()
-        XCTAssertTrue(textView.waitForNonExistence(timeout: 5), "Done closes the Select Text sheet")
+        XCTAssertTrue(textView.gone(within: 5), "Done closes the Select Text sheet")
 
         // A swipe-down-only loop failed here on CI (#595, #627, #632 run 42137284739): after the
         // Select Text sheet closed, the prompt sat ~2,200 pt BELOW the visible chat, and each
         // swipe down moved it further away. Scroll toward it instead.
         let bubble = app.staticTexts["Check typography and wrapped tables."].firstMatch
-        XCTAssertTrue(bubble.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(bubble.exists(within: 5), app.debugDescription)
         bringIntoView(bubble, in: app, "the prompt bubble", steps: 24)
         let bubbleCopy = openMenu(app, on: bubble, entry: "Copy")
         XCTAssertFalse(app.buttons["Copy as Markdown"].exists, "a prompt is copied as typed, with no markdown variant")
@@ -958,7 +958,7 @@ final class ChatUXSmokeTests: XCTestCase {
         app.buttons["Reset"].tap()
         dismissTextSizeMenu(app)
         let code = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "let copied = true")).firstMatch
-        XCTAssertTrue(code.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(code.exists(within: 5), app.debugDescription)
         let codeHeight = code.frame.height
         for _ in 0..<4 {
             app.buttons["terminal-actions"].tap()
@@ -1023,11 +1023,11 @@ final class ChatUXSmokeTests: XCTestCase {
         let app = launch()
         let chat = element(app, "chat-width-area")
         let column = element(app, "chat-column")
-        XCTAssertTrue(column.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(column.exists(within: 10), app.debugDescription)
         let left = element(app, "chat-width-handle-left")
         let right = element(app, "chat-width-handle-right")
         if UIDevice.current.userInterfaceIdiom == .pad {
-            XCTAssertTrue(right.waitForExistence(timeout: 5), app.debugDescription)
+            XCTAssertTrue(right.exists(within: 5), app.debugDescription)
             XCTAssertTrue(left.exists, app.debugDescription)
             XCTAssertEqual(right.label, "Chat width")
             XCTAssertTrue((right.value as? String)?.hasSuffix("points") == true
@@ -1067,13 +1067,13 @@ final class ChatUXSmokeTests: XCTestCase {
         let chat = element(app, "chat-width-area")
         let column = element(app, "chat-column")
         let right = element(app, "chat-width-handle-right")
-        XCTAssertTrue(right.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(right.exists(within: 10), app.debugDescription)
         var available = settle(within: 8, { chat.frame.width }, until: { $0 > 1000 })
         // An earlier class may leave the app in a smaller window (iPadOS restores its size):
         // minimising the sidebar gives the chat the window's width.
         if available < 780 {
             let minimise = app.buttons.matching(NSPredicate(format: "label == %@", "Minimise sidebar")).firstMatch
-            XCTAssertTrue(minimise.waitForExistence(timeout: 5), "chat only \(available) pt wide: \(app.debugDescription)")
+            XCTAssertTrue(minimise.exists(within: 5), "chat only \(available) pt wide: \(app.debugDescription)")
             minimise.tap()
             minimisedSidebar = true
             available = settle(within: 8, { chat.frame.width }, until: { $0 >= 780 })
@@ -1126,7 +1126,7 @@ final class ChatUXSmokeTests: XCTestCase {
         let againChat = element(again, "chat-width-area")
         let againColumn = element(again, "chat-column")
         let againRight = element(again, "chat-width-handle-right")
-        XCTAssertTrue(againRight.waitForExistence(timeout: 10), again.debugDescription)
+        XCTAssertTrue(againRight.exists(within: 10), again.debugDescription)
         let kept = settle({ againColumn.frame.width }, until: { abs($0 - 720) < 0.5 })
         XCTAssertEqual(kept, 720, accuracy: 0.5, "the chosen width survives a relaunch")
         assertComposerMatchesColumn(again, "After relaunch")
@@ -1158,7 +1158,7 @@ final class ChatUXSmokeTests: XCTestCase {
         let column = element(app, "chat-column")
         let left = element(app, "chat-width-handle-left")
         let right = element(app, "chat-width-handle-right")
-        XCTAssertTrue(right.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(right.exists(within: 10), app.debugDescription)
         XCTAssertTrue(left.exists, app.debugDescription)
         let available = chat.frame.width
         XCTAssertTrue((520..<760).contains(available),
@@ -1202,7 +1202,7 @@ final class ChatUXSmokeTests: XCTestCase {
         let chat = element(app, "chat-width-area")
         let column = element(app, "chat-column")
         let right = element(app, "chat-width-handle-right")
-        XCTAssertTrue(right.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(right.exists(within: 10), app.debugDescription)
         let available = settle(within: 8, { chat.frame.width }, until: { $0 > 1000 })
         let wide = min(1000, available)
         let initial = settle({ column.frame.width }, until: { abs($0 - wide) < 0.5 })
@@ -1215,13 +1215,13 @@ final class ChatUXSmokeTests: XCTestCase {
         record(app, "Chat column set to \(Int(chosen)) pt")
 
         let gramTab = app.buttons["Gram"].firstMatch
-        XCTAssertTrue(gramTab.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(gramTab.exists(within: 5), app.debugDescription)
         gramTab.tap()
         let gramColumn = element(app, "gram-column")
         // Gram's own width (its feed's scroll view runs on under the floating sidebar).
         let gramFeed = element(app, "gram-width-area")
-        XCTAssertTrue(gramColumn.waitForExistence(timeout: 10), app.debugDescription)
-        XCTAssertTrue(gramFeed.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(gramColumn.exists(within: 10), app.debugDescription)
+        XCTAssertTrue(gramFeed.exists(within: 5), app.debugDescription)
         let expected = min(chosen, gramFeed.frame.width)
         let shown = settle({ gramColumn.frame.width }, until: { abs($0 - expected) < 0.5 })
         XCTAssertEqual(shown, expected, accuracy: 0.5, "Gram shows the width chosen in Chat")
@@ -1230,13 +1230,13 @@ final class ChatUXSmokeTests: XCTestCase {
 
         // The other way: a reset in Gram is Chat's width too.
         let gramRight = element(app, "gram-width-handle-right")
-        XCTAssertTrue(gramRight.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(gramRight.exists(within: 5), app.debugDescription)
         gramRight.doubleTap()
         let gramWide = min(1000, gramFeed.frame.width)
         let reset = settle({ gramColumn.frame.width }, until: { abs($0 - gramWide) < 0.5 })
         XCTAssertEqual(reset, gramWide, accuracy: 0.5, "a double tap in Gram resets to Wide")
         app.buttons["Agents"].firstMatch.tap()
-        XCTAssertTrue(right.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(right.exists(within: 5), app.debugDescription)
         let chatWide = min(1000, chat.frame.width)
         let back = settle({ column.frame.width }, until: { abs($0 - chatWide) < 0.5 })
         XCTAssertEqual(back, chatWide, accuracy: 0.5, "the reset in Gram is Chat's width too")

@@ -9,17 +9,17 @@ final class GuestShellTests: XCTestCase {
     func testAcceptLandsOnGuestHome() {
         let app = XCUIApplication.launched(mock: "guestaccept")
 
-        XCTAssertTrue(app.staticTexts["Jerry shared llm-opt with you"].waitForExistence(timeout: 10),
+        XCTAssertTrue(app.staticTexts["Jerry shared llm-opt with you"].exists(within: 10),
                       "the accept screen should say who shared which agent")
         XCTAssertTrue(app.staticTexts["plotarmordev"].exists, "the name the guest appears as should show")
         attach(app, "guest-accept")
 
         app.buttons["guest-accept"].tap()
 
-        XCTAssertTrue(app.staticTexts["guest-home-title"].waitForExistence(timeout: 10),
+        XCTAssertTrue(app.staticTexts["guest-home-title"].exists(within: 10),
                       "accepting should land on guest home")
         XCTAssertEqual(app.staticTexts["guest-home-title"].label, "Jerry's Mac Studio")
-        XCTAssertTrue(app.buttons["guest-agent-row"].waitForExistence(timeout: 10),
+        XCTAssertTrue(app.buttons["guest-agent-row"].exists(within: 10),
                       "guest home should list the shared agent")
     }
 
@@ -27,7 +27,7 @@ final class GuestShellTests: XCTestCase {
         let app = XCUIApplication.launched(mock: "guest")
 
         let row = app.buttons["guest-agent-row"]
-        XCTAssertTrue(row.waitForExistence(timeout: 10), "the shared agent's row should render")
+        XCTAssertTrue(row.exists(within: 10), "the shared agent's row should render")
         XCTAssertTrue(row.label.contains("llm-opt"), "the row should be llm-opt, got \(row.label)")
         XCTAssertTrue(app.staticTexts["Shared by Jerry · 1 agent"].exists)
         // The mock agent.list also returns jarvis; only the shared agent may render.
@@ -35,7 +35,7 @@ final class GuestShellTests: XCTestCase {
         XCTAssertFalse(app.staticTexts["jarvis"].exists, "an agent that was not shared must not render")
 
         let tabs = app.tabBars.firstMatch
-        XCTAssertTrue(tabs.waitForExistence(timeout: 5))
+        XCTAssertTrue(tabs.exists(within: 5))
         XCTAssertEqual(tabs.buttons.count, 2, "the guest tab bar should hold only Agents and Settings")
         XCTAssertTrue(tabs.buttons["Agents"].exists)
         XCTAssertTrue(tabs.buttons["Settings"].exists)
@@ -45,7 +45,7 @@ final class GuestShellTests: XCTestCase {
 
     func testLeaveRemovesTheShare() {
         let app = XCUIApplication.launched(mock: "guest")
-        XCTAssertTrue(app.buttons["guest-agent-row"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["guest-agent-row"].exists(within: 10))
 
         // A tap on the tab bar right after launch can be swallowed while it settles, so
         // tap until the tab reports selected.
@@ -55,7 +55,7 @@ final class GuestShellTests: XCTestCase {
             _ = poll(3, every: 0.25) { settingsTab.isSelected }
         }
         let leave = app.buttons["guest-leave"]
-        XCTAssertTrue(leave.waitForExistence(timeout: 10), "guest Settings should offer Leave share")
+        XCTAssertTrue(leave.exists(within: 10), "guest Settings should offer Leave share")
         XCTAssertTrue(app.staticTexts["guest-settings-fingerprint"].label.hasPrefix("SHA256:"),
                       "Settings should show this phone's key fingerprint")
         attach(app, "guest-settings")
@@ -63,12 +63,12 @@ final class GuestShellTests: XCTestCase {
 
         // The confirmation's destructive button, not the row that opened it.
         let confirm = app.buttons.matching(NSPredicate(format: "label == 'Leave share' AND identifier != 'guest-leave'")).firstMatch
-        XCTAssertTrue(confirm.waitForExistence(timeout: 5), "leaving should ask for confirmation")
+        XCTAssertTrue(confirm.exists(within: 5), "leaving should ask for confirmation")
         confirm.tap()
 
-        XCTAssertTrue(app.staticTexts["guest-home-title"].waitForNonExistence(timeout: 5),
+        XCTAssertTrue(app.staticTexts["guest-home-title"].gone(within: 5),
                       "leaving should close guest home")
-        XCTAssertTrue(app.staticTexts["Scan pairing code"].waitForExistence(timeout: 5),
+        XCTAssertTrue(app.staticTexts["Scan pairing code"].exists(within: 5),
                       "with no machines left the phone should be back on onboarding")
         XCTAssertFalse(app.buttons["shared-machine-row"].exists, "the share should be gone")
     }
@@ -90,11 +90,11 @@ final class GuestShellTests: XCTestCase {
 
     /// The confirmation's destructive button: neither a row's Remove share nor the menu item.
     private func confirmRemoval(_ app: XCUIApplication, of agent: String) {
-        XCTAssertTrue(app.staticTexts["Remove \(agent)?"].waitForExistence(timeout: 10),
+        XCTAssertTrue(app.staticTexts["Remove \(agent)?"].exists(within: 10),
                       "removing should ask for confirmation")
         let confirm = app.buttons.matching(
             NSPredicate(format: "label == 'Remove share' AND identifier != 'guest-remove-share'")).firstMatch
-        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        XCTAssertTrue(confirm.exists(within: 5))
         confirm.tap()
     }
 
@@ -124,7 +124,7 @@ final class GuestShellTests: XCTestCase {
             _ = poll(3, every: 0.25) { agentsTab.isSelected }
         }
         let remove = app.buttons["guest-remove-share"]
-        XCTAssertTrue(remove.waitForExistence(timeout: 10), "an unavailable agent's row should offer Remove share")
+        XCTAssertTrue(remove.exists(within: 10), "an unavailable agent's row should offer Remove share")
         XCTAssertEqual(app.buttons.matching(identifier: "guest-remove-share").count, 1,
                        "only the unavailable row shows the button")
         attach(app, "guest-unavailable-row-remove")
@@ -133,19 +133,19 @@ final class GuestShellTests: XCTestCase {
 
         XCTAssertTrue(poll(10, every: 0.25) { rows(app).count == 2 }, "the removed share's row should go")
         XCTAssertEqual(unavailable.count, 0, "the unavailable share is the one removed")
-        XCTAssertTrue(app.staticTexts["Shared by Jerry · 2 agents"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Shared by Jerry · 2 agents"].exists(within: 5))
     }
 
     func testContextMenuRemovesAShare() {
         let app = launchMachine()
         let llm = rows(app).matching(NSPredicate(format: "label CONTAINS 'llm-opt'")).firstMatch
-        XCTAssertTrue(llm.waitForExistence(timeout: 10))
+        XCTAssertTrue(llm.exists(within: 10))
         XCTAssertTrue(poll(10, every: 0.25) { llm.label.contains("idle") }, "llm-opt should have loaded, got \(llm.label)")
 
         llm.press(forDuration: 1.0)
         let item = app.buttons.matching(
             NSPredicate(format: "label == 'Remove share' AND identifier != 'guest-remove-share'")).firstMatch
-        XCTAssertTrue(item.waitForExistence(timeout: 5), "long-press should offer Remove share")
+        XCTAssertTrue(item.exists(within: 5), "long-press should offer Remove share")
         attach(app, "guest-row-context-menu")
         item.tap()
         confirmRemoval(app, of: "llm-opt")
