@@ -8,5 +8,6 @@
   "ipad-script":{"run":"Tools/ci/macserve-ipad-script.sh"},
   "duo-screenshots":{"run":"Tools/ci/duo-screenshots.sh"},
   "duo-column":{"run":"Tools/ci/duo-column.sh"},
-  "snapshot-stress":{"run":"Tools/ci/snapshot-stress.sh"}
+  "snapshot-stress":{"run":"Tools/ci/snapshot-stress.sh"},
+  "bft-facts":{"run":"scripts/bft-facts.sh"}
  }}}
