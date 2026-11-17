@@ -20,9 +20,9 @@ final class PagingTests: XCTestCase {
 
     func testSwipeDoesNotPageAgents() {
         let app = XCUIApplication.launched(mock: "paging")
-        Thread.sleep(forTimeInterval: 2.0)   // let the first pane mount + its stream seed
 
         // Opens on ALFA (heading collapses to "ALFA" — name==kind==folder) — front, hittable.
+        // `frontIs` polls until the first pane has mounted and fronted, so no fixed settle.
         XCTAssertTrue(frontIs(app, "ALFA"),
             "Paging harness did not open on the first agent (ALFA).")
         attach(app, "01-alfa")
@@ -66,6 +66,8 @@ final class PagingTests: XCTestCase {
         let start = app.coordinate(withNormalizedOffset: CGVector(dx: startX, dy: 0.5))
         let end   = app.coordinate(withNormalizedOffset: CGVector(dx: endX, dy: 0.5))
         start.press(forDuration: 0.0, thenDragTo: end, withVelocity: .fast, thenHoldForDuration: 0.0)
-        Thread.sleep(forTimeInterval: 1.2)   // let any (now-absent) front swap + repaint settle
+        // Kept: a negative check — the flick must have had time to page (if it still could)
+        // before the caller asserts the front pane is unchanged.
+        Thread.sleep(forTimeInterval: 1.2)
     }
 }

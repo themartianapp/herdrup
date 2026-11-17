@@ -11,12 +11,14 @@ final class NeedsYouPillTests: XCTestCase {
         XCUIApplication.launched(mock: "needsyou", environment: ["HERDR_MOCK_WAITING": "\(waiting)"])
     }
 
+    // Typed queries: the pill and the rows are SwiftUI Buttons, and resolving them among
+    // buttons is cheaper than among every descendant of a roster several screens tall.
     private func needsYouPill(_ app: XCUIApplication) -> XCUIElement {
-        app.descendants(matching: .any).matching(identifier: "needs-you-pill").firstMatch
+        app.buttons.matching(identifier: "needs-you-pill").firstMatch
     }
 
     private func row(_ app: XCUIApplication, _ paneID: String) -> XCUIElement {
-        app.descendants(matching: .any)["agent-row-\(paneID)"]
+        app.buttons["agent-row-\(paneID)"]
     }
 
     /// Scrolls the roster down until `done` holds, at most `swipes` times.

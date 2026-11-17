@@ -19,15 +19,18 @@ final class ScrollTests: XCTestCase {
         let viewport = app.terminalSurface
         XCTAssertTrue(viewport.exists(within: 10))
 
-        // Let the app launch and the mock stream feed all 200 lines into the real
-        // SwiftTerm view (async), so there is scrollback to move.
+        // Kept: the app launches and the mock stream feeds all 200 lines into the real
+        // SwiftTerm view (async), so there is scrollback to move. Nothing on screen says the
+        // seed has been drawn, and a still-blank baseline would let the moved-pixels check
+        // below pass without any scroll.
         Thread.sleep(forTimeInterval: 3.0)
+        let before = settledShot(viewport, quiet: 0.5)
 
         // (1) STATIC CHECK: with the cursor hidden by the seed, an untouched terminal
         // must render essentially identically frame to frame. If it doesn't, some
         // animation is running and the scroll assertion below would be unreliable.
-        let before = viewport.screenshot()
-        Thread.sleep(forTimeInterval: 1.0)
+        // Kept: the idle gap between the baseline pair is the point of the check.
+        Thread.sleep(forTimeInterval: 0.5)
         let beforeAgain = viewport.screenshot()
         let idleDiff = pixelDiffFraction(before, beforeAgain)
         attach(before, "01-before")
@@ -40,11 +43,11 @@ final class ScrollTests: XCTestCase {
         let low  = viewport.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
         for _ in 0..<3 {
             high.press(forDuration: 0.05, thenDragTo: low)
+            // Kept: a gap between drags so each lands as its own gesture.
             Thread.sleep(forTimeInterval: 0.2)
         }
-        Thread.sleep(forTimeInterval: 1.0)   // let scroll settle + repaint
-
-        let after = viewport.screenshot()
+        // Waits for the scroll to settle and repaint.
+        let after = settledShot(viewport, quiet: 0.3)
         attach(after, "02-after-swipe")
         let movedDiff = pixelDiffFraction(before, after)
 
@@ -61,29 +64,29 @@ final class ScrollTests: XCTestCase {
         let app = XCUIApplication.launched(mock: "scroll")
         let viewport = app.terminalSurface
         XCTAssertTrue(viewport.exists(within: 10))
+        // Kept: the launch and the mock stream's 200 lines (see testTerminalScrollsWhenSwiped).
         Thread.sleep(forTimeInterval: 3.0)
+        let tail = settledShot(viewport, quiet: 0.5)
         let latest = app.buttons["terminal-jump-latest"]
         XCTAssertFalse(latest.exists, "no jump button at the tail")
-        let tail = viewport.screenshot()
         attach(tail, "01-tail")
 
         let high = viewport.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
         let low  = viewport.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
         for _ in 0..<3 {
             high.press(forDuration: 0.05, thenDragTo: low)
+            // Kept: a gap between drags so each lands as its own gesture.
             Thread.sleep(forTimeInterval: 0.2)
         }
         XCTAssertTrue(latest.exists(within: 5), "scrolled into history, the jump button should show")
         XCTAssertEqual(latest.label, "Jump to latest output")
-        Thread.sleep(forTimeInterval: 1.0)
-        let history = viewport.screenshot()
+        let history = settledShot(viewport, quiet: 0.3)
         attach(history, "02-history-with-jump-button")
         XCTAssertGreaterThan(pixelDiffFraction(tail, history), 0.10, "the swipe should have moved into history")
 
         latest.tap()
         XCTAssertTrue(latest.gone(within: 5), "back at the tail, the button goes")
-        Thread.sleep(forTimeInterval: 1.0)
-        let back = viewport.screenshot()
+        let back = settledShot(viewport, quiet: 0.3)
         attach(back, "03-after-jump")
         let backDiff = pixelDiffFraction(tail, back)
         XCTAssertLessThan(backDiff, 0.02, "the tap should render the tail again (diff=\(backDiff))")
@@ -99,11 +102,14 @@ final class ScrollTests: XCTestCase {
         let app = XCUIApplication.launched(mock: "ccscroll")
         let viewport = app.terminalSurface
         XCTAssertTrue(viewport.exists(within: 10))
-        Thread.sleep(forTimeInterval: 3.0)   // launch + enter alt-screen/mouse + render
+        // Kept: the launch, the alt-screen/mouse entry and the render (no on-screen signal;
+        // see testTerminalScrollsWhenSwiped).
+        Thread.sleep(forTimeInterval: 3.0)
+        let before = settledShot(viewport, quiet: 0.5)
 
         // Static baseline (cursor hidden by the seed): untouched frames ~identical.
-        let before = viewport.screenshot()
-        Thread.sleep(forTimeInterval: 1.0)
+        // Kept: the idle gap between the baseline pair is the point of the check.
+        Thread.sleep(forTimeInterval: 0.5)
         let beforeAgain = viewport.screenshot()
         let idleDiff = pixelDiffFraction(before, beforeAgain)
         attach(before, "cc-01-before")
@@ -116,11 +122,11 @@ final class ScrollTests: XCTestCase {
         let low  = viewport.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
         for _ in 0..<3 {
             high.press(forDuration: 0.05, thenDragTo: low)
+            // Kept: a gap between drags so each lands as its own gesture.
             Thread.sleep(forTimeInterval: 0.2)
         }
-        Thread.sleep(forTimeInterval: 1.0)
 
-        let after = viewport.screenshot()
+        let after = settledShot(viewport, quiet: 0.3)
         attach(after, "cc-02-after-swipe")
         let movedDiff = pixelDiffFraction(before, after)
         XCTAssertGreaterThan(movedDiff, 0.10,
@@ -138,11 +144,14 @@ final class ScrollTests: XCTestCase {
         let app = XCUIApplication.launched(mock: "backfill")
         let viewport = app.terminalSurface
         XCTAssertTrue(viewport.exists(within: 10))
-        Thread.sleep(forTimeInterval: 3.0)   // launch + backfill read + reset seed feed
+        // Kept: the launch, the backfill read and the reset seed feed (no on-screen signal;
+        // see testTerminalScrollsWhenSwiped).
+        Thread.sleep(forTimeInterval: 3.0)
+        let before = settledShot(viewport, quiet: 0.5)
 
         // Static baseline (cursor hidden by the fixture): untouched frames ~identical.
-        let before = viewport.screenshot()
-        Thread.sleep(forTimeInterval: 1.0)
+        // Kept: the idle gap between the baseline pair is the point of the check.
+        Thread.sleep(forTimeInterval: 0.5)
         let beforeAgain = viewport.screenshot()
         let idleDiff = pixelDiffFraction(before, beforeAgain)
         attach(before, "bf-01-before")
@@ -157,11 +166,11 @@ final class ScrollTests: XCTestCase {
         let low  = viewport.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85))
         for _ in 0..<5 {
             high.press(forDuration: 0.05, thenDragTo: low)
+            // Kept: a gap between drags so each lands as its own gesture.
             Thread.sleep(forTimeInterval: 0.2)
         }
-        Thread.sleep(forTimeInterval: 1.0)
 
-        let after = viewport.screenshot()
+        let after = settledShot(viewport, quiet: 0.3)
         attach(after, "bf-02-after-swipe")
         let movedDiff = pixelDiffFraction(before, after)
         XCTAssertGreaterThan(movedDiff, 0.10,
@@ -207,7 +216,8 @@ final class ScrollTests: XCTestCase {
             "The reconnect's keyframe history never reached SwiftTerm's scrollback (probe: \(reading)).")
 
         let before = viewport.screenshot()
-        Thread.sleep(forTimeInterval: 1.0)
+        // Kept: the idle gap between the baseline pair is the point of the check.
+        Thread.sleep(forTimeInterval: 0.5)
         let beforeAgain = viewport.screenshot()
         let idleDiff = pixelDiffFraction(before, beforeAgain)
         attach(before, "kh-01-before")
@@ -219,6 +229,7 @@ final class ScrollTests: XCTestCase {
         let low  = viewport.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85))
         for _ in 0..<5 {
             high.press(forDuration: 0.05, thenDragTo: low)
+            // Kept: a gap between drags so each lands as its own gesture.
             Thread.sleep(forTimeInterval: 0.2)
         }
         // The fixture has rows 1...300. A viewport no taller than the grid opens on the live
@@ -251,7 +262,8 @@ final class ScrollTests: XCTestCase {
         let probe = app.descendants(matching: .any)["keyframe-history-reads"]
         XCTAssertTrue(probe.exists(within: 10), "keyframe-history-reads probe missing")
 
-        // Past the 3 s hold, then until every requested read has ended one way or the other.
+        // Kept: past the 3 s hold, so a read the keyframe failed to cancel has had time to
+        // answer; then until every requested read has ended one way or the other.
         Thread.sleep(forTimeInterval: 4)
         var counts = readCounts(probe.label)
         _ = poll(6, every: 0.25) {
@@ -277,6 +289,7 @@ final class ScrollTests: XCTestCase {
         XCTAssertTrue(viewport.exists(within: 10))
         let probe = app.descendants(matching: .any)["history-paging-requests"]
         XCTAssertTrue(probe.exists(within: 10), "history-paging-requests probe missing")
+        // Kept: a negative check; the seed has time to (wrongly) page before any scroll.
         Thread.sleep(forTimeInterval: 2.0)
         XCTAssertTrue(probe.label.hasPrefix("requests=0"), "paged before any scroll (\(probe.label))")
 
@@ -315,6 +328,7 @@ final class ScrollTests: XCTestCase {
         XCTAssertTrue(app.terminalSurface.exists(within: 10))
         let probe = app.descendants(matching: .any)["history-paging-requests"]
         XCTAssertTrue(probe.exists(within: 10), "history-paging-requests probe missing")
+        // Kept: a negative check; the seed has time to (wrongly) page before any scroll.
         Thread.sleep(forTimeInterval: 2.0)
         XCTAssertTrue(probe.label.hasPrefix("requests=0"), "paged before any scroll (\(probe.label))")
 
@@ -347,6 +361,22 @@ final class ScrollTests: XCTestCase {
     }
 
     // MARK: - helpers
+
+    /// A screenshot of `viewport` once it has stopped changing: the later of two shots
+    /// `quiet` seconds apart that match within the idle check's tolerance. Gives up after
+    /// `timeout` and returns the last shot, so the assertion that follows judges it.
+    private func settledShot(_ viewport: XCUIElement, quiet: TimeInterval,
+                             timeout: TimeInterval = 15) -> XCUIScreenshot {
+        let deadline = Date().addingTimeInterval(timeout)
+        var last = viewport.screenshot()
+        while Date() < deadline {
+            Thread.sleep(forTimeInterval: quiet)
+            let now = viewport.screenshot()
+            if pixelDiffFraction(last, now) < 0.02 { return now }
+            last = now
+        }
+        return last
+    }
 
     /// Parses the `keyframe-history-reads` probe: "requested=N answered=N cancelled=N".
     private func readCounts(_ label: String) -> (requested: Int, answered: Int, cancelled: Int) {

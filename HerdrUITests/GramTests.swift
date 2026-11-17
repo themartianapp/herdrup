@@ -60,12 +60,10 @@ final class GramTests: XCTestCase {
     func testGramPageRenders() {
         let app = launchGram()
 
-        // Give the mock gram.list a moment to load + lay out the rows.
-        Thread.sleep(forTimeInterval: 2.0)
-
         // A canned agent->owner message's sender label should appear: the bare agent name,
         // its machine ("· hetzner-1") a separate span.
-        XCTAssertTrue(app.staticTexts["clientloop"].exists(within: 5),
+        // The wait covers the mock gram.list loading and laying out the rows.
+        XCTAssertTrue(app.staticTexts["clientloop"].exists(within: 10),
                       "an agent->owner message should render its sender")
         // With unread messages the feed opens where they begin (owner 2026-10-29): the
         // "3 unread" rule above g4, on screen below the floating header. This pinned the
@@ -235,6 +233,7 @@ final class GramTests: XCTestCase {
         while Date() < deadline {
             XCTAssertTrue(waitUntilNothingUnread(readAll, timeout: 0),
                           "a poll requested before Read all brought the count back: \(readAll.exists ? (readAll.value as? String ?? "") : "Read all is back")")
+            // Kept: the interval of a hold window in which the count must NOT come back.
             Thread.sleep(forTimeInterval: 0.2)
         }
     }
@@ -325,7 +324,7 @@ final class GramTests: XCTestCase {
         XCTAssertTrue(previousTop.exists(within: 3) && previousTop.isHittable,
                       "the message that was on top should stay on screen after the older page lands")
 
-        // Let a chained fetch, if any, land: the count must stay at exactly one page.
+        // Kept: let a chained fetch, if any, land: the count must stay at exactly one page.
         Thread.sleep(forTimeInterval: 2)
         XCTAssertEqual(messages.value as? String, "36 messages", "exactly one older page should load")
 
@@ -354,9 +353,9 @@ final class GramTests: XCTestCase {
         let oldest = app.descendants(matching: .any)["gram-bubble-g9"]
         XCTAssertFalse(oldest.exists, "the oldest loaded message is outside the drawn window")
 
-        for _ in 0..<8 where !oldest.exists { feed.swipeDown(velocity: .slow); Thread.sleep(forTimeInterval: 0.5) }
+        for _ in 0..<8 where !oldest.exists { feed.swipeDown(velocity: .slow); _ = oldest.exists(within: 1) }
         XCTAssertTrue(oldest.exists(within: 3), "reaching the top should draw the older loaded messages")
-        // The revealed rows push the sentinel off screen again: no fetch. Wait past the anchor
+        // Kept: the revealed rows push the sentinel off screen again: no fetch. Wait past the anchor
         // restore (up to ~0.7 s) and the mock's round trip, so a page fetched after the reveal
         // would have landed.
         Thread.sleep(forTimeInterval: 2)
@@ -407,6 +406,7 @@ final class GramTests: XCTestCase {
             NSPredicate(format: "label BEGINSWITH %@", "Picked up the deploy ticket.")).firstMatch
         XCTAssertTrue(previousTop.exists(within: 3) && previousTop.isHittable,
                       "the message that was on top should stay on screen after the older page lands")
+        // Kept: let a chained fetch, if any, land: the count must stay at exactly one page.
         Thread.sleep(forTimeInterval: 2)
         XCTAssertEqual(messages.value as? String, "36 messages", "exactly one older page should load")
     }
@@ -434,7 +434,8 @@ final class GramTests: XCTestCase {
             NSPredicate(format: "label BEGINSWITH %@", "Older page: release planning starts here.")).firstMatch
         for _ in 0..<16 where !onScreen(olderOldest) { feed.swipeDown(velocity: .slow) }
         XCTAssertTrue(onScreen(olderOldest), "the older page's oldest message should be on screen")
-        // Let a fetch from reaching that top land, so it cannot move the feed after the tap.
+        // Kept: let a fetch from reaching that top land, so it cannot move the feed after the
+        // tap; whether one comes at all is not known here, so there is no count to wait on.
         Thread.sleep(forTimeInterval: 2)
         XCTAssertFalse(onScreen(newest), "the newest message is off screen at the top")
 
@@ -443,7 +444,8 @@ final class GramTests: XCTestCase {
         (hasSidebar ? app.buttons["Gram"].firstMatch : app.tabBars.firstMatch.buttons["Gram"]).tap()
         XCTAssertTrue(poll(5, every: 0.25) { onScreen(newest) },
                       "tapping the selected Gram tab should go to the newest message")
-        // Past any late scroll (the system's to the top would land after ours).
+        // Kept: past any late scroll (the system's to the top would land after ours); a
+        // negative check that the feed does NOT move away.
         Thread.sleep(forTimeInterval: 1)
         XCTAssertTrue(onScreen(newest), "the feed should stay at the newest message")
         XCTAssertFalse(olderOldest.isHittable, "the feed should not be at the oldest messages")
@@ -457,6 +459,20 @@ final class GramTests: XCTestCase {
         let probe = app.descendants(matching: .any)["gram-row-renders"].firstMatch
         XCTAssertTrue(probe.exists(within: 5), "the DEBUG row-render probe should be present")
         return Int(probe.label) ?? -1
+    }
+
+    /// The row-render count once it holds still: two reads 0.6 s apart (over two of the
+    /// probe's 250 ms ticks) agree. Waits out an opening or a keyboard landing without a
+    /// fixed pause; on timeout it returns the last read.
+    private func settledRowRenders(_ app: XCUIApplication, timeout: TimeInterval = 10) -> Int {
+        var last = rowRenders(app)
+        var current = last
+        _ = poll(timeout, every: 0.6) {
+            current = rowRenders(app)
+            defer { last = current }
+            return current == last
+        }
+        return current
     }
 
     /// Scrolling a feed of pictures re-renders only the rows that change. Twelve image messages
@@ -473,10 +489,11 @@ final class GramTests: XCTestCase {
         let newest = app.descendants(matching: .any)["gram-bubble-gt12"]
         XCTAssertTrue(newest.exists(within: 10) && newest.isHittable, "the feed opens at the newest message")
         // Let the opening settle: the landing, the pictures on screen fetching and decoding.
-        Thread.sleep(forTimeInterval: 3)
-        let before = rowRenders(app)
+        let before = settledRowRenders(app)
+        // Kept: the pauses pace the swipes so each one's pictures cross the edges as a reader's would.
         for _ in 0..<3 { feed.swipeDown(); Thread.sleep(forTimeInterval: 0.6) }
         for _ in 0..<3 { feed.swipeUp(); Thread.sleep(forTimeInterval: 0.6) }
+        // Kept: the window in which trailing renders land before they are counted against the budget.
         Thread.sleep(forTimeInterval: 2)
         let spent = rowRenders(app) - before
         XCTAssertGreaterThan(spent, 0, "pictures crossing the screen re-render their own rows")
@@ -492,10 +509,10 @@ final class GramTests: XCTestCase {
         let field = app.textViews["gram-composer-input"]
         XCTAssertTrue(field.exists(within: 5))
         field.tap()
-        // The keyboard is up and the feed has settled under it.
-        Thread.sleep(forTimeInterval: 2)
-        let before = rowRenders(app)
+        // The keyboard is up and the feed has settled under it: the render count holds still.
+        let before = settledRowRenders(app)
         field.typeText("abcdefghij")
+        // Kept: the window in which a re-render from typing would land; none may.
         Thread.sleep(forTimeInterval: 1.5)
         let spent = rowRenders(app) - before
         XCTAssertLessThanOrEqual(spent, 5, "typing should not re-render the feed's rows; spent \(spent)")
@@ -553,6 +570,20 @@ final class GramTests: XCTestCase {
         return Int(probe.label) ?? -1
     }
 
+    /// The list-pages count once the opening's fetch has landed: iPad/Mac load one older page
+    /// on open (the first page fits), iPhone none; then two reads 0.6 s apart agree.
+    private func settledListPages(_ app: XCUIApplication, timeout: TimeInterval = 10) -> Int {
+        let opening = hasSidebar ? 1 : 0
+        var last = -2
+        var current = -1
+        _ = poll(timeout, every: 0.6) {
+            current = listPages(app)
+            defer { last = current }
+            return current >= opening && current == last
+        }
+        return current
+    }
+
     /// A search covers the loaded messages and fetches nothing by itself: "Digest" matches g6
     /// on the first page, so no older page is requested (the removed whole-store walk asked
     /// for every page), even though older history is available.
@@ -560,12 +591,12 @@ final class GramTests: XCTestCase {
         let app = launchGram(environment: ["HERDR_MOCK_GRAM_PAGED": "1"])
         XCTAssertTrue(app.staticTexts["Great, ship it."].exists(within: 10), "the feed opens")
         // iPad/Mac: the first page fits, so opening loads one older page. Let that land first.
-        Thread.sleep(forTimeInterval: 3)
-        let before = listPages(app)
+        let before = settledListPages(app)
         let field = openSearchField(app)
         field.tap()
         field.typeText("Digest")
         XCTAssertTrue(app.staticTexts["trend-scout"].exists(within: 5), "the match shows")
+        // Kept: a negative window in which an unasked-for fetch would land.
         Thread.sleep(forTimeInterval: 3)
         XCTAssertEqual(listPages(app), before, "a search must not fetch older pages the reader did not ask for")
     }
@@ -578,13 +609,13 @@ final class GramTests: XCTestCase {
         let app = launchGram(environment: ["HERDR_MOCK_GRAM_PAGED": "1"])
         let feed = app.scrollViews["gram-feed"]
         XCTAssertTrue(app.staticTexts["Great, ship it."].exists(within: 10), "the feed opens")
-        Thread.sleep(forTimeInterval: 3)
-        let pagesBefore = listPages(app)
+        let pagesBefore = settledListPages(app)
         let field = openSearchField(app)
         field.tap()
         field.typeText("vetrina")
         let matches = app.otherElements["gram-feed-messages"]
         XCTAssertTrue(matches.exists(within: 5))
+        // Kept: a negative window in which a fetch from typing would land.
         Thread.sleep(forTimeInterval: 2)
         XCTAssertEqual(listPages(app), pagesBefore, "typing the query fetches nothing")
         let shown = matches.value as? String ?? ""
@@ -607,13 +638,13 @@ final class GramTests: XCTestCase {
     func testNoRecentMatchesOffersToSearchOlderMessages() {
         let app = launchGram(environment: ["HERDR_MOCK_GRAM_PAGED": "1"])
         XCTAssertTrue(app.staticTexts["Great, ship it."].exists(within: 10), "the feed opens")
-        Thread.sleep(forTimeInterval: 3)
-        let pagesBefore = listPages(app)
+        let pagesBefore = settledListPages(app)
         let field = openSearchField(app)
         field.tap()
         field.typeText("kickoff")
         XCTAssertTrue(app.staticTexts["No matches in recent messages"].exists(within: 5),
                       "no loaded match, older history left: say what was searched")
+        // Kept: a negative window in which a fetch by the empty state would land.
         Thread.sleep(forTimeInterval: 1)
         XCTAssertEqual(listPages(app), pagesBefore, "the empty state fetches nothing by itself")
         let searchOlder = app.buttons["gram-search-older"]
@@ -656,7 +687,8 @@ final class GramTests: XCTestCase {
         readMore.tap()
         XCTAssertTrue(showLess.exists(within: 3), "an expanded message offers Show less")
         XCTAssertFalse(readMore.exists, "an expanded message has no Read more")
-        Thread.sleep(forTimeInterval: 0.4)   // the expand animates (0.2 s)
+        // The bubble grows into the expanded layout; wait for it, then judge it below.
+        _ = poll(5, every: 0.1) { bubble.frame.height >= folded.height + 3 * 20 - 4 }
         // Three more 20 pt lines (the 15/20 body): the whole report, all 11 lines.
         XCTAssertGreaterThanOrEqual(bubble.frame.height, folded.height + 3 * 20 - 4,
                                     "the expanded report should show all 11 lines")
@@ -669,7 +701,7 @@ final class GramTests: XCTestCase {
         showLess.tap()
         XCTAssertTrue(readMore.exists(within: 3), "Show less folds the report back to Read more")
         XCTAssertFalse(showLess.exists, "a folded report has no Show less")
-        Thread.sleep(forTimeInterval: 0.4)
+        _ = poll(5, every: 0.1) { abs(bubble.frame.height - folded.height) <= 2 }
         XCTAssertEqual(bubble.frame.height, folded.height, accuracy: 2, "Show less folds back to 8 lines")
     }
 
@@ -919,8 +951,10 @@ final class GramTests: XCTestCase {
             NSPredicate(format: "label BEGINSWITH %@", "Picked up the deploy ticket.")).firstMatch
         let oldestBubble = app.descendants(matching: .any)["gram-bubble-g9"]
         for _ in 0..<6 { feed.swipeDown(velocity: .fast) }
-        Thread.sleep(forTimeInterval: 0.6)   // let the scroll settle
-        XCTAssertTrue(oldest.exists(within: 3) && oldest.isHittable,
+        // Let the scroll settle: the oldest bubble stops moving.
+        XCTAssertTrue(oldest.exists(within: 3))
+        oldestBubble.waitForSettledFrame()
+        XCTAssertTrue(oldest.isHittable,
                       "at the top, the oldest loaded message is on screen and hittable")
 
         let pill = app.buttons["gram-header-pill"]
@@ -934,8 +968,10 @@ final class GramTests: XCTestCase {
     }
 
     /// The attachment card of message `id`: the whole card is its Open button.
+    /// The bubble is a SwiftUI container (`.accessibilityElement(children: .contain)`), so an
+    /// `.other`; the typed query resolves without walking every element type.
     private func attachmentCard(_ app: XCUIApplication, message id: String) -> XCUIElement {
-        app.descendants(matching: .any)["gram-bubble-\(id)"]
+        app.otherElements["gram-bubble-\(id)"]
             .descendants(matching: .button)["gram-attachment-open"].firstMatch
     }
 
@@ -1011,6 +1047,7 @@ final class GramTests: XCTestCase {
 
         let calls = probe(app, "gram-get-file-calls")
         card.tap()
+        // Kept: an inert tap must have had time to act before "nothing was fetched" means anything.
         Thread.sleep(forTimeInterval: 1.5)
         XCTAssertTrue(waitForGetFileCalls(calls, "g12", 0, timeout: 0.5),
                       "tapping the expired card fetches nothing; probe says \(calls.label)")
@@ -1061,6 +1098,7 @@ final class GramTests: XCTestCase {
 
         let calls = probe(app, "gram-get-file-calls")
         chip.tap()
+        // Kept: an inert tap must have had time to act before "nothing was fetched" means anything.
         Thread.sleep(forTimeInterval: 1.5)
         XCTAssertTrue(waitForGetFileCalls(calls, "g2", 0, timeout: 0.5),
                       "tapping the expired chip fetches nothing; probe says \(calls.label)")
@@ -1130,15 +1168,30 @@ final class GramTests: XCTestCase {
     /// rightly does not count it as seen). Down for older rows, up for newer.
     private func reveal(_ element: XCUIElement, in app: XCUIApplication, older: Bool) {
         let feed = app.scrollViews["gram-feed"]
-        let header = app.descendants(matching: .any)["gram-header-pill"]
-        func shown() -> Bool {
-            guard element.isHittable else { return false }
-            let headerBottom = header.exists ? header.frame.maxY : feed.frame.minY
-            return element.frame.minY >= headerBottom && element.frame.maxY <= feed.frame.maxY
-        }
-        for _ in 0..<12 where !shown() {
+        let header = app.buttons["gram-header-pill"]
+        // The header floats over the feed and neither moves with a scroll: read them once.
+        let feedFrame = feed.frame
+        let headerBottom = header.exists ? header.frame.maxY : feedFrame.minY
+        // `element` is a nested query (seconds per resolve on CI), so each look resolves it as
+        // few times as it can: the frame read that proves the scroll came to rest is the one
+        // judged, and hittability is asked only once that frame is in the band.
+        var swipes = 0
+        var last: CGRect?
+        for _ in 0..<60 {
+            if element.exists {
+                let frame = element.frame
+                if frame != last {
+                    // First look, or still moving: look again before judging or scrolling on.
+                    last = frame
+                    Thread.sleep(forTimeInterval: 0.2)   // Kept: the interval between two frame reads.
+                    continue
+                }
+                if frame.minY >= headerBottom, frame.maxY <= feedFrame.maxY, element.isHittable { return }
+            }
+            guard swipes < 12 else { return }
+            swipes += 1
             if older { feed.swipeDown(velocity: .slow) } else { feed.swipeUp(velocity: .slow) }
-            Thread.sleep(forTimeInterval: 0.5)
+            last = nil
         }
     }
 
@@ -1174,7 +1227,7 @@ final class GramTests: XCTestCase {
         let opened = probe(app, "gram-opened-file")
         XCTAssertTrue(waitForLabel(opened, matching: "opened:vetrina-live\\.png", timeout: 5),
                       "tapping the card should open the image; probe says \(opened.label)")
-        // Past the probe's poll, so a second fetch would show.
+        // Kept: past the probe's poll, so a second fetch would show (it must NOT).
         Thread.sleep(forTimeInterval: 1)
         XCTAssertTrue(waitForGetFileCalls(calls, "g3", 1, timeout: 1),
                       "the open must reuse the cached file, not fetch it again; probe says \(calls.label)")
@@ -1201,7 +1254,7 @@ final class GramTests: XCTestCase {
         }
         let opened = probe(app, "gram-opened-file")
         XCTAssertEqual(opened.label, "opened:run-report.html")
-        // Past the probe's poll, so a second fetch would show.
+        // Kept: past the probe's poll, so a second fetch would show (it must NOT).
         Thread.sleep(forTimeInterval: 1)
         let calls = probe(app, "gram-get-file-calls")
         XCTAssertTrue(waitForGetFileCalls(calls, "gh1", 1, timeout: 1),
@@ -1223,7 +1276,8 @@ final class GramTests: XCTestCase {
         XCTAssertTrue(card.exists, "the image row is drawn")
         XCTAssertFalse(card.isHittable, "precondition: the image sits above the fold")
 
-        // Past the landing, the prefetch delay and the probe's poll.
+        // Kept: past the landing, the prefetch delay and the probe's poll; an off-screen
+        // fetch must NOT have happened in that window.
         Thread.sleep(forTimeInterval: 2)
         let calls = probe(app, "gram-get-file-calls")
         XCTAssertTrue(waitForGetFileCalls(calls, "g3", 0, timeout: 1),
@@ -1292,7 +1346,8 @@ final class GramTests: XCTestCase {
         agents.tap()
         let covered = NSPredicate(format: "exists == false OR hittable == false")
         XCTAssertTrue(waitForPredicate(covered, object: file, timeout: 5), "Agents should cover Gram")
-        // Long enough for the page's teardown to have run, well inside the 60 s hold.
+        // Kept: long enough for the page's teardown to have run, well inside the 60 s hold;
+        // the teardown has no UI to wait on, and time away is what the test is about.
         Thread.sleep(forTimeInterval: 2)
         sections.buttons["Gram"].firstMatch.tap()
 
@@ -1303,7 +1358,7 @@ final class GramTests: XCTestCase {
         // Any name: the mock answers every non-image file with the same fixture.
         XCTAssertTrue(waitForLabel(opened, matching: "opened:.+", timeout: 80),
                       "the download should finish and open the zip; probe says \(opened.label)")
-        // Past the probe's poll, so a second request would show.
+        // Kept: past the probe's poll, so a second request would show (it must NOT).
         Thread.sleep(forTimeInterval: 1)
         XCTAssertTrue(waitForGetFileCalls(calls, "g2", 1, timeout: 1),
                       "the download must not have started again; probe says \(calls.label)")
@@ -1390,7 +1445,7 @@ final class GramTests: XCTestCase {
         field.tap()
         field.typeText("one")
         XCTAssertTrue(send.exists(within: 5))
-        Thread.sleep(forTimeInterval: 0.6)
+        field.waitForSettledFrame()
         let oneLine = field.frame
         let sendBottom = send.frame.maxY
         XCTAssertEqual(oneLine.midY, send.frame.midY, accuracy: 4,
@@ -1403,7 +1458,8 @@ final class GramTests: XCTestCase {
                                  "a one-row composer is the button row plus its padding, with no dead space")
 
         field.typeText("\ntwo\nthree")
-        Thread.sleep(forTimeInterval: 0.6)
+        _ = poll(5, every: 0.1) { field.frame.height > oneLine.height }
+        field.waitForSettledFrame()
         let threeLines = field.frame
         XCTAssertGreaterThan(threeLines.height, oneLine.height)
         XCTAssertEqual(send.frame.maxY, sendBottom, accuracy: 2)
@@ -1417,19 +1473,21 @@ final class GramTests: XCTestCase {
         let handle = app.descendants(matching: .any)["composer-expand-handle"].firstMatch
         XCTAssertTrue(handle.exists(within: 3), "three lines offer the expand handle")
         handle.tap()
-        Thread.sleep(forTimeInterval: 0.8)
+        _ = poll(5, every: 0.1) { field.frame.height > threeLines.height + 20 }
         XCTAssertGreaterThan(field.frame.height, threeLines.height + 20, "tapping the handle opens the editor")
         XCTAssertEqual(send.frame.maxY, sendBottom, accuracy: 2, "opening the editor does not move send")
         attach(app, "gram-composer-editor")
         handle.tap()
-        Thread.sleep(forTimeInterval: 0.8)
+        _ = poll(5, every: 0.1) { abs(field.frame.height - threeLines.height) <= 2 }
         XCTAssertEqual(field.frame.height, threeLines.height, accuracy: 2, "a second tap closes it")
 
         field.typeText("\nfour\nfive")
-        Thread.sleep(forTimeInterval: 0.6)
+        _ = poll(5, every: 0.1) { field.frame.height > threeLines.height }
+        field.waitForSettledFrame()
         let fiveLines = field.frame
         XCTAssertGreaterThan(fiveLines.height, threeLines.height)
         field.typeText("\nsix\nseven")
+        // Kept: a negative check; the field must have had time to grow, and must NOT.
         Thread.sleep(forTimeInterval: 0.6)
         XCTAssertEqual(field.frame.height, fiveLines.height, accuracy: 2,
                        "past five lines the text scrolls instead of growing")

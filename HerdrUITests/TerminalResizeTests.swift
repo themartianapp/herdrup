@@ -105,7 +105,14 @@ class TerminalInteractionTestCase: XCTestCase {
         anchor.coordinate(withNormalizedOffset: CGVector(dx: 6.0, dy: 0.5))
             .press(forDuration: 0.05,
                    thenDragTo: anchor.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.5)))
-        Thread.sleep(forTimeInterval: 0.25)
+        // Let any deceleration finish: the caller judges reachability by frame geometry, and
+        // a cap read while the bar still glides can be tapped where it no longer is.
+        var last = anchor.frame
+        _ = poll(2, every: 0.1) {
+            let now = anchor.frame
+            defer { last = now }
+            return now == last
+        }
     }
 
 
@@ -402,6 +409,7 @@ final class TerminalResizeTests: TerminalInteractionTestCase {
             let state = probe()
             XCTAssertFalse((state["visible"] as? String ?? "").contains("INCOMPLETE"))
             attach("split-frame-\(index)")
+            // Kept: the measurement — fixed samples spread across the split redraw.
             if index < 5 { Thread.sleep(forTimeInterval: 0.15) }
         }
         settled(cols: 120); anchor()
@@ -517,6 +525,7 @@ final class TerminalResizeTests: TerminalInteractionTestCase {
             let from = terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.35))
             let to = terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.75))
             from.press(forDuration: 0.05, thenDragTo: to)
+            // Kept: the beat between drags, so each lands as its own gesture.
             Thread.sleep(forTimeInterval: 0.2)
         }
         wait { ($0["covered"] as? Bool) == false && ($0["markerRow"] as? Int) != 0 }

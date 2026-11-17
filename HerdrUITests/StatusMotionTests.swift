@@ -48,7 +48,7 @@ final class StatusMotionTests: XCTestCase {
     /// changes inside any of those frames. A stuck shape's pixels stay identical.
     private func moves(_ shape: XCUIElement) -> Bool {
         XCTAssertTrue(shape.exists(within: 10), "the status shape should be on screen")
-        usleep(250_000)
+        usleep(250_000)   // Kept: photos over time are the measurement of motion.
         let frame = shape.frame
         let first = XCUIScreen.main.screenshot()
         guard let firstPixels = pixels(of: frame, in: first) else {
@@ -57,7 +57,7 @@ final class StatusMotionTests: XCTestCase {
         }
         var changed = 0
         for _ in 0..<4 {
-            usleep(250_000)
+            usleep(250_000)   // Kept: the interval between photos.
             guard let photo = pixels(of: frame, in: XCUIScreen.main.screenshot()) else {
                 XCTFail("the status shape's frame \(frame) is not on the screen")
                 return false
@@ -114,11 +114,11 @@ final class StatusMotionTests: XCTestCase {
         let app = launchList()
         XCTAssertTrue(moves(ring(app)), "the working row's ring turns")
         app.buttons["Gram"].firstMatch.tap()
-        sleep(1)
+        sleep(1)   // Kept: a real stay on Gram, so the roster's shapes stop before they restart.
         app.buttons["Agents"].firstMatch.tap()
         XCTAssertTrue(moves(ring(app)), "back from Gram, the working row's ring turns again")
         app.buttons["Settings"].firstMatch.tap()
-        sleep(1)
+        sleep(1)   // Kept: as above, on Settings.
         app.buttons["Agents"].firstMatch.tap()
         XCTAssertTrue(moves(ring(app)), "back from Settings, the working row's ring turns again")
         app.terminate()
@@ -137,7 +137,7 @@ final class StatusMotionTests: XCTestCase {
 
         if !pad { app.buttons["Back"].firstMatch.tap() }
         app.buttons["Gram"].firstMatch.tap()
-        sleep(1)
+        sleep(1)   // Kept: a real stay on Gram, so the pane's dot stops before it restarts.
         app.buttons["Agents"].firstMatch.tap()
         if !pad {
             row.tap()
@@ -162,6 +162,9 @@ final class StatusMotionTests: XCTestCase {
         ])
         let row = app.staticTexts["herdr-app"].firstMatch
         XCTAssertTrue(row.exists(within: 15), "the roster should list the working agent")
+        // Kept, here and before every count below: each count is read one second after the
+        // screen changed, so a shape that starts moving again late is caught. A wait for the
+        // expected count would pass on a count that is right only for a moment.
         sleep(1)
         XCTAssertEqual(moving(app), 1, "the working row's ring turns on the roster")
 

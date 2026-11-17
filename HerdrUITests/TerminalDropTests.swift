@@ -76,6 +76,8 @@ final class TerminalDropTests: TerminalInteractionTestCase {
 
         drag("fixture-drag-text")
 
+        // Kept: a negative check — the drag must have had time to light the terminal or stage
+        // something (if it still could) before asserting that it did neither.
         Thread.sleep(forTimeInterval: 1)
         let after = probe()
         XCTAssertEqual(after["dropTargets"] as? Int, 0, "a text-only drag must not light the terminal: \(after)")
@@ -89,7 +91,8 @@ final class TerminalDropTests: TerminalInteractionTestCase {
         // The highlight a file drag shows, held on by the fixture: XCUITest cannot take a
         // screenshot while its own drag is in flight.
         command("drop-highlight-on")
-        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "terminal-drop-highlight")
+                        .firstMatch.exists(within: 5), "the fixture should hold the drop highlight on")
         attach("terminal-drop-highlight")
         command("drop-highlight-off")
     }

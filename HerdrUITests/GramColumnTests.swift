@@ -181,14 +181,24 @@ final class GramColumnTests: XCTestCase {
         // The width is the column's frame, not a row input: rows reflow in layout, but a drag's
         // many ticks must not re-run their bodies. One pass of the drawn rows is the bound;
         // per-tick invalidation would be many times that.
-        Thread.sleep(forTimeInterval: 1)
-        let drawnRows = Int((element(app, "gram-feed-messages").value as? String)?
-            .split(separator: " ").first ?? "") ?? 0
+        // Wait for the first pass to finish drawing (the feed reports its rows and the render
+        // count holds still across reads) so the baseline is not inflated by a pass still running.
+        var drawnRows = 0
+        var lastRenders = -2
+        _ = poll(10, every: 0.3) {
+            drawnRows = Int((element(app, "gram-feed-messages").value as? String)?
+                .split(separator: " ").first ?? "") ?? 0
+            let renders = rowRenders(app)
+            defer { lastRenders = renders }
+            return drawnRows > 0 && renders == lastRenders
+        }
         XCTAssertGreaterThan(drawnRows, 0, "the feed reports how many messages it draws")
         let rendersBeforeDrag = rowRenders(app)
         dragRightEdge(app, by: -shrink / 2)
         let narrowed = settle({ column.frame.width }, until: { abs($0 - (initial - shrink)) <= 4 })
         XCTAssertEqual(narrowed, initial - shrink, accuracy: 4, "each point of drag narrows the column by two")
+        // Kept: renders trailing the drag must land before they are counted; this is a window
+        // in which re-renders must NOT pile up, so there is no condition to wait on.
         Thread.sleep(forTimeInterval: 0.6)
         let dragRenders = rowRenders(app) - rendersBeforeDrag
         XCTAssertLessThanOrEqual(dragRenders, drawnRows, "a width drag re-rendered \(dragRenders) Gram rows (\(drawnRows) drawn)")
@@ -209,6 +219,8 @@ final class GramColumnTests: XCTestCase {
         record(app, "Gram column snapped to Readable with its readout")
 
         // Remembered: a relaunch that keeps the stored width shows Readable again.
+        // Kept: the chosen width is stored off the release and nothing in the UI reports the
+        // write, so give it time before the relaunch reads it back.
         Thread.sleep(forTimeInterval: 1)
         app.terminate()
         let again = launchGram(environment: hold.merging(["HERDR_MOCK_COLUMN_WIDTH": "keep"]) { _, new in new })

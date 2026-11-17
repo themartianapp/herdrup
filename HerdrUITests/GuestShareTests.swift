@@ -38,8 +38,9 @@ final class GuestShareTests: XCTestCase {
             .matching(NSPredicate(format: "label CONTAINS %@", needle)).firstMatch
     }
 
+    /// No settle wait: UI tests run with animations off, so sheets and rows are already in
+    /// place by the time the caller's own waits pass. The shots are receipts, not assertions.
     private func shoot(_ name: String) {
-        Thread.sleep(forTimeInterval: 0.8)   // let sheet and row animations settle
         attach(XCUIScreen.main.screenshot(), name)
     }
 

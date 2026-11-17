@@ -73,12 +73,7 @@ final class ServerUpdateUITests: XCTestCase {
     }
 
     private func waitForBadge(_ app: XCUIApplication, timeout: TimeInterval = 15) -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        repeat {
-            if settingsTabHasBadge(app) { return true }
-            Thread.sleep(forTimeInterval: 0.5)
-        } while Date() < deadline
-        return false
+        poll(timeout, every: 0.5) { settingsTabHasBadge(app) }
     }
 
     private func confirmUpdate(_ app: XCUIApplication, button: String = "Update") {
@@ -228,9 +223,11 @@ final class ServerUpdateUITests: XCTestCase {
         let app = launch("guest")
         let tab = settingsTab(app)
         XCTAssertTrue(tab.exists(within: 15))
+        // Kept: a negative check; the update check has time to (wrongly) badge the tab.
         sleep(3)
         XCTAssertFalse(settingsTabHasBadge(app), "no badge for a non-owner")
         openMachines(app)
+        // Kept: a negative check; the update check has time to (wrongly) show the card.
         sleep(3)
         XCTAssertFalse(card(app).exists, "no update card for a non-owner")
         record(app, "guest")

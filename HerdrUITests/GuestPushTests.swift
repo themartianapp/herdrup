@@ -52,6 +52,7 @@ final class GuestPushTests: XCTestCase {
             $0.contains(self.registration)
         }
         XCTAssertFalse(element(app, "guest-push-prompt").exists, "nothing to ask when iOS already allows")
+        // Kept: a negative check; a window in which a second registration would show up.
         Thread.sleep(forTimeInterval: 2)
         XCTAssertEqual(element(app, "guest-host-calls").label.components(separatedBy: "notifications.register_device").count - 1,
                        1, "one connection registers once: \(calls)")
@@ -87,6 +88,7 @@ final class GuestPushTests: XCTestCase {
         XCTAssertEqual(app.buttons["guest-push-action"].label, "Open Settings")
 
         openAgent(app)
+        // Kept: a negative check; a window in which a prompt or a registration would show up.
         Thread.sleep(forTimeInterval: 3)
         XCTAssertFalse(element(app, "guest-push-prompt").exists, "iOS won't ask again, so neither does the app")
         XCTAssertFalse(element(app, "guest-host-calls").label.contains("notifications.register_device"))

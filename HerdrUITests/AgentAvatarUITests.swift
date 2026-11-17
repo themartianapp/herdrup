@@ -88,6 +88,7 @@ final class AgentAvatarUITests: XCTestCase {
                 opened = true
             } else {
                 app.tap()   // dismiss the menu and retry once the probe has answered
+                // Kept: the retry loop's interval; the probe's answer has no UI of its own to wait on.
                 Thread.sleep(forTimeInterval: 1)
             }
         }

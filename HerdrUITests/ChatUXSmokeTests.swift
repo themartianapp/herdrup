@@ -53,9 +53,9 @@ final class ChatUXSmokeTests: XCTestCase {
 
     private func assertTailGap(_ app: XCUIApplication, _ moment: String) {
         var gap = tailGap(app)
-        for _ in 0..<10 where gap > 32 {
-            Thread.sleep(forTimeInterval: 0.3)
+        _ = poll(3, every: 0.3) {
             gap = tailGap(app)
+            return gap <= 32
         }
         XCTAssertGreaterThanOrEqual(gap, 0, "\(moment): the model label must sit above the composer")
         XCTAssertLessThanOrEqual(gap, 32, "\(moment): at most about 20 pt between the model label and the composer")
@@ -655,6 +655,20 @@ final class ChatUXSmokeTests: XCTestCase {
         return Int(probe.label) ?? -1
     }
 
+    /// The row render count once the chat has stopped drawing: two probe reads 0.6 s apart
+    /// (more than the probe's 250 ms poll) that agree. A baseline taken while the keyboard or
+    /// a layout is still redrawing rows would charge those rows to what the test does next.
+    private func settledRowRenders(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) -> Int {
+        var last = rowRenders(app)
+        let settled = poll(10, every: 0.6) {
+            let now = rowRenders(app)
+            defer { last = now }
+            return now == last && now >= 0
+        }
+        XCTAssertTrue(settled, "the chat kept drawing rows: \(last)", file: file, line: line)
+        return last
+    }
+
     /// TestFlight build 221 lagged on every keystroke in a long agent session: the page
     /// that holds the composer redrew the chat with each character, and the chat redrew
     /// every one of its ~650 rows. On a page shaped like that session (`HERDR_CHAT_UX_LONG_SESSION`)
@@ -669,12 +683,13 @@ final class ChatUXSmokeTests: XCTestCase {
         field.tap()
         XCTAssertTrue(app.keyboards.firstMatch.exists(within: 5))
         // The keyboard is up and the chat has settled over it.
-        Thread.sleep(forTimeInterval: 2)
-        let before = rowRenders(app)
+        let before = settledRowRenders(app)
         XCTAssertGreaterThan(before, 0, "the chat's rows were drawn")
         let typed = "typing thirty chars into chat."
         XCTAssertEqual(typed.count, 30)
         field.typeText(typed)
+        // Kept: a negative window. Typing must draw no row; this gives any row it did draw time
+        // to land in the probe (polled every 250 ms) before the count is read.
         Thread.sleep(forTimeInterval: 1.5)
         let spent = rowRenders(app) - before
         XCTAssertEqual(spent, 0, "typing 30 characters re-rendered \(spent) transcript rows")
@@ -696,7 +711,8 @@ final class ChatUXSmokeTests: XCTestCase {
             let middle = chat.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
             let step = min(180, max(60, frame.minY < top ? top - frame.minY : frame.maxY - bottom))
             middle.press(forDuration: 0.05, thenDragTo: middle.withOffset(CGVector(dx: 0, dy: frame.minY < top ? step : -step)))
-            Thread.sleep(forTimeInterval: 0.8)
+            // The drag's scroll comes to rest before the next frame read aims the next step.
+            element.waitForSettledFrame()
         }
         XCTFail("\(what) never came into view: \(element.frame)", file: file, line: line)
     }
@@ -741,6 +757,7 @@ final class ChatUXSmokeTests: XCTestCase {
         for _ in 0..<10 {
             pixels = try XCTUnwrap(ScreenPixels(app.screenshot()))
             if pixels.count(string, in: swift.frame.intersection(window)) > 0 { break }
+            // Kept: the poll interval between screenshots.
             Thread.sleep(forTimeInterval: 0.5)
         }
         record(app, "chat-colours")
@@ -763,6 +780,7 @@ final class ChatUXSmokeTests: XCTestCase {
         for _ in 0..<10 {
             pixels = try XCTUnwrap(ScreenPixels(app.screenshot()))
             if pixels.count(string, in: bash.frame.intersection(window)) > 0 { break }
+            // Kept: the poll interval between screenshots.
             Thread.sleep(forTimeInterval: 0.5)
         }
         record(app, "chat-colours-code")
@@ -782,9 +800,9 @@ final class ChatUXSmokeTests: XCTestCase {
         XCTAssertTrue(field.exists(within: 5))
         field.tap()
         XCTAssertTrue(app.keyboards.firstMatch.exists(within: 5))
-        Thread.sleep(forTimeInterval: 2)
-        let before = rowRenders(app)
+        let before = settledRowRenders(app)
         field.typeText("colours stay put while typing")
+        // Kept: a negative window, as in testTypingInTheComposerDoesNotReRenderTheTranscript.
         Thread.sleep(forTimeInterval: 1.5)
         XCTAssertEqual(rowRenders(app) - before, 0, "typing re-rendered transcript rows")
     }
@@ -1096,11 +1114,12 @@ final class ChatUXSmokeTests: XCTestCase {
         // The width is the column's frame, not a row input: rows reflow in layout, but a drag's
         // many ticks must not re-run their bodies. One full pass of the drawn rows (at most
         // the ~40-row window) is the bound; per-tick invalidation would be many times that.
-        Thread.sleep(forTimeInterval: 1)
-        let rendersBeforeDrag = rowRenders(app)
+        let rendersBeforeDrag = settledRowRenders(app)
         dragRightEdge(app, by: -shrink / 2)
         let narrowed = settle({ column.frame.width }, until: { abs($0 - (initial - shrink)) <= 4 })
         XCTAssertEqual(narrowed, initial - shrink, accuracy: 4, "each point of drag narrows the column by two")
+        // Kept: the window for the drag's row renders to reach the probe (polled every 250 ms);
+        // reading sooner would undercount them and pass a drag that re-renders per tick.
         Thread.sleep(forTimeInterval: 0.6)
         let dragRenders = rowRenders(app) - rendersBeforeDrag
         XCTAssertLessThanOrEqual(dragRenders, 40, "a width drag re-rendered \(dragRenders) transcript rows")
@@ -1120,6 +1139,8 @@ final class ChatUXSmokeTests: XCTestCase {
         record(app, "Chat column snapped to Readable with its readout")
 
         // Remembered: a relaunch that keeps the stored width shows Readable again.
+        // Kept: time for the stored width (`@AppStorage`) to reach disk before the app is
+        // killed; nothing on screen shows the write landed.
         Thread.sleep(forTimeInterval: 1)
         app.terminate()
         let again = launch(environment: hold.merging(["HERDR_MOCK_COLUMN_WIDTH": "keep"]) { _, new in new })

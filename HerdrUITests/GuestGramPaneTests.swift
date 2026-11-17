@@ -65,7 +65,7 @@ final class GuestGramPaneTests: XCTestCase {
             $0.contains("gram.mark_read:gm-2,gm-4")
         }
         XCTAssertTrue(badge.gone(within: 5), "nothing is unread once seen")
-        Thread.sleep(forTimeInterval: 0.8)
+        rows[3].waitForSettledFrame()
         attach(app, "guest-gram-tab")
         XCTAssertEqual(probe(app, "guest-forbidden-calls"), "", "the Gram tab calls only what a guest may")
     }
@@ -96,7 +96,7 @@ final class GuestGramPaneTests: XCTestCase {
         XCTAssertFalse(app.buttons["guest-find"].exists, "Find is the terminal's")
         XCTAssertFalse(app.buttons["guest-refresh"].exists, "Reconnect is the terminal's")
         XCTAssertTrue(app.buttons["guest-actions"].exists, "the ⋯ stays for notifications")
-        Thread.sleep(forTimeInterval: 0.8)
+        newest.waitForSettledFrame()
         attach(app, "guest-gram-oldest-first")
         XCTAssertEqual(probe(app, "guest-forbidden-calls"), "")
     }
@@ -149,6 +149,7 @@ final class GuestGramPaneTests: XCTestCase {
         XCTAssertFalse(app.buttons["guest-gram-file-gm-0"].exists, "nothing offers it to open")
 
         chip.tap()
+        // Kept: an inert tap must have had time to act before "nothing was fetched" means anything.
         Thread.sleep(forTimeInterval: 1.5)
         XCTAssertFalse(probe(app, "guest-host-calls").contains("gram.get_file_chunk:gm-0"),
                        "tapping the expired chip fetches nothing")
@@ -173,6 +174,7 @@ final class GuestGramPaneTests: XCTestCase {
                 attach(app, "guest-gram-file-open")
                 app.buttons[label].tap()
             }
+            // Kept: the poll loop's interval between re-checks of the probe.
             Thread.sleep(forTimeInterval: 0.5)
         }
         XCTAssertTrue(opened(calls), "the file should download and open: \(calls)")
@@ -189,6 +191,7 @@ final class GuestGramPaneTests: XCTestCase {
             let app = launch(features: features)
             XCTAssertTrue(element(app, "guest-terminal").exists(within: 10))
             XCTAssertTrue(element(app, "guest-view-only-note").exists(within: 10))
+            // Kept: a negative check; the features answer must have had time to add a Gram tab.
             Thread.sleep(forTimeInterval: 3)
             XCTAssertFalse(app.buttons["guest-tab-gram"].exists, "no Gram tab for features \(String(describing: features))")
             XCTAssertFalse(element(app, "guest-push-prompt").exists, "no push offer without push")

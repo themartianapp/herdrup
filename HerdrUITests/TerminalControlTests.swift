@@ -521,6 +521,7 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
                       "the prompt should name the picked file: \(delivered["lastPrompt"] ?? "")")
         XCTAssertTrue(poll(15, every: 0.25) { !chip.exists },
                       "the chip should clear once the prompt is delivered")
+        // Kept: a negative check — a duplicate prompt or post must have had time to arrive.
         Thread.sleep(forTimeInterval: 1)
         let settled = probe()
         XCTAssertEqual(settled["prompts"] as? Int, 1, "one prompt: \(settled)")
@@ -559,7 +560,8 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
         field.typeText("one")
         let send = app.buttons["terminal-send-button"]
         XCTAssertTrue(send.exists(within: 5))
-        Thread.sleep(forTimeInterval: 0.6)
+        field.waitForSettledFrame()
+        send.waitForSettledFrame()
         let oneLine = field.frame
         let sendBottom = send.frame.maxY
         XCTAssertEqual(oneLine.midY, send.frame.midY, accuracy: 4,
@@ -567,7 +569,9 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
         XCTAssertLessThan(oneLine.maxX, send.frame.minX, "the text sits beside the buttons")
 
         field.typeText(String(repeating: " wrapped", count: 60))
-        Thread.sleep(forTimeInterval: 0.6)
+        _ = poll(5, every: 0.1) { field.frame.height > oneLine.height }
+        field.waitForSettledFrame()
+        send.waitForSettledFrame()
         let wrapped = field.frame
         XCTAssertGreaterThan(wrapped.height, oneLine.height)
         XCTAssertEqual(send.frame.maxY, sendBottom, accuracy: 2)
@@ -578,7 +582,7 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
         attach("terminal-composer-toolbar")
 
         field.typeText(String(repeating: " overflow", count: 20) + " tail-token")
-        Thread.sleep(forTimeInterval: 0.3)
+        field.waitForSettledFrame()
         XCTAssertEqual(field.frame.height, wrapped.height, accuracy: 2)
         XCTAssertEqual(send.frame.maxY, sendBottom, accuracy: 2)
         XCTAssertTrue((field.value as? String)?.contains("tail-token") == true)
@@ -625,6 +629,8 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
         command("reply-dictation")
         XCTAssertTrue(poll(8, every: 0.25) { (field.value as? String)?.hasSuffix("dictation-tail") == true },
                       "the dictated text should arrive in the reply field")
+        // Kept: the field's scroll to the end of the dictated text is not visible in the
+        // accessibility tree (only its content offset moves), so there is nothing to poll.
         Thread.sleep(forTimeInterval: 0.6)
         attach("terminal-composer-dictation")
 
@@ -648,13 +654,15 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
         XCTAssertTrue(send.exists(within: 5))
         func inToolbar() -> Bool { field.frame.maxY <= send.frame.minY + 1 }
         func inOneRow() -> Bool { abs(field.frame.midY - send.frame.midY) <= 4 }
-        Thread.sleep(forTimeInterval: 0.4)
+        field.waitForSettledFrame()
+        send.waitForSettledFrame()
         XCTAssertTrue(inOneRow(), "premise: a short reply starts in one row")
 
         var words = 0
         while !inToolbar() && words < 80 {
             field.typeText(" wrap")
             words += 1
+            // Kept: the loop's interval — lets the layout follow each word before re-checking.
             Thread.sleep(forTimeInterval: 0.25)
         }
         XCTAssertTrue(inToolbar(), "premise: the text wrapped into the toolbar layout")
@@ -664,6 +672,7 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
         while !inOneRow() && deleted < 40 {
             field.typeText(XCUIKeyboardKey.delete.rawValue)
             deleted += 1
+            // Kept: the loop's interval — lets the layout follow each delete before re-checking.
             Thread.sleep(forTimeInterval: 0.25)
         }
         XCTAssertTrue(inOneRow(), "text that fits again returns to the single row")
@@ -808,10 +817,14 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
         field.typeText("one")
         let send = app.buttons["terminal-send-button"]
         XCTAssertTrue(send.exists(within: 5))
-        // Focus may move the keyboard (or a hardware keyboard's bar): let that settle
-        // before taking the baseline.
-        Thread.sleep(forTimeInterval: 1.5)
-        wait { ($0["covered"] as? Bool) == false }
+        // Focus may move the keyboard (or a hardware keyboard's bar): wait for the composer
+        // to stop moving and the terminal grid to commit before taking the baseline.
+        field.waitForSettledFrame()
+        wait {
+            ($0["covered"] as? Bool) == false
+                && ($0["rows"] as? Int) == ($0["commitRows"] as? Int)
+                && ($0["cols"] as? Int) == ($0["commitCols"] as? Int)
+        }
         let before = probe()
         let oneLine = field.frame
 
@@ -819,9 +832,11 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
         let handle = app.descendants(matching: .any)["composer-expand-handle"].firstMatch
         if handle.exists(within: 3) {
             handle.tap()
-            Thread.sleep(forTimeInterval: 0.8)
+            field.waitForSettledFrame()
             handle.tap()
         }
+        // Kept: a negative check — a resize or cover the growth wrongly caused must have had
+        // time to land before the counters are compared.
         Thread.sleep(forTimeInterval: 1.5)
         XCTAssertGreaterThan(field.frame.height, oneLine.height, "premise: the composer grew")
         let after = probe()
@@ -851,6 +866,7 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
         let before = probe()
 
         command("keyboard-nudge")
+        // Kept: a negative check — a wrongly retained frame must have had time to install.
         Thread.sleep(forTimeInterval: 1.5)
         let after = probe()
         XCTAssertEqual(after["coverInstalls"] as? Int, before["coverInstalls"] as? Int,
