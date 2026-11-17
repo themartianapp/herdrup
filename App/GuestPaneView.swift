@@ -167,6 +167,10 @@ struct GuestPaneView: View {
         }
         .background(pageGround.ignoresSafeArea())
         .overlay { EdgeSwipeBack { onClose() } }
+        // On the page, not the chat, which unmounts in the background (`chatSheets`).
+        .chatSheets(client: client, model: chatModel,
+                    viewer: .guest(name: access.guestName, ownerName: access.ownerName),
+                    presents: showingChat, onOpenTerminal: { tab = .terminal })
         .task { await pollLoop() }
         // Once the host's features are known: register for push (or explain it, when iOS
         // hasn't asked yet) and load Gram, so the unread count shows before the guest opens
