@@ -62,7 +62,8 @@ final class ChatModel: ObservableObject {
     @Published private(set) var answerProblem: ChatAnswerProblem?
     /// The guest's host keeps answers for the owner (a host older than guest answers): it
     /// withheld `answerable` from a question the buttons could answer, or refused a guest's
-    /// answer or menu key (`guest_forbidden`). Questions wait for the owner for the session.
+    /// `agent.answer` or `agent.answer_form` (`guest_forbidden`). A refused menu key is no
+    /// such signal (herdrup#714). Questions wait for the owner for the session.
     @Published private(set) var answersRefused = false
     /// The server reads and answers omp's HTML-form asks (`ask_form`); nil until its ping answered.
     @Published private(set) var formsSupported: Bool?
@@ -262,11 +263,6 @@ final class ChatModel: ObservableObject {
                                               offersTerminal: false)
         }
         await store.refresh(client: client)
-    }
-
-    /// A guest's host refused a guest's menu key: stop offering guest answers this session.
-    func noteAnswersRefused() {
-        answersRefused = true
     }
 
     /// Keeps the chat current while it is on screen: the agent's own events where the
@@ -2260,8 +2256,9 @@ private struct IdentifiedNote: Identifiable {
 
 /// omp's `ask` question. Open and answerable: the options are buttons (the recommended
 /// one, else the first, primary), for a guest as for the owner. A guest whose host refuses
-/// guest answers (an older host): the options read-only with "Waiting for <owner> to
-/// answer". Answered: "You chose …".
+/// guest answers (it withholds `answerable`, or refused one with `guest_forbidden`): the
+/// options read-only with "Waiting for <owner> to answer". A question the chat cannot
+/// answer goes to the Terminal. Answered: "You chose …".
 struct ChatAskCard: View {
     let id: String
     let ask: TranscriptAsk
@@ -2386,7 +2383,15 @@ struct ChatAskCard: View {
             .padding(.top, 10)
         } else if !canAnswer {
             // A multi-part or multi-select question: the chat shows it, the terminal answers it.
-            terminalButton.padding(.top, 10)
+            VStack(alignment: .leading, spacing: 8) {
+                if viewer.isGuest {
+                    Text("This question needs the Terminal").font(Typography.app(13 * textScale))
+                        .foregroundStyle(Palette.waiting)
+                        .accessibilityIdentifier("chat-ask-needs-terminal")
+                }
+                terminalButton
+            }
+            .padding(.top, 10)
         }
     }
 
