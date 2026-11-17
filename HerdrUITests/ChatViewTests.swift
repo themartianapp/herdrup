@@ -388,6 +388,38 @@ final class ChatViewTests: XCTestCase {
         XCTAssertTrue(app.buttons["chat-jump-latest"].waitForExistence(timeout: 4), "the down arrow shows")
     }
 
+    /// #711, a regression from #672: `.background` unmounts the chat (`ScenePhase.mountsChat`).
+    /// Its sheets were ChatView `@State` presented by ChatView, so a note open when the app went
+    /// to the background was gone on return. The page keeps and presents them (`chatSheets`).
+    func testOpenNoteSheetSurvivesABackgroundRoundTrip() {
+        let app = launch("chatview")
+        openAgent("herdr-app", in: app)
+        let chat = app.descendants(matching: .any)["chat-view"].firstMatch
+        XCTAssertTrue(chat.waitForExistence(timeout: 10))
+        XCTAssertTrue(poll(8, every: 0.3) { self.turns(chat) > 0 }, "the newest page should load")
+
+        let note = app.buttons["chat-note"].firstMatch
+        XCTAssertTrue(note.waitForExistence(timeout: 8), app.debugDescription)
+        for _ in 0..<8 where !note.isHittable { chat.swipeDown(velocity: .slow) }
+        XCTAssertTrue(note.isHittable, "the newest turn's note card should come into view")
+        note.tap()
+        let sheet = app.descendants(matching: .any)["chat-note-sheet"].firstMatch
+        let done = app.buttons["chat-note-done"]
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(done.exists)
+
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(app.wait(for: .runningBackground, timeout: 10))
+        app.activate()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5), "the note sheet stays open across the background")
+        XCTAssertTrue(done.exists, "the same sheet, with its Done")
+
+        done.tap()
+        XCTAssertTrue(sheet.waitForNonExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(chat.waitForExistence(timeout: 10), "the chat remounted under the sheet")
+    }
+
     /// The thought line and the steps line expand.
     func testThoughtAndStepsExpand() {
         let app = launch("chatview")

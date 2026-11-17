@@ -6024,6 +6024,10 @@ struct TerminalPaneContent: View {
         // recognizer to the WINDOW, so N keep-mounted panes would otherwise stack N
         // recognizers that all fire on one edge swipe.
         .overlay { if isForeground { EdgeSwipeBack { onClose() } } }
+        // The chat's sheets hang on the page, not on the chat: it unmounts in the background
+        // (`ScenePhase.mountsChat`) and an open note or question must still be open on return.
+        .chatSheets(client: client, model: chatModel, viewer: .owner, presents: showingChat && isForeground,
+                    onOpenTerminal: { setShowsChat(false) })
         // Kept-alive panes behind the front one, Gram or Settings hold their status dot still,
         // and so does the front one while the scene is inactive, like the roster's rings.
         .environment(\.statusMotion, isForeground && scenePhase == .active)
