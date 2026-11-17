@@ -430,8 +430,17 @@ struct GuestGramConversation: View {
         .refreshable { await inbox.refresh(selection) }
         .frame(maxHeight: .infinity)
         .task(id: "\(merge.floorUnixMs ?? 0)/\(merge.hiddenCount)/\(failure != nil)") {
-            guard failure == nil else { return }
-            await pageEarlier()
+            // Until something shows or a page fails. An answer that changed nothing (another
+            // fetch for the same feed was still out, or a refresh replaced the end of its
+            // list) changes no key either, so ask again here rather than spin forever.
+            while !Task.isCancelled, pageError == nil {
+                let now = inbox.merge(selection)
+                guard now.items.isEmpty, now.hasMore else { return }
+                await pageEarlier()
+                let after = inbox.merge(selection)
+                guard after.floorUnixMs == now.floorUnixMs, after.hiddenCount == now.hiddenCount else { return }
+                try? await Task.sleep(for: .milliseconds(500))
+            }
         }
     }
 

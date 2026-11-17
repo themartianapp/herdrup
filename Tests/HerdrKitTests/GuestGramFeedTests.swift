@@ -123,6 +123,45 @@ final class GuestGramFeedTests: XCTestCase {
         XCTAssertFalse(feed.hasMore)
     }
 
+    /// CI (#702, j_5b6a9810 / j_359c2da7): the conversation opens with a refresh and, when the
+    /// strict floor hides every row, an older page at once. A refresh that lands while the
+    /// page is out but leaves the list ending at the page's cursor must not drop the page's
+    /// answer: a failure is kept (the screen offers Retry) and a page is appended. Dropping
+    /// them left the floor pager spinning forever.
+    func testARefreshKeepingTheCursorDoesNotDropTheOlderPage() async throws {
+        let failure = #"{"id":"$ID","error":{"code":"internal","message":"gram store busy"}}"#
+        do {
+            let host = OutOfOrderHost(replies: [Self.page(["z"], hasMore: true), failure, Self.page(["z"], hasMore: true)],
+                                      held: [1])
+            let client = HerdrClient(transport: host)
+            let feed = GuestGramFeed()
+            await feed.refresh(client: client)
+            let more = Task { () -> Error? in
+                do { try await feed.loadMore(client: client); return nil } catch { return error }
+            }
+            await waitUntil(host, started: 2)
+            await feed.refresh(client: client)
+            host.release(1)
+            let thrown = await more.value
+            XCTAssertNotNil(thrown, "the failure reaches the caller")
+            XCTAssertNotNil(feed.pageError, "and is kept: the list still ends at the failed page's cursor")
+        }
+        do {
+            let host = OutOfOrderHost(replies: [Self.page(["z"], hasMore: true), Self.page(["y"]), Self.page(["z"], hasMore: true)],
+                                      held: [1])
+            let client = HerdrClient(transport: host)
+            let feed = GuestGramFeed()
+            await feed.refresh(client: client)
+            let more = Task { try? await feed.loadMore(client: client) }
+            await waitUntil(host, started: 2)
+            await feed.refresh(client: client)
+            host.release(1)
+            _ = await more.value
+            XCTAssertEqual(feed.messages.map(\.id), ["z", "y"], "the page below the unchanged cursor is appended")
+            XCTAssertFalse(feed.hasMore)
+        }
+    }
+
     /// Review 2 (#702): an older page that fails is kept as state, not only thrown, so a
     /// conversation whose rows the strict floor all hides can offer Retry; the next page
     /// that lands, or a refresh, clears it.

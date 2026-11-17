@@ -291,8 +291,6 @@ public final class GuestGramFeed {
     public var onChange: (() -> Void)?
 
     private var gate = AgentRosterLoadGate()
-    /// Bumped whenever a refresh replaces the list, so an older page fetched before it is dropped.
-    private var listVersion = 0
     private var loadingMore = false
     private var marks = GuestGramReadMarks()
 
@@ -327,7 +325,6 @@ public final class GuestGramFeed {
                 ? messages.filter { !headIDs.contains($0.id) && $0.createdUnixMs < oldest } : []
             messages = head + older
             if older.isEmpty { hasMore = page.hasMore }
-            listVersion += 1
             lastError = nil
             pageError = nil
         case .failure(let error):
@@ -338,7 +335,8 @@ public final class GuestGramFeed {
         return true
     }
 
-    /// The next older page. Dropped if a refresh replaced the list meanwhile. A failure is
+    /// The next older page. Dropped if a refresh meanwhile replaced the message it was asked
+    /// below (`applies`). A failure is
     /// THROWN rather than kept in `lastError`, for the caller to show where the reader asked
     /// for the page (the feed's top sentinel) with a retry, as the owner's inbox does; it is
     /// also kept in `pageError` until a page lands or a refresh replaces the list.
@@ -346,23 +344,28 @@ public final class GuestGramFeed {
         guard hasMore, !loadingMore, let last = messages.last else { return }
         loadingMore = true
         defer { loadingMore = false }
-        let version = listVersion
+        let cursor = last.id
         let page: GuestGramPage
         do {
-            page = try await client.guestGramList(limit: Self.pageSize, beforeID: last.id)
+            page = try await client.guestGramList(limit: Self.pageSize, beforeID: cursor)
         } catch {
-            guard listVersion == version, !(error is CancellationError) else { return }
+            guard applies(cursor), !(error is CancellationError) else { return }
             pageError = error
             onChange?()
             throw error
         }
-        guard listVersion == version else { return }
+        guard applies(cursor) else { return }
         let known = Set(messages.map(\.id))
         messages += page.messages.filter { !known.contains($0.id) }
         hasMore = page.hasMore
         pageError = nil
         onChange?()
     }
+
+    /// An older page's answer still belongs to the list: it ends at the page's cursor. A
+    /// refresh that landed meanwhile and kept that end (the newest page unchanged, or older
+    /// pages kept below it) leaves the page valid; one that replaced the end drops it.
+    private func applies(_ cursor: String) -> Bool { messages.last?.id == cursor }
 
     /// The reader asked to retry the failed older page: the failure clears so the view's
     /// paging asks again (and keeps it again if that fails too).
