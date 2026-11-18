@@ -132,6 +132,89 @@ final class GuestShellTests: XCTestCase {
         XCTAssertTrue(card.waitForExistence(timeout: 10), "Back should return to the Settings index")
     }
 
+    /// #735: a guest's Settings › Text size › Terminal text is the guest's own size, the one
+    /// the shared pane shows; the owner's `terminal.fontSize` stays where it was.
+    func testGuestTerminalTextSizeChangesTheSharedPaneOnly() {
+        let app = openGuestSettings()
+        let textSize = app.staticTexts["Text size"].firstMatch
+        for _ in 0..<4 where !textSize.exists || !textSize.isHittable { app.swipeUp() }
+        XCTAssertTrue(textSize.waitForExistence(timeout: 10), "Preferences should offer Text size")
+        textSize.tap()
+
+        let value = app.staticTexts["settings-terminal-font-value"]
+        XCTAssertTrue(value.waitForExistence(timeout: 10), "Text size should show the terminal text size")
+        XCTAssertEqual(value.label, "12.5 pt", "a guest starts from the guest default")
+        let increase = app.buttons["settings-terminal-font-increase"]
+        increase.tap()
+        XCTAssertTrue(poll(3, every: 0.2) { value.label == "13.5 pt" }, "A+ should step the shown size, got \(value.label)")
+        increase.tap()
+        XCTAssertTrue(poll(3, every: 0.2) { value.label == "14.5 pt" }, "A+ should step the shown size, got \(value.label)")
+        let owner = app.descendants(matching: .any)["settings-owner-terminal-font"]
+        XCTAssertTrue(owner.waitForExistence(timeout: 5), "the DEBUG owner-size probe should exist")
+        XCTAssertEqual(owner.label, "12.5", "a guest's Terminal text must not move the owner's terminal.fontSize")
+        attach(app, "guest-settings-text-size")
+
+        let inTabBar = app.tabBars.firstMatch.buttons["Agents"]
+        let agentsTab = inTabBar.exists ? inTabBar : app.buttons["Agents"].firstMatch
+        for _ in 0..<3 where !agentsTab.isSelected {
+            agentsTab.tap()
+            _ = poll(3, every: 0.25) { agentsTab.isSelected }
+        }
+        let row = app.buttons["guest-agent-row"]
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        row.tap()
+        let probe = app.descendants(matching: .any)["terminal-grid-probe"]
+        XCTAssertTrue(poll(10, every: 0.25) { probe.exists && probe.label.contains("font=14.5") },
+                      "the shared pane should show the size set in Settings: \(probe.exists ? probe.label : "no probe")")
+    }
+
+    /// #735: Settings' "omp agents open in" is shown to guests and decides where a shared omp
+    /// agent opens: with Terminal chosen, the pane opens on Terminal, Chat still a tab away.
+    func testGuestOmpOpensInTerminalWhenSettingsSaySo() {
+        let app = openGuestSettings(environment: ["HERDR_MOCK_GUEST_CHAT": "1"])
+        let picker = app.buttons["settings-omp-opens-in"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 10), "guest Settings should offer the omp default")
+        for _ in 0..<6 where !app.frame.contains(picker.frame) { app.swipeUp() }
+        XCTAssertEqual(picker.value as? String, "Chat", "Chat should be the default")
+        // As in ChatViewTests.testSettingsDefaultDecidesWhereOmpOpens: tap the item once it is
+        // hittable, and reopen the menu if the first choice did not take.
+        for _ in 0..<2 where picker.value as? String != "Terminal" {
+            picker.tap()
+            let terminalChoice = app.buttons["Terminal"].firstMatch
+            XCTAssertTrue(poll(5, every: 0.2) {
+                terminalChoice.exists && !terminalChoice.frame.isEmpty && terminalChoice.isHittable
+            }, "the menu should offer Terminal")
+            terminalChoice.tap()
+            _ = poll(3, every: 0.3) { picker.value as? String == "Terminal" }
+        }
+        XCTAssertEqual(picker.value as? String, "Terminal", "the picker should now read Terminal")
+
+        let inTabBar = app.tabBars.firstMatch.buttons["Agents"]
+        let agentsTab = inTabBar.exists ? inTabBar : app.buttons["Agents"].firstMatch
+        for _ in 0..<3 where !agentsTab.isSelected {
+            agentsTab.tap()
+            _ = poll(3, every: 0.25) { agentsTab.isSelected }
+        }
+        let row = app.buttons["guest-agent-row"]
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        row.tap()
+        // The Chat tab appears once the host's capabilities say it serves the transcript: the
+        // moment the pane used to switch to Chat.
+        let chatTab = app.buttons["guest-tab-chat"]
+        XCTAssertTrue(chatTab.waitForExistence(timeout: 12), "a shared omp agent should still offer Chat")
+        let terminalTab = app.buttons["guest-tab-terminal"]
+        XCTAssertTrue(poll(2, every: 0.2) { terminalTab.isSelected } && !chatTab.isSelected,
+                      "with Terminal chosen, the shared omp agent should open on Terminal")
+        Thread.sleep(forTimeInterval: 1)
+        XCTAssertTrue(terminalTab.isSelected, "the pane must not switch to Chat after opening")
+        XCTAssertFalse(app.descendants(matching: .any)["chat-view"].firstMatch.exists)
+        attach(app, "guest-omp-opens-in-terminal")
+
+        chatTab.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["chat-view"].firstMatch.waitForExistence(timeout: 8),
+                      "Chat stays a tab away")
+    }
+
     /// Connect your own machine closes the share onto the machine list with its own-machine
     /// setup open, whose Scan reaches pairing (and its Paste).
     func testConnectYourOwnMachineReachesPairing() {
