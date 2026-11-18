@@ -864,20 +864,28 @@ final class TranscriptStoreTests: XCTestCase {
             reply("63568b78:reply", 1_794_754_428_208, "I'll tell you."),
             end("63568b78:end", 1_794_754_431_057),
         ]
-        // As herdr 0.9.5 sent it, and as a herdr that lists what it re-sent (`resent`).
+        // As herdr 0.9.5 sent it, and as a herdr that lists what it re-sent (`resent`). Without
+        // the list the after page is not merged: the store reloads the newest page, which by
+        // then holds the appended turn.
         let shapes: [[String]?] = [nil, ["abe83412", "f505eb3c", "23cbfb00", "bcf1ae30"]]
         for marks in shapes {
+            var newestRequests = 0
             let (client, transport) = scripted { params in
-                params["after"] == nil
-                    ? Self.page(newest, before: "b1", after: "a1", session: "01a086e3")
-                    : Self.page(resent + appended, after: "a2", session: "01a086e3", resent: marks)
+                guard params["after"] == nil else {
+                    return Self.page(resent + appended, after: "a2", session: "01a086e3", resent: marks)
+                }
+                newestRequests += 1
+                return Self.page(newestRequests == 1 ? newest : newest + appended,
+                                 before: "b1", after: newestRequests == 1 ? "a1" : "a3", session: "01a086e3")
             }
             let store = TranscriptStore(target: "w1:p9Y")
             await store.refresh(client: client)
             let outgoing = store.stageOutgoing(text: "When will it be ready?", author: .guest(name: nil))
             await store.refresh(client: client)
             // The poll says what it holds: the newest page, from its `before` cursor on.
-            XCTAssertEqual(transport.requests.last?.params["held_from"] as? String, "b1")
+            let poll = transport.requests.last { $0.params["after"] != nil }
+            XCTAssertEqual(poll?.params["held_from"] as? String, "b1")
+            XCTAssertEqual(newestRequests, marks == nil ? 2 : 1, "resent: \(String(describing: marks))")
 
             XCTAssertEqual(store.entries.map(\.id), [
                 "a7902a04", "c2592b34:reply", "c2592b34:end", "bcf1ae30", "b46a7d09:reply", "b46a7d09:end",
@@ -938,24 +946,71 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertEqual(store.entries.map(\.id), ["u", "r", "e", "p", "n"])
     }
 
-    func testAfterPageStillDropsUnloadedOriginMarkedPromptReplays() async throws {
+    func testAfterPageWithoutResentReloadsRatherThanDropAReplayGuess() async throws {
         // Guards the #684 chat wall against a herdr that does not list what it re-sent (no
         // `resent`): an unknown marked prompt older than the oldest held, with history
-        // unloaded, is taken for a replay an older page brings; a newer one is kept.
-        let (client, _) = scripted { params in
-            params["after"] == nil
-                ? Self.page([Self.timed("u", 2000, "user", extra: #""text":"hi","author":"owner""#)],
-                            before: "b1", after: "a1")
-                : Self.page([
+        // unloaded, is not appended after the newest turn. The page is not merged; the newest
+        // page replaces it, and there a replay is history (not in it) and a newer one is kept.
+        var newestRequests = 0
+        let (client, transport) = scripted { params in
+            guard params["after"] == nil else {
+                return Self.page([
                     Self.timed("old", 1999, "user", extra: Self.guestPrompt),
                     Self.timed("new", 2001, "user", extra: Self.guestPrompt),
                 ], after: "a2")
+            }
+            newestRequests += 1
+            let owner = Self.timed("u", 2000, "user", extra: #""text":"hi","author":"owner""#)
+            return newestRequests == 1
+                ? Self.page([owner], before: "b1", after: "a1")
+                : Self.page([owner, Self.timed("new", 2001, "user", extra: Self.guestPrompt)],
+                            before: "b1", after: "a3")
         }
         let store = TranscriptStore(target: "w1:p9Y")
         await store.refresh(client: client)
         await store.refresh(client: client)
         XCTAssertEqual(store.entries.map(\.id), ["u", "new"])
         XCTAssertTrue(store.hasOlder)
+        await store.refresh(client: client)
+        XCTAssertEqual(transport.requests.last?.params["after"] as? String, "a3",
+                       "the next poll goes on from the reloaded page")
+    }
+
+    func testAfterPageWithoutResentKeepsANewGuestPromptOlderThanTheWindow() async throws {
+        // #736: a guest prompt appended after a clock rollback is older than the held owner
+        // prompt. Without `resent` the page cannot tell it from a replay, so instead of
+        // dropping it (and moving the cursor past it) the store reloads the newest page,
+        // which holds it; with `resent: []` it is merged as new. Either way the prompt and its
+        // reply are shown and the reply answers the guest's turn.
+        for marks: [String]? in [nil, []] {
+            var newestRequests = 0
+            let (client, transport) = scripted { params in
+                guard params["after"] == nil else {
+                    return Self.page([
+                        Self.timed("g", 1999, "user", extra: Self.guestPrompt),
+                        Self.timed("r", 2001),
+                    ], after: "a2", resent: marks)
+                }
+                newestRequests += 1
+                let owner = Self.timed("u", 2000, "user", extra: #""text":"hi","author":"owner""#)
+                return newestRequests == 1
+                    ? Self.page([owner], before: "b1", after: "a1")
+                    : Self.page([owner, Self.timed("g", 1999, "user", extra: Self.guestPrompt),
+                                 Self.timed("r", 2001)], before: "b1", after: "a3")
+            }
+            let label = "resent: \(String(describing: marks))"
+            let store = TranscriptStore(target: "w1:p9Y")
+            await store.refresh(client: client)
+            XCTAssertTrue(store.hasOlder)
+            await store.refresh(client: client)
+            XCTAssertEqual(store.entries.map(\.id), ["u", "g", "r"], label)
+            XCTAssertEqual(store.turns.map(\.id), ["u", "g"], label)
+            XCTAssertEqual(store.turns.last?.items.map(\.id), ["r"], label)
+            XCTAssertTrue(store.hasOlder, label)
+            XCTAssertEqual(newestRequests, marks == nil ? 2 : 1, label)
+            await store.refresh(client: client)
+            XCTAssertEqual(transport.requests.last?.params["after"] as? String, marks == nil ? "a3" : "a2", label)
+        }
     }
 
     func testAfterPageWithResentListKeepsANewGuestPromptOlderThanTheWindow() async throws {

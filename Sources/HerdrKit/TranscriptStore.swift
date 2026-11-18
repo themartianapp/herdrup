@@ -334,7 +334,7 @@ public final class TranscriptStore {
                 await reload(client: client)
                 return
             }
-            mergeAfter(page)
+            if !mergeAfter(page) { await reload(client: client) }
         } catch AgentTranscriptError.cursorExpired {
             guard version == generation else { return }
             await reload(client: client)
@@ -503,11 +503,15 @@ public final class TranscriptStore {
     /// dropped new entry would be lost.
     ///
     /// Which entries are re-sent: those the page lists in `resent` (herdr #452). A herdr that
-    /// does not list them re-sent from the whole session before herdr #430, so there the
-    /// replay is guessed: an unknown user entry marked `origin: "other"`, older than the oldest
-    /// held entry, while older history is still unloaded (`hasOlder`). That guess drops a new
-    /// prompt timed behind the window by a clock rollback (#706); the `resent` list does not.
-    func mergeAfter(_ page: AgentTranscriptPage) {
+    /// does not list them re-sent from the whole session before herdr #430, so there an
+    /// unknown user entry marked `origin: "other"`, older than the oldest held entry while
+    /// older history is still unloaded (`hasOlder`), may be a replay or a new prompt timed
+    /// behind the window by a clock rollback (#706); nothing on the page tells them apart, and
+    /// dropping a new one while the cursor moves past it loses it (#736). Such a page is not
+    /// merged and the cursor stays: this returns false and the caller reloads the newest page,
+    /// which holds the new prompt and not the replay.
+    @discardableResult
+    func mergeAfter(_ page: AgentTranscriptPage) -> Bool {
         let outboxBefore = outbox
         var index: [String: Int] = [:]
         if !page.entries.isEmpty {
@@ -519,12 +523,13 @@ public final class TranscriptStore {
             live = replays.isEmpty ? page.entries
                 : page.entries.filter { index[$0.id] != nil || !replays.contains($0.id) }
         } else {
-            let oldestMs = hasOlder ? entries.first?.tsMs : nil
-            live = page.entries.filter { entry in
-                guard index[entry.id] == nil, let oldestMs,
-                      case .user(_, _, .other) = entry.kind, entry.tsMs != 0 else { return true }
-                return entry.tsMs >= oldestMs
-            }
+            if hasOlder, let oldestMs = entries.first?.tsMs, page.entries.contains(where: { entry in
+                guard index[entry.id] == nil, case .user(_, _, .other) = entry.kind, entry.tsMs != 0 else {
+                    return false
+                }
+                return entry.tsMs < oldestMs
+            }) { return false }
+            live = page.entries
         }
         outbox.reconcile(live, sessionID: page.sessionID ?? sessionID)
         var entriesChanged = false
@@ -559,6 +564,7 @@ public final class TranscriptStore {
         } else if notifies {
             onChange?()
         }
+        return true
     }
 
     private func regroup() {
