@@ -8,7 +8,8 @@
 #   - every Tools/ci/*.py and every quoted PY heredoc in ui-shard.sh compiles;
 #   - every Tools/ci/test_*.py passes: the helpers' fixture tests, the macserve shard
 #     coverage (test_macserve_shards.py: no test class left out of .macserve.json) and the
-#     CI scope classifier's (ci_scope.py decides whether a PR needs the simulator matrix).
+#     CI scope classifier's (ci_scope.py decides whether a PR needs the simulator matrix);
+#   - Tools/crash/*.py compile and Tools/crash/test_*.py pass (symbolicate.py's output names).
 set -euo pipefail
 cd "$(dirname "$0")"
 status=0
@@ -26,9 +27,10 @@ awk -v out="$scratch/ui-shard-heredoc-" '
   on && /^PY$/ { on=0; next }
   on { print > (out n ".py") }
 ' ui-shard.sh
-for source in *.py "$scratch"/*.py; do
+for source in *.py ../crash/*.py "$scratch"/*.py; do
   [ -e "$source" ] || continue
   PYTHONPYCACHEPREFIX="$scratch/cache" python3 -m py_compile "$source" || status=1
 done
 PYTHONPYCACHEPREFIX="$scratch/cache" python3 -m unittest discover -s . -p 'test_*.py' || status=1
+PYTHONPYCACHEPREFIX="$scratch/cache" python3 -m unittest discover -s ../crash -p 'test_*.py' || status=1
 exit "$status"
