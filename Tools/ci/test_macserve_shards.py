@@ -8,7 +8,12 @@ HerdrUITests and HerdrFontTests must therefore appear as a whole class in an iPh
 (iphone-terminal or iphone-app, exactly one of them), or, for an iPad-only class, as a whole
 class in the ipad shard, or be one of the classes the `ipad-script` script shard runs
 (Herdrup Desktop's references, ui-shard.sh DESKTOP_REFERENCE_CLASSES). Every selector must
-name an existing class or method."""
+name an existing class or method.
+
+The `smoke` shard is the fast tier's: a few dozen tests run on every push, while the full
+shards above still run before merge. It may overlap them, but only as a subset: each smoke
+selector's class runs whole in an iPhone shard, so the full tier never misses what smoke runs.
+Smoke does not count as a class's home. macserve refuses a shard with more than 32 selectors."""
 import json
 import pathlib
 import re
@@ -16,6 +21,8 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 IPHONE_SHARDS = ("iphone-terminal", "iphone-app")
+SMOKE_SHARD = "smoke"
+MAX_SELECTORS = 32
 
 
 def test_classes(target):
@@ -62,6 +69,19 @@ class MacserveShardTests(unittest.TestCase):
             self.assertTrue(homes or key in whole["ipad"],
                             "%s is in no shard: add it to %s, or to ipad if it is iPad-only" % (key, IPHONE_SHARDS))
         self.assertTrue(self.script_classes <= set(self.classes), "DESKTOP_REFERENCE_CLASSES names a missing class")
+
+    def test_smoke_is_a_subset_of_the_iphone_shards(self):
+        smoke = self.ui[SMOKE_SHARD]
+        self.assertEqual(len(smoke), len(set(smoke)), "smoke names a selector twice")
+        full = {selector for shard in IPHONE_SHARDS for selector in self.ui[shard]}
+        for selector in smoke:
+            key = "/".join(selector.split("/")[:2])
+            self.assertTrue(key in full or selector in full,
+                            "smoke: %s runs in no iPhone shard, so the full tier would skip it" % selector)
+
+    def test_every_shard_fits_macserve(self):
+        for shard, selectors in self.ui.items():
+            self.assertLessEqual(len(selectors), MAX_SELECTORS, "%s has more than %d selectors" % (shard, MAX_SELECTORS))
 
 
 if __name__ == "__main__":

@@ -14,7 +14,14 @@ below because the wrong turns are more instructive than the answer.
 > replies by `id` (`Sources/HerdrKit/RequestChannel.swift`). The per-request
 > channel described below is still the path for older herdr, requests over the
 > bridge's 1 MiB line limit, Gram downloads that report progress, and any request
-> made while the channel is unavailable. Streams keep their own connections.
+> made while the channel is unavailable.
+>
+> **Update (fix 1, slow networks).** Streams no longer have connections of their own.
+> Status and chat subscriptions, `pane.stream`, `pane.input.stream` and Gram uploads
+> each run as a channel on the one shared SSH connection (`SharedFirstLink` in
+> `Sources/HerdrKit/CitadelTransport.swift`): a new connection cost 9–13 round trips
+> before a stream's first byte. A stream takes a connection of its own only when the
+> shared one already holds 6 held channels or sshd refuses the channel (`MaxSessions`).
 
 ## The design
 

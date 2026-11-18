@@ -671,14 +671,12 @@ struct RootView: View {
     }
 
     /// Guest home over the mock relay: the running scenario, whose agent.list also
-    /// carries an agent that was not shared, which the home must not show.
+    /// carries an agent that was not shared, which the home must not show. Through the
+    /// machine home, which holds the Gram inbox (#697).
     private func mockGuestHome(_ access: GuestAccess) -> some View {
-        GuestHomeView(
-            access: access,
-            connect: { try GuestMockTransport.connection(for: access) },
-            onBack: nil,
-            onConnectOwnMachine: { connectOwnMachine() },
-            onLeave: { openGuest = nil })
+        SharedMachineHomeView(access: access, connect: GuestMockTransport.connection(for:),
+                              onBack: nil, onConnectOwnMachine: { connectOwnMachine() },
+                              onLeave: { openGuest = nil })
     }
     #endif
 
@@ -6026,7 +6024,12 @@ struct TerminalPaneContent: View {
                     .allowsHitTesting(!showingChat)
                     .accessibilityHidden(showingChat)
                     .overlay {
-                        if showingChat {
+                        // Only the front pane's chat is mounted, and none in the background
+                        // (`ScenePhase.mountsChat`): a kept-alive pane keeps its ChatModel, so
+                        // fronting it again draws its newest window at once, but not hours of
+                        // drawn rows that every relayout (a rotation, the background
+                        // snapshots) would have to lay out again.
+                        if showingChat, isForeground, scenePhase.mountsChat {
                             ChatView(client: client, model: chatModel, viewer: .owner, eventsPaneID: paneID,
                                      isActive: isForeground, live: true, agentStatus: agent?.agentStatus,
                                      ground: Palette.groundMachine,
@@ -6088,6 +6091,10 @@ struct TerminalPaneContent: View {
         // recognizer to the WINDOW, so N keep-mounted panes would otherwise stack N
         // recognizers that all fire on one edge swipe.
         .overlay { if isForeground { EdgeSwipeBack { onClose() } } }
+        // The chat's sheets hang on the page, not on the chat: it unmounts in the background
+        // (`ScenePhase.mountsChat`) and an open note or question must still be open on return.
+        .chatSheets(client: client, model: chatModel, viewer: .owner, presents: showingChat && isForeground,
+                    onOpenTerminal: { setShowsChat(false) })
         // Kept-alive panes behind the front one, Gram or Settings hold their status dot still,
         // and so does the front one while the scene is inactive, like the roster's rings.
         .environment(\.statusMotion, isForeground && scenePhase == .active)

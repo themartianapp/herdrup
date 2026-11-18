@@ -353,6 +353,73 @@ final class ChatViewTests: XCTestCase {
         XCTAssertTrue(loaded, "scrolling to the top should load an older page (had \(first) turns)")
     }
 
+    /// Review of #672 (P2): `.background` unmounts the chat (`ScenePhase.mountsChat`) while Find
+    /// stays open in the pane. The remounted chat must still land once Find closes: before, its
+    /// landing task was keyed on `model.loaded` alone, returned early with Find open and never
+    /// reran, so it stayed unlanded (no older pages, no jump arrows) for good.
+    func testChatLandsWhenFindClosesAfterABackgroundRoundTrip() {
+        let app = launch("chatview")
+        openAgent("herdr-app", in: app)
+        let chat = app.descendants(matching: .any)["chat-view"].firstMatch
+        XCTAssertTrue(chat.waitForExistence(timeout: 10))
+        XCTAssertTrue(poll(8, every: 0.3) { self.turns(chat) > 0 }, "the newest page should load")
+
+        app.buttons["terminal-find"].tap()
+        XCTAssertTrue(app.textFields["terminal-find-field"].waitForExistence(timeout: 5))
+
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(app.wait(for: .runningBackground, timeout: 10))
+        app.activate()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+        XCTAssertTrue(chat.waitForExistence(timeout: 10), "the chat remounts on return")
+        XCTAssertTrue(app.textFields["terminal-find-field"].waitForExistence(timeout: 5), "Find survived")
+        XCTAssertTrue(poll(8, every: 0.3) { self.turns(chat) > 0 }, "the remounted chat reloads")
+
+        app.buttons["terminal-find"].tap()
+        XCTAssertTrue(app.buttons["chat-jump-previous-mine"].waitForExistence(timeout: 8),
+                      "the up arrow shows only once the chat has landed")
+        let first = turns(chat)
+        var loaded = false
+        for _ in 0..<12 where !loaded {
+            chat.swipeDown(velocity: .fast)
+            loaded = poll(2, every: 0.3) { self.turns(chat) > first }
+        }
+        XCTAssertTrue(loaded, "a landed chat loads an older page at the top (had \(first) turns)")
+        XCTAssertTrue(app.buttons["chat-jump-latest"].waitForExistence(timeout: 4), "the down arrow shows")
+    }
+
+    /// #711, a regression from #672: `.background` unmounts the chat (`ScenePhase.mountsChat`).
+    /// Its sheets were ChatView `@State` presented by ChatView, so a note open when the app went
+    /// to the background was gone on return. The page keeps and presents them (`chatSheets`).
+    func testOpenNoteSheetSurvivesABackgroundRoundTrip() {
+        let app = launch("chatview")
+        openAgent("herdr-app", in: app)
+        let chat = app.descendants(matching: .any)["chat-view"].firstMatch
+        XCTAssertTrue(chat.waitForExistence(timeout: 10))
+        XCTAssertTrue(poll(8, every: 0.3) { self.turns(chat) > 0 }, "the newest page should load")
+
+        let note = app.buttons["chat-note"].firstMatch
+        XCTAssertTrue(note.waitForExistence(timeout: 8), app.debugDescription)
+        for _ in 0..<8 where !note.isHittable { chat.swipeDown(velocity: .slow) }
+        XCTAssertTrue(note.isHittable, "the newest turn's note card should come into view")
+        note.tap()
+        let sheet = app.descendants(matching: .any)["chat-note-sheet"].firstMatch
+        let done = app.buttons["chat-note-done"]
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(done.exists)
+
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(app.wait(for: .runningBackground, timeout: 10))
+        app.activate()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5), "the note sheet stays open across the background")
+        XCTAssertTrue(done.exists, "the same sheet, with its Done")
+
+        done.tap()
+        XCTAssertTrue(sheet.waitForNonExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(chat.waitForExistence(timeout: 10), "the chat remounted under the sheet")
+    }
+
     /// The thought line and the steps line expand.
     func testThoughtAndStepsExpand() {
         let app = launch("chatview")
@@ -740,23 +807,72 @@ final class ChatViewTests: XCTestCase {
         attach(app, "chat-guest-owner-answers")
     }
 
-    /// A guest whose host keeps answers for the owner: the form read-only, waiting for them.
-    func testGuestFormWaitsForTheOwner() {
+    /// A guest answers a three-question omp form (herdrup#714, herdr#455) in the chat: one
+    /// step per question, then Submit sends every answer at once with `agent.answer_form`.
+    func testGuestAnswersAThreeQuestionForm() {
+        let app = launch("guestchat", ["HERDR_MOCK_CHAT_FORM": "3"])
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-form"].waitForExistence(timeout: 12))
+        waitForStep("1 OF 3", in: app, "a guest answers the form one question at a time")
+        XCTAssertFalse(app.descendants(matching: .any)["chat-ask-waiting"].exists,
+                       "a host that lets guests answer never says the owner will")
+        XCTAssertFalse(app.descendants(matching: .any)["chat-ask-needs-terminal"].exists)
+        attach(app, "form-guest-three")
+        app.buttons["chat-ask-form-option-1"].tap()
+        waitForStep("2 OF 3", in: app)
+        app.buttons["chat-ask-form-option-1"].tap()
+        waitForStep("3 OF 3", in: app)
+        app.buttons["chat-ask-form-option-0"].tap()
+        waitForStep("REVIEW", in: app)
+        let hostCalls = app.descendants(matching: .any)["guest-host-calls"]
+        XCTAssertFalse(hostCalls.label.contains("agent.answer_form"), "nothing is sent before Submit")
+        app.buttons["chat-ask-form-submit"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-form-answered"].waitForExistence(timeout: 8),
+                      "the answered form shows its answers")
+        XCTAssertTrue(poll(6, every: 0.3) {
+            hostCalls.label.components(separatedBy: ";").filter { $0.hasPrefix("agent.answer_form:") }
+                == [#"agent.answer_form:["auto_reject", "moratorium"]"#]
+        }, "one agent.answer_form carries the two changed answers: \(hostCalls.label)")
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-form-answer-1"].label
+            .contains("Every regional law"))
+        XCTAssertFalse(app.descendants(matching: .any)["guest-forbidden-calls"].label.contains("agent.answer_form"))
+    }
+
+    /// A host whose guest ping leaves out `ask_form` (herdr before #455): the guest cannot
+    /// answer the form in the chat, and nothing says the owner will. The card sends the
+    /// guest to the Terminal, where the menu keys are (herdrup#714).
+    func testGuestFormTheChatCannotAnswerNeedsTheTerminal() {
+        let app = launch("guestchat", ["HERDR_MOCK_CHAT_FORM": "3", "HERDR_MOCK_CHAT_FORM_CAPABILITY": "0"])
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-form"].waitForExistence(timeout: 12))
+        let needsTerminal = app.descendants(matching: .any)["chat-ask-needs-terminal"]
+        XCTAssertTrue(needsTerminal.waitForExistence(timeout: 8), "the card says the Terminal answers")
+        XCTAssertEqual(needsTerminal.label, "This question needs the Terminal")
+        XCTAssertFalse(app.descendants(matching: .any)["chat-ask-waiting"].exists,
+                       "no 'waiting for the owner' without the host saying so")
+        XCTAssertFalse(app.buttons["chat-ask-form-option-0"].isEnabled, "the chat cannot answer it")
+        attach(app, "form-guest-needs-terminal")
+        let chat = app.descendants(matching: .any)["chat-view"].firstMatch
+        app.buttons["chat-ask-terminal"].tap()
+        XCTAssertTrue(chat.waitForNonExistence(timeout: 6), "the button opens the Terminal, where the menu keys are")
+        XCTAssertTrue(app.buttons["guest-tab-terminal"].isSelected)
+        XCTAssertFalse(app.staticTexts["NEEDS JERRY"].exists)
+    }
+
+    /// A host that keeps answers for the owner refuses the guest's `agent.answer_form`
+    /// (`guest_forbidden`): that explicit refusal, and only it, leaves the form waiting for
+    /// the owner.
+    func testGuestFormWaitsForTheOwnerOnceTheHostRefusesTheAnswer() {
         let app = launch("guestchat", ["HERDR_MOCK_CHAT_FORM": "1", "HERDR_MOCK_GUEST_OWNER_ANSWERS": "1"])
         XCTAssertTrue(app.descendants(matching: .any)["chat-ask-form"].waitForExistence(timeout: 12))
         let waiting = app.descendants(matching: .any)["chat-ask-waiting"]
-        XCTAssertTrue(waiting.waitForExistence(timeout: 8), "the guest sees the form waiting for the owner")
+        XCTAssertFalse(waiting.exists, "nothing is known yet about who answers")
+        app.buttons["chat-ask-form-review-all"].tap()
+        waitForStep("REVIEW", in: app)
+        app.buttons["chat-ask-form-submit"].tap()
+        XCTAssertTrue(waiting.waitForExistence(timeout: 8), "the refused guest sees the form waiting for the owner")
         XCTAssertTrue(waiting.label.contains("WAITING FOR JERRY TO ANSWER"), waiting.label)
-        XCTAssertFalse(app.buttons["chat-ask-form-option-0"].isEnabled, "the guest cannot answer")
         XCTAssertFalse(app.buttons["chat-ask-form-submit"].exists)
         XCTAssertFalse(app.buttons["chat-ask-terminal"].exists, "a guest has no Terminal to answer in")
         attach(app, "form-guest")
-        // The guest reads every field, the waiting line under each.
-        app.buttons["chat-ask-form-next"].tap()
-        waitForStep("2 OF 6", in: app, "a guest steps through the form")
-        XCTAssertTrue(waiting.exists, "the waiting line stays on every step")
-        app.buttons["chat-ask-form-back"].tap()
-        waitForStep("1 OF 6", in: app)
     }
 
     /// A paused share (its agent not in the pane's foreground) still has its conversation in

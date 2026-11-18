@@ -1790,8 +1790,8 @@ public actor HerdrClient {
     /// advertises `ServerCapabilities.eventsV2`: an older daemon rejects the entries
     /// without `pane_id`, which surfaces here as a thrown `APIError`.
     ///
-    /// The stream holds its own transport stream (a dedicated SSH connection on
-    /// `CitadelTransport`). Ending iteration or cancelling the consuming task closes
+    /// The stream holds its own transport stream (a channel on `CitadelTransport`'s
+    /// shared SSH connection). Ending iteration or cancelling the consuming task closes
     /// it. It finishes normally when the daemon closes the connection, and throws
     /// `AgentStatusStreamError.silent` when no line (event or heartbeat, which the
     /// daemon writes every 15 s) arrives within `silenceTimeout`, so a half-open
@@ -1972,10 +1972,11 @@ public actor HerdrClient {
     /// that cannot deserialize the method reports `.unsupported` like a non-omp agent.
     public func agentTranscript(
         target: String, before: String? = nil, after: String? = nil, limit: UInt32? = nil,
-        subagent: String? = nil
+        subagent: String? = nil, heldFrom: String? = nil
     ) async throws -> AgentTranscriptPage {
         let params = AgentTranscriptParams(target: target, before: before, after: after,
-                                           limit: limit.map { min(max($0, 1), 50) }, subagent: subagent)
+                                           limit: limit.map { min(max($0, 1), 50) }, subagent: subagent,
+                                           heldFrom: heldFrom)
         do {
             return try await call("agent.transcript", params, as: AgentTranscriptPage.self)
         } catch let error as APIError {
