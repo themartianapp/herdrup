@@ -122,4 +122,107 @@ final class GuestGramFeedTests: XCTestCase {
         XCTAssertEqual(feed.messages.map(\.id), ["m9", "m3"])
         XCTAssertFalse(feed.hasMore)
     }
+
+    /// CI (#702, j_5b6a9810 / j_359c2da7): the conversation opens with a refresh and, when the
+    /// strict floor hides every row, an older page at once. A refresh that lands while the
+    /// page is out but leaves the list ending at the page's cursor must not drop the page's
+    /// answer: a failure is kept (the screen offers Retry) and a page is appended. Dropping
+    /// them left the floor pager spinning forever.
+    func testARefreshKeepingTheCursorDoesNotDropTheOlderPage() async throws {
+        let failure = #"{"id":"$ID","error":{"code":"internal","message":"gram store busy"}}"#
+        do {
+            let host = OutOfOrderHost(replies: [Self.page(["z"], hasMore: true), failure, Self.page(["z"], hasMore: true)],
+                                      held: [1])
+            let client = HerdrClient(transport: host)
+            let feed = GuestGramFeed()
+            await feed.refresh(client: client)
+            let more = Task { () -> Error? in
+                do { try await feed.loadMore(client: client); return nil } catch { return error }
+            }
+            await waitUntil(host, started: 2)
+            await feed.refresh(client: client)
+            host.release(1)
+            let thrown = await more.value
+            XCTAssertNotNil(thrown, "the failure reaches the caller")
+            XCTAssertNotNil(feed.pageError, "and is kept: the list still ends at the failed page's cursor")
+        }
+        do {
+            let host = OutOfOrderHost(replies: [Self.page(["z"], hasMore: true), Self.page(["y"]), Self.page(["z"], hasMore: true)],
+                                      held: [1])
+            let client = HerdrClient(transport: host)
+            let feed = GuestGramFeed()
+            await feed.refresh(client: client)
+            let more = Task { try? await feed.loadMore(client: client) }
+            await waitUntil(host, started: 2)
+            await feed.refresh(client: client)
+            host.release(1)
+            _ = await more.value
+            XCTAssertEqual(feed.messages.map(\.id), ["z", "y"], "the page below the unchanged cursor is appended")
+            XCTAssertFalse(feed.hasMore)
+        }
+    }
+
+    /// Review 2 (#702): an older page that fails is kept as state, not only thrown, so a
+    /// conversation whose rows the strict floor all hides can offer Retry; the next page
+    /// that lands, or a refresh, clears it.
+    func testAFailedOlderPageIsKeptUntilAPageLands() async throws {
+        let first = #"{"id":"$ID","result":{"type":"guest_gram_list","has_more":true,"messages":[{"id":"z","direction":"agent_to_owner","from":"a","text":"z","created_unix_ms":500,"read":false}]}}"#
+        let older = #"{"id":"$ID","result":{"type":"guest_gram_list","has_more":false,"messages":[{"id":"y","direction":"agent_to_owner","from":"a","text":"y","created_unix_ms":500,"read":true}]}}"#
+        let failure = #"{"id":"$ID","error":{"code":"internal","message":"gram store busy"}}"#
+        let host = ScriptedHost([first, failure, older])
+        let client = HerdrClient(transport: host)
+        let feed = GuestGramFeed()
+        await feed.refresh(client: client)
+        var thrown: Error?
+        do { try await feed.loadMore(client: client) } catch { thrown = error }
+        XCTAssertNotNil(thrown, "the failure is thrown")
+        XCTAssertNotNil(feed.pageError, "and kept for a screen with no sentinel to show it")
+        XCTAssertNil(feed.lastError, "the list itself is fine")
+        var changes = 0
+        feed.onChange = { changes += 1 }
+        feed.clearPageError()
+        XCTAssertNil(feed.pageError, "Retry clears it, so the view's paging asks again")
+        XCTAssertEqual(changes, 1, "and the view hears it")
+        feed.onChange = nil
+        XCTAssertFalse(GuestGramMerge(lanes: [feed.lane(grant: "a")]).hasMore == false, "still pageable: Retry can ask again")
+        try await feed.loadMore(client: client)
+        XCTAssertNil(feed.pageError, "a page that lands clears it")
+        XCTAssertEqual(GuestGramMerge(lanes: [feed.lane(grant: "a")]).items.map(\.id), ["a/y", "a/z"])
+    }
+
+    /// CI (#702, j_b43f1e71): a recorded page failure stays until the reader retries (or
+    /// reopens, which retries): a refresh that lands after it and keeps the list's end (the
+    /// same newest page, as the conversation's opening refresh) must not clear it, or the
+    /// floor pager asks again at once and Retry is never seen. A refresh that replaces the
+    /// end makes the failed cursor moot, and clears it.
+    func testARefreshKeepsAFailedPageUnlessItReplacesTheEnd() async {
+        let z = #"{"id":"$ID","result":{"type":"guest_gram_list","has_more":true,"messages":[{"id":"z","direction":"agent_to_owner","from":"a","text":"z","created_unix_ms":500,"read":false}]}}"#
+        let n = #"{"id":"$ID","result":{"type":"guest_gram_list","has_more":false,"messages":[{"id":"n","direction":"agent_to_owner","from":"a","text":"n","created_unix_ms":900,"read":false}]}}"#
+        let failure = #"{"id":"$ID","error":{"code":"internal","message":"gram store busy"}}"#
+        let client = HerdrClient(transport: ScriptedHost([z, failure, z, n]))
+        let feed = GuestGramFeed()
+        await feed.refresh(client: client)
+        try? await feed.loadMore(client: client)
+        XCTAssertNotNil(feed.pageError)
+        await feed.refresh(client: client)
+        XCTAssertNotNil(feed.pageError, "the same newest page keeps the end: the failure stands, with Retry")
+        await feed.refresh(client: client)
+        XCTAssertEqual(feed.messages.map(\.id), ["n"])
+        XCTAssertNil(feed.pageError, "a refresh that replaced the end clears the moot failure")
+    }
+
+    /// Answers each call with the next scripted line.
+    private final class ScriptedHost: HerdrTransport, @unchecked Sendable {
+        private var lines: [String]
+        private let lock = NSLock()
+        init(_ lines: [String]) { self.lines = lines }
+        func roundTrip(_ requestLine: String) async throws -> String {
+            let object = try JSONSerialization.jsonObject(with: Data(requestLine.utf8)) as? [String: Any]
+            let line = lock.withLock { lines.removeFirst() }
+            return line.replacingOccurrences(of: "$ID", with: object?["id"] as? String ?? "x")
+        }
+        func stream(_ requestLine: String) -> AsyncThrowingStream<String, Error> {
+            AsyncThrowingStream { $0.finish() }
+        }
+    }
 }

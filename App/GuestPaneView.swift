@@ -5,21 +5,33 @@ import SwiftUI
 /// composer whose messages and files reach the agent under the guest's name. While the
 /// agent waits on a menu or question the guest answers it as the owner would: the chat's
 /// answer buttons, or the owner's menu keys under the terminal. When the owner shares the
-/// agent's Gram, a second tab lists it.
+/// agent's Gram, the Gram button opens the guest's Gram inbox on this agent (#697).
 struct GuestPaneView: View {
     let client: HerdrClient
     let access: GuestAccess
     @ObservedObject var features: GuestFeaturesModel
     @Binding var tab: GuestPaneTab
+    /// This agent's unread Grams, for the Gram button's count.
+    let gramUnread: Int
+    /// Opens the Gram tab with this agent's row selected; nil where no Gram inbox exists.
+    let onOpenGram: (() -> Void)?
+    /// DEBUG: draw the `guest-forbidden-calls` / `guest-host-calls` probes. Off where the
+    /// guest shell around the pane already draws them (`GuestGramProbes`), so each identifier
+    /// is on screen once.
+    let callProbes: Bool
     let onClose: () -> Void
 
     init(client: HerdrClient, access: GuestAccess, features: GuestFeaturesModel,
-         tab: Binding<GuestPaneTab>, onClose: @escaping () -> Void) {
+         tab: Binding<GuestPaneTab>, gramUnread: Int = 0, onOpenGram: (() -> Void)? = nil,
+         callProbes: Bool = true, onClose: @escaping () -> Void) {
         self.client = client
         self.access = access
         self.features = features
         _chatModel = StateObject(wrappedValue: ChatModel(target: access.agentTarget))
         _tab = tab
+        self.gramUnread = gramUnread
+        self.onOpenGram = onOpenGram
+        self.callProbes = callProbes
         self.onClose = onClose
     }
 
@@ -97,7 +109,6 @@ struct GuestPaneView: View {
     /// the terminal (as the owner's does), so only its resting row takes layout height.
     @State private var bottomChromeHeight: CGFloat = 0
     @State private var terminalHeight: CGFloat = 0
-    @StateObject private var gram = GuestGramModel()
     @ObservedObject private var guestPush = GuestPushCenter.shared
     #if DEBUG
     @State private var forbiddenProbe = ""
@@ -106,21 +117,20 @@ struct GuestPaneView: View {
     @State private var delayedDropCompletion: ((Data?, Error?) -> Void)?
     #endif
 
-    /// The owner shares this agent's Gram with the guest (the host's hello says so).
-    private var showsGram: Bool { features.current?.gram == true }
-    private var showingGram: Bool { showsGram && tab == .gram }
+    /// The owner shares this agent's Gram with the guest (the host's hello says so), and a
+    /// Gram inbox is there to open.
+    private var showsGram: Bool { features.current?.gram == true && onOpenGram != nil }
     /// The Chat tab: a shared omp agent on a host that serves guests its transcript, until
     /// the host says it cannot.
     private var showsChat: Bool {
         transcriptCapable && ChatPreference.isOmp(agent?.agent) && !chatModel.unsupported
     }
     private var showingChat: Bool { showsChat && tab == .chat }
-    /// Neither Gram nor Chat covers the terminal.
-    private var showingTerminal: Bool { !showingGram && !showingChat }
+    /// Chat doesn't cover the terminal.
+    private var showingTerminal: Bool { !showingChat }
 
-    /// The page's ground: the terminal's on the Terminal and Chat tabs, as the owner's
-    /// pages, and the app's on Gram, as the owner's Gram.
-    private var pageGround: Color { showingGram ? Palette.ground : Palette.groundMachine }
+    /// The page's ground: the terminal's, as the owner's pages.
+    private var pageGround: Color { Palette.groundMachine }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -147,10 +157,6 @@ struct GuestPaneView: View {
                     // Typing redraws this page; the chat skips it (`ChatView ==`).
                     .equatable()
                 }
-                if showingGram {
-                    GuestGramList(client: client, access: access, model: gram)
-                        .background(Palette.ground)
-                }
                 if guestPush.asking == access.id, let current = features.current {
                     GuestPushPrompt(
                         agentName: access.agentName, ownerName: access.ownerName, gram: current.gram,
@@ -173,12 +179,10 @@ struct GuestPaneView: View {
                     presents: showingChat, onOpenTerminal: { tab = .terminal })
         .task { await pollLoop() }
         // Once the host's features are known: register for push (or explain it, when iOS
-        // hasn't asked yet) and load Gram, so the unread count shows before the guest opens
-        // the tab.
+        // hasn't asked yet).
         .task(id: features.current) {
             guard let current = features.current else { return }
             await guestPush.connected(access, client: client, features: current)
-            if current.gram { await gram.refresh(client: client, access: access) }
         }
         // The Chat tab exists only where the host serves guests `agent.transcript`.
         .task(id: access.id) {
@@ -195,21 +199,6 @@ struct GuestPaneView: View {
         }
         .onChange(of: tab) { _, _ in
             if findOpen { toggleFind() }
-            guard showingGram else { return }
-            Task {
-                await gram.refresh(client: client, access: access)
-                await gram.markAllRead(client: client)
-            }
-        }
-        // Viewed is read: whatever lands in the list while it shows is marked read.
-        .onChange(of: gram.messages) { _, _ in
-            guard showingGram else { return }
-            Task { await gram.markAllRead(client: client) }
-        }
-        // A Gram push from this share's host: reload.
-        .onReceive(PushCenter.shared.$guestGramArrival) { arrival in
-            guard let arrival, arrival.hostID == access.endpoint.hostID, showsGram else { return }
-            Task { await gram.refresh(client: client, access: access) }
         }
         .composerAttachPicker(
             isPresented: $showAttachSheet, loading: $loadingAttachment,
@@ -226,8 +215,9 @@ struct GuestPaneView: View {
 
     // MARK: - Tabs
 
-    /// Chat · Terminal · Gram, as many as this share offers. On iPad (regular width) a
-    /// compact centred capsule with fixed-width tabs, not a strip across the whole page.
+    /// Chat · Terminal, and Gram where the owner shares it: Gram opens the guest's Gram tab
+    /// on this agent's own feed (#697). On iPad (regular width) a compact centred capsule
+    /// with fixed-width tabs, not a strip across the whole page.
     private var tabStrip: some View {
         let compact = sizeClass == .regular
         return HStack(spacing: 4) {
@@ -235,9 +225,9 @@ struct GuestPaneView: View {
                 tabButton("Chat", systemImage: "bubble.left", tab: .chat, id: "guest-tab-chat", compact: compact)
             }
             tabButton("Terminal", systemImage: "terminal", tab: .terminal, id: "guest-tab-terminal", compact: compact)
-            if showsGram {
-                tabButton("Gram", systemImage: "paperplane", tab: .gram, id: "guest-tab-gram",
-                          badge: gram.unreadCount, compact: compact)
+            if showsGram, let onOpenGram {
+                tabButton("Gram", systemImage: "paperplane", tab: nil, id: "guest-tab-gram",
+                          badge: gramUnread, compact: compact, action: onOpenGram)
             }
         }
         .padding(3)
@@ -253,11 +243,12 @@ struct GuestPaneView: View {
     /// One tab of the compact (iPad) strip: three of them fill the mockup's 450 pt capsule.
     private static let compactTabWidth: CGFloat = 145
 
-    private func tabButton(_ title: String, systemImage: String, tab value: GuestPaneTab, id: String,
-                           badge: Int = 0, compact: Bool = false) -> some View {
-        let selected = tab == value
+    /// `tab` nil is a link out (Gram): never selected, `action` runs instead.
+    private func tabButton(_ title: String, systemImage: String, tab value: GuestPaneTab?, id: String,
+                           badge: Int = 0, compact: Bool = false, action: (() -> Void)? = nil) -> some View {
+        let selected = value != nil && tab == value
         return Button {
-            tab = value
+            if let value { tab = value } else { action?() }
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: systemImage).font(.system(size: 12, weight: .semibold))
@@ -309,17 +300,15 @@ struct GuestPaneView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             PaneHeaderCapsule {
-                if !showingGram {
-                    InlineSearchToggle(isOpen: findOpen, identifier: "guest-find",
-                                       target: CGSize(width: 40, height: 44)) { toggleFind() }
-                    PaneHeaderRefreshButton(identifier: "guest-refresh",
-                                            refreshing: showingChat && chatModel.manualRefreshing) {
-                        if showingChat {
-                            Task { await chatModel.manualRefresh(client: client) }
-                        } else {
-                            streamGen += 1
-                            Task { await refresh() }
-                        }
+                InlineSearchToggle(isOpen: findOpen, identifier: "guest-find",
+                                   target: CGSize(width: 40, height: 44)) { toggleFind() }
+                PaneHeaderRefreshButton(identifier: "guest-refresh",
+                                        refreshing: showingChat && chatModel.manualRefreshing) {
+                    if showingChat {
+                        Task { await chatModel.manualRefresh(client: client) }
+                    } else {
+                        streamGen += 1
+                        Task { await refresh() }
                     }
                 }
                 actionsMenu
@@ -917,8 +906,8 @@ struct GuestPaneView: View {
                 attachments.removeAll { sentIDs.contains($0.id) }
                 uploader.forget(sentIDs)
                 if reply.trimmingCharacters(in: .whitespacesAndNewlines) == text { reply = "" }
-                // Attachments are the guest's own Grams: show them in the Gram tab.
-                if !batch.isEmpty, showsGram { await gram.refresh(client: client, access: access) }
+                // Attachments are the guest's own Grams: the Gram inbox reloads this host.
+                if !batch.isEmpty, showsGram { PushCenter.shared.guestGramArrived(hostID: access.endpoint.hostID) }
             } catch {
                 note = failureNote(error)
                 let state: TranscriptSendState
@@ -997,14 +986,16 @@ struct GuestPaneView: View {
     /// arguments (`guest-host-calls`).
     private var debugProbes: some View {
         ZStack {
-            Color.clear
-                .accessibilityElement()
-                .accessibilityIdentifier("guest-forbidden-calls")
-                .accessibilityLabel(forbiddenProbe)
-            Color.clear
-                .accessibilityElement()
-                .accessibilityIdentifier("guest-host-calls")
-                .accessibilityLabel(hostCallsProbe)
+            if callProbes {
+                Color.clear
+                    .accessibilityElement()
+                    .accessibilityIdentifier("guest-forbidden-calls")
+                    .accessibilityLabel(forbiddenProbe)
+                Color.clear
+                    .accessibilityElement()
+                    .accessibilityIdentifier("guest-host-calls")
+                    .accessibilityLabel(hostCallsProbe)
+            }
             Color.clear
                 .accessibilityElement()
                 .accessibilityIdentifier("guest-stream-opens")
