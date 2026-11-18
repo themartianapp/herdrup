@@ -125,6 +125,14 @@ final class GuestGramInbox: ObservableObject {
     private(set) var labels: [GuestAccess.ID: String] = [:]
     func label(_ id: GuestAccess.ID) -> String { labels[id] ?? agentName(id) }
 
+    /// What the label adds to the agent's name ("Jerry · Studio · w2-4"), for the feed's
+    /// sender line; nil where the name alone is unique.
+    func labelSuffix(_ id: GuestAccess.ID) -> String? {
+        let name = agentName(id), label = label(id)
+        guard label != name, label.hasPrefix(name + " · ") else { return nil }
+        return String(label.dropFirst(name.count + 3))
+    }
+
     /// Rows grouped by owner and host, in share order. One group needs no label.
     var groups: [Group] {
         var groups: [Group] = []
@@ -209,12 +217,13 @@ final class GuestGramInbox: ObservableObject {
         ids(selection).contains { grants[$0]?.feed.pageError != nil }
     }
 
-    /// "Earlier": the next page of each share the merge names (those at its safe floor).
+    /// "Earlier": pages the shares at the merge's safe floor until the shown range grows,
+    /// history runs out, or a page fails (`GuestGramEarlier`, herdrup#730).
     func loadEarlier(_ selection: Selection) async throws {
-        for id in merge(selection).grantsToPage {
-            guard let grant = grants[id] else { continue }
-            try await grant.feed.loadMore(client: grant.connection.client)
+        let sources = ids(selection).compactMap { id in
+            grants[id].map { GuestGramEarlier.Source(grant: id, feed: $0.feed, client: $0.connection.client) }
         }
+        try await GuestGramEarlier.load(sources)
     }
 
     /// The reader saw the feed: each share's shown unread Grams are read, for this guest only.
