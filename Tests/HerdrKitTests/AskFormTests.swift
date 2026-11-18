@@ -130,6 +130,29 @@ final class AskFormDecodingTests: XCTestCase {
         XCTAssertFalse(form.isFillable)
     }
 
+    /// herdr's Markdown twin of the context: the comparison table of the 2026-11-17 enyo ask
+    /// (an empty corner cell) reaches the chat as a table, the bold label as bold; a server
+    /// that sends only the plain text leaves both nil, so the card draws the plain text.
+    func testMarkdownContextDecodesAndKeepsItsTable() throws {
+        let form = try JSONDecoder().decode(AskForm.self, from: Data(#"""
+        {"intro":"Costs:\n\n · Sales\nTime · 2 days",
+         "intro_markdown":"**Costs:**\n\n|  | Sales |\n| --- | --- |\n| Time | 2 days |",
+         "fields":[{"name":"x","kind":"choice","title":"X","description":"Note: a | b",
+                    "description_markdown":"**Note:** a \\| b","options":[{"value":"a","label":"A"}]}]}
+        """#.utf8))
+        XCTAssertEqual(form.intro, "Costs:\n\n · Sales\nTime · 2 days")
+        XCTAssertEqual(ChatMarkdown.blocks(try XCTUnwrap(form.introMarkdown)), [
+            .paragraph("**Costs:**"),
+            .table(header: ["", "Sales"], rows: [["Time", "2 days"]]),
+        ])
+        XCTAssertEqual(form.fields[0].descriptionMarkdown, #"**Note:** a \| b"#)
+
+        let older = try Self.form()
+        XCTAssertNil(older.introMarkdown)
+        XCTAssertNil(older.fields[0].descriptionMarkdown)
+        XCTAssertEqual(older.fields[0].description, "lenscale.ai is public today.")
+    }
+
     func testAskFormCapabilityDecodes() throws {
         func capabilities(_ json: String) throws -> ServerCapabilities {
             try JSONDecoder().decode(ServerCapabilities.self, from: Data(json.utf8))

@@ -5,8 +5,10 @@ import Foundation
 /// HTML-form `ask` (omp ≥ 18.18.3) as herdr parses it: the enyo-ui form of 2026-11-10 (five
 /// radio fields), plus the checkbox field the proposals added ("While it builds, send me").
 ///
+/// - `HERDR_MOCK_CHAT_FORM=3`: instead, the three-radio form of herdrup#714.
 /// - `HERDR_MOCK_CHAT_FORM_CAPABILITY=0`: the server predates `ask_form` (its ping leaves it
-///   out); the form shows read-only with "Answer in Terminal".
+///   out, as herdr's guest gate did before herdr#455); the form shows read-only, with
+///   "Answer in Terminal" for the owner and "This question needs the Terminal" for a guest.
 /// - `HERDR_MOCK_CHAT_FORM_ANSWER=<code>`: `agent.answer_form` refuses with that code.
 ///   `ask_form_invalid` names the Other field ("form: …").
 /// - `HERDR_MOCK_CHAT_FORM_STATUS=timed_out|cancelled`: the form ended unanswered.
@@ -16,13 +18,16 @@ import Foundation
 ///   "notes: too long to edit from the app; answer in the terminal".
 /// - `HERDR_MOCK_CHAT_FORM_OPTIONAL=1`: an optional radio with Other and no default comes
 ///   after the checkbox group; left out of `values`, omp records it unanswered.
+/// - `HERDR_MOCK_CHAT_FORM_CONTEXT=table`: herdr also sends the context as Markdown
+///   (`intro_markdown`): the comparison table and bold labels of the 2026-11-17 enyo ask.
 enum ChatMockAskForm {
-    static let enabled = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM"] == "1"
+    static let enabled = ["1", "3"].contains(ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM"])
     static let advertised = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM_CAPABILITY"] != "0"
     static let refusal = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM_ANSWER"]
     static let endedStatus = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM_STATUS"]
     static let hasTextarea = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM_TEXTAREA"] == "1"
     static let hasOptionalRadio = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM_OPTIONAL"] == "1"
+    static let contextTable = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM_CONTEXT"] == "table"
 
     /// What herdr reports as `form_answerable` for a viewer who may answer.
     static var answerable: Bool { advertised }
@@ -87,8 +92,31 @@ enum ChatMockAskForm {
     private static let tone = field("tone", "Tone of the landing copy", "Optional.", multi: false,
                                     options: [("calm", "Calm and plain"), ("bold", "Bold and short")], checked: [])
 
+    /// `HERDR_MOCK_CHAT_FORM=3`: the form guest Nike was asked on 16 Nov (herdrup#714): three
+    /// radios, each with omp's Other row.
+    static let threeQuestions = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM"] == "3"
+
+    static let threeQuestionsIntro = "For Nicola. Three decisions are yours. Nothing changes until you answer."
+
+    private static let threeQuestionFields: [[String: Any]] = [
+        radio("auto_reject", "1. Automatic \"no\": may the check reject a value automatically?", nil,
+              [("yes", "Yes, reject automatically (recommended)"), ("no", "No, leave them waiting for a person")],
+              checked: "yes"),
+        radio("moratorium", "2. Which regional laws count as a \"moratorium\" on renewables?", nil,
+              [("sardinia_only", "Only Sardinia 5/2024 and 20/2024 (recommended)"),
+               ("all_found", "Every regional law the documents call a limit on renewables")],
+              checked: "sardinia_only"),
+        radio("crop", "3. Crops: if only some are confirmed, what do we show?", nil,
+              [("trim", "Only the confirmed crops (recommended)"),
+               ("all_or_nothing", "Nothing until every crop on the list is confirmed")],
+              checked: "trim"),
+    ]
+
     /// The choice fields.
-    static var fields: [[String: Any]] { baseFields + (hasOptionalRadio ? [tone] : []) }
+    static var fields: [[String: Any]] {
+        if threeQuestions { return threeQuestionFields }
+        return baseFields + (hasOptionalRadio ? [tone] : [])
+    }
 
     static let textareaValue = "Keep the 1 Nov palette.\nNo stock photos on the landing."
 
@@ -102,7 +130,27 @@ enum ChatMockAskForm {
 
     static var allFields: [[String: Any]] { fields + (hasTextarea ? [notes] : []) }
 
-    static var form: [String: Any] { ["intro": intro, "fields": allFields] }
+    /// The Markdown twin herdr serves beside the plain `intro` (owner's 2026-11-17 enyo ask).
+    static let tableIntroMarkdown = """
+    **Searching past deals for Nicola's usefulness test.** enyo-research estimated how many Italian renewable events since 2021 are public, and what a full search costs:
+
+    |  | Sales / acquisitions | Energisations (≥ 5 MW) |
+    | --- | --- | --- |
+    | Expected to find | 600–900 deals | 250–400 with a dated public source |
+    | Time | about 2–2.5 days | about 1–1.5 days |
+    | AI cost | about $250–350 | about $100–200 |
+
+    **Limits from the 20-row samples:**
+
+    - **Sales:** the date is stated in 16 of 20, the stake in 11, and the project company name in only 7.
+    - **Energisations:** only 4 of 20 give the actual connection day.
+    """
+
+    static var form: [String: Any] {
+        var form: [String: Any] = ["intro": threeQuestions ? threeQuestionsIntro : intro, "fields": allFields]
+        if contextTable { form["intro_markdown"] = tableIntroMarkdown }
+        return form
+    }
 
     /// The `questions` herdr keeps for older apps: one per choice field.
     static var questions: [[String: Any]] {

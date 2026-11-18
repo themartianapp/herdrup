@@ -21,7 +21,12 @@ herdr's JSON API exposes both, so panes and agents become real UI objects instea
 - **Settings** — the connected machine's profile card opens Machines, with its herdr update
   card, connection actions and federation. Pending updates and exhausted accounts appear as
   suggestions above the Your herd, Preferences, Help and About groups. iPad and Mac keep the
-  same index beside the selected detail page; guest Settings uses the shared agent as its header.
+  same index beside the selected detail page. A phone holding only shares gets the same index
+  without what needs a machine of its own: the shared agent's card (opening Shared with you,
+  with its device key and Leave) in place of the machine card, then Your own machine, whose
+  Connect your own machine row closes the share onto the machine list's pairing setup (or, with
+  an owner session kept underneath, onto the owner's home with the pairing sheet open).
+  `SettingsView` takes one `SettingsMode`: `.owner(client)` or `.guest(share)`.
 - **Live terminal** — a full SwiftTerm terminal for any pane, one tap behind its card, with gestures
   to page between agents, tail the output, and scroll history.
   History keeps its original row layout, including plain text, so resizing does not rewrap old
@@ -215,7 +220,7 @@ job builds the app for itself, so there are few, long shards:
 |---|---|---|
 | `mac-evidence/org-ios-sim-uitest-v1/iphone-terminal` | UI test, iPhone 18 Pro | the terminal classes, `ChatViewTests`, `PagingTests`, `GramTests` |
 | `mac-evidence/org-ios-sim-uitest-v1/iphone-app` | UI test, iPhone 18 Pro | `HerdrFontTests` and every other iPhone class |
-| `mac-evidence/org-ios-sim-uitest-v1/ipad` | UI test, iPad Pro 13-inch | the iPad rounds: resize, Duo transition, control, drop, chat column, Gram column, needs-you, star bar |
+| `mac-evidence/org-ios-sim-uitest-v1/ipad` | UI test, iPad Pro 13-inch | the iPad rounds: resize, Duo transition, control, drop, chat column, Gram column, needs-you, star bar, guest Settings |
 | `mac-evidence/org-ios-sim-script-v1/ipad-script` | script, iPhone 18 Pro + its own iPads | `Tools/ci/macserve-ipad-script.sh`: the built-version check, Herdrup Desktop's references on both iPads, iPad `AgentListChromeTests`, the optimized Settings stack regression, the SwiftTerm UIKit API tests |
 
 The UI-test template runs a shard's `-only-testing` selectors as one `xcodebuild test`;
@@ -228,6 +233,23 @@ A failed shard is not rerun automatically; macserve reruns only jobs its own ser
 cancelled. macserve does not skip docs-only or version-only pull requests;
 [`Tools/ci/ci_scope.py`](../Tools/ci/ci_scope.py) still records that decision in the
 *Scope* job.
+
+**The `smoke` shard is the fast tier's.** macserve's two-tier matrix will run it on every push,
+drafts included, on an iPhone 18 Pro from the head's one prebuilt app, while the four shards
+above become the full tier, which runs only on the final head before merge. Until macserve's
+policy names it, macserve ignores it. It lists 30 selectors (36 tests, about 7.4 minutes of
+test time at #694's durations) on the critical paths: launch and onboarding, pairing and the
+live connection, the agent list, the terminal (type, scroll, resize, drop, the memory budget),
+Chat (open, send, older pages, landing after a background round trip, an ask card, the question
+sheet), Gram (open at the newest, post, open a file), the guest pane and guest Gram, Settings,
+the server-update card, and the Gram and Chat width handles, which check the compact layout on
+iPhone and the split columns on iPad. It includes a test from each class with a real
+regression in history (`GuestGramPaneTests` and `AgentAvatarUITests` on #702,
+`TerminalMemoryTests` for #687, `ChatViewTests` and the question sheet for #686 and #711) and
+leaves out the known flakes (#685, #705, the iPad width readout and Duo draft) and the
+four-minute `PagingTests`. Smoke is a subset: `test_macserve_shards.py` checks that each smoke
+selector's class also runs in an iPhone shard, so a green smoke never stands in for the full
+tier, which still gates the merge.
 
 **Running a shard on any Mac.** [`Tools/ci/ui-shard.sh`](../Tools/ci/ui-shard.sh) runs the
 same shards round by round, with measured per-round budgets, an infrastructure-only rerun

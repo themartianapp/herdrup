@@ -71,7 +71,8 @@ final class ScriptedHost: @unchecked Sendable {
                     self.links.append((command, bridge))
                     return bridge
                 }
-            })
+            },
+            openStreamLink: { _ in ScriptedBridge() })
     }
 }
 

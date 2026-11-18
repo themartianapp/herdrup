@@ -1031,6 +1031,8 @@ struct GramConversationRow: View {
     let time: Date?
     let unread: Bool
     let selected: Bool
+    /// How many are unread, drawn as a neutral count pill by the preview; 0 draws none.
+    var unreadCount = 0
 
     private static let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
     private var secondary: Color { selected ? Palette.onAccentDim : Palette.textDim }
@@ -1053,12 +1055,22 @@ struct GramConversationRow: View {
                             .fixedSize()
                     }
                 }
-                Text(preview)
-                    .font(GramType.preview)
-                    .lineSpacing(GramType.previewLineSpacing)
-                    .foregroundStyle(secondary)
-                    .lineLimit(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(alignment: .center, spacing: 6) {
+                    Text(preview)
+                        .font(GramType.preview)
+                        .lineSpacing(GramType.previewLineSpacing)
+                        .foregroundStyle(secondary)
+                        .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if unreadCount > 0 {
+                        Text("\(unreadCount)")
+                            .font(Typography.machine(11, .bold))
+                            .foregroundStyle(selected ? Palette.onAccent : Palette.text)
+                            .padding(.horizontal, 6).frame(minWidth: 20, minHeight: 20)
+                            .background(Capsule().fill(Palette.surfaceRaised))
+                            .fixedSize()
+                    }
+                }
             }
         }
         .padding(.leading, 22)
@@ -1077,7 +1089,7 @@ struct GramConversationRow: View {
         }
         .contentShape(Self.shape)
         .accessibilityElement(children: .combine)
-        .accessibilityValue(unread ? "Unread" : "")
+        .accessibilityValue(unreadCount > 0 ? "\(unreadCount) unread" : unread ? "Unread" : "")
     }
 
     @ViewBuilder

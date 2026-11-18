@@ -382,10 +382,12 @@ final class TranscriptStoreTests: XCTestCase {
     }
 
     private static func page(_ entries: [String], before: String? = nil, after: String = "a",
-                             session: String = "s1", working: Bool = false, pendingAsk: String? = nil) -> String {
+                             session: String = "s1", working: Bool = false, pendingAsk: String? = nil,
+                             resent: [String]? = nil) -> String {
         let beforeJSON = before.map { "\"\($0)\"" } ?? "null"
         let workingJSON = working ? #"{"intent":"Testing","tool":"bash","since_ms":1}"# : "null"
-        return #"{"id":"x","result":{"type":"agent_transcript","session_id":"\#(session)","entries":[\#(entries.joined(separator: ","))],"before":\#(beforeJSON),"after":"\#(after)","pending_ask":\#(pendingAsk ?? "null"),"working":\#(workingJSON)}}"#
+        let resentJSON = resent.map { #","resent":[\#($0.map { "\"\($0)\"" }.joined(separator: ","))]"# } ?? ""
+        return #"{"id":"x","result":{"type":"agent_transcript","session_id":"\#(session)","entries":[\#(entries.joined(separator: ","))],"before":\#(beforeJSON),"after":"\#(after)","pending_ask":\#(pendingAsk ?? "null"),"working":\#(workingJSON)\#(resentJSON)}}"#
     }
 
     /// Answers `agent.transcript` from a script keyed by which cursor the request carried.
@@ -862,30 +864,34 @@ final class TranscriptStoreTests: XCTestCase {
             reply("63568b78:reply", 1_794_754_428_208, "I'll tell you."),
             end("63568b78:end", 1_794_754_431_057),
         ]
-        let (client, transport) = scripted { params in
-            params["after"] == nil
-                ? Self.page(newest, before: "b1", after: "a1", session: "01a086e3")
-                : Self.page(resent + appended, after: "a2", session: "01a086e3")
-        }
-        let store = TranscriptStore(target: "w1:p9Y")
-        await store.refresh(client: client)
-        let outgoing = store.stageOutgoing(text: "When will it be ready?", author: .guest(name: nil))
-        await store.refresh(client: client)
-        // The poll says what it holds: the newest page, from its `before` cursor on.
-        XCTAssertEqual(transport.requests.last?.params["held_from"] as? String, "b1")
+        // As herdr 0.9.5 sent it, and as a herdr that lists what it re-sent (`resent`).
+        let shapes: [[String]?] = [nil, ["abe83412", "f505eb3c", "23cbfb00", "bcf1ae30"]]
+        for marks in shapes {
+            let (client, transport) = scripted { params in
+                params["after"] == nil
+                    ? Self.page(newest, before: "b1", after: "a1", session: "01a086e3")
+                    : Self.page(resent + appended, after: "a2", session: "01a086e3", resent: marks)
+            }
+            let store = TranscriptStore(target: "w1:p9Y")
+            await store.refresh(client: client)
+            let outgoing = store.stageOutgoing(text: "When will it be ready?", author: .guest(name: nil))
+            await store.refresh(client: client)
+            // The poll says what it holds: the newest page, from its `before` cursor on.
+            XCTAssertEqual(transport.requests.last?.params["held_from"] as? String, "b1")
 
-        XCTAssertEqual(store.entries.map(\.id), [
-            "a7902a04", "c2592b34:reply", "c2592b34:end", "bcf1ae30", "b46a7d09:reply", "b46a7d09:end",
-            "b2f25ccb", "2db84f2f:thinking", "2db84f2f:toolu_015EWurddNboHwrfLZKfJmEh", "63568b78:reply",
-            "63568b78:end",
-        ])
-        XCTAssertEqual(store.turns.map(\.id), ["a7902a04", "bcf1ae30", "b2f25ccb"])
-        XCTAssertEqual(store.turns.last?.items.map(\.id),
-                       ["2db84f2f:thinking", "63568b78:reply"])
-        // An old prompt with the same words is not the send just staged.
-        XCTAssertTrue(store.outbox.messages.contains(where: { $0.id == outgoing }))
-        // An older page still brings them, in place.
-        XCTAssertTrue(store.hasOlder)
+            XCTAssertEqual(store.entries.map(\.id), [
+                "a7902a04", "c2592b34:reply", "c2592b34:end", "bcf1ae30", "b46a7d09:reply", "b46a7d09:end",
+                "b2f25ccb", "2db84f2f:thinking", "2db84f2f:toolu_015EWurddNboHwrfLZKfJmEh", "63568b78:reply",
+                "63568b78:end",
+            ], "resent: \(String(describing: marks))")
+            XCTAssertEqual(store.turns.map(\.id), ["a7902a04", "bcf1ae30", "b2f25ccb"])
+            XCTAssertEqual(store.turns.last?.items.map(\.id),
+                           ["2db84f2f:thinking", "63568b78:reply"])
+            // An old prompt with the same words is not the send just staged.
+            XCTAssertTrue(store.outbox.messages.contains(where: { $0.id == outgoing }))
+            // An older page still brings them, in place.
+            XCTAssertTrue(store.hasOlder)
+        }
     }
 
     private static func timed(_ id: String, _ ms: UInt64?, _ kind: String = "reply",
@@ -933,8 +939,9 @@ final class TranscriptStoreTests: XCTestCase {
     }
 
     func testAfterPageStillDropsUnloadedOriginMarkedPromptReplays() async throws {
-        // Guards the #684 chat wall: an unknown marked prompt older than the oldest held,
-        // with history unloaded, is a replay an older page brings; a newer one is kept.
+        // Guards the #684 chat wall against a herdr that does not list what it re-sent (no
+        // `resent`): an unknown marked prompt older than the oldest held, with history
+        // unloaded, is taken for a replay an older page brings; a newer one is kept.
         let (client, _) = scripted { params in
             params["after"] == nil
                 ? Self.page([Self.timed("u", 2000, "user", extra: #""text":"hi","author":"owner""#)],
@@ -948,6 +955,54 @@ final class TranscriptStoreTests: XCTestCase {
         await store.refresh(client: client)
         await store.refresh(client: client)
         XCTAssertEqual(store.entries.map(\.id), ["u", "new"])
+        XCTAssertTrue(store.hasOlder)
+    }
+
+    func testAfterPageWithResentListKeepsANewGuestPromptOlderThanTheWindow() async throws {
+        // #706: a guest prompt appended after a clock rollback is older than the held owner
+        // prompt. herdr does not list it as re-sent, so it is new: it and its reply (after
+        // or also behind the window) are appended, and the reply answers the guest's turn.
+        for replyMs: UInt64 in [2001, 1999] {
+            let (client, _) = scripted { params in
+                params["after"] == nil
+                    ? Self.page([Self.timed("u", 2000, "user", extra: #""text":"hi","author":"owner""#)],
+                                before: "b1", after: "a1")
+                    : Self.page([
+                        Self.timed("g", 1999, "user", extra: Self.guestPrompt),
+                        Self.timed("r", replyMs),
+                    ], after: "a2", resent: [])
+            }
+            let store = TranscriptStore(target: "w1:p9Y")
+            await store.refresh(client: client)
+            XCTAssertTrue(store.hasOlder)
+            await store.refresh(client: client)
+            XCTAssertEqual(store.entries.map(\.id), ["u", "g", "r"], "reply at \(replyMs)")
+            XCTAssertEqual(store.turns.map(\.id), ["u", "g"], "reply at \(replyMs)")
+            XCTAssertEqual(store.turns.last?.items.map(\.id), ["r"], "reply at \(replyMs)")
+        }
+    }
+
+    func testAfterPageWithResentListDropsOnlyReplaysOfUnloadedHistory() async throws {
+        // #706: what herdr lists in `resent` came from before the after cursor. One the store
+        // does not hold is history an older page brings, whatever its timestamp; one it holds
+        // takes its new mark in place. Everything unlisted is new, whatever its timestamp.
+        let (client, _) = scripted { params in
+            params["after"] == nil
+                ? Self.page([Self.timed("h", 2000, "user", extra: #""text":"old","author":"guest""#)],
+                            before: "b1", after: "a1")
+                : Self.page([
+                    Self.timed("old", 2500, "user", extra: Self.guestPrompt),
+                    Self.timed("h", 2000, "user", extra: Self.guestPrompt),
+                    Self.timed("new", 1000, "user", extra: Self.guestPrompt),
+                ], after: "a2", resent: ["old", "h"])
+        }
+        let store = TranscriptStore(target: "w1:p9Y")
+        await store.refresh(client: client)
+        await store.refresh(client: client)
+        XCTAssertEqual(store.entries.map(\.id), ["h", "new"])
+        guard case .user(_, _, .other)? = store.entries.first?.kind else {
+            return XCTFail("the held prompt takes its re-sent mark")
+        }
         XCTAssertTrue(store.hasOlder)
     }
 

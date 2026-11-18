@@ -27,14 +27,17 @@ struct GuestConnection {
     }
 }
 
-/// Screen G2: a guest's home. One machine, only the shared agent, and two tabs
-/// (Agents, Settings); nothing about the owner's fleet. The shared agent's Gram, when the
-/// owner shares it, is a tab of the agent's own screen.
+/// Screen G2: a guest's home. One machine, only the shared agent, and three tabs
+/// (Agents, Gram when an owner shares it, Settings); nothing about the owner's fleet. The
+/// Gram tab is the guest's one inbox across every shared agent (#697).
 struct GuestHomeView: View {
     let access: GuestAccess
     let connect: () throws -> GuestConnection
     /// Back to the machine list; nil when this share is the only thing on the phone.
     let onBack: (() -> Void)?
+    /// Settings › Connect your own machine: closes the share onto the machine list with its
+    /// owner setup open. Nil where no machine list sits behind the share.
+    let onConnectOwnMachine: (() -> Void)?
     /// Called after the share was removed (Leave, or Remove from the row or its menu).
     let onLeave: () -> Void
     /// Where the row posts its state in a word or two ("omp · idle", "unavailable"), for
@@ -42,8 +45,12 @@ struct GuestHomeView: View {
     let statusBoard: GuestShareStatusBoard?
     let pollInterval: Duration
     let embedded: Bool
+    /// The guest's Gram inbox, for the Gram tab and the agent page's Gram button.
+    @ObservedObject var inbox: GuestGramInbox
+    /// Embedded in a machine's list: the parent's Gram tab opens on this agent.
+    let onOpenGram: ((GuestAccess) -> Void)?
 
-    enum Tab: Hashable { case agents, settings }
+    enum Tab: Hashable { case agents, gram, settings }
 
     private enum Status: Equatable {
         case loading
@@ -65,20 +72,50 @@ struct GuestHomeView: View {
     /// The agent screen's tab; a tapped push picks it.
     @State private var paneTab: GuestPaneTab = .terminal
     @State private var confirmingRemove = false
+    /// A tapped Gram push waiting for the inbox to learn this host shares Gram.
+    @State private var pendingGram = false
     @Environment(\.displayScale) private var displayScale
     /// Observed so a Text size change re-renders at the new `Typography.scale`.
     @AppStorage("ui.fontScale") private var uiFontScale: Double = 1.0
 
     init(access: GuestAccess, connect: @escaping () throws -> GuestConnection,
+         inbox: GuestGramInbox, onOpenGram: ((GuestAccess) -> Void)? = nil,
          pollInterval: Duration = .seconds(5), embedded: Bool = false,
-         onBack: (() -> Void)?, onLeave: @escaping () -> Void, statusBoard: GuestShareStatusBoard? = nil) {
+         onBack: (() -> Void)?, onConnectOwnMachine: (() -> Void)? = nil,
+         onLeave: @escaping () -> Void, statusBoard: GuestShareStatusBoard? = nil) {
         self.access = access
         self.connect = connect
+        self.inbox = inbox
+        self.onOpenGram = onOpenGram
         self.pollInterval = pollInterval
         self.embedded = embedded
         self.onBack = onBack
+        self.onConnectOwnMachine = onConnectOwnMachine
         self.onLeave = onLeave
         self.statusBoard = statusBoard
+    }
+
+    /// This agent's Gram is in the inbox: the agent page offers its Gram button.
+    private var hasGram: Bool { inbox.shares.contains { $0.id == access.id } }
+
+    /// The agent page's Gram button, and a tapped Gram push: the Gram tab, on this agent.
+    private func openGram() {
+        inbox.selection = .grant(access.id)
+        showingPane = false
+        if embedded {
+            onOpenGram?(access)
+        } else {
+            tab = .gram
+        }
+    }
+
+    private func pane(_ connection: GuestConnection, close: @escaping () -> Void) -> some View {
+        GuestPaneView(client: connection.client, access: access, features: connection.features,
+                      tab: $paneTab, gramUnread: inbox.unread(access.id),
+                      onOpenGram: hasGram ? { openGram() } : nil,
+                      // The machine home's probes cover the inline pane; a full-screen cover
+                      // (embedded) hides them, so the pane draws its own there.
+                      callProbes: embedded, onClose: close)
     }
 
     var body: some View {
@@ -87,10 +124,7 @@ struct GuestHomeView: View {
             if embedded {
                 content
                     .fullScreenCover(isPresented: $showingPane) {
-                        if let connection {
-                            GuestPaneView(client: connection.client, access: access, features: connection.features,
-                                          tab: $paneTab) { showingPane = false }
-                        }
+                        if let connection { pane(connection) { showingPane = false } }
                     }
             } else {
                 ZStack {
@@ -98,15 +132,22 @@ struct GuestHomeView: View {
                 agentsTab
                     .tag(Tab.agents)
                     .tabItem { Label("Agents", systemImage: "square.grid.2x2.fill") }
-                GuestSettingsView(access: access, fingerprint: connection?.fingerprint,
-                                  client: connection?.client, onLeave: leave)
+                if !inbox.shares.isEmpty {
+                    GuestGramTab(inbox: inbox, active: tab == .gram && !showingPane)
+                        .tag(Tab.gram)
+                        .tabItem { Label("Gram", systemImage: "bubble.left.and.bubble.right") }
+                        .badge(inbox.unreadTotal)
+                }
+                SettingsView(mode: .guest(GuestSettingsShare(access: access, fingerprint: connection?.fingerprint,
+                                                            client: connection?.client, onLeave: leave,
+                                                            onConnectOwnMachine: onConnectOwnMachine)),
+                             agents: [], host: access.machineLabel)
                     .tag(Tab.settings)
                     .tabItem { Label("Settings", systemImage: "gearshape") }
             }
             .tint(Palette.text)
             if showingPane, let connection {
-                GuestPaneView(client: connection.client, access: access, features: connection.features,
-                              tab: $paneTab) {
+                pane(connection) {
                     withAnimation(.easeOut(duration: 0.26)) { showingPane = false }
                 }
                 .transition(.move(edge: .trailing).combined(with: .opacity))
@@ -126,13 +167,24 @@ struct GuestHomeView: View {
             guard let features, let client = connection?.client else { return }
             Task { await GuestPushCenter.shared.connected(access, client: client, features: features) }
         }
-        // A tapped push for this share: its Gram tab for a Gram, else the terminal.
+        // A tapped push for this share: the Gram tab on this agent for a Gram (once the
+        // inbox knows the host shares it), else the terminal.
         .onReceive(PushCenter.shared.$pendingGuest) { route in
             guard let route, route.access(in: [access]) != nil else { return }
             PushCenter.shared.pendingGuest = nil
-            tab = .agents
-            paneTab = route.kind == .gram ? .gram : .terminal
-            showingPane = true
+            if route.kind == .gram {
+                pendingGram = true
+                if hasGram { pendingGram = false; openGram() }
+            } else {
+                tab = .agents
+                paneTab = .terminal
+                showingPane = true
+            }
+        }
+        .onChange(of: hasGram) { _, has in
+            guard has, pendingGram else { return }
+            pendingGram = false
+            openGram()
         }
         .environment(avatars)
     }

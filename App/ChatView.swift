@@ -64,7 +64,8 @@ final class ChatModel: ObservableObject {
     @Published private(set) var answerProblem: ChatAnswerProblem?
     /// The guest's host keeps answers for the owner (a host older than guest answers): it
     /// withheld `answerable` from a question the buttons could answer, or refused a guest's
-    /// answer or menu key (`guest_forbidden`). Questions wait for the owner for the session.
+    /// `agent.answer` or `agent.answer_form` (`guest_forbidden`). A refused menu key is no
+    /// such signal (herdrup#714). Questions wait for the owner for the session.
     @Published private(set) var answersRefused = false
     /// The server reads and answers omp's HTML-form asks (`ask_form`); nil until its ping answered.
     @Published private(set) var formsSupported: Bool?
@@ -83,10 +84,14 @@ final class ChatModel: ObservableObject {
     var rowCount: Int { rows.count }
 
     let store: TranscriptStore
+    /// Which sheet the chat has open. Here, not in ChatView, so a sheet survives the chat's
+    /// unmount in the background (`ChatPresentation`).
+    let presentation: ChatPresentation
 
     /// `subagent`: the model pages that subagent's own conversation (read-only) instead.
     init(target: String, subagent: String? = nil) {
         store = TranscriptStore(target: target, subagent: subagent)
+        presentation = ChatPresentation()
         store.onChange = { [weak self] in self?.sync() }
         #if DEBUG
         SnapshotStress.track(self)
@@ -276,11 +281,6 @@ final class ChatModel: ObservableObject {
         await store.refresh(client: client)
     }
 
-    /// A guest's host refused a guest's menu key: stop offering guest answers this session.
-    func noteAnswersRefused() {
-        answersRefused = true
-    }
-
     /// Keeps the chat current while it is on screen: the agent's own events where the
     /// server sends them (owner), a 3 s poll while a send waits to show up in the
     /// transcript or while omp works, and a slow poll otherwise as a backstop for a missed
@@ -399,6 +399,31 @@ final class ChatModel: ObservableObject {
     private func assign<Value: Equatable>(_ keyPath: ReferenceWritableKeyPath<ChatModel, Value>, _ value: Value) {
         if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
     }
+}
+
+/// The chat sheet that is open, and over what. `ChatModel` owns it and the page presents it
+/// (`chatSheets`), both above ChatView, which unmounts in the background
+/// (`ScenePhase.mountsChat`): a sheet open then is still open on return. Its own object, so
+/// opening a sheet redraws neither the chat nor the page.
+@MainActor
+final class ChatPresentation: ObservableObject {
+    enum Sheet: Identifiable {
+        case note(TranscriptNote)
+        case question(id: String)
+        case selectText(ChatSelectableText)
+        case subagent(TranscriptSubagent)
+
+        var id: String {
+            switch self {
+            case .note(let note): "note:\(note.title)\n\(note.body)"
+            case .question(let id): "question:\(id)"
+            case .selectText(let text): "text:\(text.id)"
+            case .subagent(let subagent): "subagent:\(subagent.id)"
+            }
+        }
+    }
+
+    @Published var sheet: Sheet?
 }
 
 /// A turn's prompt as its row draws it: only what the bubble shows, so comparing rows
@@ -601,8 +626,9 @@ extension ScenePhase {
     /// the other orientation and the other appearance, and each snapshot lays the whole tree
     /// out again on the main thread under a 10 s watchdog (0x8BADF00D, "scene-update watchdog
     /// transgression"). A chat is the largest part of that tree, so in the background it is
-    /// unmounted: its `ChatModel`, and so the conversation, stays, and the chat mounts again
-    /// at its newest message when the app comes back.
+    /// unmounted: its `ChatModel`, and so the conversation and any open sheet
+    /// (`ChatPresentation`), stays, and the chat mounts again at its newest message when the
+    /// app comes back.
     var mountsChat: Bool { self != .background }
 }
 
@@ -634,7 +660,6 @@ struct ChatView: View {
     @AppStorage(ChatTextSize.storageKey) private var chatFontSize = ChatTextSize.defaultPoints
     private var textScale: CGFloat { CGFloat(chatFontSize / ChatTextSize.defaultPoints) }
     @State private var expanded: Set<String> = []
-    @State private var openNote: TranscriptNote?
     @State private var atBottom = true
     @State private var followingLatest = true
     @State private var userScrolling = false
@@ -653,11 +678,6 @@ struct ChatView: View {
     @State private var searchResult = TranscriptSearchResult.empty
     @State private var searchKey = ChatSearchKey.none
     @State private var searchTexts = ChatSearchTextCache()
-    @State private var openQuestionID: String?
-    /// The message whose Select Text sheet is open.
-    @State private var selectingText: ChatSelectableText?
-    /// The subagent whose conversation is open (owner only).
-    @State private var openSubagent: TranscriptSubagent?
     /// Which drawn prompts sit above the viewport, as their rows report it (the up arrow).
     @State private var promptTops = ChatPromptTops()
     /// A form's review waiting to be shown from its top (`revealFormTop`).
@@ -829,18 +849,6 @@ struct ChatView: View {
             promptTops.lastJump = nil
             promptTops.navigation += 1
             formReveal.pending = false
-        }
-        .sheet(item: Binding(get: { openNote.map(IdentifiedNote.init) }, set: { openNote = $0?.note })) { item in
-            ChatNoteSheet(note: item.note)
-        }
-        .sheet(isPresented: Binding(get: { openQuestionID != nil }, set: { if !$0 { openQuestionID = nil } })) {
-            questionSheet
-        }
-        .sheet(item: $selectingText) { item in
-            ChatSelectTextSheet(text: item.text)
-        }
-        .sheet(item: $openSubagent) { subagent in
-            ChatSubagentSheet(client: client, target: model.target, subagent: subagent)
         }
         .environment(\.chatTextScale, textScale)
         .environment(\.chatSearchQuery, findRequest?.term ?? "")
@@ -1135,8 +1143,8 @@ struct ChatView: View {
     private var rowActions: ChatRowActions {
         ChatRowActions(
             toggle: { key in toggle(key) },
-            openNote: { note in openNote = note },
-            openQuestion: { id in openQuestionID = id },
+            openNote: { note in model.presentation.sheet = .note(note) },
+            openQuestion: { id in model.presentation.sheet = .question(id: id) },
             answer: { id, option in Task { await model.answer(client: client, askID: id, option: option) } },
             submitForm: { id, draft in
                 // The answer moves the conversation on: the chat follows it again. Like Jump to
@@ -1159,10 +1167,10 @@ struct ChatView: View {
             formReviewLaidOut: { frame in revealFormTop(frame) },
             canAnswer: model.store.subagent == nil,
             openTerminal: {
-                openQuestionID = nil
+                model.presentation.sheet = nil
                 onOpenTerminal()
             },
-            selectText: { text in selectingText = text })
+            selectText: { text in model.presentation.sheet = .selectText(text) })
     }
 
     /// A form's review is open and asked to be shown from its top (`ChatFormReveal`). A card
@@ -1183,41 +1191,6 @@ struct ChatView: View {
         guard scrollPosition.revealTop(frame, margin: 16, atTail: followingLatest) else { return }
         promptTops.lastJump = nil
         followingLatest = false
-    }
-
-    private var questionSheet: some View {
-        ChatContentSheet {
-            if let turn = model.turns.first(where: { $0.items.contains(where: { $0.id == openQuestionID }) }),
-               let item = turn.items.first(where: { $0.id == openQuestionID }),
-               case .ask(let id, let ask, let pending) = item {
-                VStack(alignment: .leading, spacing: 12) {
-                    questionCard(id: id, ask: ask, pending: pending)
-                    if case .user(let text, _, _) = turn.prompt?.kind, !text.isEmpty {
-                        DisclosureGroup("Show context") { ChatMarkdownView(markdown: text).textSelection(.enabled) }
-                            .font(Typography.app(14 * textScale))
-                    }
-                }
-            } else {
-                Text("This question is no longer available.")
-            }
-        }
-        .accessibilityIdentifier("chat-question-sheet")
-    }
-
-    // MARK: - Rows
-
-    private func questionCard(id: String, ask: TranscriptAsk, pending: TranscriptPendingAsk?) -> some View {
-        ChatAskCard(id: id, ask: ask, pending: pending, viewer: viewer,
-                    answering: model.answeringAskID == id,
-                    problem: model.answerProblem?.askID == id ? model.answerProblem : nil,
-                    answersRefused: model.answersRefused,
-                    onAnswer: { option in
-                        Task { await model.answer(client: client, askID: id, option: option) }
-                    },
-                    onOpenTerminal: {
-                        openQuestionID = nil
-                        onOpenTerminal()
-                    })
     }
 
     // MARK: - My previous message (the up arrow)
@@ -1636,7 +1609,7 @@ struct ChatView: View {
 
     private func subagentRow(_ subagent: TranscriptSubagent) -> some View {
         ChatSubagentRow(subagent: subagent, opens: !viewer.isGuest && subagent.hasTranscript) {
-            openSubagent = subagent
+            model.presentation.sheet = .subagent(subagent)
         }
         .equatable()
     }
@@ -1759,6 +1732,92 @@ private struct ChatSubagentRow: View, Equatable {
     }
 }
 
+extension View {
+    /// The chat's sheets (`ChatPresentation`), attached by the page that mounts the chat rather
+    /// than by ChatView, so they stay presented while the chat is unmounted in the background.
+    /// `presents`: the page shows this chat; once it stops (another pane, the Terminal), an
+    /// open sheet closes, as it did with the ChatView that presented it.
+    func chatSheets(client: HerdrClient, model: ChatModel, viewer: ChatViewer, presents: Bool,
+                    onOpenTerminal: @escaping () -> Void) -> some View {
+        modifier(ChatSheets(client: client, model: model, presentation: model.presentation, viewer: viewer,
+                            presents: presents, onOpenTerminal: onOpenTerminal))
+    }
+}
+
+private struct ChatSheets: ViewModifier {
+    let client: HerdrClient
+    let model: ChatModel
+    @ObservedObject var presentation: ChatPresentation
+    let viewer: ChatViewer
+    let presents: Bool
+    let onOpenTerminal: () -> Void
+    @AppStorage(ChatTextSize.storageKey) private var chatFontSize = ChatTextSize.defaultPoints
+
+    func body(content: Content) -> some View {
+        content
+            .sheet(item: $presentation.sheet) { sheet in
+                sheetContent(sheet)
+                    .environment(\.chatTextScale, CGFloat(chatFontSize / ChatTextSize.defaultPoints))
+            }
+            .onChange(of: presents) { _, presents in
+                if !presents { presentation.sheet = nil }
+            }
+    }
+
+    @ViewBuilder
+    private func sheetContent(_ sheet: ChatPresentation.Sheet) -> some View {
+        switch sheet {
+        case .note(let note):
+            ChatNoteSheet(note: note)
+        case .question(let id):
+            ChatQuestionSheet(client: client, model: model, viewer: viewer, questionID: id) {
+                presentation.sheet = nil
+                onOpenTerminal()
+            }
+        case .selectText(let text):
+            ChatSelectTextSheet(text: text.text)
+        case .subagent(let subagent):
+            ChatSubagentSheet(client: client, target: model.target, subagent: subagent)
+        }
+    }
+}
+
+/// A question opened from its card: the question, answerable, over the prompt it answers.
+private struct ChatQuestionSheet: View {
+    let client: HerdrClient
+    @ObservedObject var model: ChatModel
+    let viewer: ChatViewer
+    let questionID: String
+    let onOpenTerminal: () -> Void
+    @Environment(\.chatTextScale) private var textScale
+
+    var body: some View {
+        ChatContentSheet {
+            if let turn = model.turns.first(where: { $0.items.contains(where: { $0.id == questionID }) }),
+               let item = turn.items.first(where: { $0.id == questionID }),
+               case .ask(let id, let ask, let pending) = item {
+                VStack(alignment: .leading, spacing: 12) {
+                    ChatAskCard(id: id, ask: ask, pending: pending, viewer: viewer,
+                                answering: model.answeringAskID == id,
+                                problem: model.answerProblem?.askID == id ? model.answerProblem : nil,
+                                answersRefused: model.answersRefused,
+                                onAnswer: { option in
+                                    Task { await model.answer(client: client, askID: id, option: option) }
+                                },
+                                onOpenTerminal: onOpenTerminal)
+                    if case .user(let text, _, _) = turn.prompt?.kind, !text.isEmpty {
+                        DisclosureGroup("Show context") { ChatMarkdownView(markdown: text).textSelection(.enabled) }
+                            .font(Typography.app(14 * textScale))
+                    }
+                }
+            } else {
+                Text("This question is no longer available.")
+            }
+        }
+        .accessibilityIdentifier("chat-question-sheet")
+    }
+}
+
 /// A subagent's own conversation, read-only: the chat over its session file
 /// (`agent.transcript` with `subagent`), with no composer. It polls while the subagent runs.
 private struct ChatSubagentSheet: View {
@@ -1766,6 +1825,7 @@ private struct ChatSubagentSheet: View {
     let subagent: TranscriptSubagent
     @StateObject private var model: ChatModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
 
     init(client: HerdrClient, target: String, subagent: TranscriptSubagent) {
         self.client = client
@@ -1775,19 +1835,30 @@ private struct ChatSubagentSheet: View {
 
     var body: some View {
         NavigationStack {
-            ChatView(client: client, model: model, viewer: .owner, eventsPaneID: nil, isActive: true,
-                     live: subagent.status.isRunning, agentStatus: nil, ground: Palette.groundMachine,
-                     onOpenTerminal: { dismiss() })
-                .navigationTitle(subagent.id)
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Done") { dismiss() }
-                            .accessibilityIdentifier("chat-subagent-done")
-                    }
+            Group {
+                // Like the page's chat, not mounted in the background (`ScenePhase.mountsChat`):
+                // the sheet stays open, its model keeps the conversation, and the chat mounts
+                // again on return.
+                if scenePhase.mountsChat {
+                    ChatView(client: client, model: model, viewer: .owner, eventsPaneID: nil, isActive: true,
+                             live: subagent.status.isRunning, agentStatus: nil, ground: Palette.groundMachine,
+                             onOpenTerminal: { dismiss() })
+                } else {
+                    Palette.groundMachine.ignoresSafeArea()
                 }
+            }
+            .navigationTitle(subagent.id)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                        .accessibilityIdentifier("chat-subagent-done")
+                }
+            }
         }
         .accessibilityIdentifier("chat-subagent-transcript")
+        // Its own notes, questions and Select Text, above its background unmount too.
+        .chatSheets(client: client, model: model, viewer: .owner, presents: true, onOpenTerminal: { dismiss() })
     }
 }
 
@@ -2269,17 +2340,13 @@ private struct ChatRowRenderProbe: View {
 }
 #endif
 
-private struct IdentifiedNote: Identifiable {
-    let note: TranscriptNote
-    var id: String { note.title + note.body }
-}
-
 // MARK: - The question card
 
 /// omp's `ask` question. Open and answerable: the options are buttons (the recommended
 /// one, else the first, primary), for a guest as for the owner. A guest whose host refuses
-/// guest answers (an older host): the options read-only with "Waiting for <owner> to
-/// answer". Answered: "You chose …".
+/// guest answers (it withholds `answerable`, or refused one with `guest_forbidden`): the
+/// options read-only with "Waiting for <owner> to answer". A question the chat cannot
+/// answer goes to the Terminal. Answered: "You chose …".
 struct ChatAskCard: View {
     let id: String
     let ask: TranscriptAsk
@@ -2404,7 +2471,15 @@ struct ChatAskCard: View {
             .padding(.top, 10)
         } else if !canAnswer {
             // A multi-part or multi-select question: the chat shows it, the terminal answers it.
-            terminalButton.padding(.top, 10)
+            VStack(alignment: .leading, spacing: 8) {
+                if viewer.isGuest {
+                    Text("This question needs the Terminal").font(Typography.app(13 * textScale))
+                        .foregroundStyle(Palette.waiting)
+                        .accessibilityIdentifier("chat-ask-needs-terminal")
+                }
+                terminalButton
+            }
+            .padding(.top, 10)
         }
     }
 

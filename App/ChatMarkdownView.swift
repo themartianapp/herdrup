@@ -7,12 +7,13 @@ import SwiftUI
 /// inline markdown so bold, italic, code and links stay inside one wrapping `Text`.
 struct ChatMarkdownView: View {
     let markdown: String
-    /// `.thought` draws an expanded thought: the same blocks, a step smaller and dimmer.
+    /// `.thought` draws an expanded thought: the same blocks, a step smaller and dimmer;
+    /// `.context` draws an ask form's context, smaller again to sit inside the form card.
     var tone: ChatMarkdownTone = .reply
 
     @Environment(\.chatTextScale) private var chatTextScale
     private var textScale: CGFloat { chatTextScale * tone.scale }
-    private var dim: Bool { tone == .thought }
+    private var dim: Bool { tone.dim }
     /// Parsed once per text (`ChatMarkdownCache`): a redraw of the same reply, or the same
     /// reply drawn again after it scrolled out of the drawn window, does not parse it again.
     private var blocks: [ChatMarkdownBlock] { ChatMarkdownCache.blocks(markdown) }
@@ -90,15 +91,24 @@ struct ChatMarkdownView: View {
 
 /// How a markdown body is drawn: a reply in the chat's ink, or an expanded thought, which
 /// must read as the agent's aside and not as its answer: the secondary ink and one type step
-/// smaller (16 pt body → 15 pt), inline code and lists included.
+/// smaller (16 pt body → 15 pt), inline code and lists included. An ask form's context is
+/// drawn like a thought at the card's 14 pt, under the question it introduces.
 enum ChatMarkdownTone: Equatable {
     case reply
     case thought
+    case context
 
-    var ink: Color { self == .thought ? Palette.textDim : Palette.text }
+    var dim: Bool { self != .reply }
+    var ink: Color { dim ? Palette.textDim : Palette.text }
     /// List markers and checkboxes: one tier under the text.
-    var marker: Color { self == .thought ? Palette.textFaint : Palette.textDim }
-    var scale: CGFloat { self == .thought ? 15.0 / 16.0 : 1 }
+    var marker: Color { dim ? Palette.textFaint : Palette.textDim }
+    var scale: CGFloat {
+        switch self {
+        case .reply: 1
+        case .thought: 15.0 / 16.0
+        case .context: 14.0 / 16.0
+        }
+    }
 }
 
 /// Fit ordinary tables to the chat width; scroll only when readable columns cannot fit.
@@ -125,7 +135,7 @@ private struct ChatMarkdownTable: View {
                 GridRow {
                     ForEach(0..<columns, id: \.self) { column in
                         Text(ChatInline.styled(column < header.count ? header[column] : "",
-                                               size: 13 * textScale, weight: .semibold, dim: tone == .thought))
+                                               size: 13 * textScale, weight: .semibold, dim: tone.dim))
                             .foregroundStyle(Palette.textDim)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(width: cellWidth - 24, alignment: .leading)
@@ -157,10 +167,10 @@ private struct ChatMarkdownTable: View {
             && trimmed.contains(where: \.isNumber)
         return Group {
             if numeric {
-                Text(ChatInline.styled(trimmed, size: 13.5 * textScale, dim: tone == .thought)).monospacedDigit()
+                Text(ChatInline.styled(trimmed, size: 13.5 * textScale, dim: tone.dim)).monospacedDigit()
                     .foregroundColor(trimmed.hasPrefix("+") ? ChatStyle.ok : tone.ink)
             } else {
-                Text(ChatInline.styled(value, size: 14.5 * textScale, dim: tone == .thought)).foregroundColor(tone.ink)
+                Text(ChatInline.styled(value, size: 14.5 * textScale, dim: tone.dim)).foregroundColor(tone.ink)
             }
         }
         .multilineTextAlignment(numeric ? .trailing : .leading)

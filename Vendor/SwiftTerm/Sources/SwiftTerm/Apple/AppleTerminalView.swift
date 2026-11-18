@@ -279,19 +279,25 @@ extension TerminalView {
     /// terminal, so modes, margins and installed colors survive a resize. Calling
     /// it with the current grid is legal and cheap: it reconciles the scroller and
     /// cursor against current font metrics and queues a safe repaint without
-    /// touching the buffers.
-    public func applyTerminalSize (cols: Int, rows: Int)
+    /// touching the buffers. herdr: with `scrollback`, the scrollback is set in the
+    /// same step, ordered so the ring drops no row it keeps
+    /// (`Terminal.resize(cols:rows:scrollback:)`).
+    public func applyTerminalSize (cols: Int, rows: Int, scrollback: Int? = nil)
     {
-        commitTerminalSize (cols: cols, rows: rows, notifyDelegate: false)
+        commitTerminalSize (cols: cols, rows: rows, notifyDelegate: false, scrollback: scrollback)
     }
 
     @discardableResult
-    func commitTerminalSize (cols: Int, rows: Int, notifyDelegate: Bool) -> Bool
+    func commitTerminalSize (cols: Int, rows: Int, notifyDelegate: Bool, scrollback: Int? = nil) -> Bool
     {
         let changed = cols != terminal.cols || rows != terminal.rows
+        if let scrollback, scrollback != terminal.options.scrollback {
+            terminal.resize (cols: cols, rows: rows, scrollback: scrollback)
+        } else if changed {
+            terminal.resize (cols: cols, rows: rows)
+        }
         if changed {
             selection.active = false
-            terminal.resize (cols: cols, rows: rows)
             
             accessibility.invalidate ()
             search.invalidate ()
