@@ -29,6 +29,16 @@ final class GuestPushTests: XCTestCase {
         tab.tap()
     }
 
+    /// Settings › Shared with you, where the share's Notifications control lives (behind the
+    /// share's card on the Settings index).
+    private func openSharedWithYou(_ app: XCUIApplication) {
+        openTab(app, "Settings")
+        let card = app.buttons["guest-settings-agent-card"]
+        XCTAssertTrue(card.exists(within: 10), "guest Settings should lead with the share's card")
+        card.tap()
+        XCTAssertTrue(element(app, "guest-push-status").exists(within: 10))
+    }
+
     private func openAgent(_ app: XCUIApplication) {
         openTab(app, "Agents")
         let row = app.buttons["guest-agent-row"]
@@ -42,7 +52,7 @@ final class GuestPushTests: XCTestCase {
     /// which registers once.
     func testGrantedPermissionRegistersWithoutAskingAndShowsOn() {
         let app = launch(authorization: "granted")
-        openTab(app, "Settings")
+        openSharedWithYou(app)
         pollLabel(app, "guest-push-status", "a granted phone's notifications should be on") { $0 == "On" }
         XCTAssertEqual(app.buttons["guest-push-action"].label, "Turn off")
         attach(app, "guest-push-settings-on")
@@ -68,7 +78,7 @@ final class GuestPushTests: XCTestCase {
         XCTAssertTrue(element(app, "guest-push-prompt").gone(within: 5))
         app.buttons["guest-back"].tap()
 
-        openTab(app, "Settings")
+        openSharedWithYou(app)
         pollLabel(app, "guest-push-status", "Not now leaves notifications off") { $0 == "Off" }
         let action = app.buttons["guest-push-action"]
         XCTAssertEqual(action.label, "Turn on")
@@ -83,7 +93,7 @@ final class GuestPushTests: XCTestCase {
     /// iOS refuses: nothing registers or asks, and Settings points to iOS Settings.
     func testDeniedPermissionPointsToSettingsAndNeverRegisters() {
         let app = launch(authorization: "denied")
-        openTab(app, "Settings")
+        openSharedWithYou(app)
         pollLabel(app, "guest-push-status", "a refused phone says so") { $0 == "Off in iOS Settings" }
         XCTAssertEqual(app.buttons["guest-push-action"].label, "Open Settings")
 
