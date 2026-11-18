@@ -214,6 +214,23 @@ cancelled. macserve does not skip docs-only or version-only pull requests;
 [`Tools/ci/ci_scope.py`](../Tools/ci/ci_scope.py) still records that decision in the
 *Scope* job.
 
+**The `smoke` shard is the fast tier's.** macserve's two-tier matrix will run it on every push,
+drafts included, on an iPhone 18 Pro from the head's one prebuilt app, while the four shards
+above become the full tier, which runs only on the final head before merge. Until macserve's
+policy names it, macserve ignores it. It lists 30 selectors (36 tests, about 7.4 minutes of
+test time at #694's durations) on the critical paths: launch and onboarding, pairing and the
+live connection, the agent list, the terminal (type, scroll, resize, drop, the memory budget),
+Chat (open, send, older pages, landing after a background round trip, an ask card, the question
+sheet), Gram (open at the newest, post, open a file), the guest pane and guest Gram, Settings,
+the server-update card, and the Gram and Chat width handles, which check the compact layout on
+iPhone and the split columns on iPad. It includes a test from each class with a real
+regression in history (`GuestGramPaneTests` and `AgentAvatarUITests` on #702,
+`TerminalMemoryTests` for #687, `ChatViewTests` and the question sheet for #686 and #711) and
+leaves out the known flakes (#685, #705, the iPad width readout and Duo draft) and the
+four-minute `PagingTests`. Smoke is a subset: `test_macserve_shards.py` checks that each smoke
+selector's class also runs in an iPhone shard, so a green smoke never stands in for the full
+tier, which still gates the merge.
+
 **Running a shard on any Mac.** [`Tools/ci/ui-shard.sh`](../Tools/ci/ui-shard.sh) runs the
 same shards round by round, with measured per-round budgets, an infrastructure-only rerun
 and receipts in `TestReceipts/` (it needs no Homebrew: `xcbeautify` and GNU `timeout` are
@@ -321,6 +338,23 @@ resizable, so it must show no handles and the whole width instead; a chat narrow
 wide must show whole once turned to tall, and its narrowed width must return held wide again. It writes
 `RESULTS.md` and before/after screenshots per pose.
 
+The macserve script shard `snapshot-stress` ([`Tools/ci/snapshot-stress.sh`](../Tools/ci/snapshot-stress.sh))
+guards against the background watchdog kill (0x8BADF00D, "scene-update watchdog transgression"). Going to the
+background, iOS snapshots the app in the other orientation and the other appearance, and each snapshot lays
+the whole SwiftUI tree out again on the main thread under a 10 s allowance. The shard plays hours of use in
+minutes over the `chatview` mock (`HERDR_SNAPSHOT_STRESS`, [`App/SnapshotStress.swift`](../App/SnapshotStress.swift)):
+agents whose transcripts keep growing, fronted again and again in Chat, Terminal and Gram. It records the
+footprint, the window's layer and view counts, live WKWebViews, chat rows held and drawn, and the main
+thread's longest block while the app turns to landscape and back and flips its appearance, then once it is
+sent to the background. It fails when the layers or footprint pass their limits, when the layers keep
+growing, or when any of those relayouts blocks the main thread for more than a second. It runs on demand
+(about 15 minutes).
+
+What keeps it green: a chat that follows its tail slides its drawn window back to the newest rows instead
+of growing it forever (`ChatView.slideWindowToTail`); only the front pane's chat is mounted, so a kept-alive
+pane holds its `ChatModel` but no drawn rows; and in the background no chat is mounted at all
+(`ScenePhase.mountsChat`), so the snapshots lay out a small tree.
+
 The shared native composer reconciles external text edits after the SwiftUI layout pass,
 using the current binding rather than a captured layout value. This preserves newer
 keystrokes while still applying dictation, mention completion, restored drafts, and send clears.
@@ -395,6 +429,9 @@ the stable feed so search controls remain separate from scrolling message conten
 The DEBUG `HERDR_LAYOUT_TRANSITIONS=1` interaction fixture changes width and size class
 without relaunching, so draft, stream-lifetime, and active-search regressions exercise
 a live transition. Terminal tab roundtrips also check the exact draft and stream count.
+Only the presented pane's reply editor carries `terminal-reply-input`: a warm pane's
+hidden editor drops the identifier, so the fixture's second pane cannot answer for the
+front one's draft (#677).
 Search coverage includes emptying a query and continuing to type without refocusing,
 then closing and reopening the editor with normal taps and checking the exact query
 and filtered results before returning to the regular layout.

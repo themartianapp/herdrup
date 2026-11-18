@@ -323,7 +323,10 @@ public final class TranscriptStore {
         }
         let version = generation
         do {
-            let page = try await client.agentTranscript(target: target, after: after, subagent: subagent)
+            // What this store holds, so marks herdr learns late reach scrolled-in history too.
+            let heldFrom = hasOlder ? beforeCursor : ""
+            let page = try await client.agentTranscript(target: target, after: after, subagent: subagent,
+                                                        heldFrom: heldFrom)
             guard version == generation else { return }
             if let session = page.sessionID, let known = sessionID, session != known {
                 // omp started a new session in this pane: the old cursor's history is not
@@ -490,23 +493,50 @@ public final class TranscriptStore {
     /// then the turns are not regrouped and `onChange` is not called, so the chat does not
     /// redraw for them. Only entries, the open question or whether omp works change the
     /// turns; the model, plan, recap and outbox only need the change notification.
+    ///
+    /// When the pane's remembered non-owner prompts change, herdr re-sends user entries from
+    /// before the cursor that are now marked `origin: "other"`, so a copy served unmarked gets
+    /// its mark. A re-sent entry this store holds takes the new copy in place. One it does not
+    /// hold is history an older page brings, marked, not a new prompt to append after the
+    /// newest turn as a wall of old prompts (#684), so it is dropped. Every other unknown
+    /// entry is new and appended whatever its timestamp: the after cursor moves past it, so a
+    /// dropped new entry would be lost.
+    ///
+    /// Which entries are re-sent: those the page lists in `resent` (herdr #452). A herdr that
+    /// does not list them re-sent from the whole session before herdr #430, so there the
+    /// replay is guessed: an unknown user entry marked `origin: "other"`, older than the oldest
+    /// held entry, while older history is still unloaded (`hasOlder`). That guess drops a new
+    /// prompt timed behind the window by a clock rollback (#706); the `resent` list does not.
     func mergeAfter(_ page: AgentTranscriptPage) {
         let outboxBefore = outbox
-        outbox.reconcile(page.entries, sessionID: page.sessionID ?? sessionID)
-        var entriesChanged = false
+        var index: [String: Int] = [:]
         if !page.entries.isEmpty {
-            var index: [String: Int] = [:]
             for (position, entry) in entries.enumerated() { index[entry.id] = position }
-            for entry in page.entries {
-                if let position = index[entry.id] {
-                    guard entries[position] != entry else { continue }
-                    entries[position] = entry
-                } else {
-                    index[entry.id] = entries.count
-                    entries.append(entry)
-                }
-                entriesChanged = true
+        }
+        let live: [TranscriptEntry]
+        if let resent = page.resent {
+            let replays = Set(resent)
+            live = replays.isEmpty ? page.entries
+                : page.entries.filter { index[$0.id] != nil || !replays.contains($0.id) }
+        } else {
+            let oldestMs = hasOlder ? entries.first?.tsMs : nil
+            live = page.entries.filter { entry in
+                guard index[entry.id] == nil, let oldestMs,
+                      case .user(_, _, .other) = entry.kind, entry.tsMs != 0 else { return true }
+                return entry.tsMs >= oldestMs
             }
+        }
+        outbox.reconcile(live, sessionID: page.sessionID ?? sessionID)
+        var entriesChanged = false
+        for entry in live {
+            if let position = index[entry.id] {
+                guard entries[position] != entry else { continue }
+                entries[position] = entry
+            } else {
+                index[entry.id] = entries.count
+                entries.append(entry)
+            }
+            entriesChanged = true
         }
         if let after = page.after { afterCursor = after }
         if let session = page.sessionID { sessionID = session }

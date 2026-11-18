@@ -5202,7 +5202,6 @@ struct ComposerTextField: UIViewRepresentable {
         // whether the content overflows.
         view.isScrollEnabled = true
         view.alwaysBounceVertical = false
-        view.accessibilityIdentifier = accessibilityIdentifier
         view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         view.updatePlaceholder()
         return view
@@ -5216,6 +5215,11 @@ struct ComposerTextField: UIViewRepresentable {
         // SwiftUI opacity does not hide the retained UITextView from UIKit/AX.
         // Keep the native editor mounted, but make its visibility match its pane.
         view.isHidden = !isPresented
+        // Neither that nor the pane's `accessibilityHidden` takes it out of the tree XCUITest
+        // reads: a warm pane's hidden editor answered to the front one's identifier, the two
+        // were told apart only by their order, and a composer animation flipped it (#677).
+        // So only the presented editor is the reply input.
+        view.accessibilityIdentifier = isPresented ? accessibilityIdentifier : nil
         if !isPresented { context.coordinator.nativeFocusPendingStateSync = false }
         view.onPasteFile = onPasteFile
         view.onCommandReturn = onCommandReturn
@@ -5953,7 +5957,12 @@ struct TerminalPaneContent: View {
                     .allowsHitTesting(!showingChat)
                     .accessibilityHidden(showingChat)
                     .overlay {
-                        if showingChat {
+                        // Only the front pane's chat is mounted, and none in the background
+                        // (`ScenePhase.mountsChat`): a kept-alive pane keeps its ChatModel, so
+                        // fronting it again draws its newest window at once, but not hours of
+                        // drawn rows that every relayout (a rotation, the background
+                        // snapshots) would have to lay out again.
+                        if showingChat, isForeground, scenePhase.mountsChat {
                             ChatView(client: client, model: chatModel, viewer: .owner, eventsPaneID: paneID,
                                      isActive: isForeground, live: true, agentStatus: agent?.agentStatus,
                                      ground: Palette.groundMachine,
@@ -6015,6 +6024,10 @@ struct TerminalPaneContent: View {
         // recognizer to the WINDOW, so N keep-mounted panes would otherwise stack N
         // recognizers that all fire on one edge swipe.
         .overlay { if isForeground { EdgeSwipeBack { onClose() } } }
+        // The chat's sheets hang on the page, not on the chat: it unmounts in the background
+        // (`ScenePhase.mountsChat`) and an open note or question must still be open on return.
+        .chatSheets(client: client, model: chatModel, viewer: .owner, presents: showingChat && isForeground,
+                    onOpenTerminal: { setShowsChat(false) })
         // Kept-alive panes behind the front one, Gram or Settings hold their status dot still,
         // and so does the front one while the scene is inactive, like the roster's rings.
         .environment(\.statusMotion, isForeground && scenePhase == .active)

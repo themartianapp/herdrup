@@ -44,9 +44,9 @@ struct GuestMockTransport: HerdrTransport {
         || ScreenshotMock.mode == .guestChat
 
     /// `HERDR_MOCK_GUEST_OWNER_ANSWERS`: a host older than guest answers. Its transcript
-    /// withholds `answerable` from the guest and it refuses `agent.answer` and
-    /// `pane.send_keys` with `guest_forbidden`. Unset, the host lets the guest answer
-    /// (`agent.answer`, and the menu keys while the agent is blocked).
+    /// withholds `answerable` from the guest and it refuses `agent.answer`,
+    /// `agent.answer_form` and `pane.send_keys` with `guest_forbidden`. Unset, the host lets
+    /// the guest answer (`agent.answer`, and the menu keys while the agent is blocked).
     static let ownerOnlyAnswers = ProcessInfo.processInfo.environment["HERDR_MOCK_GUEST_OWNER_ANSWERS"] != nil
 
     /// `HERDR_MOCK_GUEST_KEYS_PAUSE_AFTER_FIRST`: the host takes the guest's first menu key,

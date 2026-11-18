@@ -24,6 +24,7 @@ struct GuestPaneView: View {
     }
 
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.scenePhase) private var scenePhase
     /// The shared agent's conversation for the Chat tab (#482).
     @StateObject private var chatModel: ChatModel
     /// The host serves `agent.transcript` to guests (its pong's `agent_transcript`).
@@ -59,10 +60,6 @@ struct GuestPaneView: View {
     @State private var note: String?
     /// Menu keys go out one after another, in the order they were tapped.
     @State private var menuKeyTask: Task<Void, Never>?
-    /// The host has taken at least one of this guest's menu keys. An older host that keeps
-    /// answers for the owner takes none, so after this a refusal is only the pause after a
-    /// committing key (the old menu can still show) and proves nothing about the host.
-    @State private var hostTookAMenuKey = false
     /// Why the last status poll failed, when it wasn't a change of availability.
     @State private var connectionNote: String?
     @State private var attachments: [ComposerAttachment] = []
@@ -137,7 +134,9 @@ struct GuestPaneView: View {
                     .opacity(showingTerminal ? 1 : 0)
                     .allowsHitTesting(showingTerminal)
                     .accessibilityHidden(!showingTerminal)
-                if showingChat {
+                // Not in the background (`ScenePhase.mountsChat`): the snapshots iOS takes
+                // there would lay the whole chat out again.
+                if showingChat, scenePhase.mountsChat {
                     ChatView(client: client, model: chatModel,
                              viewer: .guest(name: access.guestName, ownerName: access.ownerName),
                              eventsPaneID: nil, isActive: true, live: availability == .running,
@@ -168,6 +167,10 @@ struct GuestPaneView: View {
         }
         .background(pageGround.ignoresSafeArea())
         .overlay { EdgeSwipeBack { onClose() } }
+        // On the page, not the chat, which unmounts in the background (`chatSheets`).
+        .chatSheets(client: client, model: chatModel,
+                    viewer: .guest(name: access.guestName, ownerName: access.ownerName),
+                    presents: showingChat, onOpenTerminal: { tab = .terminal })
         .task { await pollLoop() }
         // Once the host's features are known: register for push (or explain it, when iOS
         // hasn't asked yet) and load Gram, so the unread count shows before the guest opens
@@ -840,10 +843,11 @@ struct GuestPaneView: View {
 
     /// Presses one of the owner's menu keys in the shared agent's pane (`pane.send_keys`).
     /// The host takes these from a guest only while the agent waits on a menu, and only
-    /// `GuestMenuKeyBar.keys`. A refusal while the agent still waits, from a host that has
-    /// never taken one of this guest's keys, means an older host that keeps answers for the
-    /// owner: back to waiting for them. Any other refusal is a race (the menu closed, or the
-    /// pause after a committing key), and the next poll settles the screen.
+    /// `GuestMenuKeyBar.keys`. A refused key says nothing about who may answer (herdrup#714):
+    /// the menu may have closed, the host may still be settling the key before it, or it may
+    /// not see this dialog as a menu. The keys stay, and a refusal while the agent still
+    /// waits says the key was not taken; only the chat's explicit signals
+    /// (`ChatModel.answersRefused`) hand the question to the owner.
     private func sendMenuKey(_ key: String) {
         guard GuestMenuKeyBar.keys.contains(key), let pane = agent?.paneID else { return }
         let previous = menuKeyTask
@@ -852,13 +856,12 @@ struct GuestPaneView: View {
             guard !Task.isCancelled, !chatModel.answersRefused else { return }
             do {
                 try await client.sendPaneKeys(pane: pane, keys: [key])
-                hostTookAMenuKey = true
                 note = nil
             } catch is CancellationError {
                 return
             } catch let error where GuestError.classify(error) == .forbidden {
                 await refresh()
-                if isBlocked, !hostTookAMenuKey { chatModel.noteAnswersRefused() }
+                if isBlocked { note = "That key wasn't taken. Try again in a moment." }
             } catch {
                 note = failureNote(error)
             }
