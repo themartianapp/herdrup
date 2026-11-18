@@ -687,7 +687,12 @@ final class ChatViewTests: XCTestCase {
         XCTAssertFalse(card.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "five choices")).firstMatch.exists,
                        "the Markdown replaces the plain intro")
         attach(app, "form-context-table")
-        app.buttons["chat-ask-form-next"].tap()
+        // The table makes the first step tall: its Next button can start below the screen,
+        // outside the drawn chat, so bring it up first.
+        let next = app.buttons["chat-ask-form-next"]
+        for _ in 0..<4 where !(next.exists && next.isHittable) { card.swipeUp(velocity: .slow) }
+        XCTAssertTrue(next.exists && next.isHittable, "the first step's Next button should come on screen")
+        next.tap()
         waitForStep("2 OF 6", in: app)
         XCTAssertFalse(table.exists, "the context belongs to the first step")
     }
