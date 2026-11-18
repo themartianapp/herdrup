@@ -321,4 +321,98 @@ final class GuestGramMergeTests: XCTestCase {
             AsyncThrowingStream { $0.finish() }
         }
     }
+
+    // MARK: Review of #716 (#730, #731)
+
+    /// One host's Gram store, paged as herdr's `gram.list` (newest first, equal timestamps in
+    /// reverse store order, `limit`/`before_id`), with the calls that should fail.
+    private final class StoreHost: HerdrTransport, @unchecked Sendable {
+        private let lock = NSLock()
+        private let store: [(id: String, ms: UInt64)]
+        private let failing: Set<Int>
+        private(set) var calls = 0
+
+        init(_ store: [(id: String, ms: UInt64)], failing: Set<Int> = []) {
+            self.store = store
+            self.failing = failing
+        }
+
+        func roundTrip(_ requestLine: String) async throws -> String {
+            let object = try JSONSerialization.jsonObject(with: Data(requestLine.utf8)) as? [String: Any]
+            let id = object?["id"] as? String ?? "x"
+            let params = object?["params"] as? [String: Any] ?? [:]
+            let call = lock.withLock { () -> Int in calls += 1; return calls - 1 }
+            if failing.contains(call) {
+                return #"{"id":"\#(id)","error":{"code":"internal","message":"gram store busy"}}"#
+            }
+            let newest = store.enumerated().sorted { ($0.element.ms, $0.offset) > ($1.element.ms, $1.offset) }.map(\.element)
+            let start = (params["before_id"] as? String).flatMap { before in
+                newest.firstIndex { $0.id == before }.map { $0 + 1 }
+            } ?? 0
+            let limit = params["limit"] as? Int ?? newest.count
+            let page = Array(newest[start...].prefix(limit))
+            let messages = page.map {
+                #"{"id":"\#($0.id)","direction":"agent_to_owner","from":"agent","text":"\#($0.id)","created_unix_ms":\#($0.ms),"read":true}"#
+            }
+            let more = start + page.count < newest.count
+            return #"{"id":"\#(id)","result":{"type":"guest_gram_list","has_more":\#(more),"messages":[\#(messages.joined(separator: ","))]}}"#
+        }
+
+        func stream(_ requestLine: String) -> AsyncThrowingStream<String, Error> {
+            AsyncThrowingStream { $0.finish() }
+        }
+    }
+
+    /// The reviewer's shape (#730): one Gram at 900 over 201 at 500, 100 a page. The first
+    /// page shows only the 900 (the rest sit at the floor); so does the second, though it
+    /// succeeded. One "Earlier" must keep paging until the 500s show: 1 -> 202, not 1 -> 1
+    /// with paging re-armed and nothing left to fire it.
+    @MainActor
+    func testEarlierPagesOnUntilTheShownRangeGrows() async throws {
+        let store = [(id: "top", ms: UInt64(900))] + (0..<201).map { (id: String(format: "o%03d", $0), ms: UInt64(500)) }
+        let host = StoreHost(store)
+        let client = HerdrClient(transport: host)
+        let feed = GuestGramFeed()
+        await feed.refresh(client: client)
+        let source = GuestGramEarlier.Source(grant: "a", feed: feed, client: client)
+        func shown() -> Int { GuestGramMerge(lanes: [feed.lane(grant: "a")]).items.count }
+        XCTAssertEqual(shown(), 1, "the first page shows only the Gram above the floor")
+
+        try await GuestGramEarlier.load([source])
+        XCTAssertEqual(shown(), 202, "one Earlier pages past the run at the floor")
+        XCTAssertFalse(GuestGramMerge(lanes: [feed.lane(grant: "a")]).hasMore)
+        XCTAssertEqual(host.calls, 3, "the refresh, then two older pages")
+    }
+
+    /// A page that fails mid-run ends the run: thrown, kept in the feed for Retry, and not
+    /// asked again by itself.
+    @MainActor
+    func testEarlierStopsAtAFailedPage() async {
+        let store = [(id: "top", ms: UInt64(900))] + (0..<201).map { (id: String(format: "o%03d", $0), ms: UInt64(500)) }
+        let host = StoreHost(store, failing: [2])
+        let client = HerdrClient(transport: host)
+        let feed = GuestGramFeed()
+        await feed.refresh(client: client)
+        var thrown: Error?
+        do { try await GuestGramEarlier.load([GuestGramEarlier.Source(grant: "a", feed: feed, client: client)]) } catch { thrown = error }
+        XCTAssertNotNil(thrown, "the failed page reaches the caller")
+        XCTAssertNotNil(feed.pageError, "and stays for Retry")
+        XCTAssertEqual(host.calls, 3, "no page after the failure")
+        XCTAssertEqual(GuestGramMerge(lanes: [feed.lane(grant: "a")]).items.count, 1)
+    }
+
+    /// #731: an explicit recipient whose Gram was turned off has left the merge's grants;
+    /// the composer falls back to the default instead of posting to the forbidden grant.
+    func testAnExplicitRecipientNoLongerSharedFallsBackToTheDefault() {
+        let onlyB = GuestGramMerge(lanes: [GuestGramLane(grant: "b", messages: [Self.gram("x", 100)], hasMore: false)])
+        XCTAssertEqual(onlyB.target(choosing: "a"), "b", "A lost Gram: its pick is stale")
+        XCTAssertEqual(onlyB.target(choosing: "b"), "b")
+        XCTAssertEqual(onlyB.target(choosing: nil), "b")
+        let both = GuestGramMerge(lanes: [
+            GuestGramLane(grant: "a", messages: [], hasMore: false),
+            GuestGramLane(grant: "b", messages: [Self.gram("x", 100)], hasMore: false),
+        ])
+        XCTAssertEqual(both.target(choosing: "a"), "a", "a pick still shared stands over the default")
+        XCTAssertNil(GuestGramMerge(lanes: []).target(choosing: "a"), "no grant left: no recipient")
+    }
 }

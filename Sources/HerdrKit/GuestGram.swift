@@ -92,11 +92,14 @@ public struct GuestGramMessage: Decodable, Identifiable, Sendable, Equatable {
     /// from the agent, and the guest's own posts are addressed to `agent`, so they read
     /// "Delivered to <agent>" under the bubble. The guest's read mark stands in for the
     /// owner's; there is no queue claim or federated machine on a guest's projection.
-    public func gramMessage(agent: String) -> GramMessage {
+    /// `machineLabel`, when given, is what tells this agent apart from another share's of the
+    /// same name ("Jerry · Studio"): the sender line reads "name · <machineLabel>".
+    public func gramMessage(agent: String, machineLabel: String? = nil) -> GramMessage {
         GramMessage(
             id: id, direction: direction, from: from, to: isFromAgent ? nil : agent, text: text,
             createdUnixMs: createdUnixMs, readByOwner: read,
-            file: file.map(\.gramFile), expiredFile: expiredFile.map(\.gramFile))
+            file: file.map(\.gramFile), expiredFile: expiredFile.map(\.gramFile),
+            machineLabel: isFromAgent ? machineLabel : nil)
     }
 }
 
