@@ -612,13 +612,11 @@ struct RootView: View {
     }
 
     /// Guest home over the mock relay: the running scenario, whose agent.list also
-    /// carries an agent that was not shared, which the home must not show.
+    /// carries an agent that was not shared, which the home must not show. Through the
+    /// machine home, which holds the Gram inbox (#697).
     private func mockGuestHome(_ access: GuestAccess) -> some View {
-        GuestHomeView(
-            access: access,
-            connect: { try GuestMockTransport.connection(for: access) },
-            onBack: nil,
-            onLeave: { openGuest = nil })
+        SharedMachineHomeView(access: access, connect: GuestMockTransport.connection(for:),
+                              onBack: nil, onLeave: { openGuest = nil })
     }
     #endif
 

@@ -36,10 +36,10 @@ final class GuestShellTests: XCTestCase {
 
         let tabs = app.tabBars.firstMatch
         XCTAssertTrue(tabs.exists(within: 5))
-        XCTAssertEqual(tabs.buttons.count, 2, "the guest tab bar should hold only Agents and Settings")
+        XCTAssertEqual(tabs.buttons.count, 2, "without a shared Gram the tab bar holds only Agents and Settings")
         XCTAssertTrue(tabs.buttons["Agents"].exists)
         XCTAssertTrue(tabs.buttons["Settings"].exists)
-        XCTAssertFalse(tabs.buttons["Gram"].exists, "a guest has no Gram tab")
+        XCTAssertFalse(tabs.buttons["Gram"].exists, "no Gram tab where no owner shares Gram")
         attach(app, "guest-home")
     }
 

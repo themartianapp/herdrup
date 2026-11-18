@@ -284,11 +284,14 @@ public final class GuestGramFeed {
     /// Why the newest refresh failed; nil after one succeeds. An older page's failure is
     /// thrown by `loadMore` instead.
     public private(set) var lastError: Error?
+    /// Why the last older page failed, until a page lands, the reader retries, or a refresh
+    /// replaces the end of the list:
+    /// state for a view with nothing else on screen to show it (the strict floor hides
+    /// every row), as well as thrown by `loadMore`.
+    public private(set) var pageError: Error?
     public var onChange: (() -> Void)?
 
     private var gate = AgentRosterLoadGate()
-    /// Bumped whenever a refresh replaces the list, so an older page fetched before it is dropped.
-    private var listVersion = 0
     private var loadingMore = false
     private var marks = GuestGramReadMarks()
 
@@ -321,10 +324,13 @@ public final class GuestGramFeed {
             let oldest = head.last?.createdUnixMs ?? .max
             let older = page.hasMore
                 ? messages.filter { !headIDs.contains($0.id) && $0.createdUnixMs < oldest } : []
+            let end = messages.last?.id
             messages = head + older
             if older.isEmpty { hasMore = page.hasMore }
-            listVersion += 1
             lastError = nil
+            // A failed older page stands (with Retry) while the list still ends where it was
+            // asked; only a list whose end was replaced makes it moot.
+            if messages.last?.id != end { pageError = nil }
         case .failure(let error):
             lastError = error
         }
@@ -333,25 +339,44 @@ public final class GuestGramFeed {
         return true
     }
 
-    /// The next older page. Dropped if a refresh replaced the list meanwhile. A failure is
+    /// The next older page. Dropped if a refresh meanwhile replaced the message it was asked
+    /// below (`applies`). A failure is
     /// THROWN rather than kept in `lastError`, for the caller to show where the reader asked
-    /// for the page (the feed's top sentinel) with a retry, as the owner's inbox does.
+    /// for the page (the feed's top sentinel) with a retry, as the owner's inbox does; it is
+    /// also kept in `pageError` until a page lands, the reader retries (`clearPageError`), or
+    /// a refresh replaces the end of the list.
     public func loadMore(client: HerdrClient) async throws {
         guard hasMore, !loadingMore, let last = messages.last else { return }
         loadingMore = true
         defer { loadingMore = false }
-        let version = listVersion
+        let cursor = last.id
         let page: GuestGramPage
         do {
-            page = try await client.guestGramList(limit: Self.pageSize, beforeID: last.id)
+            page = try await client.guestGramList(limit: Self.pageSize, beforeID: cursor)
         } catch {
-            guard listVersion == version, !(error is CancellationError) else { return }
+            guard applies(cursor), !(error is CancellationError) else { return }
+            pageError = error
+            onChange?()
             throw error
         }
-        guard listVersion == version else { return }
+        guard applies(cursor) else { return }
         let known = Set(messages.map(\.id))
         messages += page.messages.filter { !known.contains($0.id) }
         hasMore = page.hasMore
+        pageError = nil
+        onChange?()
+    }
+
+    /// An older page's answer still belongs to the list: it ends at the page's cursor. A
+    /// refresh that landed meanwhile and kept that end (the newest page unchanged, or older
+    /// pages kept below it) leaves the page valid; one that replaced the end drops it.
+    private func applies(_ cursor: String) -> Bool { messages.last?.id == cursor }
+
+    /// The reader asked to retry the failed older page: the failure clears so the view's
+    /// paging asks again (and keeps it again if that fails too).
+    public func clearPageError() {
+        guard pageError != nil else { return }
+        pageError = nil
         onChange?()
     }
 
@@ -359,7 +384,13 @@ public final class GuestGramFeed {
     /// only. Flipped at once; restored if the host refuses, and then not re-sent until its
     /// backoff (`GuestGramReadMarks`) has passed.
     public func markAllRead(client: HerdrClient, now: Date = Date()) async {
-        let ids = marks.begin(unread: messages.filter(\.isUnread).map(\.id), now: now)
+        await markRead(messages.filter(\.isUnread).map(\.id), client: client, now: now)
+    }
+
+    /// Marks only `shown` read: what the combined inbox (#697) drew of this grant.
+    public func markRead(_ shown: [String], client: HerdrClient, now: Date = Date()) async {
+        let unread = Set(messages.filter(\.isUnread).map(\.id))
+        let ids = marks.begin(unread: shown.filter(unread.contains), now: now)
         guard !ids.isEmpty else { return }
         setRead(ids, true)
         do {

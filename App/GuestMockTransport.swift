@@ -143,8 +143,19 @@ struct GuestMockTransport: HerdrTransport {
     /// The shared agent's PTY: one per process, like the host's, whichever transport value
     /// a re-rendered view built.
     private static let pty = MockPTY()
-    /// The guest's Gram and read marks: one per process, like the host's store.
+    /// The guest's Gram and read marks: one per grant and process, like the host's store.
+    /// llm-opt's is the scripted conversation; the `guestmachine` mock's listed enyo-ui has
+    /// its own two Grams, so the combined inbox (#697) merges two agents; the gone one has none.
     private static let gram = MockGram()
+    private static let enyoGram = MockGram(agent: "enyo-ui")
+    private static let emptyGram = MockGram(agent: nil)
+    private var gram: MockGram {
+        switch share.agentTarget {
+        case Self.access.agentTarget: Self.gram
+        case "w2-4": Self.enyoGram
+        default: Self.emptyGram
+        }
+    }
 
     private func allows(_ method: String) -> Bool {
         if Self.gramMethods.contains(method) { return Self.features?.gram == true }
@@ -152,6 +163,12 @@ struct GuestMockTransport: HerdrTransport {
         if Self.answerMethods.contains(method) { return !Self.ownerOnlyAnswers }
         if method == "agent.transcript" { return Self.chat }
         return Self.allowlist.contains(method) && !(scenario == .oldHost && method == "pane.set_pty_size")
+    }
+
+    /// A new unread Gram from the `guestmachine` mock's enyo-ui (`gm-e3`), for the test of
+    /// what a hidden Gram tab may mark read.
+    static func deliverGram() {
+        enyoGram.arrive(id: "gm-e3", from: "enyo-ui", text: "Pricing page shipped.")
     }
 
     /// The app opened a downloaded Gram file (for the UI tests' probe).
@@ -171,7 +188,7 @@ struct GuestMockTransport: HerdrTransport {
         switch method {
         case "gram.list":
             Self.hostRecorder.append("gram.list")
-            guard let page = Self.gram.list(beforeID: params["before_id"] as? String) else {
+            guard let page = gram.list(beforeID: params["before_id"] as? String) else {
                 return Self.errorLine(id: id, code: "internal", message: "gram store busy")
             }
             return Self.encode(id: id, result: ["type": "guest_gram_list", "messages": page.messages,
@@ -179,7 +196,7 @@ struct GuestMockTransport: HerdrTransport {
         case "gram.mark_read":
             let ids = params["ids"] as? [String] ?? []
             Self.hostRecorder.append("gram.mark_read:\(ids.sorted().joined(separator: ","))")
-            Self.gram.markRead(ids)
+            gram.markRead(ids)
             return #"{"id":"\#(id)","result":{"type":"ok"}}"#
         case "gram.get_file_chunk":
             let file = params["id"] as? String ?? ""
@@ -280,13 +297,17 @@ struct GuestMockTransport: HerdrTransport {
                     return Self.errorLine(id: id, code: "upload_in_progress",
                                           message: "read the upload connection to EOF")
                 }
-                guard let message = Self.gram.post(text: params["text"] as? String ?? "",
+                guard let message = gram.post(text: params["text"] as? String ?? "",
                                                    to: params["to"] as? String ?? "", file: file) else {
                     Self.hostRecorder.append(call + "=no_staged_upload")
                     return Self.errorLine(id: id, code: "invalid_params",
                                           message: "no staged upload with that id; upload the file chunks first")
                 }
                 Self.hostRecorder.append(call + "=\(message["id"] as? String ?? "")")
+                // A text post (the combined inbox's reply) also records which grant took it.
+                if file == nil {
+                    Self.hostRecorder.append("gram.post.to:\(params["to"] as? String ?? "")@\(share.agentTarget)")
+                }
                 // The host's guest projection (`project_gram_sent`): no direction, claim or
                 // read fields, unlike the owner's `gram.post` reply.
                 return Self.encode(id: id, result: ["type": "gram_sent", "message": message])
@@ -524,6 +545,24 @@ struct GuestMockTransport: HerdrTransport {
         private let olderPage: [[String: Any]]
         private var failOlderPage = ProcessInfo.processInfo.environment["HERDR_MOCK_GUEST_OLDER_PAGE_FAILS_ONCE"] != nil
 
+        /// Another grant's store: two Grams from `agent` (interleaved in time with llm-opt's),
+        /// or none for nil.
+        init(agent: String?) {
+            let now = UInt64(Date().timeIntervalSince1970 * 1000)
+            let minute: UInt64 = 60_000
+            files = [:]
+            olderPage = []
+            guard let agent else { messages = []; return }
+            messages = [
+                ["id": "gm-e2", "direction": "agent_to_owner", "from": agent,
+                 "text": "Header spacing fixed on the pricing page.",
+                 "created_unix_ms": now - 5 * minute, "read": false],
+                ["id": "gm-e1", "direction": "agent_to_owner", "from": agent,
+                 "text": "Starting the pricing page pass.",
+                 "created_unix_ms": now - 13 * minute, "read": true],
+            ]
+        }
+
         init() {
             let now = UInt64(Date().timeIntervalSince1970 * 1000)
             let minute: UInt64 = 60_000
@@ -548,6 +587,13 @@ struct GuestMockTransport: HerdrTransport {
                  "created_unix_ms": now - 20 * minute, "read": true,
                  "expired_file": ["name": "q4-baseline.png", "size": 873_472, "mime": "image/png", "sha256": "9c0d"]],
             ]
+            // `HERDR_MOCK_GUEST_GRAM_ONE_MS_PAGE`: the first page holds only the newest Gram, the
+            // rest are the older page, so the strict floor hides every row of the first page.
+            if ProcessInfo.processInfo.environment["HERDR_MOCK_GUEST_GRAM_ONE_MS_PAGE"] != nil {
+                olderPage = Array(messages.dropFirst())
+                messages = Array(messages.prefix(1))
+                return
+            }
             guard ProcessInfo.processInfo.environment["HERDR_MOCK_GUEST_OLDER_PAGE_FAILS_ONCE"] != nil else {
                 olderPage = []
                 return
@@ -578,6 +624,14 @@ struct GuestMockTransport: HerdrTransport {
                     return nil
                 }
                 return (olderPage, false)
+            }
+        }
+
+        /// A new unread Gram from the agent, newest.
+        func arrive(id: String, from: String, text: String) {
+            lock.withLock {
+                messages.insert(["id": id, "direction": "agent_to_owner", "from": from, "text": text,
+                                 "created_unix_ms": UInt64(Date().timeIntervalSince1970 * 1000), "read": false], at: 0)
             }
         }
 
