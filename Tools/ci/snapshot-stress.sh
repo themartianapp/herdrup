@@ -10,8 +10,8 @@
 # over the `chatview` mock with HERDR_SNAPSHOT_STRESS (App/SnapshotStress.swift): agents whose
 # transcripts keep growing, fronted again and again (Chat, a second Chat, a terminal, Gram).
 # Every few rounds the app writes its footprint, layer/view/WKWebView counts, chat rows held
-# and drawn, and the main thread's longest block while it turns to landscape and back and
-# while its appearance flips. Then Settings is launched over it, sending Herdr to the
+# and drawn, and the main thread's longest block while it turns to the other orientation and
+# back and while its appearance flips. Then Settings is launched over it, sending Herdr to the
 # background, where the simulator takes its snapshots: the app writes the longest block from
 # resigning active until four seconds in.
 #
@@ -150,8 +150,11 @@ else:
     base = measured[0]["layers"]
     if base and last["layers"] / base > max_growth:
         problems.append(f"layers grew {last['layers'] / base:.2f}x ({base} -> {last['layers']}) > {max_growth}x")
-    if any(l.get("rotated_to") != "landscape" for l in measured):
-        problems.append("the scene did not turn to landscape in every measurement")
+    # The run turns the scene to the other orientation from whichever it starts in (a reused
+    # simulator may be left in landscape), so each turn must reach the opposite of its start.
+    if any(l.get("rotated_from") not in ("portrait", "landscape") or l.get("rotated_to") == l.get("rotated_from")
+           for l in measured):
+        problems.append("the scene did not turn to the other orientation in every measurement")
 for b in background:
     if b["background_block_ms"] > max_ms:
         problems.append(f"background_block_ms {b['background_block_ms']} > {max_ms}")

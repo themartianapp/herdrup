@@ -76,7 +76,8 @@ final class InputStreamHost: @unchecked Sendable {
                 }
                 self.lock.withLock { self.links.append((command, bridge)) }
                 return bridge
-            })
+            },
+            openStreamLink: { _ in ScriptedBridge() })
     }
 
     func client(session: String? = nil) -> HerdrClient {

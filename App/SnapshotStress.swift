@@ -19,7 +19,8 @@ import WebKit
 /// line to `tmp/snapshot-stress.jsonl` in the app's container:
 ///   phys_footprint (task_vm_info), CALayers and UIViews under the scene's windows (recursive),
 ///   live WKWebViews, chat rows held, and the main thread's longest block while the scene
-///   turns to landscape and back (`requestGeometryUpdate`) and while the window's appearance
+///   turns to the other orientation and back (`requestGeometryUpdate`; `rotated_from` and
+///   `rotated_to` record that it turned) and while the window's appearance
 ///   flips light and back (`overrideUserInterfaceStyle`): the two relayouts a snapshot forces.
 /// Then `{"done":true}`. After that, sending the app to the background writes the longest
 /// main-thread block between resigning active and four seconds into the background
@@ -88,8 +89,10 @@ enum SnapshotStress {
             write(line)
             return
         }
-        // Rotation: the main thread's longest block while the scene turns and settles.
+        // Rotation: the main thread's longest block while the scene turns to the other
+        // orientation from whichever it is in, and settles.
         let wasPortrait = window.bounds.height >= window.bounds.width
+        line["rotated_from"] = wasPortrait ? "portrait" : "landscape"
         line["rotate_ms"] = await longestBlock(seconds: 2) {
             scene.requestGeometryUpdate(.iOS(interfaceOrientations: wasPortrait ? .landscapeRight : .portrait)) { error in
                 let text = "\(error)"
