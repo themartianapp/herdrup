@@ -284,7 +284,8 @@ public final class GuestGramFeed {
     /// Why the newest refresh failed; nil after one succeeds. An older page's failure is
     /// thrown by `loadMore` instead.
     public private(set) var lastError: Error?
-    /// Why the last older page failed, until a page lands or a refresh replaces the list:
+    /// Why the last older page failed, until a page lands, the reader retries, or a refresh
+    /// replaces the end of the list:
     /// state for a view with nothing else on screen to show it (the strict floor hides
     /// every row), as well as thrown by `loadMore`.
     public private(set) var pageError: Error?
@@ -323,10 +324,13 @@ public final class GuestGramFeed {
             let oldest = head.last?.createdUnixMs ?? .max
             let older = page.hasMore
                 ? messages.filter { !headIDs.contains($0.id) && $0.createdUnixMs < oldest } : []
+            let end = messages.last?.id
             messages = head + older
             if older.isEmpty { hasMore = page.hasMore }
             lastError = nil
-            pageError = nil
+            // A failed older page stands (with Retry) while the list still ends where it was
+            // asked; only a list whose end was replaced makes it moot.
+            if messages.last?.id != end { pageError = nil }
         case .failure(let error):
             lastError = error
         }
@@ -339,7 +343,8 @@ public final class GuestGramFeed {
     /// below (`applies`). A failure is
     /// THROWN rather than kept in `lastError`, for the caller to show where the reader asked
     /// for the page (the feed's top sentinel) with a retry, as the owner's inbox does; it is
-    /// also kept in `pageError` until a page lands or a refresh replaces the list.
+    /// also kept in `pageError` until a page lands, the reader retries (`clearPageError`), or
+    /// a refresh replaces the end of the list.
     public func loadMore(client: HerdrClient) async throws {
         guard hasMore, !loadingMore, let last = messages.last else { return }
         loadingMore = true

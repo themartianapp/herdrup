@@ -190,6 +190,27 @@ final class GuestGramFeedTests: XCTestCase {
         XCTAssertEqual(GuestGramMerge(lanes: [feed.lane(grant: "a")]).items.map(\.id), ["a/y", "a/z"])
     }
 
+    /// CI (#702, j_b43f1e71): a recorded page failure stays until the reader retries (or
+    /// reopens, which retries): a refresh that lands after it and keeps the list's end (the
+    /// same newest page, as the conversation's opening refresh) must not clear it, or the
+    /// floor pager asks again at once and Retry is never seen. A refresh that replaces the
+    /// end makes the failed cursor moot, and clears it.
+    func testARefreshKeepsAFailedPageUnlessItReplacesTheEnd() async {
+        let z = #"{"id":"$ID","result":{"type":"guest_gram_list","has_more":true,"messages":[{"id":"z","direction":"agent_to_owner","from":"a","text":"z","created_unix_ms":500,"read":false}]}}"#
+        let n = #"{"id":"$ID","result":{"type":"guest_gram_list","has_more":false,"messages":[{"id":"n","direction":"agent_to_owner","from":"a","text":"n","created_unix_ms":900,"read":false}]}}"#
+        let failure = #"{"id":"$ID","error":{"code":"internal","message":"gram store busy"}}"#
+        let client = HerdrClient(transport: ScriptedHost([z, failure, z, n]))
+        let feed = GuestGramFeed()
+        await feed.refresh(client: client)
+        try? await feed.loadMore(client: client)
+        XCTAssertNotNil(feed.pageError)
+        await feed.refresh(client: client)
+        XCTAssertNotNil(feed.pageError, "the same newest page keeps the end: the failure stands, with Retry")
+        await feed.refresh(client: client)
+        XCTAssertEqual(feed.messages.map(\.id), ["n"])
+        XCTAssertNil(feed.pageError, "a refresh that replaced the end clears the moot failure")
+    }
+
     /// Answers each call with the next scripted line.
     private final class ScriptedHost: HerdrTransport, @unchecked Sendable {
         private var lines: [String]

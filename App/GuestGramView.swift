@@ -239,6 +239,10 @@ struct GuestGramConversation: View {
         }
         .background(Palette.ground)
         .gramFileViewer($preview)
+        // Opening (or reopening) the conversation retries a page that failed while it was
+        // away: the failure clears, and the floor pager's key with it, so paging asks again.
+        // A failure recorded while it shows stays, with Retry, until the reader taps it.
+        .onAppear { inbox.retryPaging(selection) }
         // Keyed on visibility: leaving the tab cancels a refresh still out, so it can't mark
         // a hidden feed read when it lands; coming back refreshes and marks what shows.
         .task(id: active) {
@@ -369,8 +373,9 @@ struct GuestGramConversation: View {
     }
 
     /// The failed older page of the selection's feeds, shown by both paging surfaces with
-    /// Retry: derived from the feeds (`GuestGramFeed.pageError`), so it clears the moment a
-    /// page lands or a refresh replaces a list, wherever that happened.
+    /// Retry: derived from the feeds (`GuestGramFeed.pageError`). It stays until the reader
+    /// retries (the tap, or reopening the conversation), a page lands, or a refresh replaces
+    /// the end of the list it failed below.
     private var pageError: String? {
         inbox.pageFailed(selection) ? "Couldn't load older messages." : nil
     }
@@ -401,8 +406,8 @@ struct GuestGramConversation: View {
     /// Every held row is at or under the strict floor (a page that ended inside one
     /// millisecond): page on until something shows, with the sentinel's failure and Retry.
     /// Keyed on the floor, the hidden count and whether a feed's page failed: a new floor
-    /// pages again, a failure waits, and the failure clearing (Retry, a page landing, or a
-    /// refresh replacing the list when the conversation is reopened) pages again.
+    /// pages again, a failure waits, and the failure clearing (Retry, reopening the
+    /// conversation, a page landing, or a refresh replacing the list's end) pages again.
     private func floorPager(_ merge: GuestGramMerge) -> some View {
         let failure = pageError
         return ScrollView {
@@ -430,9 +435,10 @@ struct GuestGramConversation: View {
         .refreshable { await inbox.refresh(selection) }
         .frame(maxHeight: .infinity)
         .task(id: "\(merge.floorUnixMs ?? 0)/\(merge.hiddenCount)/\(failure != nil)") {
-            // Until something shows or a page fails. An answer that changed nothing (another
-            // fetch for the same feed was still out, or a refresh replaced the end of its
-            // list) changes no key either, so ask again here rather than spin forever.
+            // Until something shows or a page fails. Only an answer that was swallowed (no
+            // failure recorded: another fetch for the same feed was still out, or a refresh
+            // replaced the end of its list) is asked again here; a recorded failure ends the
+            // loop and waits for Retry.
             while !Task.isCancelled, pageError == nil {
                 let now = inbox.merge(selection)
                 guard now.items.isEmpty, now.hasMore else { return }
