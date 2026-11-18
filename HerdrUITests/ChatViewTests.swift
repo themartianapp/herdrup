@@ -284,10 +284,14 @@ final class ChatViewTests: XCTestCase {
             "transcript_unsupported,transcript_unsupported,transcript_unavailable"])
         openAgent("herdr-app", in: app)
         let chatSwitch = app.buttons["chat-switch-chat"]
-        XCTAssertTrue(app.terminalSurface.waitForExistence(timeout: 10), "the pane opens")
+        let chat = app.descendants(matching: .any)["chat-view"].firstMatch
+        // An omp page that opens in Chat mounts no terminal until it knows Chat is refused
+        // (`TerminalPaneContent.mountsTerminal`), and the terminal leaves again as soon as a
+        // retry is answered: it shows only for the refused window, whose length is retry
+        // timing. The page has opened once either surface is up.
+        XCTAssertTrue(poll(10, every: 0.2) { app.terminalSurface.exists || chat.exists }, "the pane opens")
         XCTAssertTrue(chatSwitch.waitForExistence(timeout: 30),
                       "Chat should come back once the agent's transcript can be read")
-        let chat = app.descendants(matching: .any)["chat-view"].firstMatch
         XCTAssertTrue(chat.waitForExistence(timeout: 10), "an omp agent opens in Chat")
         XCTAssertTrue(poll(15, every: 0.5) { self.turns(chat) > 0 },
                       "the conversation loads; turns=\(turns(chat))")
