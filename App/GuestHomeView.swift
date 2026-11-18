@@ -34,6 +34,9 @@ struct GuestHomeView: View {
     let connect: () throws -> GuestConnection
     /// Back to the machine list; nil when this share is the only thing on the phone.
     let onBack: (() -> Void)?
+    /// Settings › Connect your own machine: closes the share onto the machine list with its
+    /// owner setup open. Nil where no machine list sits behind the share.
+    let onConnectOwnMachine: (() -> Void)?
     /// Called after the share was removed (Leave, or Remove from the row or its menu).
     let onLeave: () -> Void
     /// Where the row posts its state in a word or two ("omp · idle", "unavailable"), for
@@ -77,7 +80,8 @@ struct GuestHomeView: View {
     init(access: GuestAccess, connect: @escaping () throws -> GuestConnection,
          inbox: GuestGramInbox, onOpenGram: ((GuestAccess) -> Void)? = nil,
          pollInterval: Duration = .seconds(5), embedded: Bool = false,
-         onBack: (() -> Void)?, onLeave: @escaping () -> Void, statusBoard: GuestShareStatusBoard? = nil) {
+         onBack: (() -> Void)?, onConnectOwnMachine: (() -> Void)? = nil,
+         onLeave: @escaping () -> Void, statusBoard: GuestShareStatusBoard? = nil) {
         self.access = access
         self.connect = connect
         self.inbox = inbox
@@ -85,6 +89,7 @@ struct GuestHomeView: View {
         self.pollInterval = pollInterval
         self.embedded = embedded
         self.onBack = onBack
+        self.onConnectOwnMachine = onConnectOwnMachine
         self.onLeave = onLeave
         self.statusBoard = statusBoard
     }
@@ -132,8 +137,10 @@ struct GuestHomeView: View {
                         .tabItem { Label("Gram", systemImage: "bubble.left.and.bubble.right") }
                         .badge(inbox.unreadTotal)
                 }
-                GuestSettingsView(access: access, fingerprint: connection?.fingerprint,
-                                  client: connection?.client, onLeave: leave)
+                SettingsView(mode: .guest(GuestSettingsShare(access: access, fingerprint: connection?.fingerprint,
+                                                            client: connection?.client, onLeave: leave,
+                                                            onConnectOwnMachine: onConnectOwnMachine)),
+                             agents: [], host: access.machineLabel)
                     .tag(Tab.settings)
                     .tabItem { Label("Settings", systemImage: "gearshape") }
             }

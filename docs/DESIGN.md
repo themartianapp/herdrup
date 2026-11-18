@@ -21,7 +21,12 @@ herdr's JSON API exposes both, so panes and agents become real UI objects instea
 - **Settings** — the connected machine's profile card opens Machines, with its herdr update
   card, connection actions and federation. Pending updates and exhausted accounts appear as
   suggestions above the Your herd, Preferences, Help and About groups. iPad and Mac keep the
-  same index beside the selected detail page; guest Settings uses the shared agent as its header.
+  same index beside the selected detail page. A phone holding only shares gets the same index
+  without what needs a machine of its own: the shared agent's card (opening Shared with you,
+  with its device key and Leave) in place of the machine card, then Your own machine, whose
+  Connect your own machine row closes the share onto the machine list's pairing setup (or, with
+  an owner session kept underneath, onto the owner's home with the pairing sheet open).
+  `SettingsView` takes one `SettingsMode`: `.owner(client)` or `.guest(share)`.
 - **Live terminal** — a full SwiftTerm terminal for any pane, one tap behind its card, with gestures
   to page between agents, tail the output, and scroll history.
   History keeps its original row layout, including plain text, so resizing does not rewrap old
@@ -200,7 +205,7 @@ job builds the app for itself, so there are few, long shards:
 |---|---|---|
 | `mac-evidence/org-ios-sim-uitest-v1/iphone-terminal` | UI test, iPhone 18 Pro | the terminal classes, `ChatViewTests`, `PagingTests`, `GramTests` |
 | `mac-evidence/org-ios-sim-uitest-v1/iphone-app` | UI test, iPhone 18 Pro | `HerdrFontTests` and every other iPhone class |
-| `mac-evidence/org-ios-sim-uitest-v1/ipad` | UI test, iPad Pro 13-inch | the iPad rounds: resize, Duo transition, control, drop, chat column, Gram column, needs-you, star bar |
+| `mac-evidence/org-ios-sim-uitest-v1/ipad` | UI test, iPad Pro 13-inch | the iPad rounds: resize, Duo transition, control, drop, chat column, Gram column, needs-you, star bar, guest Settings |
 | `mac-evidence/org-ios-sim-script-v1/ipad-script` | script, iPhone 18 Pro + its own iPads | `Tools/ci/macserve-ipad-script.sh`: the built-version check, Herdrup Desktop's references on both iPads, iPad `AgentListChromeTests`, the optimized Settings stack regression, the SwiftTerm UIKit API tests |
 
 The UI-test template runs a shard's `-only-testing` selectors as one `xcodebuild test`;

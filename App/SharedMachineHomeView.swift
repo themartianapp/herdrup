@@ -9,6 +9,8 @@ struct SharedMachineHomeView: View {
     /// Opens a grant's connection; the relay unless a mock stands in.
     let connect: (GuestAccess) throws -> GuestConnection
     let onBack: (() -> Void)?
+    /// Settings › Connect your own machine (see `GuestHomeView.onConnectOwnMachine`).
+    let onConnectOwnMachine: (() -> Void)?
     let onLeave: () -> Void
     @ObservedObject private var store = SharedMachinesStore.shared
     @StateObject private var inbox: GuestGramInbox
@@ -20,10 +22,12 @@ struct SharedMachineHomeView: View {
     @State private var tab: GuestHomeView.Tab = .agents
 
     init(access: GuestAccess, connect: @escaping (GuestAccess) throws -> GuestConnection = GuestConnection.open,
-         onBack: (() -> Void)?, onLeave: @escaping () -> Void) {
+         onBack: (() -> Void)?, onConnectOwnMachine: (() -> Void)? = nil,
+         onLeave: @escaping () -> Void) {
         self.access = access
         self.connect = connect
         self.onBack = onBack
+        self.onConnectOwnMachine = onConnectOwnMachine
         self.onLeave = onLeave
         _inbox = StateObject(wrappedValue: GuestGramInbox(connect: connect))
     }
@@ -53,7 +57,7 @@ struct SharedMachineHomeView: View {
     private var shell: some View {
         if peers.count == 1, let only = peers.first {
             GuestHomeView(access: only, connect: { try inbox.connection(for: only) }, inbox: inbox,
-                          onBack: onBack, onLeave: leftShare)
+                          onBack: onBack, onConnectOwnMachine: onConnectOwnMachine, onLeave: leftShare)
                 .id(only.id)
         } else {
             TabView(selection: $tab) {
@@ -126,13 +130,18 @@ struct SharedMachineHomeView: View {
             }
             .tint(Palette.text)
             .sheet(item: $settingsAccess) { peer in
-                GuestSettingsView(access: peer, fingerprint: settingsConnection?.fingerprint,
-                                  client: settingsConnection?.client) {
-                    store.remove(peer)
-                    settingsAccess = nil
-                    settingsConnection = nil
-                    leftShare()
-                }
+                SettingsView(mode: .guest(GuestSettingsShare(
+                                access: peer, fingerprint: settingsConnection?.fingerprint,
+                                client: settingsConnection?.client,
+                                onLeave: {
+                                    store.remove(peer)
+                                    settingsAccess = nil
+                                    settingsConnection = nil
+                                    leftShare()
+                                },
+                                onConnectOwnMachine: onConnectOwnMachine.map { connect -> () -> Void in { settingsAccess = nil; connect() } })),
+                             agents: [], host: peer.machineLabel,
+                             onClose: { settingsAccess = nil })
             }
         }
     }
