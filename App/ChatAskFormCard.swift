@@ -375,7 +375,10 @@ struct AskFormStepper: View {
     @ViewBuilder
     private func context(markdown: String?, plain: String?, size: CGFloat) -> some View {
         if let markdown {
+            // A container element: an identifier set on the bare stack would be copied onto
+            // every block inside it, hiding the table's own `chat-markdown-table`.
             ChatMarkdownView(markdown: markdown, tone: .context)
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("chat-ask-form-context")
         } else if let plain {
             Text(plain).font(Typography.app(size * textScale)).foregroundStyle(Palette.textDim)
