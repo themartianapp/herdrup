@@ -138,7 +138,13 @@ struct ChatAskFormCard: View {
         if answerable { return .answer }
         // The capability is not known yet: nothing that may vanish a moment later.
         if formsSupported == nil || !canAnswerHere { return .browse(offersTerminal: false) }
-        if case .guest(_, let owner) = viewer { return .waiting(owner: owner) }
+        if case .guest(_, let owner) = viewer {
+            // Only the host's own word hands the question to the owner: a `guest_forbidden`
+            // from `agent.answer_form`. A form the chat cannot answer (a host whose guest
+            // ping leaves out `ask_form`, a field herdr cannot drive) goes to the Terminal's
+            // menu keys (herdrup#714).
+            return answersRefused ? .waiting(owner: owner) : .needsTerminal
+        }
         return .browse(offersTerminal: true)
     }
 
@@ -258,7 +264,9 @@ struct AskFormStepper: View {
         /// Read-only steps (a server without `ask_form`, or controls herdr cannot drive);
         /// the Terminal answers.
         case browse(offersTerminal: Bool)
-        /// A guest who cannot answer: the owner will.
+        /// A guest whose chat cannot answer this form: its keys are in the Terminal.
+        case needsTerminal
+        /// A guest whose host refused their answer: the owner will.
         case waiting(owner: String)
     }
 
@@ -328,19 +336,16 @@ struct AskFormStepper: View {
 
     @ViewBuilder
     private func fieldStep(_ field: AskFormField) -> some View {
-        if draft.step == 0, let intro = draft.form.intro {
-            Text(intro).font(Typography.app(14 * textScale)).foregroundStyle(Palette.textDim)
-                .fixedSize(horizontal: false, vertical: true)
+        if draft.step == 0, draft.form.intro != nil || draft.form.introMarkdown != nil {
+            context(markdown: draft.form.introMarkdown, plain: draft.form.intro, size: 14)
                 .padding(.bottom, 10)
         }
         Text(field.title ?? field.name).font(Typography.app(15 * textScale, .semibold)).foregroundStyle(Palette.text)
             .lineSpacing(0.5)
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityIdentifier("chat-ask-form-title")
-        if let description = field.description {
-            Text(description).font(Typography.app(13.5 * textScale)).foregroundStyle(Palette.textDim)
-                .lineSpacing(0.5)
-                .fixedSize(horizontal: false, vertical: true)
+        if field.description != nil || field.descriptionMarkdown != nil {
+            context(markdown: field.descriptionMarkdown, plain: field.description, size: 13.5)
                 .padding(.top, 4)
         }
         VStack(spacing: 8) {
@@ -362,6 +367,24 @@ struct AskFormStepper: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 8)
                 .accessibilityIdentifier("chat-ask-form-error")
+        }
+    }
+
+    /// The form's context: herdr's Markdown when it sends it (a table stays a table, a bold
+    /// label stays bold), else the plain text older servers send.
+    @ViewBuilder
+    private func context(markdown: String?, plain: String?, size: CGFloat) -> some View {
+        if let markdown {
+            // A container element: an identifier set on the bare stack would be copied onto
+            // every block inside it, hiding the table's own `chat-markdown-table`.
+            ChatMarkdownView(markdown: markdown, tone: .context)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("chat-ask-form-context")
+        } else if let plain {
+            Text(plain).font(Typography.app(size * textScale)).foregroundStyle(Palette.textDim)
+                .lineSpacing(0.5)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("chat-ask-form-context")
         }
     }
 
@@ -577,6 +600,15 @@ struct AskFormStepper: View {
         case .browse(let offersTerminal):
             navigation(next: .link("Next"))
             if offersTerminal { terminalButton.padding(.top, 10) }
+        case .needsTerminal:
+            navigation(next: .link("Next"))
+            VStack(alignment: .leading, spacing: 8) {
+                Text("This question needs the Terminal").font(Typography.app(13 * textScale))
+                    .foregroundStyle(Palette.waiting)
+                    .accessibilityIdentifier("chat-ask-needs-terminal")
+                terminalButton
+            }
+            .padding(.top, 10)
         case .answer:
             if draft.isReviewing {
                 HStack {

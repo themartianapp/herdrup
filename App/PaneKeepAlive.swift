@@ -22,8 +22,9 @@ struct PaneSlot: Identifiable {
 /// between them — is instant: nothing is torn down or re-streamed. Exactly one slot is the
 /// FRONT (visible, interactive, holding the PTY width-lock); the rest sit at opacity 0 with
 /// hit-testing disabled, their stream still warm and their lock released once a short grace
-/// has passed (`TerminalSizeClaim.hiddenGraceNanos`). Opening/paging just
-/// changes which slot is front.
+/// has passed (`TerminalSizeClaim.hiddenGraceNanos`). A slot left hidden for longer is parked
+/// (`LiveTerminalView.Coordinator.parkGraceNanos`): its stream stops and its scrollback is
+/// freed, and fronting it re-seeds it. Opening/paging just changes which slot is front.
 ///
 /// It lives INSIDE `TerminalHomeView`, which is the point: a reconnect bumps the view's
 /// `.id(session)` and dismantles every mounted pane (each `Coordinator.stop()` closing its
