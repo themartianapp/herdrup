@@ -2478,11 +2478,14 @@ struct LiveTerminalView: UIViewRepresentable {
         private static let publishesHistoryProbe = ScreenshotMock.mode == .keyframeHistory
         #endif
 
-        /// `dismantling`: called from `dismantleUIView`, i.e. while SwiftUI tears its view graph
-        /// down. Writing the host's state there (the armed-Ctrl binding) is an exclusivity
-        /// violation that aborts the app (`swift_beginAccess` fatal in `GraphHost.isUpdating`,
-        /// the same abort as the 1.2.1 (238) TestFlight crash in `ScrollActivityObserver`):
-        /// arming Ctrl and then tapping refresh (which remounts the terminal) did exactly that.
+        /// `dismantling`: called from `dismantleUIView`. When the hosting view itself is torn
+        /// down (a hosting controller deallocating), that runs inside `GraphHost.invalidate()`,
+        /// and writing the host's state there (the armed-Ctrl binding) is an exclusivity
+        /// violation that aborts the app: `swift_beginAccess` fatal in `GraphHost.isUpdating`,
+        /// the 1.2.1 (238) TestFlight crash in `ScrollActivityObserver`, whose stack runs
+        /// `UIHostingController` dealloc → `ViewGraphHost.tearDown` → `GraphHost.invalidate` →
+        /// `dismantleUIView`. A remount inside the graph (`.id`, refresh) does not abort: there
+        /// the write is only a "modifying state during view update" warning (#679).
         func stop(dismantling: Bool = false) {
             stopped = true                  // no new resize/scroll may start after this
             #if DEBUG
@@ -3812,15 +3815,16 @@ struct LiveTerminalView: UIViewRepresentable {
                 && view.isFirstResponder && (controlArmedGetter?() ?? false)
         }
 
-        /// `deferringHostWrite` delivers the disarm on the next main-queue turn, for a caller
-        /// inside SwiftUI's graph teardown (see `stop(dismantling:)`).
+        /// `deferringHostWrite` neither reads nor writes the host's binding now: both happen on
+        /// the next main-queue turn, for a caller inside SwiftUI's graph teardown (see
+        /// `stop(dismantling:)`).
         func cancelArmedControl(deferringHostWrite: Bool = false) {
-            if controlArmedGetter?() == true, let disarm = controlArmedSetter {
-                if deferringHostWrite {
-                    DispatchQueue.main.async { disarm(false) }
-                } else {
-                    disarm(false)
+            if deferringHostWrite {
+                if let armed = controlArmedGetter, let disarm = controlArmedSetter {
+                    DispatchQueue.main.async { if armed() { disarm(false) } }
                 }
+            } else if controlArmedGetter?() == true {
+                controlArmedSetter?(false)
             }
             applyingControlModifier = true
             view?.controlModifier = false

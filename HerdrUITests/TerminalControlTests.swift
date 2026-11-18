@@ -135,10 +135,10 @@ final class TerminalControlTests: TerminalInteractionTestCase {
     }
 
     /// Refresh remounts the terminal (`streamGen`), and tearing the old one down cancels an
-    /// armed Ctrl. That cancel wrote the pane's `ctrlArmed` state from `dismantleUIView`,
-    /// inside SwiftUI's graph teardown: an exclusivity abort (`swift_beginAccess` fatal, as in
-    /// the 1.2.1 (238) TestFlight crash). Arm, refresh: the app must stay up, the one-shot
-    /// must be cancelled, and the next key must arrive plain.
+    /// armed Ctrl. Arm, refresh: the app must stay up, the one-shot must be cancelled, and the
+    /// next key must arrive plain. This does NOT reproduce the teardown abort: it passed without
+    /// the deferred disarm too (#679), because an in-graph remount is not a hosting-view teardown.
+    /// `TerminalTeardownTests` covers that.
     func testRefreshWhileControlIsArmedDoesNotCrashOrLeak() throws {
         launch("control"); focusTerminal()
         cap("terminal-ctrl").tap()
