@@ -18,6 +18,8 @@ import Foundation
 ///   "notes: too long to edit from the app; answer in the terminal".
 /// - `HERDR_MOCK_CHAT_FORM_OPTIONAL=1`: an optional radio with Other and no default comes
 ///   after the checkbox group; left out of `values`, omp records it unanswered.
+/// - `HERDR_MOCK_CHAT_FORM_CONTEXT=table`: herdr also sends the context as Markdown
+///   (`intro_markdown`): the comparison table and bold labels of the 2026-11-17 enyo ask.
 enum ChatMockAskForm {
     static let enabled = ["1", "3"].contains(ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM"])
     static let advertised = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM_CAPABILITY"] != "0"
@@ -25,6 +27,7 @@ enum ChatMockAskForm {
     static let endedStatus = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM_STATUS"]
     static let hasTextarea = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM_TEXTAREA"] == "1"
     static let hasOptionalRadio = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM_OPTIONAL"] == "1"
+    static let contextTable = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_FORM_CONTEXT"] == "table"
 
     /// What herdr reports as `form_answerable` for a viewer who may answer.
     static var answerable: Bool { advertised }
@@ -127,7 +130,27 @@ enum ChatMockAskForm {
 
     static var allFields: [[String: Any]] { fields + (hasTextarea ? [notes] : []) }
 
-    static var form: [String: Any] { ["intro": threeQuestions ? threeQuestionsIntro : intro, "fields": allFields] }
+    /// The Markdown twin herdr serves beside the plain `intro` (owner's 2026-11-17 enyo ask).
+    static let tableIntroMarkdown = """
+    **Searching past deals for Nicola's usefulness test.** enyo-research estimated how many Italian renewable events since 2021 are public, and what a full search costs:
+
+    |  | Sales / acquisitions | Energisations (≥ 5 MW) |
+    | --- | --- | --- |
+    | Expected to find | 600–900 deals | 250–400 with a dated public source |
+    | Time | about 2–2.5 days | about 1–1.5 days |
+    | AI cost | about $250–350 | about $100–200 |
+
+    **Limits from the 20-row samples:**
+
+    - **Sales:** the date is stated in 16 of 20, the stake in 11, and the project company name in only 7.
+    - **Energisations:** only 4 of 20 give the actual connection day.
+    """
+
+    static var form: [String: Any] {
+        var form: [String: Any] = ["intro": threeQuestions ? threeQuestionsIntro : intro, "fields": allFields]
+        if contextTable { form["intro_markdown"] = tableIntroMarkdown }
+        return form
+    }
 
     /// The `questions` herdr keeps for older apps: one per choice field.
     static var questions: [[String: Any]] {

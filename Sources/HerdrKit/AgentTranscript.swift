@@ -269,18 +269,26 @@ public struct TranscriptQuestion: Decodable, Sendable, Equatable {
 public struct AskForm: Decodable, Sendable, Equatable {
     /// Plain text of the context before the first section or field; paragraphs split by "\n\n".
     public let intro: String?
+    /// The same context as Markdown (tables, bold, lists); nil from servers that predate
+    /// `intro_markdown` and send only `intro`.
+    public let introMarkdown: String?
     public let fields: [AskFormField]
 
-    public init(intro: String? = nil, fields: [AskFormField]) {
+    public init(intro: String? = nil, introMarkdown: String? = nil, fields: [AskFormField]) {
         self.intro = intro
+        self.introMarkdown = introMarkdown
         self.fields = fields
     }
 
-    enum CodingKeys: String, CodingKey { case intro, fields }
+    enum CodingKeys: String, CodingKey {
+        case intro, fields
+        case introMarkdown = "intro_markdown"
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         intro = try c.decodeIfPresent(String.self, forKey: .intro)
+        introMarkdown = try c.decodeIfPresent(String.self, forKey: .introMarkdown)
         fields = try c.decodeIfPresent([AskFormField].self, forKey: .fields) ?? []
     }
 
@@ -328,6 +336,8 @@ public struct AskFormField: Decodable, Sendable, Equatable, Identifiable {
     public let title: String?
     /// Plain text of the context in this field's section before it.
     public let description: String?
+    /// The same context as Markdown; nil from servers that send only `description`.
+    public let descriptionMarkdown: String?
     /// A checkbox group or `<select multiple>`.
     public let multi: Bool
     /// Drawn from a `<select>`: no Other.
@@ -350,6 +360,7 @@ public struct AskFormField: Decodable, Sendable, Equatable, Identifiable {
     public var id: String { name }
 
     public init(name: String, kind: AskFormFieldKind, title: String? = nil, description: String? = nil,
+                descriptionMarkdown: String? = nil,
                 multi: Bool = false, select: Bool = false, other: Bool = false, required: Bool = false,
                 options: [AskFormOption] = [], inputType: String? = nil, placeholder: String? = nil,
                 value: String? = nil, min: Double? = nil, max: Double? = nil, minLength: Int? = nil,
@@ -358,6 +369,7 @@ public struct AskFormField: Decodable, Sendable, Equatable, Identifiable {
         self.kind = kind
         self.title = title
         self.description = description
+        self.descriptionMarkdown = descriptionMarkdown
         self.multi = multi
         self.select = select
         self.other = other
@@ -377,6 +389,7 @@ public struct AskFormField: Decodable, Sendable, Equatable, Identifiable {
         case name, kind, title, description, multi, select, other, required, options, placeholder, value
         case min, max, pattern
         case inputType = "input_type"
+        case descriptionMarkdown = "description_markdown"
         case minLength = "minlength"
         case maxLength = "maxlength"
     }
@@ -389,6 +402,7 @@ public struct AskFormField: Decodable, Sendable, Equatable, Identifiable {
                 ?? .unknown,
             title: try c.decodeIfPresent(String.self, forKey: .title),
             description: try c.decodeIfPresent(String.self, forKey: .description),
+            descriptionMarkdown: try c.decodeIfPresent(String.self, forKey: .descriptionMarkdown),
             multi: try c.decodeIfPresent(Bool.self, forKey: .multi) ?? false,
             select: try c.decodeIfPresent(Bool.self, forKey: .select) ?? false,
             other: try c.decodeIfPresent(Bool.self, forKey: .other) ?? false,
