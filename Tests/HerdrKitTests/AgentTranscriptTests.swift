@@ -972,7 +972,7 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertEqual(store.entries.map(\.id), ["u", "new"])
         XCTAssertTrue(store.hasOlder)
         await store.refresh(client: client)
-        XCTAssertEqual(transport.requests.last?.params["after"] as? String, "a3",
+        XCTAssertEqual(transport.requests.last { $0.params["after"] != nil }?.params["after"] as? String, "a3",
                        "the next poll goes on from the reloaded page")
     }
 
