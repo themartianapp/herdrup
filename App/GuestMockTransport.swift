@@ -162,6 +162,8 @@ struct GuestMockTransport: HerdrTransport {
         if Self.pushMethods.contains(method) { return Self.features?.push == true }
         if Self.answerMethods.contains(method) { return !Self.ownerOnlyAnswers }
         if method == "agent.transcript" { return Self.chat }
+        // The owner's guests see and use the shared agent's topics (`HERDR_MOCK_TOPICS`).
+        if method.hasPrefix("agent.topics.") { return TopicsMock.enabled }
         return Self.allowlist.contains(method) && !(scenario == .oldHost && method == "pane.set_pty_size")
     }
 
@@ -222,11 +224,17 @@ struct GuestMockTransport: HerdrTransport {
         switch method {
         case "ping":
             if Self.chat {
-                return #"{"id":"\#(id)","result":{"type":"pong","version":"0.9.4","protocol":22,"capabilities":{"agent_transcript":true\#(ChatMockAskForm.capability)}}}"#
+                return #"{"id":"\#(id)","result":{"type":"pong","version":"0.9.4","protocol":22,"capabilities":{"agent_transcript":true\#(ChatMockAskForm.capability)\#(TopicsMock.capability)}}}"#
             }
             return #"{"id":"\#(id)","result":{"type":"pong"}}"#
         case "agent.transcript":
+            if let topic = params["topic"] as? String {
+                return TopicsMock.guest.transcript(id: id, topic: topic)
+            }
             return ChatMockConversation.guest.transcript(id: id, params: params)
+        case _ where method.hasPrefix("agent.topics."):
+            return TopicsMock.guest.reply(method: method, id: id, params: params)
+                ?? Self.errorLine(id: id, code: "guest_forbidden", message: "guests can't call \(method)")
         case "agent.list":
             return #"{"id":"\#(id)","result":{"type":"agent_list","agents":[\#(listedAgentsJSON)]}}"#
         case "agent.get":

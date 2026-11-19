@@ -28,6 +28,7 @@ struct GuestPaneView: View {
         self.access = access
         self.features = features
         _chatModel = StateObject(wrappedValue: ChatModel(target: access.agentTarget))
+        _topicsModel = StateObject(wrappedValue: TopicsModel(target: access.agentTarget))
         _tab = tab
         self.gramUnread = gramUnread
         self.onOpenGram = onOpenGram
@@ -41,6 +42,11 @@ struct GuestPaneView: View {
     @StateObject private var chatModel: ChatModel
     /// The host serves `agent.transcript` to guests (its pong's `agent_transcript`).
     @State private var transcriptCapable = false
+    /// The shared agent's Topics, as the owner sees them (owner decision 2026-11-19): only the
+    /// host's `agent_topics` gates them. A guest has no event stream; the list polls.
+    @StateObject private var topicsModel: TopicsModel
+    /// The host serves omp agents' topics (its pong's `agent_topics`).
+    @State private var topicsCapable = false
     /// The Chat tab has been made the default once; after that the guest's own pick stands.
     @State private var chatDefaulted = false
 
@@ -126,8 +132,13 @@ struct GuestPaneView: View {
         transcriptCapable && ChatPreference.isOmp(agent?.agent) && !chatModel.unsupported
     }
     private var showingChat: Bool { showsChat && tab == .chat }
-    /// Chat doesn't cover the terminal.
-    private var showingTerminal: Bool { !showingChat }
+    /// The Topics tab: a shared omp agent that offers topics, on a host with `agent_topics`.
+    private var showsTopics: Bool {
+        topicsCapable && ChatPreference.isOmp(agent?.agent) && topicsModel.offered
+    }
+    private var showingTopics: Bool { showsTopics && tab == .topics }
+    /// Neither Chat nor Topics covers the terminal.
+    private var showingTerminal: Bool { !showingChat && !showingTopics }
 
     /// The page's ground: the terminal's, as the owner's pages.
     private var pageGround: Color { Palette.groundMachine }
@@ -136,7 +147,7 @@ struct GuestPaneView: View {
         VStack(spacing: 0) {
             header
             statusRow
-            if showsGram || showsChat { tabStrip }
+            if showsGram || showsChat || showsTopics { tabStrip }
             ZStack(alignment: .bottom) {
                 // The terminal stays mounted under the Gram and Chat tabs, so its stream and
                 // scrollback survive a look at them.
@@ -157,6 +168,18 @@ struct GuestPaneView: View {
                     // Typing redraws this page; the chat skips it (`ChatView ==`).
                     .equatable()
                 }
+                // Topics brings its own composer (a topic's chat sends to that topic only), so
+                // it covers the page's composer too: drawn down over the bottom block, which
+                // keeps its height (so the terminal keeps its size) but hides.
+                if showingTopics, scenePhase.mountsChat {
+                    TopicsPane(client: client, model: topicsModel,
+                               viewer: .guest(name: access.guestName, ownerName: access.ownerName),
+                               eventsPaneID: nil, isActive: true, live: availability == .running,
+                               inboxPreview: agent?.activityText,
+                               onOpenInbox: { tab = showsChat ? .chat : .terminal },
+                               onOpenTerminal: { tab = .terminal })
+                        .padding(.bottom, -(bottomChromeHeight + ComposerStyle.restingHeight + 8))
+                }
                 if guestPush.asking == access.id, let current = features.current {
                     GuestPushPrompt(
                         agentName: access.agentName, ownerName: access.ownerName, gram: current.gram,
@@ -170,6 +193,9 @@ struct GuestPaneView: View {
             }
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { terminalHeight = $0 }
             bottomBlock
+                .opacity(showingTopics ? 0 : 1)
+                .allowsHitTesting(!showingTopics)
+                .accessibilityHidden(showingTopics)
         }
         .background(pageGround.ignoresSafeArea())
         .overlay { EdgeSwipeBack { onClose() } }
@@ -186,7 +212,15 @@ struct GuestPaneView: View {
         }
         // The Chat tab exists only where the host serves guests `agent.transcript`.
         .task(id: access.id) {
-            transcriptCapable = (try? await client.serverCapabilities())?.agentTranscript ?? false
+            let capabilities = try? await client.serverCapabilities()
+            transcriptCapable = capabilities?.agentTranscript ?? false
+            topicsCapable = capabilities?.agentTopics ?? false
+        }
+        // Whether the shared omp agent offers topics: asked once known, until it answers (the
+        // Topics tab then polls the list every 15 s while it shows).
+        .task(id: [topicsCapable ? "topics" : "", ChatPreference.isOmp(agent?.agent) ? "omp" : ""]) {
+            guard topicsCapable, ChatPreference.isOmp(agent?.agent), !topicsModel.offered else { return }
+            await topicsModel.refresh(client: client)
         }
         // A shared omp agent opens in Chat, once; afterwards the guest's own pick stands.
         .onChange(of: showsChat, initial: true) { _, available in
@@ -196,6 +230,9 @@ struct GuestPaneView: View {
             } else if !available, tab == .chat {
                 tab = .terminal
             }
+        }
+        .onChange(of: showsTopics) { _, available in
+            if !available, tab == .topics { tab = showsChat ? .chat : .terminal }
         }
         .onChange(of: tab) { _, _ in
             if findOpen { toggleFind() }
@@ -221,6 +258,9 @@ struct GuestPaneView: View {
     private var tabStrip: some View {
         let compact = sizeClass == .regular
         return HStack(spacing: 4) {
+            if showsTopics {
+                tabButton("Topics", systemImage: "list.bullet", tab: .topics, id: "guest-tab-topics", compact: compact)
+            }
             if showsChat {
                 tabButton("Chat", systemImage: "bubble.left", tab: .chat, id: "guest-tab-chat", compact: compact)
             }
@@ -300,12 +340,21 @@ struct GuestPaneView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             PaneHeaderCapsule {
-                InlineSearchToggle(isOpen: findOpen, identifier: "guest-find",
-                                   target: CGSize(width: 40, height: 44)) { toggleFind() }
+                if !showingTopics {
+                    InlineSearchToggle(isOpen: findOpen, identifier: "guest-find",
+                                       target: CGSize(width: 40, height: 44)) { toggleFind() }
+                }
                 PaneHeaderRefreshButton(identifier: "guest-refresh",
                                         refreshing: showingChat && chatModel.manualRefreshing) {
                     if showingChat {
                         Task { await chatModel.manualRefresh(client: client) }
+                    } else if showingTopics {
+                        Task {
+                            await topicsModel.refresh(client: client)
+                            if let topic = topicsModel.selectedTopicID {
+                                await topicsModel.chatModel(for: topic).manualRefresh(client: client)
+                            }
+                        }
                     } else {
                         streamGen += 1
                         Task { await refresh() }
@@ -448,9 +497,9 @@ struct GuestPaneView: View {
                     isAtTail: terminalAtTail,
                     fontSize: CGFloat(GuestTerminalSize.clamped(terminalFontSize)),
                     controlArmed: .constant(false),
-                    findRequest: showingChat ? nil : findRequest,
+                    findRequest: showingTerminal ? findRequest : nil,
                     onFindResult: { index, total in
-                        if !showingChat { findMatches = (index, total, false) }
+                        if showingTerminal { findMatches = (index, total, false) }
                     },
                     // A file dropped anywhere on the terminal joins the composer, under the
                     // paperclip's own rule: only while the guest may attach (#575).

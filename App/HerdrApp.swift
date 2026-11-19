@@ -5662,10 +5662,15 @@ struct TerminalPaneContent: View {
     @State private var agent: AgentInfo?
     /// The omp Chat view (#481): its conversation, kept across Chat ↔ Terminal switches.
     @StateObject private var chatModel: ChatModel
+    /// The agent's Topics (jerryfane/herdr#475): its list, open topic and their chats, kept
+    /// across switches like the Chat's.
+    @StateObject private var topicsModel: TopicsModel
     /// The switch position: Settings' default, or this agent's last choice this session.
-    @State private var showsChat: Bool
+    @State private var mode: ChatPreference.Mode
     /// The machine answers `agent.transcript` (ping `agent_transcript`). Probed per pane.
     @State private var transcriptCapable = false
+    /// The machine serves omp agents' topics (ping `agent_topics`). Probed per pane.
+    @State private var topicsCapable = false
     /// The key row's height when it last showed: in Chat the terminal underneath keeps the
     /// height it has in Terminal view, so switching never resizes the PTY.
     @State private var keyRowHeight: CGFloat = ChatPaneLayout.lastKeyRowHeight
@@ -5817,7 +5822,8 @@ struct TerminalPaneContent: View {
         _reply = State(initialValue: initialReply)
         _pendingPrefill = State(initialValue: !initialReply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         _chatModel = StateObject(wrappedValue: ChatModel(target: paneID))
-        _showsChat = State(initialValue: ChatPreference.showsChat(paneID: paneID))
+        _topicsModel = StateObject(wrappedValue: TopicsModel(target: paneID))
+        _mode = State(initialValue: ChatPreference.mode(paneID: paneID))
     }
 
     private var group: AgentGroup? { agent.map { AgentRow(info: $0).group } }
@@ -5834,14 +5840,31 @@ struct TerminalPaneContent: View {
     }
     /// Gaps between transcript retries while Chat is refused, in seconds. The last one repeats.
     private static let chatRecoveryDelays: [UInt64] = [1, 2, 4, 8, 15, 30, 60]
-    private var showingChat: Bool { chatAvailable && showsChat }
+    /// The page offers Topics: an omp agent on a machine with `agent_topics` that answered its
+    /// topic list this session, or whose session file already holds topics. Everything else
+    /// keeps exactly today's `Chat | Terminal` page.
+    private var topicsAvailable: Bool {
+        topicsCapable && ChatPreference.isOmp(agent?.agent)
+            && (topicsModel.offered || agent?.topicSessions?.contains { !$0.topicID.isEmpty } == true)
+    }
+    /// What the page shows: the switch position, where the agent offers it.
+    private var shownMode: ChatPreference.Mode {
+        ChatPreference.resolved(mode, chatAvailable: chatAvailable, topicsAvailable: topicsAvailable)
+    }
+    private var showingChat: Bool { shownMode == .chat }
+    private var showingTopics: Bool { shownMode == .topics }
+    /// Chat or Topics covers the terminal, which stays mounted underneath.
+    private var coversTerminal: Bool { shownMode != .terminal }
 
-    private func setShowsChat(_ value: Bool) {
+    private func setMode(_ value: ChatPreference.Mode) {
         if findOpen { toggleFind() }
-        showsChat = value
-        ChatPreference.remember(paneID: paneID, showsChat: value)
-        if value {
+        mode = value
+        ChatPreference.remember(paneID: paneID, mode: value)
+        if value != .terminal {
             terminalInputFocused = false
+        }
+        if value == .topics {
+            replyFocused = false
         }
     }
     /// The pane header label: the agent's NAME first (matching the list), then the model (kind) and
@@ -5912,7 +5935,8 @@ struct TerminalPaneContent: View {
                 // omp agents on a machine with `agent_transcript`: the Chat | Terminal switch
                 // (#481). Other agents and older servers keep exactly today's page.
                 if chatAvailable {
-                    ChatTerminalSwitch(showsChat: Binding(get: { showsChat }, set: { setShowsChat($0) }))
+                    ChatTerminalSwitch(mode: Binding(get: { shownMode }, set: { setMode($0) }),
+                                       showsTopics: topicsAvailable)
                         .padding(.top, 2).padding(.bottom, 4)
                         .accessibilityHidden(!isForeground)
                 }
@@ -5930,14 +5954,14 @@ struct TerminalPaneContent: View {
                                  onNavigate: onNavigate, isForeground: isForeground,
                                  // Chat covers the terminal: its UIKit views leave
                                  // accessibility too (see `accessibilityCovered`).
-                                 accessibilityCovered: showingChat,
+                                 accessibilityCovered: coversTerminal,
                                  // Releases the width claim while the scene is in the
                                  // background; cleared with the remount decision below.
                                  sceneBackgrounded: wasBackgrounded,
                                  // The find and reply fields own their own responders.
                                  // Terminal focus is never inferred from device idiom.
                                  wantsTerminalKeyFocus: isForeground && !replyFocused && !findFocused
-                                     && !showingChat
+                                     && !coversTerminal
                                      && terminalInputFocused,
                                  // Set by the collapse chevron so the resign in updateUIView can
                                  // tell a deliberate dismissal from an incidental body pass.
@@ -5960,14 +5984,14 @@ struct TerminalPaneContent: View {
                                  liveness: terminalLiveness,
                                  controlArmed: $ctrlArmed,
                                  userInputToken: userInputToken,
-                                 findRequest: showingChat ? nil : findRequest,
+                                 findRequest: coversTerminal ? nil : findRequest,
                                  onFindResult: { index, total in
-                                     if !showingChat { findMatches = (index, total, false) }
+                                     if !coversTerminal { findMatches = (index, total, false) }
                                  },
                                  // A file dropped anywhere on the terminal joins the reply,
                                  // exactly as one dropped on the composer bar does (#575).
                                  // Off in Chat, where the terminal is hidden under it.
-                                 fileDrop: showingChat ? nil : TerminalFileDrop(
+                                 fileDrop: coversTerminal ? nil : TerminalFileDrop(
                                      onTargetChange: { terminalDropTargeted = $0 },
                                      onDrop: { acceptDroppedFiles($0) }))
                     // Reconnect on refresh: a new id re-creates the view → fresh stream/connection.
@@ -5982,7 +6006,7 @@ struct TerminalPaneContent: View {
                     // file drag hovers it. An overlay that never hit-tests, so the drop
                     // still lands on the terminal surface underneath.
                     .overlay {
-                        if terminalDropTargeted && !showingChat {
+                        if terminalDropTargeted && !coversTerminal {
                             RoundedRectangle(cornerRadius: 12)
                                 .strokeBorder(Palette.brand, lineWidth: 2)
                                 .allowsHitTesting(false)
@@ -6001,7 +6025,7 @@ struct TerminalPaneContent: View {
                         ZStack {
                             // Not under Chat: there it is invisible, and on iOS 27 still an
                             // accessibility element over the chat.
-                            if !terminalAtTail && !showingChat {
+                            if !terminalAtTail && !coversTerminal {
                                 JumpToLatestButton(label: "Jump to latest output", identifier: "terminal-jump-latest",
                                                    regularGlass: true) { jumpToTailToken += 1 }
                                     .padding(.bottom, 16)
@@ -6017,13 +6041,13 @@ struct TerminalPaneContent: View {
                         }
                         .animation(.easeInOut(duration: 0.15), value: terminalHistoryPaging)
                     }
-                    // In Chat the terminal stays mounted under it (its stream stays warm for
-                    // the switch back) at the height it has with the key row showing, so the
-                    // switch never resizes the PTY.
-                    .padding(.bottom, showingChat ? keyRowHeight : 0)
-                    .opacity(showingChat ? 0 : 1)
-                    .allowsHitTesting(!showingChat)
-                    .accessibilityHidden(showingChat)
+                    // In Chat (and Topics) the terminal stays mounted under it (its stream stays
+                    // warm for the switch back) at the height it has with the key row showing,
+                    // so the switch never resizes the PTY.
+                    .padding(.bottom, coversTerminal ? keyRowHeight : 0)
+                    .opacity(coversTerminal ? 0 : 1)
+                    .allowsHitTesting(!coversTerminal)
+                    .accessibilityHidden(coversTerminal)
                     .overlay {
                         // Only the front pane's chat is mounted, and none in the background
                         // (`ScenePhase.mountsChat`): a kept-alive pane keeps its ChatModel, so
@@ -6034,12 +6058,26 @@ struct TerminalPaneContent: View {
                             ChatView(client: client, model: chatModel, viewer: .owner, eventsPaneID: paneID,
                                      isActive: isForeground, live: true, agentStatus: agent?.agentStatus,
                                      ground: Palette.groundMachine,
-                                     onOpenTerminal: { setShowsChat(false) },
+                                     onOpenTerminal: { setMode(.terminal) },
                                      findRequest: findRequest,
                                      onFindResult: { index, total, capped in findMatches = (index, total, capped) })
                             // A composer keystroke redraws this page; the chat skips it
                             // (`ChatView ==`), so typing never re-evaluates the transcript.
                             .equatable()
+                        }
+                    }
+                    // Topics brings its own composer (a topic's chat sends to that topic only),
+                    // so it covers the page's composer too: drawn down over the bottom block,
+                    // which keeps its height (so the terminal keeps its size) but hides.
+                    .overlay(alignment: .top) {
+                        if showingTopics, isForeground, scenePhase.mountsChat {
+                            TopicsPane(client: client, model: topicsModel, viewer: .owner, eventsPaneID: paneID,
+                                       isActive: isForeground, live: true,
+                                       inboxPreview: agent?.activityText,
+                                       onOpenInbox: { setMode(.chat) },
+                                       onOpenTerminal: { setMode(.terminal) })
+                                .padding(.bottom, -(bottomChromeHeight + ComposerStyle.restingHeight
+                                    + Self.replyBarTopPadding + Self.replyBarBottomPadding))
                         }
                     }
                 // THE COMPOSER FLOATS OVER THE TERMINAL. Only its resting row (plus the
@@ -6063,7 +6101,7 @@ struct TerminalPaneContent: View {
                                         .accessibilityIdentifier("terminal-action-note")
                                 }
                                 // Chat hides the key row: the composer is its only input.
-                                if !showingChat {
+                                if !coversTerminal {
                                     controlBar
                                         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
                                             keyRowHeight = height
@@ -6084,6 +6122,9 @@ struct TerminalPaneContent: View {
                         // Opaque, so rows the composer grows over do not show through the
                         // gaps between the keycaps and around the card.
                         .background(Palette.groundMachine)
+                        .opacity(showingTopics ? 0 : 1)
+                        .allowsHitTesting(!showingTopics)
+                        .accessibilityHidden(showingTopics)
                     }
             }
         }
@@ -6095,7 +6136,7 @@ struct TerminalPaneContent: View {
         // The chat's sheets hang on the page, not on the chat: it unmounts in the background
         // (`ScenePhase.mountsChat`) and an open note or question must still be open on return.
         .chatSheets(client: client, model: chatModel, viewer: .owner, presents: showingChat && isForeground,
-                    onOpenTerminal: { setShowsChat(false) })
+                    onOpenTerminal: { setMode(.terminal) })
         // Kept-alive panes behind the front one, Gram or Settings hold their status dot still,
         // and so does the front one while the scene is inactive, like the roster's rings.
         .environment(\.statusMotion, isForeground && scenePhase == .active)
@@ -6123,7 +6164,18 @@ struct TerminalPaneContent: View {
             await deliverPrefillIfNeeded()
         }
         .task(id: paneID) {
-            transcriptCapable = (try? await client.serverCapabilities())?.agentTranscript ?? false
+            let capabilities = try? await client.serverCapabilities()
+            transcriptCapable = capabilities?.agentTranscript ?? false
+            topicsCapable = capabilities?.agentTopics ?? false
+        }
+        // Whether this omp agent offers topics: asked once it is known to be an omp agent on a
+        // machine with `agent_topics`, and again each time the pane comes to the front until
+        // the agent answers (the Topics view keeps the list current after that).
+        .task(id: [topicsCapable ? "topics" : "", ChatPreference.isOmp(agent?.agent) ? "omp" : "",
+                   isForeground ? "front" : ""]) {
+            guard topicsCapable, ChatPreference.isOmp(agent?.agent), isForeground,
+                  !topicsModel.offered else { return }
+            await topicsModel.refresh(client: client)
         }
         // While the server refuses this omp agent a transcript, ask again: soon after it
         // starts, then less often, and at once when its status changes (its first turn writes
@@ -6236,8 +6288,11 @@ struct TerminalPaneContent: View {
                 if let chip = guestShare.chipText { GuestShareChip(text: chip) }
             }
             PaneHeaderCapsule {
-                InlineSearchToggle(isOpen: findOpen, identifier: "terminal-find",
-                                   target: CGSize(width: 40, height: 44)) { toggleFind() }
+                // Find searches the terminal or the Chat; the Topics list has its own search.
+                if !showingTopics {
+                    InlineSearchToggle(isOpen: findOpen, identifier: "terminal-find",
+                                       target: CGSize(width: 40, height: 44)) { toggleFind() }
+                }
                 PaneHeaderRefreshButton(identifier: "terminal-refresh",
                                         refreshing: showingChat && chatModel.manualRefreshing) {
                     refreshActivePane()
@@ -6332,15 +6387,15 @@ struct TerminalPaneContent: View {
             TerminalTextSizeMenuSection(
                 increaseID: "terminal-font-increase", decreaseID: "terminal-font-decrease",
                 onIncrease: {
-                    if showingChat { chatFontSize = ChatTextSize.stepped(chatFontSize, by: 1) }
+                    if coversTerminal { chatFontSize = ChatTextSize.stepped(chatFontSize, by: 1) }
                     else { terminalFontSize = min(terminalFontSize + 1, 24) }
                 },
                 onDecrease: {
-                    if showingChat { chatFontSize = ChatTextSize.stepped(chatFontSize, by: -1) }
+                    if coversTerminal { chatFontSize = ChatTextSize.stepped(chatFontSize, by: -1) }
                     else { terminalFontSize = max(terminalFontSize - 1, 9) }
                 },
                 onReset: {
-                    if showingChat { chatFontSize = ChatTextSize.defaultPoints }
+                    if coversTerminal { chatFontSize = ChatTextSize.defaultPoints }
                     else { terminalFontSize = 12.5 }
                 })
             if agent != nil {
@@ -6382,6 +6437,13 @@ struct TerminalPaneContent: View {
     private func refreshActivePane() {
         if showingChat {
             Task { await chatModel.manualRefresh(client: client) }
+        } else if showingTopics {
+            Task {
+                await topicsModel.refresh(client: client)
+                if let topic = topicsModel.selectedTopicID {
+                    await topicsModel.chatModel(for: topic).manualRefresh(client: client)
+                }
+            }
         } else {
             streamGen += 1
             Task { await refresh() }
@@ -8307,13 +8369,14 @@ struct SettingsView: View {
                 }
             }
             glyphDivider
-            // "omp agents open in": Chat (default) or Terminal (#481). The page's switch
-            // overrides it per agent for the session.
+            // "omp agents open in": Chat (default), Topics or Terminal (#481). The page's switch
+            // overrides it per agent for the session; an agent without topics opens Topics as Chat.
             glyphRow("omp agents open in", systemImage: "bubble.left.and.bubble.right",
                      subtitle: "Claude Code and Codex agents always open in the terminal.") {
-                menuPicker("omp agents open in", value: ompOpensIn == ChatPreference.terminal ? "Terminal" : "Chat",
+                menuPicker("omp agents open in", value: ompOpensInLabel,
                            identifier: "settings-omp-opens-in") {
                     Picker("omp agents open in", selection: $ompOpensIn) {
+                        Text("Topics").tag(ChatPreference.topics)
                         Text("Chat").tag(ChatPreference.chat)
                         Text("Terminal").tag(ChatPreference.terminal)
                     }
@@ -8321,6 +8384,14 @@ struct SettingsView: View {
             }
             glyphDivider
             previewsRow
+        }
+    }
+
+    private var ompOpensInLabel: String {
+        switch ompOpensIn {
+        case ChatPreference.terminal: return "Terminal"
+        case ChatPreference.topics: return "Topics"
+        default: return "Chat"
         }
     }
 
