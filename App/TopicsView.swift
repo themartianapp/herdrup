@@ -244,15 +244,19 @@ final class TopicsModel: ObservableObject {
 struct TopicStatusPill: View {
     let topic: AgentTopic
 
-    private var label: String? {
+    /// The status as words ("Working", "Closed · 2 queued"), nil for a state this app does not
+    /// know. Also the topic row's accessibility value.
+    static func text(for topic: AgentTopic) -> String? {
+        let label: String
         switch topic.state {
-        case .starting: return "Starting"
-        case .running: return "Working"
-        case .idle: return "Idle"
-        case .dead: return "Stopped"
-        case .closed: return "Closed"
+        case .starting: label = "Starting"
+        case .running: label = "Working"
+        case .idle: label = "Idle"
+        case .dead: label = "Stopped"
+        case .closed: label = "Closed"
         case .unknown: return nil
         }
+        return topic.queued > 0 ? "\(label) · \(topic.queued) queued" : label
     }
 
     private var dot: Color? {
@@ -265,8 +269,7 @@ struct TopicStatusPill: View {
     }
 
     var body: some View {
-        if let label {
-            let text = topic.queued > 0 ? "\(label) · \(topic.queued) queued" : label
+        if let text = Self.text(for: topic) {
             if let dot {
                 HStack(spacing: 5) {
                     Circle().fill(dot).frame(width: 6, height: 6)
@@ -548,7 +551,12 @@ private struct TopicsList: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityElement(children: .combine)
+        // The title is the row's name; its status and last activity are its value.
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(topic.title.isEmpty ? "Untitled topic" : topic.title)
+        .accessibilityValue([TopicStatusPill.text(for: topic), topic.lastActivity]
+            .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", "))
         .accessibilityIdentifier("topic-row-\(topic.id)")
         .stableContextMenu {
             StableMenuItem("Rename…", systemImage: "pencil") {

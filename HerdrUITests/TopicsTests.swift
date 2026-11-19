@@ -73,8 +73,10 @@ final class TopicsTests: XCTestCase {
         XCTAssertTrue(diokan.exists(within: 8), "the topics should load")
         XCTAssertTrue(row("t-board", in: app).exists)
         XCTAssertTrue(row("t-nippon", in: app).exists, "a closed topic is still listed")
-        XCTAssertTrue(diokan.label.contains("Working"), "a running topic says so: \(diokan.label)")
-        XCTAssertTrue(row("t-nippon", in: app).label.contains("Closed"))
+        XCTAssertEqual(diokan.label, "Diokan term sheet", "the row is named by its title")
+        XCTAssertTrue((diokan.value as? String ?? "").hasPrefix("Working"),
+                      "a running topic says so: \(String(describing: diokan.value))")
+        XCTAssertTrue((row("t-nippon", in: app).value as? String ?? "").hasPrefix("Closed"))
         XCTAssertLessThan(app.buttons["topics-inbox-row"].frame.minY, diokan.frame.minY, "the Inbox comes first")
         XCTAssertLessThan(diokan.frame.minY, row("t-board", in: app).frame.minY, "newest activity first")
         XCTAssertLessThan(row("t-board", in: app).frame.minY, row("t-nippon", in: app).frame.minY,
@@ -96,6 +98,26 @@ final class TopicsTests: XCTestCase {
         let field = app.textViews["topic-composer-input"]
         XCTAssertTrue(field.exists(within: 8))
         field.tap()
+        // The Topics view is drawn over the page's (hidden) composer with a negative bottom
+        // padding: its own composer must still clear the keyboard, once, not twice.
+        let keyboard = app.keyboards.firstMatch
+        XCTAssertTrue(keyboard.exists(within: 5), "focusing the topic composer brings up the keyboard")
+        let window = app.windows.firstMatch.frame
+        XCTAssertTrue(poll(5, every: 0.3) { field.isHittable }, "the composer stays reachable over the keyboard")
+        _ = poll(3, every: 0.3) { field.frame.maxY <= keyboard.frame.minY + 1 }
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "topics-composer-keyboard"
+        shot.lifetime = .keepAlways
+        add(shot)
+        if isPad {
+            XCTAssertLessThanOrEqual(field.frame.maxY, window.maxY,
+                                     "the composer is on screen: \(field.frame) in \(window)")
+            XCTAssertGreaterThanOrEqual(field.frame.minY, window.minY,
+                                        "the composer is not shifted off the top: \(field.frame) in \(window)")
+        } else {
+            XCTAssertLessThanOrEqual(field.frame.maxY, keyboard.frame.minY + 1,
+                                     "the composer sits above the keyboard: \(field.frame) vs \(keyboard.frame)")
+        }
         field.typeText("Add the second lender")
         app.buttons["topic-send-button"].tap()
         let sent = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Add the second lender"))
@@ -153,26 +175,26 @@ final class TopicsTests: XCTestCase {
         let close = app.buttons["Close"]
         XCTAssertTrue(close.exists(within: 6), "the row's menu should offer Close")
         close.tap()
-        XCTAssertTrue(poll(8, every: 0.3) { board.label.contains("Closed") }, "the topic closes: \(board.label)")
+        XCTAssertTrue(poll(8, every: 0.3) { (board.value as? String ?? "").hasPrefix("Closed") },
+                      "the topic closes: \(String(describing: board.value))")
 
         board.press(forDuration: 1.0)
         let reopen = app.buttons["Reopen"]
         XCTAssertTrue(reopen.exists(within: 6), "a closed topic offers Reopen")
         reopen.tap()
-        XCTAssertTrue(poll(8, every: 0.3) { board.label.contains("Idle") }, "the topic reopens: \(board.label)")
+        XCTAssertTrue(poll(8, every: 0.3) { (board.value as? String ?? "").hasPrefix("Idle") },
+                      "the topic reopens: \(String(describing: board.value))")
 
         board.press(forDuration: 1.0)
         let rename = app.buttons["Rename…"]
         XCTAssertTrue(rename.exists(within: 6))
         rename.tap()
-        let field = app.textFields["topics-rename-field"]
+        let field = app.alerts.firstMatch.textFields.firstMatch
         XCTAssertTrue(field.exists(within: 6))
-        field.tap()
-        // Clear the current title, then type the new one.
-        field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 20))
-        field.typeText("Board pack Q4")
+        field.clearAndType("Board pack Q4")
+        XCTAssertEqual(field.value as? String, "Board pack Q4", "the field holds only the new title")
         app.alerts.buttons["Rename"].tap()
-        XCTAssertTrue(poll(8, every: 0.3) { board.label.contains("Board pack Q4") }, "renamed: \(board.label)")
+        XCTAssertTrue(poll(8, every: 0.3) { board.label == "Board pack Q4" }, "renamed: \(board.label)")
     }
 
     /// `topics_unreachable` keeps the last list on screen and says the agent can't be reached.

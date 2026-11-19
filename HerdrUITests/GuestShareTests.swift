@@ -282,13 +282,3 @@ final class GuestShareTests: XCTestCase {
         shoot("guest-gram-owner-guest-toggle")
     }
 }
-
-private extension XCUIElement {
-    func clearAndType(_ text: String) {
-        tap()
-        if let current = value as? String, !current.isEmpty {
-            typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
-        }
-        typeText(text)
-    }
-}
