@@ -41,6 +41,9 @@ import urllib.request
 import zipfile
 
 RELAY = "https://guest.herdrup.app"
+# Cloudflare's Browser Integrity Check answers 403 (error 1010) to urllib's default
+# "Python-urllib/3.x" user agent before the request reaches the Worker, so name the tool.
+USER_AGENT = "herdrup-symbolicate/1"
 REPO = "themartianapp/herdrup"
 CPU = {0x0100000C: "arm64", 0x01000007: "x86_64", 0x0200000C: "arm64_32"}
 ARM64E = 2  # cpusubtype of arm64e
@@ -221,7 +224,7 @@ def render(report, dsyms, tool):
 
 
 def admin_get(relay, path, token):
-    request = urllib.request.Request(relay + path, headers={"Authorization": "Bearer " + token})
+    request = urllib.request.Request(relay + path, headers={"Authorization": "Bearer " + token, "User-Agent": USER_AGENT})
     with urllib.request.urlopen(request, timeout=60) as response:
         return response.read()
 
