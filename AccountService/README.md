@@ -78,8 +78,10 @@ Bodies are capped at 8 KB and ID tokens at 4 KB.
 | `DB` | D1 | `herdrup-accounts`, EU jurisdiction, id in `wrangler.toml` |
 | `APPLE_APP_CLIENT_ID` | var | `com.jerryfane.herdr` |
 | `APPLE_WEB_CLIENT_ID` | var | `com.jerryfane.herdr.signin` (the Services ID) |
-| `GOOGLE_IOS_CLIENT_ID`, `GOOGLE_WEB_CLIENT_ID` | var | from Google Cloud; while both are empty Google sign-in answers 500 `not_configured` |
+| `GOOGLE_IOS_CLIENT_ID` | var | `552913387875-ujv6unveo5qtmmbnapogekc5jl8h6olk.apps.googleusercontent.com` (Google Cloud project `themartianapp`; bundle `com.jerryfane.herdr`, team `FXQ5Z9HHY6`) |
+| `GOOGLE_WEB_CLIENT_ID` | var | `552913387875-0te8j0cm9tmt5ifai9m8nlc1igdhi844.apps.googleusercontent.com` (same project; redirect `https://accounts.herdrup.app/v1/auth/web/google/callback`) |
 | `ACCOUNT_HMAC_KEY` | secret | 32 random bytes, standard base64 |
+| `GOOGLE_WEB_CLIENT_SECRET` | secret | the web client's secret, pasted by the owner; first read by the web sign-in flow (a later step) |
 
 `ACCOUNT_HMAC_KEY` keys the nonces and the identity hashes. **Losing it orphans every account**
 (no sign-in finds its account again), so keep a copy outside Cloudflare. Never rotate it in
@@ -102,9 +104,10 @@ Before the first deploy, once:
 ```sh
 npx wrangler d1 migrations apply herdrup-accounts --remote
 openssl rand -base64 32 | tr -d '\n' | npx wrangler secret put ACCOUNT_HMAC_KEY   # and keep a copy (above)
+npx wrangler secret put GOOGLE_WEB_CLIENT_SECRET                                  # paste it when asked
 ```
 
-Then fill in the Google client ids in `wrangler.toml` and `npx wrangler deploy`. The deploy
+Then `npx wrangler deploy`. The deploy
 attaches `accounts.herdrup.app` (`custom_domain = true`); the `herdrup.app` zone must be on the
 deploying account. Later migrations go through `wrangler d1 migrations apply … --remote` before
 the deploy that needs them.

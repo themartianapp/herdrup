@@ -743,8 +743,8 @@ Nothing here is done by an agent; no secrets have been created.
 
 ### Google Cloud
 
-5. **[PR1] Project and consent screen** (owner decision: the existing Google Cloud project
-   **`themartianapp`**, app name **TheMartian**):
+5. **[PR1] Project and consent screen: DONE** (19 Nov; owner decision: the existing Google Cloud
+   project **`themartianapp`**, app name **TheMartian**, now In production):
    1. Project `themartianapp` → Google Auth Platform → **Branding**:
       - App name TheMartian, support email, logo;
       - App domain `https://herdrup.app`;
@@ -753,18 +753,20 @@ Nothing here is done by an agent; no secrets have been created.
    2. **Audience:** External → **Publish app** (In production).
    3. **Data access:** scopes `openid` and `.../auth/userinfo.email` only. Both are non-sensitive,
       so no Google security review is needed; a logo needs brand verification.
-6. **[PR1] iOS client:** Clients → Create → iOS.
-   - Bundle ID `com.jerryfane.herdr`; Team ID `FXQ5Z9HHY6`; App Store ID optional.
-   - Copy the **client ID** → `wrangler.toml` `GOOGLE_IOS_CLIENT_ID`, and into the app config in
-     PR5. PR5 also adds its reversed form `com.googleusercontent.apps.<…>` as a URL scheme next
-     to `herdrup` in project.yml.
+6. **[PR1] iOS client: DONE** (19 Nov), in project `themartianapp`: bundle ID
+   `com.jerryfane.herdr`, team ID `FXQ5Z9HHY6`.
+   - Client ID `552913387875-ujv6unveo5qtmmbnapogekc5jl8h6olk.apps.googleusercontent.com`, in
+     `wrangler.toml` `GOOGLE_IOS_CLIENT_ID` (PR1). PR5 puts it in the app config and adds its
+     reversed form `com.googleusercontent.apps.552913387875-ujv6unveo5qtmmbnapogekc5jl8h6olk` as a
+     URL scheme next to `herdrup` in project.yml.
    - There is no secret.
-7. **[PR1] Web client:** Clients → Create → Web application, name "HerdrUp accounts".
-   - Authorized redirect URI: `https://accounts.herdrup.app/v1/auth/web/google/callback`.
-     JavaScript origins: none.
-   - Copy the **client ID** → `GOOGLE_WEB_CLIENT_ID`.
-   - **Client secret** → keyring `HERDRUP_GOOGLE_WEB_CLIENT_SECRET`, and
-     `wrangler secret put GOOGLE_WEB_CLIENT_SECRET`.
+7. **[PR1] Web client: DONE** (19 Nov), in project `themartianapp`, redirect URI
+   `https://accounts.herdrup.app/v1/auth/web/google/callback`.
+   - Client ID `552913387875-0te8j0cm9tmt5ifai9m8nlc1igdhi844.apps.googleusercontent.com`, in
+     `wrangler.toml` `GOOGLE_WEB_CLIENT_ID` (PR1).
+   - **Client secret:** nobody else has read it. The owner pastes it into the Worker secret
+     `GOOGLE_WEB_CLIENT_SECRET` at the first deploy (`npx wrangler secret put GOOGLE_WEB_CLIENT_SECRET`).
+     PR5's web flow is the first code that reads it.
 
 ### Cloudflare (the account that holds `herdrup.app` and `herdrup-guest`)
 
@@ -803,9 +805,9 @@ Nothing here is done by an agent; no secrets have been created.
 | Services ID | No | `APPLE_WEB_CLIENT_ID` var |
 | SIWA Key ID | No | `APPLE_KEY_ID` var |
 | SIWA .p8 | **Yes** | Worker secret `APPLE_SIWA_P8` (pasted once) |
-| Google iOS client ID | No | `GOOGLE_IOS_CLIENT_ID` var + app config |
-| Google web client ID | No | `GOOGLE_WEB_CLIENT_ID` var |
-| Google web client secret | **Yes** | keyring `HERDRUP_GOOGLE_WEB_CLIENT_SECRET` + Worker secret `GOOGLE_WEB_CLIENT_SECRET` |
+| Google iOS client ID | No | `GOOGLE_IOS_CLIENT_ID` var (`552913387875-ujv6unveo5qtmmbnapogekc5jl8h6olk.apps.googleusercontent.com`) + app config |
+| Google web client ID | No | `GOOGLE_WEB_CLIENT_ID` var (`552913387875-0te8j0cm9tmt5ifai9m8nlc1igdhi844.apps.googleusercontent.com`) |
+| Google web client secret | **Yes** | Worker secret `GOOGLE_WEB_CLIENT_SECRET`, pasted by the owner at the first deploy |
 | D1 `database_id` | No | `wrangler.toml` |
 | `ACCOUNT_HMAC_KEY` | **Yes** | keyring `HERDRUP_ACCOUNTS_HMAC_KEY` + Worker secret |
 | `STATEMENT_SIGNING_KEY` | **Yes** | Worker secret only |

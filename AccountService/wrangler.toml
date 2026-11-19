@@ -56,16 +56,20 @@ simple = { limit = 120, period = 60 }
 crons = ["17 * * * *"]
 
 # Public identifiers only. The ID tokens' audiences: Sign in with Apple's App ID (native) and
-# Services ID (web, used from a later step); the Google iOS and web client ids, which the owner
-# creates in Google Cloud and fills in here. Empty Google ids leave Google sign-in answering
+# Services ID (web, used from a later step); the Google iOS client (bundle com.jerryfane.herdr,
+# team FXQ5Z9HHY6) and web client (redirect .../v1/auth/web/google/callback), both in the
+# Google Cloud project themartianapp. An empty Google id leaves Google sign-in answering
 # 500 not_configured.
 [vars]
 APPLE_APP_CLIENT_ID = "com.jerryfane.herdr"
 APPLE_WEB_CLIENT_ID = "com.jerryfane.herdr.signin"
-GOOGLE_IOS_CLIENT_ID = ""
-GOOGLE_WEB_CLIENT_ID = ""
+GOOGLE_IOS_CLIENT_ID = "552913387875-ujv6unveo5qtmmbnapogekc5jl8h6olk.apps.googleusercontent.com"
+GOOGLE_WEB_CLIENT_ID = "552913387875-0te8j0cm9tmt5ifai9m8nlc1igdhi844.apps.googleusercontent.com"
 
 # Secrets (wrangler secret put), never in this file:
 #   ACCOUNT_HMAC_KEY   32 random bytes, standard base64. Keys the sign-in nonces and the stored
 #                      hash of each provider's user id. Losing it orphans every account, so the
 #                      owner keeps a copy in the keyring (README "Deploy").
+#   GOOGLE_WEB_CLIENT_SECRET  the Google web client's secret; the owner pastes it at the first
+#                      deploy. Nothing in this step reads it: the web sign-in flow (step 5) is
+#                      its first user.
