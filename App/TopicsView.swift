@@ -388,13 +388,23 @@ private struct TopicsList: View {
         }
     }
 
-    private struct Section: Identifiable {
-        let id: String
-        let topics: [AgentTopic]
+    /// One line of the list: a section heading or a topic. Flat, with each topic keyed by its
+    /// own id whatever section it is in: with nested per-section ForEach, a topic that moved
+    /// section (closed, reopened) kept drawing its old row in the lazy stack.
+    private enum Line: Identifiable {
+        case heading(String)
+        case topic(AgentTopic)
+
+        var id: String {
+            switch self {
+            case .heading(let title): return "heading:" + title
+            case .topic(let topic): return "topic:" + topic.id
+            }
+        }
     }
 
     /// Open topics by day (Today, This week, Earlier), then Closed.
-    private var sections: [Section] {
+    private var lines: [Line] {
         let calendar = Calendar.current
         let now = GramDates.clockNow()
         let startOfToday = calendar.startOfDay(for: now)
@@ -410,9 +420,9 @@ private struct TopicsList: View {
             else if date >= weekAgo { week.append(topic) }
             else { earlier.append(topic) }
         }
-        return [Section(id: "Today", topics: today), Section(id: "This week", topics: week),
-                Section(id: "Earlier", topics: earlier), Section(id: "Closed", topics: closed)]
-            .filter { !$0.topics.isEmpty }
+        return [("Today", today), ("This week", week), ("Earlier", earlier), ("Closed", closed)]
+            .filter { !$0.1.isEmpty }
+            .flatMap { title, topics in [Line.heading(title)] + topics.map(Line.topic) }
     }
 
     var body: some View {
@@ -449,14 +459,18 @@ private struct TopicsList: View {
                 .accessibilityIdentifier("topics-problem")
             }
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 0) {
                     inboxRow
-                    ForEach(sections) { section in
-                        Text(section.id.uppercased())
-                            .font(Typography.microLabel).tracking(1)
-                            .foregroundStyle(Palette.textFaint)
-                            .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 4)
-                        ForEach(section.topics) { topic in row(topic) }
+                    ForEach(lines) { line in
+                        switch line {
+                        case .heading(let title):
+                            Text(title.uppercased())
+                                .font(Typography.microLabel).tracking(1)
+                                .foregroundStyle(Palette.textFaint)
+                                .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 4)
+                        case .topic(let topic):
+                            row(topic)
+                        }
                     }
                     if model.loaded && model.topics.isEmpty && model.problem == nil {
                         Text("No topics yet. A topic is a lasting line of work with its own conversation.")

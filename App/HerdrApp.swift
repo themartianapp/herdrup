@@ -6091,6 +6091,11 @@ struct TerminalPaneContent: View {
                     .frame(height: bottomChromeHeight + ComposerStyle.restingHeight
                         + Self.replyBarTopPadding + Self.replyBarBottomPadding)
                     .overlay(alignment: .bottom) {
+                        // Under Topics the page's composer is not drawn at all (its slot keeps
+                        // its height, so the terminal keeps its size): a hidden UIKit text view
+                        // there sat right under the topic's composer, above the keyboard, and
+                        // took its touches and its accessibility hit-test.
+                        if !showingTopics {
                         VStack(spacing: 0) {
                             VStack(spacing: 0) {
                                 if let note = actionNote {
@@ -6122,11 +6127,7 @@ struct TerminalPaneContent: View {
                         // Opaque, so rows the composer grows over do not show through the
                         // gaps between the keycaps and around the card.
                         .background(Palette.groundMachine)
-                        // Under Topics: invisible (so out of accessibility) and untouchable, with
-                        // no accessibility modifier, which would make this stack one element and
-                        // hand it the composer card's identifier and the column's frame.
-                        .opacity(showingTopics ? 0 : 1)
-                        .allowsHitTesting(!showingTopics)
+                        }
                     }
             }
         }

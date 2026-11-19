@@ -192,11 +192,13 @@ struct GuestPaneView: View {
                 }
             }
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { terminalHeight = $0 }
-            // Under Topics: invisible and untouchable, with no accessibility modifier (which
-            // would turn the block into one element carrying its composer's identifier).
-            bottomBlock
-                .opacity(showingTopics ? 0 : 1)
-                .allowsHitTesting(!showingTopics)
+            // Under Topics the page's composer is not drawn, only its slot (so the terminal
+            // keeps its size): a hidden text view there took the topic composer's touches.
+            if showingTopics {
+                Color.clear.frame(height: bottomChromeHeight + ComposerStyle.restingHeight + 8)
+            } else {
+                bottomBlock
+            }
         }
         .background(pageGround.ignoresSafeArea())
         .overlay { EdgeSwipeBack { onClose() } }
