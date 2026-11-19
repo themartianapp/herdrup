@@ -31,30 +31,35 @@ with the same nonce. The Worker checks the token against the provider's publishe
 - signature: RS256 only, key by `kid` from `https://appleid.apple.com/auth/keys` or
   `https://www.googleapis.com/oauth2/v3/certs`, cached in memory (src/jwks.ts);
 - `iss`; `aud` is one of our client ids (Apple: the App ID and the Services ID; Google: the iOS
-  and web client ids); Google's `azp`, when present, equals `aud`;
+  and web client ids); `azp`, when present, is also one of our client ids, checked on its own
+  (Google's cross-client flow has `aud` = web client, `azp` = iOS client);
 - `exp` not passed, `iat` not in the future and at most 10 minutes old (60 s skew);
 - `nonce` equals the one posted, which this Worker issued, hasn't expired and wasn't spent.
 
 **Sessions.** `a1.<session>.<secret>` access tokens last 1 hour; `r1.<session>.<secret>` refresh
-tokens 90 days from their last use. Each refresh rotates both in one conditional D1 `UPDATE`,
-so when two refreshes race with the same token the first wins and the second finds a token
-already rotated away. Presenting a rotated-away refresh token is treated as theft: the whole
-session ends, for every holder. Clients must refresh one at a time.
+tokens 90 days from their last use. A refresh is one D1 batch (a transaction): it records the
+old refresh token as spent, rotates both tokens and marks the account seen, or does none of
+these. When two refreshes race with the same token the first wins and the second finds it
+spent. Presenting any refresh token the session ever rotated away is treated as theft: the
+whole session ends, for every holder. Clients must refresh one at a time. The design behind
+this Worker and the steps after it is in [DESIGN.md](DESIGN.md).
 
 ## Privacy
 
 - **Stored:** an account id (16 random bytes) with its creation time and last-seen day; for each
   sign-in identity, `HMAC-SHA256(key, "<provider>|<sub>")`, never the provider's user id itself;
-  each session's SHA-256 token hashes, platform and times; the SHA-256 of spent nonces until they
-  expire. **Never stored:** names, emails, ID tokens, tokens in the clear.
+  each session's SHA-256 token hashes, platform and times, and the SHA-256 of each refresh token
+  it rotated away until that token's own expiry; the SHA-256 of spent nonces until they expire.
+  **Never stored:** names, emails, ID tokens, tokens in the clear.
 - **Email:** Apple is asked for nothing. Google's email is read from the ID token and handed back
   once as `display_hint`, then dropped.
 - **Logs:** a log line is `{endpoint, outcome}`, written only for `not_configured`,
   `rate_limited`, `keys_unavailable` and `internal_error`. Never tokens, nonces, provider ids or
   their hashes, emails, account or session ids, IPs, bodies or URLs. `wrangler.toml` turns off
   Workers Logs (including invocation logs), traces and Logpush.
-- **Retention:** spent nonces go at their expiry, sessions when their refresh token expires,
-  and accounts not seen for 24 months, with their identities and sessions (hourly cron).
+- **Retention:** spent nonces and spent refresh tokens go at their own expiry, sessions when
+  their refresh token expires, and accounts not seen for 24 months, with their identities and
+  sessions (hourly cron).
   D1 Time Travel keeps point-in-time history for 7 days on Workers Free (30 on Paid).
 
 ## Limits

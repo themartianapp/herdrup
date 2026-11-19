@@ -2,7 +2,8 @@
 // provider's JWKS. The signature is checked before any claim is trusted. Then:
 //   iss  the provider's issuer;
 //   aud  one of our client ids (a single string, never an array);
-//   azp  equal to aud when present (Google);
+//   azp  when present, also one of our client ids, checked on its own: Google's cross-client
+//        flow gives aud = the web client and azp = the iOS client that asked;
 //   exp  in the future, iat not in the future and at most 10 minutes old (60 s skew each way);
 //   nonce present (the caller compares it with the nonce it issued);
 //   sub  1..255 characters.
@@ -43,6 +44,7 @@ export type IdTokenFailure =
   | "bad_signature"
   | "wrong_issuer"
   | "wrong_audience"
+  | "wrong_presenter"
   | "expired"
   | "issued_in_future"
   | "too_old"
@@ -89,7 +91,9 @@ export async function verifyIdToken(token: string, config: ProviderConfig, nowMs
   const { iss, aud, azp, exp, iat, nonce, sub, email } = payload;
   if (typeof iss !== "string" || !config.issuers.includes(iss)) return fail("wrong_issuer");
   if (typeof aud !== "string" || !config.audiences.includes(aud)) return fail("wrong_audience");
-  if (azp !== undefined && azp !== aud) return fail("wrong_audience");
+  // The presenters we accept are our own client ids, the same list as the audiences, but azp
+  // need not equal aud (https://developers.google.com/identity/openid-connect/openid-connect#obtainuserinfo).
+  if (azp !== undefined && (typeof azp !== "string" || !config.audiences.includes(azp))) return fail("wrong_presenter");
   if (typeof exp !== "number" || typeof iat !== "number") return fail("malformed");
   if (exp * 1000 <= nowMs - SKEW_MS) return fail("expired");
   if (iat * 1000 > nowMs + SKEW_MS) return fail("issued_in_future");

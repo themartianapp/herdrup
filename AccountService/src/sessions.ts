@@ -5,12 +5,14 @@
 // The session id is 16 random bytes and each secret 32, all base64url. A sessions row keeps
 // only the SHA-256 (hex) of each secret, so a copy of the database holds no usable token.
 //
-// One row is one session family. Refreshing rotates both tokens in a single conditional
-// UPDATE, so D1, which runs one statement at a time, decides every race: of two refreshes
-// with the same token, the first changes the row and gets the new pair, and the second
-// changes nothing. A refresh token that was already rotated away (it matches
-// prev_refresh_hash) is treated as stolen: the row is deleted, which ends every token of the
-// family. There is no grace window, so clients refresh one at a time.
+// One row is one session family. Refreshing rotates both tokens, records the old refresh
+// token in spent_refresh_tokens and marks the account seen, all in one D1 batch, which is a
+// transaction: if any statement fails, none of them happened and the presented token still
+// works. D1 runs one batch at a time, so it decides every race: of two refreshes with the
+// same token, the first rotates it and the second finds it spent. Any refresh token the
+// session ever rotated away (and that has not expired on its own) is treated as stolen when
+// presented again: the session row is deleted, which ends every token of the family. There
+// is no grace window, so clients refresh one at a time.
 import { randomB64url, sameString, sha256Hex } from "./bytes";
 
 export const ACCESS_TTL_MS = 60 * 60 * 1000;
@@ -92,22 +94,41 @@ export async function refreshSession(db: D1Database, refreshToken: string, nowMs
   const [, sessionId, secret] = match;
   const presented = await sha256Hex(secret);
   const minted = await mint(sessionId);
-  const rotated = await db
+  // The three statements share one condition: the presented token is the session's current,
+  // unexpired one. The spent row is written first, while the row still holds the old expiry;
+  // the account touch runs last and finds the session by its new hash.
+  const [, rotation] = await db.batch<{ account_id: string }>([
+    db
+      .prepare(
+        `INSERT INTO spent_refresh_tokens (session_id, token_hash, exp_ms)
+         SELECT id, refresh_hash, refresh_exp_ms FROM sessions WHERE id = ?1 AND refresh_hash = ?2 AND refresh_exp_ms > ?3`,
+      )
+      .bind(sessionId, presented, nowMs),
+    db
+      .prepare(
+        `UPDATE sessions
+            SET access_hash = ?1, access_exp_ms = ?2, refresh_hash = ?3, refresh_exp_ms = ?4
+          WHERE id = ?5 AND refresh_hash = ?6 AND refresh_exp_ms > ?7
+        RETURNING account_id`,
+      )
+      .bind(minted.accessHash, nowMs + ACCESS_TTL_MS, minted.refreshHash, nowMs + REFRESH_TTL_MS, sessionId, presented, nowMs),
+    db
+      .prepare(
+        `UPDATE accounts SET last_seen_day = ?1
+          WHERE id = (SELECT account_id FROM sessions WHERE id = ?2 AND refresh_hash = ?3) AND last_seen_day < ?1`,
+      )
+      .bind(dayOf(nowMs), sessionId, minted.refreshHash),
+  ]);
+  const rotated = rotation.results[0];
+  if (rotated !== undefined) return { ok: true, tokens: pair(rotated.account_id, minted) };
+  // Not the current token. If the session ever rotated it away, someone else holds the
+  // family's current token: end the whole session.
+  const revoked = await db
     .prepare(
-      `UPDATE sessions
-          SET access_hash = ?1, access_exp_ms = ?2, refresh_hash = ?3, refresh_exp_ms = ?4, prev_refresh_hash = refresh_hash
-        WHERE id = ?5 AND refresh_hash = ?6 AND refresh_exp_ms > ?7
-      RETURNING account_id`,
+      "DELETE FROM sessions WHERE id = ?1 AND EXISTS (SELECT 1 FROM spent_refresh_tokens WHERE session_id = ?1 AND token_hash = ?2)",
     )
-    .bind(minted.accessHash, nowMs + ACCESS_TTL_MS, minted.refreshHash, nowMs + REFRESH_TTL_MS, sessionId, presented, nowMs)
-    .first<{ account_id: string }>();
-  if (rotated !== null) {
-    await touchAccount(db, rotated.account_id, nowMs).run();
-    return { ok: true, tokens: pair(rotated.account_id, minted) };
-  }
-  // Not the current token. If it is the one rotated away, someone else holds the family's
-  // current token: end the whole session.
-  const revoked = await db.prepare("DELETE FROM sessions WHERE id = ? AND prev_refresh_hash = ?").bind(sessionId, presented).run();
+    .bind(sessionId, presented)
+    .run();
   return { ok: false, error: revoked.meta.changes > 0 ? "session_revoked" : "invalid_token" };
 }
 

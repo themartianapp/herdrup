@@ -17,7 +17,7 @@ import { errorResponse, json, log, readJsonObject, type Endpoint } from "./http"
 import { APPLE_ISSUER, APPLE_JWKS, GOOGLE_ISSUERS, GOOGLE_JWKS, verifyIdToken, type ProviderConfig } from "./idtoken";
 import { serviceKeys, subjectHash, type Provider, type ServiceKeys } from "./keys";
 import { issueNonce, openNonce, spendNonce } from "./nonce";
-import { authenticate, openSession, PLATFORMS, refreshSession, type Platform, type Principal } from "./sessions";
+import { authenticate, dayOf, openSession, PLATFORMS, refreshSession, type Platform, type Principal } from "./sessions";
 
 /** Largest sign-in or refresh body: an ID token is ~1 KB, and verifyIdToken refuses past 4 KB. */
 export const MAX_AUTH_BODY_BYTES = 8192;
@@ -95,9 +95,11 @@ export async function handleSignIn(request: Request, env: Env, provider: Provide
 /**
  * The account for this identity, made on first sign-in. Two first sign-ins racing for the
  * same identity both insert an account, but only one identity row lands; the loser deletes
- * its account and uses the winner's.
+ * its account and uses the winner's. A new account is seen today from its first statement,
+ * so the hourly cleanup can never take it between creation and its first session.
+ * Exported for its tests.
  */
-async function findOrCreateAccount(
+export async function findOrCreateAccount(
   db: D1Database,
   provider: Provider,
   hash: string,
@@ -108,7 +110,7 @@ async function findOrCreateAccount(
   if (existing !== null) return { accountId: existing.account_id, created: false };
   const accountId = randomB64url(16);
   await db.batch([
-    db.prepare("INSERT INTO accounts (id, created_ms, last_seen_day) VALUES (?, ?, 0)").bind(accountId, nowMs),
+    db.prepare("INSERT INTO accounts (id, created_ms, last_seen_day) VALUES (?, ?, ?)").bind(accountId, nowMs, dayOf(nowMs)),
     db
       .prepare("INSERT INTO identities (provider, subject_hash, account_id, created_ms) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING")
       .bind(provider, hash, accountId, nowMs),

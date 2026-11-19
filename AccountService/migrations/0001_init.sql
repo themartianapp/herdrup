@@ -26,8 +26,7 @@ CREATE TABLE identities (
 CREATE INDEX identities_account ON identities (account_id);
 
 -- One row per session family: every rotation of its refresh token updates this row.
--- Hashes are SHA-256 hex of the tokens' 32 random bytes. prev_refresh_hash is the refresh
--- token rotated away last; presenting it again revokes the session (theft).
+-- Hashes are SHA-256 hex of the tokens' 32 random bytes.
 CREATE TABLE sessions (
   id TEXT PRIMARY KEY,
   account_id TEXT NOT NULL REFERENCES accounts (id) ON DELETE CASCADE,
@@ -35,13 +34,24 @@ CREATE TABLE sessions (
   access_exp_ms INTEGER NOT NULL,
   refresh_hash TEXT NOT NULL,
   refresh_exp_ms INTEGER NOT NULL,
-  prev_refresh_hash TEXT,
   platform TEXT NOT NULL,
   created_ms INTEGER NOT NULL
 ) STRICT;
 
 CREATE INDEX sessions_account ON sessions (account_id, created_ms);
 CREATE INDEX sessions_refresh_exp ON sessions (refresh_exp_ms);
+
+-- Every refresh token a session rotated away, by SHA-256 hex, until the token's own expiry
+-- (exp_ms): presenting any of them again revokes the session (theft). Past that expiry the
+-- token is refused as expired anyway, so the hourly cleanup drops the row.
+CREATE TABLE spent_refresh_tokens (
+  session_id TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL,
+  exp_ms INTEGER NOT NULL,
+  PRIMARY KEY (session_id, token_hash)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX spent_refresh_tokens_exp ON spent_refresh_tokens (exp_ms);
 
 -- Nonces already spent on a sign-in, by SHA-256 hex, until they would have expired anyway.
 CREATE TABLE used_nonces (

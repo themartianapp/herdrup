@@ -1,6 +1,7 @@
 import { SELF, env } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
-import { b64url, utf8 } from "../src/bytes";
+import { findOrCreateAccount } from "../src/auth";
+import { b64url, randomB64url, utf8 } from "../src/bytes";
 import { cleanup, INACTIVE_ACCOUNT_DAYS } from "../src/cleanup";
 import { serviceKeys } from "../src/keys";
 import { issueNonce } from "../src/nonce";
@@ -205,9 +206,17 @@ describe("ID token checks", () => {
     expect(result).toEqual({ status: 401, error: "token_invalid", reason });
   });
 
-  it("refuses a Google token whose azp is another client", async () => {
-    const result = await attempt("google", (nonce) => signIdToken(keys.google, googleClaims(freshSub(), nonce, { azp: GOOGLE_WEB_AUD })));
-    expect(result).toEqual({ status: 401, error: "token_invalid", reason: "wrong_audience" });
+  it("accepts Google's cross-client flow: aud is the web client, azp the iOS client", async () => {
+    const tokens = await signIn("google", freshSub(), { aud: GOOGLE_WEB_AUD, azp: GOOGLE_IOS_AUD });
+    expect(tokens.account_id).toMatch(/^[A-Za-z0-9_-]{22}$/);
+  });
+
+  it.each([
+    ["another project's client", "other.apps.googleusercontent.com"],
+    ["not a string", 7],
+  ])("refuses a Google token whose azp is %s", async (_name, azp) => {
+    const result = await attempt("google", (nonce) => signIdToken(keys.google, googleClaims(freshSub(), nonce, { azp })));
+    expect(result).toEqual({ status: 401, error: "token_invalid", reason: "wrong_presenter" });
   });
 
   it("refuses a Google-signed token at the Apple endpoint", async () => {
@@ -335,6 +344,36 @@ describe("sessions", () => {
     expect(await rejection(await refresh(first.refresh_token))).toEqual({ status: 401, error: "session_revoked" });
     expect(await rejection(await refresh(second.refresh_token))).toEqual({ status: 401, error: "invalid_token" });
     expect((await get("/v1/account", second.access_token)).status).toBe(401);
+  });
+
+  it("revokes the session when any earlier refresh token comes back, not just the last one", async () => {
+    const r0 = await signIn("apple");
+    const r1 = await (await refresh(r0.refresh_token)).json<Tokens>();
+    const r2 = await (await refresh(r1.refresh_token)).json<Tokens>();
+    expect(await rejection(await refresh(r0.refresh_token))).toEqual({ status: 401, error: "session_revoked" });
+    expect(await rejection(await refresh(r2.refresh_token))).toEqual({ status: 401, error: "invalid_token" });
+    expect((await get("/v1/account", r2.access_token)).status).toBe(401);
+  });
+
+  it("rotates and marks the account seen atomically: a failed refresh leaves the token usable", async () => {
+    const tokens = await signIn("apple");
+    await env.DB.prepare("UPDATE accounts SET last_seen_day = 5 WHERE id = ?").bind(tokens.account_id).run();
+    // Make the account touch fail, as a D1 error mid-refresh would.
+    const trigger = `fail_touch_${randomB64url(6).replace(/-/g, "_")}`;
+    await env.DB.prepare(
+      `CREATE TRIGGER ${trigger} BEFORE UPDATE OF last_seen_day ON accounts WHEN OLD.id = '${tokens.account_id}'
+       BEGIN SELECT RAISE(ABORT, 'touch failed'); END`,
+    ).run();
+    try {
+      expect(await rejection(await refresh(tokens.refresh_token))).toEqual({ status: 500, error: "internal_error" });
+    } finally {
+      await env.DB.prepare(`DROP TRIGGER ${trigger}`).run();
+    }
+    expect((await get("/v1/account", tokens.access_token)).status).toBe(200);
+    const retried = await refresh(tokens.refresh_token);
+    expect(retried.status).toBe(200);
+    const row = await env.DB.prepare("SELECT last_seen_day FROM accounts WHERE id = ?").bind(tokens.account_id).first<{ last_seen_day: number }>();
+    expect(row?.last_seen_day).toBe(dayOf(Date.now()));
   });
 
   it("lets the first of two racing refreshes win and revokes the session for the second", async () => {
@@ -468,5 +507,30 @@ describe("cleanup", () => {
     expect(await count("SELECT COUNT(*) AS n FROM sessions WHERE account_id = ?", expiredSession.account_id)).toBe(0);
     expect(await count("SELECT COUNT(*) AS n FROM accounts WHERE id = ?", expiredSession.account_id)).toBe(1);
     expect(await count("SELECT COUNT(*) AS n FROM used_nonces WHERE nonce_hash IN ('old', 'live')")).toBe(1);
+  });
+
+  it("drops spent refresh tokens past their own expiry and keeps the rest", async () => {
+    const now = Date.now();
+    const tokens = await signIn("apple");
+    const [, sessionId] = tokens.refresh_token.split(".");
+    await env.DB.prepare("INSERT INTO spent_refresh_tokens (session_id, token_hash, exp_ms) VALUES (?1, 'old', ?2), (?1, 'live', ?3)")
+      .bind(sessionId, now - 1, now + 60_000)
+      .run();
+    await cleanup(env.DB, now);
+    const { results } = await env.DB.prepare("SELECT token_hash FROM spent_refresh_tokens WHERE session_id = ?").bind(sessionId).all<{ token_hash: string }>();
+    expect(results.map((row) => row.token_hash)).toEqual(["live"]);
+  });
+
+  it("never takes a new account between its creation and its first session", async () => {
+    const now = Date.now();
+    const hash = randomB64url(32);
+    const { accountId, created } = await findOrCreateAccount(env.DB, "apple", hash, now);
+    expect(created).toBe(true);
+    await cleanup(env.DB, now);
+    const identity = await env.DB.prepare("SELECT account_id FROM identities WHERE provider = 'apple' AND subject_hash = ?")
+      .bind(hash)
+      .first<{ account_id: string }>();
+    expect(identity?.account_id).toBe(accountId);
+    expect(await findOrCreateAccount(env.DB, "apple", hash, now)).toEqual({ accountId, created: false });
   });
 });
