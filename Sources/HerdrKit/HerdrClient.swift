@@ -1966,17 +1966,23 @@ public actor HerdrClient {
     /// `before` pages back from an older page's cursor; `after` returns what was appended
     /// (or changed) since a page's `after` cursor; neither asks for the newest turns.
     /// `limit` counts turns and is clamped to the server's 1...50. `subagent` pages that
-    /// subagent's own conversation (a `TranscriptSubagent.id` with `hasTranscript`).
+    /// subagent's own conversation (a `TranscriptSubagent.id` with `hasTranscript`). `topic`
+    /// pages that topic's conversation (an `AgentTopic.id`); it is sent only to a server that
+    /// advertises `agent_topics`, and refused here as `.unsupported` otherwise, because an
+    /// older server would ignore it and answer with the agent's own conversation.
     ///
     /// The refusals the view acts on are typed (`AgentTranscriptError`); an older server
     /// that cannot deserialize the method reports `.unsupported` like a non-omp agent.
     public func agentTranscript(
         target: String, before: String? = nil, after: String? = nil, limit: UInt32? = nil,
-        subagent: String? = nil, heldFrom: String? = nil
+        subagent: String? = nil, heldFrom: String? = nil, topic: String? = nil
     ) async throws -> AgentTranscriptPage {
+        if topic != nil, !(await supports(\.agentTopics)) {
+            throw AgentTranscriptError.unsupported
+        }
         let params = AgentTranscriptParams(target: target, before: before, after: after,
                                            limit: limit.map { min(max($0, 1), 50) }, subagent: subagent,
-                                           heldFrom: heldFrom)
+                                           heldFrom: heldFrom, topic: topic)
         do {
             return try await call("agent.transcript", params, as: AgentTranscriptPage.self)
         } catch let error as APIError {
@@ -1986,12 +1992,85 @@ public actor HerdrClient {
             case "transcript_unavailable": throw AgentTranscriptError.unavailable
             case "cursor_expired": throw AgentTranscriptError.cursorExpired
             case "subagent_not_found": throw AgentTranscriptError.subagentNotFound
+            case "topic_not_found": throw AgentTranscriptError.topicNotFound
             case "invalid_request"
                 where error.message.lowercased().contains("unknown variant")
                     && error.message.contains("agent.transcript"):
                 throw AgentTranscriptError.unsupported
             default: throw error
             }
+        }
+    }
+
+    // MARK: - omp topics (agent.topics.*)
+
+    /// The server serves an omp agent's topics (`agent_topics`). From the per-client capability
+    /// cache, so asking again costs no `ping`.
+    public func advertisesAgentTopics() async -> Bool {
+        await supports(\.agentTopics)
+    }
+
+    /// Every `agent.topics.*` call: refused before sending on a server without `agent_topics`,
+    /// and its refusals typed (`AgentTopicsError`).
+    private func topicsCall<P: Encodable, R: Decodable>(
+        _ method: String, _ params: P, as type: R.Type
+    ) async throws -> R {
+        guard await supports(\.agentTopics) else { throw AgentTopicsError.notAdvertised }
+        do {
+            return try await call(method, params, as: type)
+        } catch let error as APIError {
+            throw AgentTopicsError(error)
+        }
+    }
+
+    /// The agent's topics, live from the agent (`agent.topics.list`). An agent that cannot be
+    /// reached throws `.unreachable`; one without topics returns an empty list.
+    public func agentTopicsList(target: String) async throws -> AgentTopicList {
+        try await topicsCall("agent.topics.list", AgentTopicsListParams(target: target), as: AgentTopicList.self)
+    }
+
+    /// Starts a topic with its title and first message (`agent.topics.new`); returns its id.
+    public func agentTopicsNew(target: String, title: String, message: String) async throws -> String {
+        try await topicsCall("agent.topics.new",
+                             AgentTopicsNewParams(target: target, title: title, message: message),
+                             as: AgentTopicResult.self).topicID
+    }
+
+    /// Sends a message to one topic (`agent.topics.send`): steered into its running turn,
+    /// queued behind it, or starting a new one.
+    public func agentTopicsSend(target: String, topicID: String, message: String) async throws -> AgentTopicSendMode {
+        try await topicsCall("agent.topics.send",
+                             AgentTopicsSendParams(target: target, topicID: topicID, message: message),
+                             as: AgentTopicResult.self).mode ?? .unknown
+    }
+
+    /// Closes a topic (`agent.topics.close`): it ends, keeping its conversation and a closing note.
+    public func agentTopicsClose(target: String, topicID: String) async throws {
+        _ = try await topicsCall("agent.topics.close", AgentTopicTargetParams(target: target, topicID: topicID),
+                                 as: AgentTopicResult.self)
+    }
+
+    /// Reopens a closed topic (`agent.topics.reopen`), which continues its conversation.
+    public func agentTopicsReopen(target: String, topicID: String) async throws {
+        _ = try await topicsCall("agent.topics.reopen", AgentTopicTargetParams(target: target, topicID: topicID),
+                                 as: AgentTopicResult.self)
+    }
+
+    /// Renames a topic (`agent.topics.rename`).
+    public func agentTopicsRename(target: String, topicID: String, title: String) async throws {
+        _ = try await topicsCall("agent.topics.rename",
+                                 AgentTopicsRenameParams(target: target, topicID: topicID, title: title),
+                                 as: AgentTopicResult.self)
+    }
+
+    /// Every omp agent's topic changes (`agent.topics.changed`), on its own `events.subscribe`
+    /// stream. Owner only: guests have no event stream and poll `agentTopicsList` instead.
+    /// Call it only when the server advertises `agent_topics`; an older one refuses the
+    /// subscription, which surfaces here as a thrown `APIError`.
+    public nonisolated func subscribeTopicChanges() -> AsyncThrowingStream<AgentTopicsStreamLine, Error> {
+        openLineStream(id: "herdrkit:events.subscribe:agent-topics", method: "events.subscribe",
+                       params: SubscribeParams(subscriptions: [Subscription(.agentTopicsChanged)])) {
+            { try AgentTopicsStreamLine.decode($0) }
         }
     }
 

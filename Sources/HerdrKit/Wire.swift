@@ -367,6 +367,11 @@ public struct AgentInfo: Decodable, Equatable, Sendable, Identifiable {
     /// device and every guest of the agent. Absent means the agent's initial tile. Decoded
     /// leniently (`AgentAvatarDescriptor` never throws), so an odd value cannot fail the list.
     public let avatar: AgentAvatarDescriptor?
+    /// An omp agent's topic transcripts in its current session, read from the session file on
+    /// disk (servers advertising `agent_topics`), listed whether or not the agent can be
+    /// reached. Absent or nil on older servers and for agents without topics. Elements decode
+    /// leniently (`AgentTopicSession` never throws), so an odd value cannot fail the list.
+    public let topicSessions: [AgentTopicSession]?
 
     /// Stable list identity. A LIVE agent is keyed on its pane id, which is unique
     /// and stable while it runs. An ARCHIVED agent has NO pane — the server empties
@@ -463,6 +468,7 @@ public struct AgentInfo: Decodable, Equatable, Sendable, Identifiable {
         case sessionTransfer = "session_transfer"
         case gramReachable = "gram_reachable"
         case guestRunning = "guest_running"
+        case topicSessions = "topic_sessions"
     }
 }
 
@@ -718,6 +724,8 @@ public enum SubscriptionType: String, Codable, Sendable {
     case paneScrollChanged = "pane.scroll_changed"
     case paneOutputMatched = "pane.output_matched"
     case layoutUpdated = "layout.updated"
+    /// An omp agent's topic changed (servers advertising `agent_topics`); no `pane_id`.
+    case agentTopicsChanged = "agent.topics.changed"
 }
 
 /// A single subscription entry. Pane-scoped kinds require `paneID`; the server
@@ -1183,6 +1191,10 @@ public struct ServerCapabilities: Decodable, Equatable, Sendable {
     /// herdr parses omp's HTML-form `ask` (omp ≥ 18.18.3) into `form`, reports its answer, and
     /// answers it with `agent.answer_form`. False: a form shows read-only with "Answer in Terminal".
     public let askForm: Bool
+    /// `agent.topics.*`, the `agent.topics.changed` event and `topic` on `agent.transcript`:
+    /// an omp agent's topics (jerryfane/herdr#475). False: no Topics view, and no request
+    /// sends `topic` (an older server would ignore it and page the agent's own conversation).
+    public let agentTopics: Bool
 
     enum CodingKeys: String, CodingKey {
         case liveHandoff = "live_handoff"
@@ -1201,6 +1213,7 @@ public struct ServerCapabilities: Decodable, Equatable, Sendable {
         case serverUpdate = "server_update"
         case turnOrigin = "turn_origin"
         case askForm = "ask_form"
+        case agentTopics = "agent_topics"
     }
 
     public init(from decoder: Decoder) throws {
@@ -1224,6 +1237,7 @@ public struct ServerCapabilities: Decodable, Equatable, Sendable {
         serverUpdate = try c.decodeIfPresent(Bool.self, forKey: .serverUpdate) ?? false
         turnOrigin = try c.decodeIfPresent(Bool.self, forKey: .turnOrigin) ?? false
         askForm = try c.decodeIfPresent(Bool.self, forKey: .askForm) ?? false
+        agentTopics = try c.decodeIfPresent(Bool.self, forKey: .agentTopics) ?? false
     }
 }
 
