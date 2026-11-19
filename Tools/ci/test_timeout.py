@@ -9,6 +9,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 
@@ -59,6 +60,25 @@ class TimeoutTests(unittest.TestCase):
 
     def test_the_command_status_passes_through(self):
         self.assertEqual(subprocess.run([sys.executable, str(TIMEOUT), "5", "sh", "-c", "exit 7"]).returncode, 7)
+
+    def test_an_int_sent_to_a_backgrounded_timeout_reaches_the_command(self):
+        # As ui-shard.sh's accessibility watcher stops a round: timeout.py started with `&`
+        # (INT ignored, as in any script's background job) gets SIGINT and passes it on.
+        ready = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory())) / "ready"
+        script = ('"$PY" "$TIMEOUT" --signal=INT --kill-after=5s 60s bash -c '
+                  '\'trap "echo got-int; exit 3" INT; : >"$READY"; for _ in $(seq 200); do sleep 0.05; done\' & '
+                  'pid=$!; while [ ! -e "$READY" ]; do sleep 0.02; done; kill -INT "$pid"; '
+                  'wait "$pid"; echo "status $?"')
+        process = subprocess.Popen(["bash", "-c", script], stdout=subprocess.PIPE, text=True,
+                                   env=dict(os.environ, PY=sys.executable, TIMEOUT=str(TIMEOUT), READY=str(ready)))
+        try:
+            out, _ = process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            self.fail("the INT did not end the timed command")
+        self.assertIn("got-int", out)
+        self.assertIn("status 3", out)
 
 
 if __name__ == "__main__":

@@ -15,12 +15,27 @@ timed `bash -c` would otherwise outlive the deadline and hold the pipe of the ro
 `| tee` open (review of #663, F1). With --kill-after, everything still in the group when
 the grace runs out is killed; without it, as with GNU timeout, only the command itself
 is waited for.
+
+A SIGNAL SENT TO timeout.py GOES TO THE COMMAND'S GROUP, as GNU timeout forwards INT, TERM
+and HUP: ui-shard.sh stops a round whose simulator stopped answering accessibility by
+sending SIGINT to the timeout process it started in the background, and without this the
+command, in a session of its own, would run on. The group then gets the same grace and
+KILL as after a time-out, and the exit status is the command's own. The handlers are
+installed before the command starts, so a timeout.py started in the background of a
+script (where INT is ignored) still takes INT, and the command starts with INT at its
+default instead of inheriting the ignore.
 """
 import os
 import signal
 import subprocess
 import sys
 import time
+
+FORWARDED = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+
+
+class Forwarded(Exception):
+    """Raised once, by the first forwarded signal, to end the wait for the command."""
 
 
 def seconds(text: str) -> float:
@@ -39,6 +54,24 @@ def signal_group(group: int, sig: int) -> bool:
     return True
 
 
+def finish(child: subprocess.Popen, kill_after) -> None:
+    """Waits for the signalled command; with kill_after, KILLs what is left of its group."""
+    if kill_after is None:
+        child.wait()
+        return
+    deadline = time.monotonic() + kill_after
+    # Reap the command as it exits (a zombie would keep the group alive), and give the
+    # rest of the group the same grace before the KILL.
+    while time.monotonic() < deadline:
+        child.poll()
+        if not signal_group(child.pid, 0):
+            break
+        time.sleep(0.01)
+    else:
+        signal_group(child.pid, signal.SIGKILL)
+    child.wait()
+
+
 def main(argv: list) -> int:
     sig, kill_after = signal.SIGTERM, None
     while argv and argv[0].startswith("--"):
@@ -54,6 +87,20 @@ def main(argv: list) -> int:
         print("usage: timeout.py [--signal=NAME] [--kill-after=DURATION] DURATION COMMAND...", file=sys.stderr)
         return 125
     budget = seconds(argv[0])
+    child = None
+    received = []
+
+    def forward(signum, _frame):
+        if child is None:
+            # Before the command started: nothing to forward to, so stop here.
+            sys.exit(128 + signum)
+        signal_group(child.pid, signum)
+        if not received:
+            received.append(signum)
+            raise Forwarded()
+
+    for forwarded in FORWARDED:
+        signal.signal(forwarded, forward)
     try:
         # Its own session, so its process group holds the command and its descendants only.
         child = subprocess.Popen(argv[1:], start_new_session=True)
@@ -63,23 +110,12 @@ def main(argv: list) -> int:
     try:
         status = child.wait(timeout=budget)
     except subprocess.TimeoutExpired:
-        group = child.pid
-        signal_group(group, sig)
-        if kill_after is None:
-            child.wait()
-            return 124
-        deadline = time.monotonic() + kill_after
-        # Reap the command as it exits (a zombie would keep the group alive), and give the
-        # rest of the group the same grace before the KILL.
-        while time.monotonic() < deadline:
-            child.poll()
-            if not signal_group(group, 0):
-                break
-            time.sleep(0.01)
-        else:
-            signal_group(group, signal.SIGKILL)
-        child.wait()
+        signal_group(child.pid, sig)
+        finish(child, kill_after)
         return 124
+    except Forwarded:
+        finish(child, kill_after)
+        status = child.returncode
     return 128 - status if status < 0 else status
 
 

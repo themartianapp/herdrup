@@ -369,6 +369,7 @@ recover_simulator() {
 # tests, the desktop references' device settings): boot, with the one recovery.
 ensure_simulator() {
   local udid="$1" label="$2"
+  simulator_is_dead "$udid" "$label" && return 1
   boot_simulator "$udid" "TestReceipts/$label-boot.log" && return 0
   recover_simulator "$udid" "$label" "its simulator could not be booted (see the error above)" erase || return 1
   boot_simulator "$udid" "TestReceipts/$label-boot.log"
@@ -380,6 +381,7 @@ ensure_simulator() {
 # does it once, after a recovery rebooted or erased the device, so the settings hold again.
 prepare_round() {
   local label="$1" udid="$2" app="$3" setup="${4:-}"
+  simulator_is_dead "$udid" "$label" && return 1
   reprepare_round "$label" "$udid" "$app" "$setup" && return 0
   recover_simulator "$udid" "$label" "its simulator could not be prepared (see the error above)" erase || return 1
   reprepare_round "$label" "$udid" "$app" "$setup"
@@ -395,13 +397,13 @@ reprepare_round() {
 }
 # The optimized Settings regression starts from a fresh install of its Distribution app.
 settings_device_setup() {
-  xcrun simctl uninstall "$1" com.jerryfane.herdr 2>/dev/null || true
-  xcrun simctl uninstall "$1" com.jerryfane.herdr.uitests.xctrunner 2>/dev/null || true
+  bounded 120 xcrun simctl uninstall "$1" com.jerryfane.herdr 2>/dev/null || true
+  bounded 120 xcrun simctl uninstall "$1" com.jerryfane.herdr.uitests.xctrunner 2>/dev/null || true
 }
 
 # Prints one -only-testing argument per failed Class/method test case in an .xcresult.
 failed_tests() {
-  xcrun xcresulttool get test-results tests --path "$1" 2>/dev/null | python3 "$XCRESULT_TESTS" failed-tests
+  bounded 300 xcrun xcresulttool get test-results tests --path "$1" 2>/dev/null | python3 "$XCRESULT_TESTS" failed-tests
 }
 
 # Succeeds only when a round executed no test case at all: its log has no XCTest result
@@ -413,7 +415,61 @@ ran_no_test_case() {
   if grep -qE "^Test Case '.*' (passed|failed|skipped) \(" "$log"; then
     return 1
   fi
-  xcrun xcresulttool get test-results tests --path "$bundle" 2>/dev/null | python3 "$XCRESULT_TESTS" ran-none
+  bounded 300 xcrun xcresulttool get test-results tests --path "$bundle" 2>/dev/null | python3 "$XCRESULT_TESTS" ran-none
+}
+
+# A SIMULATOR WHOSE ACCESSIBILITY STOPPED ANSWERING FAILS ITS ROUND AT ONCE. Herdrup #674's
+# ipad-script job j_1b3bd71b: five DesktopReferenceShots cases in a row failed after 150-170 s
+# each on "Failed to get screenshot: Timed out while requesting screenshot." or "Failed to get
+# list of active applications: Accessibility error kAXErrorIPCTimeout", the round and the
+# next ran out their 15m and 20m budgets on the same iPad, and the job then hung in an
+# unbounded simctl call until macserve's 2 h cap. Every XCUITest run of a round now runs
+# under watched_test_run: ax-watch.py follows its log, and after three such cases in a row
+# it stops the run (SIGINT to its timeout process, which passes it on to xcodebuild's group;
+# --kill-after ends what is left). The round then fails with that reason: no retry, no
+# infrastructure rerun, no recovery, and every later round on the device fails at once
+# instead of spending its budget there. A recovery (shutdown, erase, cold boot) and a
+# second run of the round would cost the round's whole budget again (up to 20m) on top of
+# the ~8 min the three time-outs took, putting the shard near an hour; macserve#201 will add
+# per-test time limits.
+AX_WATCH="$(dirname "$SIM_STATE")/ax-watch.py"
+dead_simulators=" "
+# watched_test_run LOG BUDGET COMMAND...: runs COMMAND (an xcodebuild test run) under
+# BUDGET, with SIGINT when it runs out and KILL 60 s later, its output in LOG and on the
+# console. Returns COMMAND's status (124 when it ran out). When ax-watch.py stopped it,
+# ${LOG%.log}-accessibility-stop.txt lists the timed-out cases (accessibility_stopped).
+watched_test_run() {
+  local log="$1" budget="$2" stop="${1%.log}-accessibility-stop.txt" runner watcher status=0
+  shift 2
+  rm -f "$stop" "$stop.done"
+  : >"$log" || return 1
+  "$TIMEOUT_BIN" --signal=INT --kill-after=60s "$budget" "$@" >>"$log" 2>&1 &
+  runner=$!
+  python3 "$AX_WATCH" "$log" "$runner" "$stop" | beautify &
+  watcher=$!
+  wait "$runner" || status=$?
+  : >"$stop.done"
+  wait "$watcher" || true
+  rm -f "$stop.done"
+  return "$status"
+}
+# accessibility_stopped LABEL UDID LOG: succeeds, with the round's error, when ax-watch.py
+# stopped LOG's run; UDID then counts as dead for the rest of the job.
+accessibility_stopped() {
+  local label="$1" udid="$2" stop="${3%.log}-accessibility-stop.txt"
+  [ -s "$stop" ] || return 1
+  dead_simulators="$dead_simulators$udid "
+  echo "::error::simulator $udid stopped answering accessibility (3 timeouts in a row): $(paste -sd ' ' "$stop"); $label stopped early, see $3"
+}
+# simulator_is_dead UDID LABEL: succeeds, with LABEL's error, when a round already found that
+# UDID stopped answering accessibility.
+simulator_is_dead() {
+  case "$dead_simulators" in *" $1 "*)
+    echo "::error::$2 not run: simulator $1 stopped answering accessibility earlier in this job"
+    return 0
+    ;;
+  esac
+  return 1
 }
 
 # One xcodebuild invocation of a round into TestReceipts/$label-first.*.
@@ -423,14 +479,14 @@ ran_no_test_case() {
 first_run() {
   local label="$1" udid="$2" budget="$3" status=0
   shift 3
-  "$TIMEOUT_BIN" --signal=INT "$budget" xcodebuild test-without-building "${PROJECT[@]}" \
+  watched_test_run "TestReceipts/$label-first.log" "$budget" xcodebuild test-without-building "${PROJECT[@]}" \
       -destination "platform=iOS Simulator,id=$udid" \
       -parallel-testing-enabled NO \
       -test-timeouts-enabled YES \
       -default-test-execution-time-allowance 300 \
       -maximum-test-execution-time-allowance 600 \
       -resultBundlePath "TestReceipts/$label-first.xcresult" \
-      "$@" 2>&1 | tee "TestReceipts/$label-first.log" | beautify || status=$?
+      "$@" || status=$?
   # The first case's result and time is the first real XCTest launch after install.
   grep -m1 -E "^Test Case '.*' (passed|failed|skipped) \(" "TestReceipts/$label-first.log" \
     | sed 's/^/first test after install: /' >>"TestReceipts/$label-install.log" || true
@@ -455,6 +511,11 @@ run_suite() {
   # Boot outside the test deadline. Booting during the build was measured to slow both.
   prepare_round "$label" "$udid" "$APP_UNDER_TEST" "$setup" || return 1
   first_run "$label" "$udid" "$budget" "$@" || status=$?
+  if accessibility_stopped "$label" "$udid" "TestReceipts/$label-first.log"; then
+    last_round_result=failed
+    stop_recording
+    return 1
+  fi
   # A round whose test runner died before any test started is a simulator failure, not a
   # test result. Run 41775711449 (iPhoneTerminal, Xcode 27): 199 s after launch, "Early
   # unexpected exit, operation never finished bootstrapping ... The test runner crashed
@@ -471,6 +532,11 @@ run_suite() {
     status=0
     reprepare_round "$label" "$udid" "$APP_UNDER_TEST" "$setup" || return 1
     first_run "$label" "$udid" "$budget" "$@" || status=$?
+    if accessibility_stopped "$label" "$udid" "TestReceipts/$label-first.log"; then
+      last_round_result=failed
+      stop_recording
+      return 1
+    fi
   fi
   if [ "$status" -eq 0 ]; then
     last_round_result=passed
@@ -530,20 +596,22 @@ retry_failed_tests() {
   printf '%s\n' "${selectors[@]}" | tee "TestReceipts/$label-retry-selection.txt"
   # The failed tests usually rerun in 1-3 min. A short cap keeps a pathological retry from
   # eating the job budget that the receipt upload needs; a retry that runs out fails.
-  "$TIMEOUT_BIN" --signal=INT 10m xcodebuild test-without-building "${PROJECT[@]}" \
+  watched_test_run "TestReceipts/$label-retry.log" 10m xcodebuild test-without-building "${PROJECT[@]}" \
       -destination "platform=iOS Simulator,id=$udid" \
       -parallel-testing-enabled NO \
       -test-timeouts-enabled YES \
       -default-test-execution-time-allowance 300 \
       -maximum-test-execution-time-allowance 600 \
       -resultBundlePath "TestReceipts/$label-retry.xcresult" \
-      "${selectors[@]}" 2>&1 | tee "TestReceipts/$label-retry.log" | beautify || status=$?
+      "${selectors[@]}" || status=$?
   if ! : >"$verdicts"; then
     echo "::error::$label first run failed and its retry verdict cannot be written to $verdicts; the failure stands"
     return 1
   fi
   bundle_id=$(bundle_identifier "$app" 2>>"$verdicts") || bundle_id=""
-  if ! xcrun xcresulttool get test-results tests --path "TestReceipts/$label-first.xcresult" \
+  if accessibility_stopped "$label" "$udid" "TestReceipts/$label-retry.log"; then
+    verdict="the simulator stopped answering accessibility during the retry"
+  elif ! bounded 300 xcrun xcresulttool get test-results tests --path "TestReceipts/$label-first.xcresult" \
       >"$first_tests" 2>>"$verdicts"; then
     verdict="cannot read the first run's result bundle"
   elif ! python3 "$XCRESULT_TESTS" no-runner-error "$first_tests" >>"$verdicts" 2>&1; then
@@ -556,7 +624,7 @@ retry_failed_tests() {
     verdict="the first run's attachments do not show that $bundle_id did not crash"
   elif [ "$status" -ne 0 ]; then
     verdict="the retry failed too (xcodebuild exit $status)"
-  elif ! xcrun xcresulttool get test-results tests --path "TestReceipts/$label-retry.xcresult" \
+  elif ! bounded 300 xcrun xcresulttool get test-results tests --path "TestReceipts/$label-retry.xcresult" \
       >"$retry_tests" 2>>"$verdicts"; then
     verdict="cannot read the retry's result bundle"
   elif ! python3 "$XCRESULT_TESTS" all-passed "$retry_tests" "${selectors[@]}" >>"$verdicts" 2>&1; then
@@ -583,7 +651,7 @@ retry_failed_tests() {
 no_app_crash_in() {
   local bundle="$1" bundle_id="$2" out
   out=$(mktemp -u "$SIM_TMP/crash-check.XXXXXX") || return 1
-  if ! xcrun xcresulttool export attachments --path "$bundle" --output-path "$out" >/dev/null 2>&1; then
+  if ! bounded 600 xcrun xcresulttool export attachments --path "$bundle" --output-path "$out" >/dev/null 2>&1; then
     echo "cannot export the attachments of $bundle"
     return 1
   fi
@@ -620,14 +688,15 @@ infra_rerun() {
   done
   reprepare_round "$label" "$udid" "$app" "$setup" || return 1
   # shellcheck disable=SC2086 # one -only-testing argument per line
-  "$TIMEOUT_BIN" --signal=INT 15m xcodebuild test-without-building "${PROJECT[@]}" \
+  watched_test_run "TestReceipts/$label-infra-rerun.log" 15m xcodebuild test-without-building "${PROJECT[@]}" \
       -destination "platform=iOS Simulator,id=$udid" \
       -parallel-testing-enabled NO \
       -test-timeouts-enabled YES \
       -default-test-execution-time-allowance 300 \
       -maximum-test-execution-time-allowance 600 \
       -resultBundlePath "TestReceipts/$label-infra-rerun.xcresult" \
-      $failed 2>&1 | tee "TestReceipts/$label-infra-rerun.log" | beautify || status=$?
+      $failed || status=$?
+  accessibility_stopped "$label" "$udid" "TestReceipts/$label-infra-rerun.log" && return 1
   if [ "$status" -eq 0 ]; then
     echo "$label: the rerun of its infrastructure failures passed"
     return 0
@@ -644,7 +713,7 @@ infra_rerun() {
 check_classes_ran() {
   local bundle="$1"
   shift
-  xcrun xcresulttool get test-results tests --path "$bundle" 2>/dev/null |
+  bounded 300 xcrun xcresulttool get test-results tests --path "$bundle" 2>/dev/null |
     python3 "$XCRESULT_TESTS" check-classes "$bundle" "${last_round_result:-unknown}" "$@"
 }
 
@@ -661,9 +730,23 @@ DESKTOP_REFERENCE_STATUS_BAR=(--time 9:41 --batteryLevel 100 --batteryState char
 DESKTOP_REFERENCE_CLASSES=(DesktopReferenceShots DesktopGramReferenceShots DesktopSettingsReferenceShots DesktopDetailReferenceShots)
 # The desktop references' device settings. Each class's round applies them before its
 # install (run_suite --setup), so they hold even after a recovery rebooted or erased the device.
+# BOUNDED, with each step stamped: in herdrup #674's ipad-script job j_1b3bd71b, after two
+# rounds lost to a simulator whose accessibility stopped answering, the third round's setup
+# logged nothing after its boot check (16:09:14Z) until macserve's 2 h cap killed the job
+# at 17:07Z. These two simctl calls were the unbounded steps between that check and the
+# bounded install, which logs a time-out; earlier rounds went from the check to "installed"
+# in 5-6 s.
 desktop_reference_device_setup() {
-  xcrun simctl ui "$1" appearance dark || return 1
-  xcrun simctl status_bar "$1" override "${DESKTOP_REFERENCE_STATUS_BAR[@]}" || return 1
+  echo "$(date -u +%FT%TZ) $1: simctl ui appearance dark"
+  if ! bounded 60 xcrun simctl ui "$1" appearance dark; then
+    echo "::error::simulator $1: simctl ui appearance dark failed or did not answer in 60 s"
+    return 1
+  fi
+  echo "$(date -u +%FT%TZ) $1: simctl status_bar override"
+  if ! bounded 60 xcrun simctl status_bar "$1" override "${DESKTOP_REFERENCE_STATUS_BAR[@]}"; then
+    echo "::error::simulator $1: simctl status_bar override failed or did not answer in 60 s"
+    return 1
+  fi
 }
 desktop_reference_round() {
   local label="$1" udid="$2" bundle_id class round budget status=0
@@ -672,14 +755,15 @@ desktop_reference_round() {
   if [ "$#" -gt 0 ]; then classes=("$@"); fi
   ensure_simulator "$udid" "$label" || return 1
   bundle_id=$(bundle_identifier "$APP_UNDER_TEST") || return 1
-  xcrun simctl uninstall "$udid" "$bundle_id" >/dev/null 2>&1 || true
+  bounded 120 xcrun simctl uninstall "$udid" "$bundle_id" >/dev/null 2>&1 || true
   desktop_reference_device_setup "$udid" || return 1
   {
     echo "xcrun simctl status_bar <udid> override ${DESKTOP_REFERENCE_STATUS_BAR[*]}"
-    xcrun simctl status_bar "$udid" list
+    bounded 60 xcrun simctl status_bar "$udid" list
   } | tee "TestReceipts/$label-status-bar.txt"
   # Match focused iPad runs: record before installation, including simulator failures
-  # that happen before XCTest can attach its own recording.
+  # that happen before XCTest can attach its own recording. The recorder runs until
+  # stop_recording, which bounds its exit.
   xcrun simctl io "$udid" recordVideo "TestReceipts/$label-reference.mp4" \
     > "TestReceipts/$label-reference-video.log" 2>&1 &
   recorder=$!
@@ -696,8 +780,8 @@ desktop_reference_round() {
     check_classes_ran "TestReceipts/$round-first.xcresult" "${class%%/*}" || status=1
   done
   stop_recording
-  xcrun simctl status_bar "$udid" clear || true
-  xcrun simctl ui "$udid" appearance light || true
+  bounded 60 xcrun simctl status_bar "$udid" clear || true
+  bounded 60 xcrun simctl ui "$udid" appearance light || true
   return "$status"
 }
 
@@ -711,7 +795,7 @@ swiftterm_api() {
   ensure_simulator "$udid" "$label" || return 1
   (
     cd Vendor/SwiftTerm || exit 1
-    xcodebuild -list -json > ../../TestReceipts/SwiftTermSchemes.json
+    bounded 120 xcodebuild -list -json > ../../TestReceipts/SwiftTermSchemes.json
     scheme=$(python3 - <<'PY'
 import json
 with open("../../TestReceipts/SwiftTermSchemes.json") as source:
@@ -726,14 +810,14 @@ else:
 PY
     ) || exit 1
     # Build outside the timed test window.
-    if ! "$TIMEOUT_BIN" --signal=INT 10m xcodebuild build-for-testing -scheme "$scheme" \
+    if ! "$TIMEOUT_BIN" --signal=INT --kill-after=60s 10m xcodebuild build-for-testing -scheme "$scheme" \
         -destination "platform=iOS Simulator,id=$udid" \
         -derivedDataPath ../../.build-dd-swiftterm \
         CODE_SIGNING_ALLOWED=NO 2>&1 | tee "../../TestReceipts/SwiftTermUIKit-$device-build.log" | beautify; then
       echo "::error::SwiftTerm test build failed; see TestReceipts/SwiftTermUIKit-$device-build.log"
       exit 1
     fi
-    if ! "$TIMEOUT_BIN" --signal=INT 15m xcodebuild test-without-building -scheme "$scheme" \
+    if ! "$TIMEOUT_BIN" --signal=INT --kill-after=60s 15m xcodebuild test-without-building -scheme "$scheme" \
         -destination "platform=iOS Simulator,id=$udid" \
         -parallel-testing-enabled NO \
         -test-timeouts-enabled YES \
@@ -743,7 +827,7 @@ PY
         CODE_SIGNING_ALLOWED=NO 2>&1 | tee "../../TestReceipts/$label-first.log" | beautify; then
       echo "::error::$label first run failed; collecting raw diagnostics without erasing failure"
       boot_simulator "$udid" "../../TestReceipts/$label-diagnostic-boot.log" || exit 1
-      "$TIMEOUT_BIN" --signal=INT 15m xcodebuild test-without-building -scheme "$scheme" \
+      "$TIMEOUT_BIN" --signal=INT --kill-after=60s 15m xcodebuild test-without-building -scheme "$scheme" \
           -destination "platform=iOS Simulator,id=$udid" \
           -parallel-testing-enabled NO \
           -test-timeouts-enabled YES \
@@ -919,7 +1003,7 @@ case "$shard" in
     elif ! prepare_round settings-device-stack "$IPAD_UDID" "$SETTINGS_APP_UNDER_TEST" settings_device_setup; then
       failed=1
     else
-      "$TIMEOUT_BIN" --signal=INT 40m xcodebuild test-without-building -xctestrun "${settings_runs[0]}" \
+      "$TIMEOUT_BIN" --signal=INT --kill-after=60s 40m xcodebuild test-without-building -xctestrun "${settings_runs[0]}" \
           -destination "platform=iOS Simulator,id=$IPAD_UDID" \
           -parallel-testing-enabled NO \
           -test-timeouts-enabled YES \
@@ -930,7 +1014,7 @@ case "$shard" in
           2>&1 | tee TestReceipts/settings-device-stack.log | beautify || failed=1
       # XCTest activation can restart a crashed app and still report a pass.
       # Without a readable export the guard cannot tell, so that fails the shard too.
-      if ! xcrun xcresulttool export attachments \
+      if ! bounded 600 xcrun xcresulttool export attachments \
           --path TestReceipts/settings-device-stack.xcresult \
           --output-path TestReceipts/settings-device-stack-crash-check >/dev/null; then
         echo "::error::could not export the Settings regression's attachments to check for crashes"
@@ -949,7 +1033,7 @@ case "$shard" in
     # shut down before the iPhone boots: a second booted simulator adds to the memory
     # pressure measured during launch stalls (herdrup#418).
     swiftterm_api iPad "$IPAD_UDID" || failed=1
-    xcrun simctl shutdown "$IPAD_UDID" >/dev/null 2>&1 || true
+    bounded 120 xcrun simctl shutdown "$IPAD_UDID" >/dev/null 2>&1 || true
     ready_devices="${ready_devices/ $IPAD_UDID / }"
     swiftterm_api iPhone "$IPHONE_UDID" || failed=1
     ;;
@@ -987,7 +1071,7 @@ case "$shard" in
       fi
       echo "::notice::focused dispatch: $ONLY_SUITE on ${ONLY_DEVICE:-ipad}"
       desktop_reference_round iPadDesktopReference "$IPAD_UDID" "${reference_classes[@]}" || failed=1
-      xcrun simctl shutdown "$IPAD_UDID" >/dev/null 2>&1 || true
+      bounded 120 xcrun simctl shutdown "$IPAD_UDID" >/dev/null 2>&1 || true
       # A shut-down device must be booted and checked again by any later round.
       ready_devices="${ready_devices/ $IPAD_UDID / }"
       if [ "${ONLY_DEVICE:-ipad}" != ipad-pro-13 ]; then
