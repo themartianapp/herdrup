@@ -284,7 +284,7 @@ install_app_under_test() {
     echo "::error::app under test not found at $app"
     return 1
   fi
-  bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist") || {
+  bundle_id=$(bundle_identifier "$app") || {
     echo "::error::cannot read CFBundleIdentifier from $app"
     return 1
   }
@@ -308,6 +308,11 @@ install_app_under_test() {
     return 1
   fi
   echo "$(date -u +%FT%TZ) installed in $(( $(date +%s) - start )) s" | tee -a "$log"
+}
+
+# bundle_identifier APP: prints APP's CFBundleIdentifier.
+bundle_identifier() {
+  /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$1/Info.plist"
 }
 
 # THE ONE INFRASTRUCTURE RECOVERY OF A ROUND. A round whose simulator could not be prepared
@@ -505,10 +510,14 @@ run_suite() {
 # ::warning::. Otherwise the first failure stands and the retry is its diagnostics. A round
 # with no failed case recorded (it never ran a test, or its result bundle is unreadable)
 # gets no retry, and a round that ran out of its budget never gets here.
+# EVERY GATE IS A POSITIVE CHECK (review of #747): only a command that read its input and
+# exited 0 clears it. A gate that cannot run, cannot read, or fails in any way keeps the
+# failure; the first version read an unreadable bundle or a Python exception as clean.
 # retry_failed_tests LABEL UDID FAILED APP: returns 0 when the retry passed.
 retry_failed_tests() {
-  local label="$1" udid="$2" failed="$3" app="$4" status=0 bundle_id verdict="" selector flaky
+  local label="$1" udid="$2" failed="$3" app="$4" status=0 bundle_id="" verdict="" selector flaky
   local verdicts="TestReceipts/$label-retry-verdict.txt" selectors=()
+  local first_tests="$SIM_TMP/$label-first-tests.json" retry_tests="$SIM_TMP/$label-retry-tests.json"
   if [ -z "$failed" ]; then
     echo "::error::$label first run failed with no failed test case recorded in its result bundle; the failure stands, no retry"
     return 1
@@ -529,26 +538,34 @@ retry_failed_tests() {
       -maximum-test-execution-time-allowance 600 \
       -resultBundlePath "TestReceipts/$label-retry.xcresult" \
       "${selectors[@]}" 2>&1 | tee "TestReceipts/$label-retry.log" | beautify || status=$?
-  bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist" 2>/dev/null)
-  if xcrun xcresulttool get test-results tests --path "TestReceipts/$label-first.xcresult" 2>/dev/null \
-      | python3 "$XCRESULT_TESTS" runner-error >"$verdicts"; then
-    verdict="the first run's test runner failed outside a test case"
-  elif python3 "$XCRESULT_TESTS" crash-issues "TestReceipts/$label-first.xcresult" >>"$verdicts"; then
-    verdict="an issue of the first run mentions a crash, or its issues could not be read"
+  if ! : >"$verdicts"; then
+    echo "::error::$label first run failed and its retry verdict cannot be written to $verdicts; the failure stands"
+    return 1
+  fi
+  bundle_id=$(bundle_identifier "$app" 2>>"$verdicts") || bundle_id=""
+  if ! xcrun xcresulttool get test-results tests --path "TestReceipts/$label-first.xcresult" \
+      >"$first_tests" 2>>"$verdicts"; then
+    verdict="cannot read the first run's result bundle"
+  elif ! python3 "$XCRESULT_TESTS" no-runner-error "$first_tests" >>"$verdicts" 2>&1; then
+    verdict="the first run's record does not show only test-case failures"
+  elif ! python3 "$XCRESULT_TESTS" no-crash-issues "TestReceipts/$label-first.xcresult" >>"$verdicts" 2>&1; then
+    verdict="the first run's issues mention a crash or cannot be read"
   elif [ -z "$bundle_id" ]; then
     verdict="no bundle identifier in $app/Info.plist to check for crash reports"
-  elif app_crash_in "TestReceipts/$label-first.xcresult" "$bundle_id" >>"$verdicts"; then
-    verdict="the first run attached a crash report of $bundle_id, or its attachments could not be exported"
+  elif ! no_app_crash_in "TestReceipts/$label-first.xcresult" "$bundle_id" >>"$verdicts" 2>&1; then
+    verdict="the first run's attachments do not show that $bundle_id did not crash"
   elif [ "$status" -ne 0 ]; then
     verdict="the retry failed too (xcodebuild exit $status)"
-  elif ! xcrun xcresulttool get test-results tests --path "TestReceipts/$label-retry.xcresult" 2>/dev/null \
-      | python3 "$XCRESULT_TESTS" all-passed "${selectors[@]}" >>"$verdicts"; then
+  elif ! xcrun xcresulttool get test-results tests --path "TestReceipts/$label-retry.xcresult" \
+      >"$retry_tests" 2>>"$verdicts"; then
+    verdict="cannot read the retry's result bundle"
+  elif ! python3 "$XCRESULT_TESTS" all-passed "$retry_tests" "${selectors[@]}" >>"$verdicts" 2>&1; then
     verdict="the retry's result bundle does not show every failed test passed"
-  elif app_crash_in "TestReceipts/$label-retry.xcresult" "$bundle_id" >>"$verdicts"; then
-    verdict="the retry attached a crash report of $bundle_id, or its attachments could not be exported"
+  elif ! no_app_crash_in "TestReceipts/$label-retry.xcresult" "$bundle_id" >>"$verdicts" 2>&1; then
+    verdict="the retry's attachments do not show that $bundle_id did not crash"
   fi
   if [ -n "$verdict" ]; then
-    echo "::error::$label first run failed and $verdict; the failure stands. See TestReceipts/$label-first.* and $label-retry.* ($(paste -sd ';' "$verdicts"))"
+    echo "::error::$label first run failed and $verdict; the failure stands. See TestReceipts/$label-first.* and $label-retry.* ($(paste -sd ';' "$verdicts" 2>/dev/null))"
     return 1
   fi
   for selector in "${selectors[@]}"; do
@@ -560,13 +577,18 @@ retry_failed_tests() {
   return 0
 }
 
-# app_crash_in BUNDLE BUNDLE_ID: succeeds when BUNDLE's attachments hold a crash report of
-# BUNDLE_ID, or cannot be exported: then nothing shows that the app did not crash.
-app_crash_in() {
+# no_app_crash_in BUNDLE BUNDLE_ID: succeeds only when BUNDLE's attachments were exported and
+# hold no crash report of BUNDLE_ID. Each export goes to a new path; a successful export of a
+# bundle without attachments may leave no directory, which then holds no crash report.
+no_app_crash_in() {
   local bundle="$1" bundle_id="$2" out
-  out="$SIM_TMP/$(basename "$bundle" .xcresult)-crash-check"
-  xcrun xcresulttool export attachments --path "$bundle" --output-path "$out" >/dev/null 2>&1 || return 0
-  python3 "$XCRESULT_TESTS" app-crashed "$out" "$bundle_id"
+  out=$(mktemp -u "$SIM_TMP/crash-check.XXXXXX") || return 1
+  if ! xcrun xcresulttool export attachments --path "$bundle" --output-path "$out" >/dev/null 2>&1; then
+    echo "cannot export the attachments of $bundle"
+    return 1
+  fi
+  mkdir -p "$out" || return 1
+  python3 "$XCRESULT_TESTS" no-app-crash "$out" "$bundle_id"
 }
 
 # A ROUND WHOSE EVERY FAILURE IS THE SIMULATOR'S. When every issue of every failed case was
@@ -585,13 +607,9 @@ infra_rerun() {
   local label="$1" udid="$2" failed="$3" app="$4" setup="${5:-}" status=0 bundle_id part
   local kinds="TestReceipts/$label-failure-kinds.txt"
   python3 "$XCRESULT_TESTS" infra-only "TestReceipts/$label-first.xcresult" >"$kinds" 2>&1 || return 2
-  bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist") || return 2
+  bundle_id=$(bundle_identifier "$app") || return 2
   # Without the attachments there is no proof the app did not crash: no rerun then.
-  xcrun xcresulttool export attachments --path "TestReceipts/$label-first.xcresult" \
-    --output-path "$SIM_TMP/$label-attachments" >/dev/null 2>&1 || return 2
-  if python3 "$XCRESULT_TESTS" app-crashed "$SIM_TMP/$label-attachments" "$bundle_id" >>"$kinds"; then
-    return 2
-  fi
+  no_app_crash_in "TestReceipts/$label-first.xcresult" "$bundle_id" >>"$kinds" 2>&1 || return 2
   case "$recovered_rounds" in *" $label "*) return 2 ;; esac
   recovered_rounds="$recovered_rounds$label "
   echo "::warning::infrastructure, not a test result: every failure of $label is the simulator's ($(paste -sd ';' "$kinds")). Rebooting $udid and running only those cases again once; their result stands. The first run is TestReceipts/$label-first.*, the rerun TestReceipts/$label-infra-rerun.*"
@@ -653,7 +671,7 @@ desktop_reference_round() {
   local classes=("${DESKTOP_REFERENCE_CLASSES[@]}")
   if [ "$#" -gt 0 ]; then classes=("$@"); fi
   ensure_simulator "$udid" "$label" || return 1
-  bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_UNDER_TEST/Info.plist") || return 1
+  bundle_id=$(bundle_identifier "$APP_UNDER_TEST") || return 1
   xcrun simctl uninstall "$udid" "$bundle_id" >/dev/null 2>&1 || true
   desktop_reference_device_setup "$udid" || return 1
   {

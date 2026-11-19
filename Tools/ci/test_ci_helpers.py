@@ -4,6 +4,7 @@ Tools/ci/check.sh runs them in CI's Linux job, before any simulator shard spends
 import json
 import os
 import pathlib
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -131,51 +132,202 @@ class XcresultTests(unittest.TestCase):
         self.assertEqual(run("xcresult-tests.py", ["infra-only", silent])[0], 1)
         self.assertEqual(run("xcresult-tests.py", ["infra-only", tempfile.gettempdir() + "/no-such.xcresult"])[0], 1)
 
-    def test_app_crashed_finds_only_the_apps_report(self):
+    def test_no_app_crash_is_a_positive_check(self):
+        herdr = "com.jerryfane.herdr"
         with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(run("xcresult-tests.py", ["no-app-crash", directory, herdr])[0], 0)
             with open(os.path.join(directory, "a.ips"), "w") as report:
                 report.write(json.dumps({"bundleID": "com.apple.springboard"}) + "\n{}\n")
-            self.assertEqual(run("xcresult-tests.py", ["app-crashed", directory, "com.jerryfane.herdr"])[0], 1)
+            self.assertEqual(run("xcresult-tests.py", ["no-app-crash", directory, herdr])[0], 0)
             with open(os.path.join(directory, "b.ips"), "w") as report:
-                report.write(json.dumps({"bundleID": "com.jerryfane.herdr"}) + "\n{}\n")
-            self.assertEqual(run("xcresult-tests.py", ["app-crashed", directory, "com.jerryfane.herdr"])[0], 0)
+                report.write(json.dumps({"bundleID": herdr}) + "\n{}\n")
+            code, out, _ = run("xcresult-tests.py", ["no-app-crash", directory, herdr])
+            self.assertEqual(code, 1)
+            self.assertIn("crash report of %s" % herdr, out)
+        with tempfile.TemporaryDirectory() as directory:
+            # Unreadable: a report whose header is no JSON, a missing directory, no bundle id.
+            with open(os.path.join(directory, "c.ips"), "w") as report:
+                report.write("not json\n")
+            self.assertEqual(run("xcresult-tests.py", ["no-app-crash", directory, herdr])[0], 1)
+            self.assertEqual(run("xcresult-tests.py", ["no-app-crash", directory + "/missing", herdr])[0], 1)
+            self.assertEqual(run("xcresult-tests.py", ["no-app-crash", directory, ""])[0], 1)
+            # An exception: a header that is JSON but no object.
+            with open(os.path.join(directory, "c.ips"), "w") as report:
+                report.write("[1]\n")
+            code, out, _ = run("xcresult-tests.py", ["no-app-crash", directory, herdr])
+            self.assertEqual(code, 1)
+            self.assertIn("AttributeError", out)
 
-    def test_runner_error_only_for_a_failure_outside_a_class_method_case(self):
+    def json_file(self, text):
+        handle, path = tempfile.mkstemp(suffix=".json")
+        self.addCleanup(os.remove, path)
+        with os.fdopen(handle, "w") as target:
+            target.write(text)
+        return path
+
+    def test_no_runner_error_is_a_positive_check(self):
         data = json.loads(bundle([("A", "testOne", "Failed", ["x"])]))
-        self.assertEqual(run("xcresult-tests.py", ["runner-error"], json.dumps(data))[0], 1)
+        self.assertEqual(run("xcresult-tests.py", ["no-runner-error", self.json_file(json.dumps(data))])[0], 0)
         data["testNodes"][0]["children"][0]["children"].append({"nodeType": "Test Case", "result": "Failed",
             "nodeIdentifier": "HerdrUITests-Runner (21391) encountered an error"})
-        self.assertEqual(run("xcresult-tests.py", ["runner-error"], json.dumps(data))[0], 0)
-        self.assertEqual(run("xcresult-tests.py", ["runner-error"], "not json")[0], 0)
+        code, out, _ = run("xcresult-tests.py", ["no-runner-error", self.json_file(json.dumps(data))])
+        self.assertEqual(code, 1)
+        self.assertIn("runner error", out)
+        for garbage in ("not json", "", "[]", '{"testNodes": []}', '{"testNodes": {}}'):
+            self.assertEqual(run("xcresult-tests.py", ["no-runner-error", self.json_file(garbage)])[0], 1, garbage)
+        self.assertEqual(run("xcresult-tests.py", ["no-runner-error", tempfile.gettempdir() + "/no-such.json"])[0], 1)
+        code, out, _ = run("xcresult-tests.py", ["no-runner-error", self.json_file('{"testNodes": ["x"]}')])
+        self.assertEqual(code, 1)
+        self.assertIn("AttributeError", out)
 
-    def test_crash_issues_blocks_a_retry_after_a_crash(self):
+    def test_no_crash_issues_is_a_positive_check(self):
         assertion, auto = "Assertion Failure", "UI Automation Failure"
-        plain = self.issues_bundle([("A/testOne", "Failure", [(assertion, "XCTAssertTrue failed")])])
-        self.assertEqual(run("xcresult-tests.py", ["crash-issues", plain])[0], 1)
+        plain = self.issues_bundle([("A/testOne", "Failure", [(assertion, "XCTAssertTrue failed")]),
+                                    ("A/testTwo", "Failure", [])])
+        self.assertEqual(run("xcresult-tests.py", ["no-crash-issues", plain])[0], 0)
         crashed = self.issues_bundle([("A/testOne", "Failure", [(auto, "Herdr crashed in Foo.bar()")])])
-        code, out, _ = run("xcresult-tests.py", ["crash-issues", crashed])
-        self.assertEqual(code, 0)
+        code, out, _ = run("xcresult-tests.py", ["no-crash-issues", crashed])
+        self.assertEqual(code, 1)
         self.assertIn("A/testOne()", out)
-        self.assertEqual(run("xcresult-tests.py", ["crash-issues", tempfile.gettempdir() + "/no-such.xcresult"])[0], 0)
+        # Unreadable: no database, or one that records no failed case.
+        self.assertEqual(run("xcresult-tests.py", ["no-crash-issues", tempfile.gettempdir() + "/no-such.xcresult"])[0], 1)
+        passed = self.issues_bundle([("A/testOne", "Success", [])])
+        self.assertEqual(run("xcresult-tests.py", ["no-crash-issues", passed])[0], 1)
+        # An exception: a description stored as a blob, which the text pattern cannot search.
+        odd = self.issues_bundle([("A/testOne", "Failure", [(assertion, b"crash")])])
+        code, out, _ = run("xcresult-tests.py", ["no-crash-issues", odd])
+        self.assertEqual(code, 1)
+        self.assertIn("TypeError", out)
 
     def test_all_passed_needs_every_retried_case_passed_and_nothing_else(self):
         one, two = "-only-testing:HerdrUITests/A/testOne", "-only-testing:HerdrUITests/A/testTwo"
-        passed = bundle([("A", "testOne", "Passed", []), ("A", "testTwo", "Passed", [])])
-        self.assertEqual(run("xcresult-tests.py", ["all-passed", one, two], passed)[0], 0)
+        def all_passed(text, *selectors):
+            return run("xcresult-tests.py", ["all-passed", self.json_file(text), *selectors])[0]
+        self.assertEqual(all_passed(bundle([("A", "testOne", "Passed", []), ("A", "testTwo", "Passed", [])]), one, two), 0)
         # A case that did not run, failed, or was skipped keeps the failure.
-        self.assertEqual(run("xcresult-tests.py", ["all-passed", one, two],
-                             bundle([("A", "testOne", "Passed", [])]))[0], 1)
-        self.assertEqual(run("xcresult-tests.py", ["all-passed", one, two],
-                             bundle([("A", "testOne", "Passed", []), ("A", "testTwo", "Failed", ["x"])]))[0], 1)
-        self.assertEqual(run("xcresult-tests.py", ["all-passed", one],
-                             bundle([("A", "testOne", "Skipped", [])]))[0], 1)
+        self.assertEqual(all_passed(bundle([("A", "testOne", "Passed", [])]), one, two), 1)
+        self.assertEqual(all_passed(bundle([("A", "testOne", "Passed", []), ("A", "testTwo", "Failed", ["x"])]),
+                                    one, two), 1)
+        self.assertEqual(all_passed(bundle([("A", "testOne", "Skipped", [])]), one), 1)
         # A runner error next to passing cases, no test case at all, or no readable bundle.
         data = json.loads(bundle([("A", "testOne", "Passed", [])]))
         data["testNodes"][0]["children"][0]["children"].append({"nodeType": "Test Case", "result": "Failed",
             "nodeIdentifier": "HerdrUITests-Runner (21391) encountered an error"})
-        self.assertEqual(run("xcresult-tests.py", ["all-passed", one], json.dumps(data))[0], 1)
-        self.assertEqual(run("xcresult-tests.py", ["all-passed", one], json.dumps({"testNodes": []}))[0], 1)
-        self.assertEqual(run("xcresult-tests.py", ["all-passed", one], "not json")[0], 1)
+        self.assertEqual(all_passed(json.dumps(data), one), 1)
+        self.assertEqual(all_passed(json.dumps({"testNodes": []}), one), 1)
+        self.assertEqual(all_passed("not json", one), 1)
+        self.assertEqual(run("xcresult-tests.py", ["all-passed", tempfile.gettempdir() + "/no-such.json", one])[0], 1)
+        # An exception: a node that is no object.
+        self.assertEqual(all_passed('{"testNodes": [{"children": ["x"]}]}', one), 1)
+
+
+class RetryGateTests(unittest.TestCase):
+    """ui-shard.sh's retry_failed_tests, run as the production functions with xcrun,
+    xcodebuild and the bundle identifier stubbed: only a retry every gate checked as clean
+    passes the round; a stub that fails or returns nothing usable keeps the failure."""
+
+    FUNCTIONS = ("beautify", "retry_failed_tests", "no_app_crash_in")
+    SELECTOR = "-only-testing:HerdrUITests/A/testOne"
+    issues_bundle = XcresultTests.issues_bundle
+
+    @classmethod
+    def setUpClass(cls):
+        source = (HERE / "ui-shard.sh").read_text()
+        bodies = []
+        for name in cls.FUNCTIONS:
+            match = re.search(r"^%s\(\) \{\n.*?^\}\n" % name, source, re.M | re.S)
+            assert match, "ui-shard.sh has no function %s" % name
+            bodies.append(match.group(0))
+        cls.functions = "".join(bodies)
+
+    def retry(self, **fake):
+        """Runs retry_failed_tests L on one failed case; returns (status, output, FLAKES.txt)."""
+        work = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, work)
+        first = work / "TestReceipts" / "L-first.xcresult"
+        first.mkdir(parents=True)
+        database = pathlib.Path(self.issues_bundle(fake.pop("issues", [("A/testOne", "Failure", [])])))
+        shutil.copy(database / "database.sqlite3", first / "database.sqlite3")
+        (work / "first.json").write_text(fake.pop("first", bundle([("A", "testOne", "Failed", ["x"])])))
+        (work / "retry.json").write_text(fake.pop("retry", bundle([("A", "testOne", "Passed", [])])))
+        if "ips" in fake:
+            (work / "report.ips").write_text(fake.pop("ips"))
+        harness = """set -uo pipefail
+cd "$WORK" || exit 99
+SIM_TMP="$WORK/sim"; mkdir -p "$SIM_TMP"
+XCRESULT_TESTS="${FAKE_XCRESULT_TESTS:-$HERE/xcresult-tests.py}"
+PROJECT=(-project Herdr.xcodeproj -scheme Herdr)
+TIMEOUT_BIN=fake_timeout
+fake_timeout() { shift 2; "$@"; }
+xcodebuild() { return "${FAKE_XCODEBUILD:-0}"; }
+bundle_identifier() { echo com.jerryfane.herdr; }
+xcrun() {
+  local which=retry
+  case "$2 $3" in
+    "get test-results")
+      case "$6" in *-first.xcresult) which=first ;; esac
+      [ "${FAKE_GET:-}" = "$which" ] && { echo "xcresulttool: cannot open $6" >&2; return 1; }
+      cat "$WORK/$which.json" ;;
+    "export attachments")
+      case "$5" in *-first.xcresult) which=first ;; esac
+      [ "${FAKE_EXPORT:-}" = "$which" ] && return 1
+      mkdir -p "$7"
+      if [ -f "$WORK/report.ips" ] && [ "${FAKE_IPS_IN:-$which}" = "$which" ]; then cp "$WORK/report.ips" "$7/"; fi ;;
+    *) return 1 ;;
+  esac
+}
+%s
+retry_failed_tests L udid "%s" app
+""" % (self.functions, self.SELECTOR)
+        env = dict(os.environ, WORK=str(work), HERE=str(HERE))
+        env.update({"FAKE_" + key.upper(): value for key, value in fake.items()})
+        result = subprocess.run(["bash", "-c", harness], env=env, capture_output=True, text=True)
+        flakes = work / "TestReceipts" / "FLAKES.txt"
+        return result.returncode, result.stdout + result.stderr, flakes.read_text() if flakes.exists() else None
+
+    def test_a_clean_retry_passes_and_records_the_flake(self):
+        code, out, flakes = self.retry()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(flakes, "L A/testOne\n")
+        self.assertIn("::warning::flaky (passed on retry): L A/testOne", out)
+
+    def test_every_gate_that_cannot_check_or_finds_something_keeps_the_failure(self):
+        herdr_crash = json.dumps({"bundleID": "com.jerryfane.herdr"}) + "\n{}\n"
+        first_record = "the first run's record does not show only test-case failures"
+        first_issues = "the first run's issues mention a crash or cannot be read"
+        first_crash = "the first run's attachments do not show that com.jerryfane.herdr did not crash"
+        retry_record = "the retry's result bundle does not show every failed test passed"
+        retry_crash = "the retry's attachments do not show that com.jerryfane.herdr did not crash"
+        cases = {
+            "xcresulttool cannot read the first bundle": ({"get": "first"}, "cannot read the first run's result bundle"),
+            "xcresulttool cannot read the retry bundle": ({"get": "retry"}, "cannot read the retry's result bundle"),
+            "the first attachments cannot be exported": ({"export": "first"}, first_crash),
+            "the retry attachments cannot be exported": ({"export": "retry"}, retry_crash),
+            "the retry failed": ({"xcodebuild": "65"}, "the retry failed too (xcodebuild exit 65)"),
+            "the first record is garbage": ({"first": "not json"}, first_record),
+            "the first record is empty": ({"first": ""}, first_record),
+            "the first run had a runner error": ({"first": json.dumps({"testNodes": [{
+                "nodeType": "UI test bundle", "name": "HerdrUITests", "children": [
+                    {"nodeType": "Test Case", "result": "Failed", "nodeIdentifier": "A/testOne()"},
+                    {"nodeType": "Test Case", "result": "Failed",
+                     "nodeIdentifier": "HerdrUITests-Runner (1) encountered an error"}]}]})}, first_record),
+            "an issue mentions a crash": (
+                {"issues": [("A/testOne", "Failure", [("Assertion Failure", "Herdr crashed")])]}, first_issues),
+            "the database records no failure": ({"issues": [("A/testOne", "Success", [])]}, first_issues),
+            "the app crashed in the first run": ({"ips": herdr_crash, "ips_in": "first"}, first_crash),
+            "the app crashed in the retry": ({"ips": herdr_crash, "ips_in": "retry"}, retry_crash),
+            "a crash report cannot be read": ({"ips": "not json\n"}, first_crash),
+            "the retry's record is garbage": ({"retry": "{"}, retry_record),
+            "the retry ran nothing": ({"retry": json.dumps({"testNodes": []})}, retry_record),
+            "the retry failed the case": ({"retry": bundle([("A", "testOne", "Failed", ["x"])])}, retry_record),
+            "the helper is missing": ({"xcresult_tests": "/nonexistent/xcresult-tests.py"}, first_record),
+        }
+        for name, (fake, verdict) in cases.items():
+            with self.subTest(name):
+                code, out, flakes = self.retry(**fake)
+                self.assertEqual(code, 1, out)
+                self.assertIsNone(flakes, out)
+                self.assertIn("first run failed and %s; the failure stands" % verdict, out)
 
 
 class SimStateTests(unittest.TestCase):

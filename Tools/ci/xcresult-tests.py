@@ -29,22 +29,32 @@ and test a file.
       else (an assertion above all), when a failed case has no issue, and when the bundle's
       issue records cannot be read.
 
-  xcresult-tests.py app-crashed ATTACHMENTS_DIR BUNDLE_ID
-      Exits 0 when the exported attachments hold a crash report (.ips) of BUNDLE_ID.
+THE RETRY GATES ARE POSITIVE CHECKS. ui-shard.sh lets a failed round pass on its retry only
+when each of these exits 0, so 0 means "read the input and found nothing", and everything
+else (a finding, unreadable or unexpected input, a missing file, any exception) exits 1
+with the reason printed. Review of #747: the first shape, "exit 0 when a crash is found",
+read an unreadable bundle or a Python exception as clean.
 
-  xcresult-tests.py runner-error
-      Exits 0 when the bundle records a failed test case that is no Class/method case (the
-      test runner's own error, see failed-tests) or cannot be read: a round whose runner
-      failed outside its tests is never retried into a pass.
+  xcresult-tests.py no-app-crash ATTACHMENTS_DIR BUNDLE_ID
+      Exits 0 only when ATTACHMENTS_DIR exists and holds no crash report (.ips) of
+      BUNDLE_ID. A report whose header cannot be read counts as the app's.
 
-  xcresult-tests.py crash-issues BUNDLE
-      Exits 0 when an issue recorded against a failed test case mentions a crash, printing
-      it, or when the bundle's issue records cannot be read.
+  xcresult-tests.py no-runner-error BUNDLE_JSON_FILE
+      Exits 0 only when BUNDLE_JSON_FILE (`xcresulttool get test-results tests` output)
+      records test cases and no failed one outside a Class/method case (the test runner's
+      own error, see failed-tests): a round whose runner failed outside its tests is never
+      retried into a pass.
 
-  xcresult-tests.py all-passed SELECTOR...
+  xcresult-tests.py no-crash-issues BUNDLE
+      Exits 0 only when the bundle's database records failed test cases and no issue
+      recorded against one of them mentions a crash.
+
+  xcresult-tests.py all-passed BUNDLE_JSON_FILE SELECTOR...
       Exits 0 only when every -only-testing:Bundle/Class/method SELECTOR is recorded as a
-      passed test case and no test case has any other result. Unreadable input exits 1: a
-      retry that left no readable record of its tests never counts as a pass.
+      passed test case and no test case has any other result.
+
+Every command exits 1 on an exception: for the others, too, 1 is the cautious answer (a
+round may have run, a class is missing, a failure is not infrastructure).
 """
 import glob
 import json
@@ -183,17 +193,40 @@ def infra_only(bundle):
     return verdict
 
 
-def app_crashed(directory, bundle_id):
-    for report in glob.glob(os.path.join(directory, "**", "*.ips"), recursive=True):
+def no_app_crash(directory, bundle_id):
+    if not bundle_id:
+        print("no bundle identifier to look for")
+        return 1
+    if not os.path.isdir(directory):
+        print("no attachments directory %s" % directory)
+        return 1
+    verdict = 0
+    for report in sorted(glob.glob(os.path.join(directory, "**", "*.ips"), recursive=True)):
         try:
             with open(report, errors="replace") as source:
                 header = json.loads(source.readline())
-        except (OSError, ValueError):
+        except (OSError, ValueError) as error:
+            print("unreadable crash report %s (%s): it may be the app's" % (report, error))
+            verdict = 1
             continue
         if header.get("bundleID") == bundle_id:
             print("crash report of %s: %s" % (bundle_id, report))
-            return 0
-    return 1
+            verdict = 1
+    return verdict
+
+
+def load_file(path):
+    """The `xcresulttool get test-results tests` JSON in path, or None (reason printed)."""
+    try:
+        with open(path) as source:
+            data = json.load(source)
+    except (OSError, ValueError) as error:
+        print("cannot read %s: %s" % (path, error))
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("testNodes"), list):
+        print("%s holds no testNodes list" % path)
+        return None
+    return data
 
 
 def test_cases(data):
@@ -206,46 +239,55 @@ def test_cases(data):
             cases.append(("%s/%s" % (bundle, identifier(node)), node.get("result")))
         for child in node.get("children", []):
             walk(child, bundle)
-    for node in data.get("testNodes", []):
+    for node in data["testNodes"]:
         walk(node, None)
     return cases
 
 
-def runner_error(data):
+def no_runner_error(path):
+    data = load_file(path)
     if data is None:
-        print("the result bundle cannot be read")
-        return 0
-    errors = [case for case, result in test_cases(data)
+        return 1
+    cases = test_cases(data)
+    if not cases:
+        print("%s records no test case" % path)
+        return 1
+    errors = [case for case, result in cases
               if result == "Failed" and not CASE.fullmatch(case.partition("/")[2])]
     for case in errors:
         print("runner error: %s" % case)
-    return 0 if errors else 1
+    return 1 if errors else 0
 
 
 CRASH = re.compile(r"crash", re.I)
 
 
-def crash_issues(bundle):
+def no_crash_issues(bundle):
     database = os.path.join(bundle, "database.sqlite3")
     try:
         connection = sqlite3.connect("file:%s?mode=ro" % database, uri=True)
         rows = connection.execute(
             "SELECT tc.identifier, ti.compactDescription"
             " FROM TestCaseRuns tcr JOIN TestCases tc ON tcr.testCase_fk = tc.rowid"
-            " JOIN TestIssues ti ON ti.testCaseRun_fk = tcr.rowid"
+            " LEFT JOIN TestIssues ti ON ti.testCaseRun_fk = tcr.rowid"
             " WHERE tcr.result = 'Failure'").fetchall()
     except sqlite3.Error as error:
         print("cannot read the issues of %s: %s" % (bundle, error))
-        return 0
-    crashes = [(case, description) for case, description in rows if CRASH.search(description or "")]
+        return 1
+    if not rows:
+        # The round failed: a database with no failed case is not the one it wrote.
+        print("%s records no failed test case" % database)
+        return 1
+    crashes = [(case, description) for case, description in rows
+               if description is not None and CRASH.search(description)]
     for case, description in crashes:
         print("crash %s: %s" % (case, description.replace("\n", " ")[:300]))
-    return 0 if crashes else 1
+    return 1 if crashes else 0
 
 
-def all_passed(data, selectors):
+def all_passed(path, selectors):
+    data = load_file(path)
     if data is None:
-        print("the retry's result bundle cannot be read")
         return 1
     results = {}
     for case, result in test_cases(data):
@@ -263,24 +305,33 @@ def all_passed(data, selectors):
     return verdict
 
 
+def main(argv):
+    command = argv[1] if len(argv) > 1 else ""
+    if command == "failed-tests" and len(argv) == 2:
+        return failed_tests(load())
+    if command == "ran-none" and len(argv) == 2:
+        return ran_none(load())
+    if command == "check-classes" and len(argv) >= 5:
+        return check_classes(load(), argv[2], argv[3], argv[4:])
+    if command == "infra-only" and len(argv) == 3:
+        return infra_only(argv[2])
+    if command == "no-app-crash" and len(argv) == 4:
+        return no_app_crash(argv[2], argv[3])
+    if command == "no-runner-error" and len(argv) == 3:
+        return no_runner_error(argv[2])
+    if command == "no-crash-issues" and len(argv) == 3:
+        return no_crash_issues(argv[2])
+    if command == "all-passed" and len(argv) >= 4:
+        return all_passed(argv[2], argv[3:])
+    print(__doc__, file=sys.stderr)
+    return 64
+
 
 if __name__ == "__main__":
-    command = sys.argv[1] if len(sys.argv) > 1 else ""
-    if command == "failed-tests" and len(sys.argv) == 2:
-        sys.exit(failed_tests(load()))
-    if command == "ran-none" and len(sys.argv) == 2:
-        sys.exit(ran_none(load()))
-    if command == "check-classes" and len(sys.argv) >= 5:
-        sys.exit(check_classes(load(), sys.argv[2], sys.argv[3], sys.argv[4:]))
-    if command == "infra-only" and len(sys.argv) == 3:
-        sys.exit(infra_only(sys.argv[2]))
-    if command == "app-crashed" and len(sys.argv) == 4:
-        sys.exit(app_crashed(sys.argv[2], sys.argv[3]))
-    if command == "runner-error" and len(sys.argv) == 2:
-        sys.exit(runner_error(load()))
-    if command == "crash-issues" and len(sys.argv) == 3:
-        sys.exit(crash_issues(sys.argv[2]))
-    if command == "all-passed" and len(sys.argv) >= 3:
-        sys.exit(all_passed(load(), sys.argv[2:]))
-    print(__doc__, file=sys.stderr)
-    sys.exit(64)
+    try:
+        status = main(sys.argv)
+    except Exception as error:  # pylint: disable=broad-except
+        # Never "clean" by accident: 1 is every command's cautious answer.
+        print("%s: %s: %s" % (os.path.basename(sys.argv[0]), type(error).__name__, error))
+        status = 1
+    sys.exit(status)

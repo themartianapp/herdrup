@@ -327,7 +327,9 @@ every one of them passes, with no crash report and no test-runner error, the rou
 and each such test is a flake: a `<round> <Class/method>` line in `TestReceipts/FLAKES.txt`
 (in the exported receipts) and a `::warning::flaky (passed on retry)` line. A retry that
 fails, runs out, or leaves no passing record, and a round that ran no test case, crashed or
-ran out of its budget, keeps the failure; manual reruns execute the entire selected job.
+ran out of its budget, keeps the failure. Each of those checks must positively read its
+input as clean: a result bundle `xcresulttool` cannot read, attachments it cannot export, or
+a helper that errors keeps the failure too. Manual reruns execute the entire selected job.
 The optimized Settings job builds only the selected simulator architecture and caches
 `Build/Products` for the same workflow run, commit, Xcode/SDK, OS, architecture and workspace.
 It saves a successful build before testing, so a test failure does not discard the build.
