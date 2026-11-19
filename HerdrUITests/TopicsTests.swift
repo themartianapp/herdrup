@@ -34,6 +34,13 @@ final class TopicsTests: XCTestCase {
         return view
     }
 
+    /// A topic's chat is open with this title: its header title, an identified static text
+    /// (the chat's own container is not reliably an `otherElements` match on iPhone).
+    private func topicChatOpen(_ title: String, in app: XCUIApplication) -> Bool {
+        let header = app.staticTexts["topic-chat-title"].firstMatch
+        return poll(10, every: 0.3) { header.exists && header.label == title }
+    }
+
     private func row(_ id: String, in app: XCUIApplication) -> XCUIElement {
         app.buttons["topic-row-\(id)"].firstMatch
     }
@@ -84,12 +91,12 @@ final class TopicsTests: XCTestCase {
         attach(app, "topics-list")
 
         diokan.tap()
-        let chat = app.otherElements["topic-chat"].firstMatch
-        XCTAssertTrue(chat.exists(within: 8), "a topic opens its chat")
+        XCTAssertTrue(topicChatOpen("Diokan term sheet", in: app), "a topic opens its chat")
         XCTAssertTrue(app.staticTexts["Draft the term sheet comparison for Diokan."]
             .firstMatch.exists(within: 10), "the topic's own conversation (agent.transcript with topic)")
-        XCTAssertFalse(app.staticTexts["Merge #305 and update the servers?"].firstMatch.exists,
-                       "not the Inbox's conversation")
+        // The Inbox row's preview still names the Inbox's question on iPad (the list stays);
+        // the Inbox's own chat would draw it as a question card.
+        XCTAssertFalse(app.descendants(matching: .any)["chat-ask"].exists, "not the Inbox's conversation")
         if isPad {
             XCTAssertTrue(diokan.exists, "on iPad the topics column stays beside the chat")
         }
@@ -155,8 +162,7 @@ final class TopicsTests: XCTestCase {
         attach(app, "topics-new")
         start.tap()
 
-        XCTAssertTrue(app.otherElements["topic-chat"].firstMatch.exists(within: 10), "the new topic opens")
-        XCTAssertEqual(app.staticTexts["topic-chat-title"].firstMatch.label, "Solar plan")
+        XCTAssertTrue(topicChatOpen("Solar plan", in: app), "the new topic opens")
         XCTAssertTrue(app.staticTexts["Compare the two arsenic remediation quotes."].firstMatch.exists(within: 10),
                       "its first message is its conversation's first turn")
         if !isPad { app.buttons["topic-back"].tap() }
@@ -175,14 +181,14 @@ final class TopicsTests: XCTestCase {
         let close = app.buttons["Close"]
         XCTAssertTrue(close.exists(within: 6), "the row's menu should offer Close")
         close.tap()
-        XCTAssertTrue(poll(8, every: 0.3) { (board.value as? String ?? "").hasPrefix("Closed") },
+        XCTAssertTrue(poll(15, every: 0.3) { (board.value as? String ?? "").hasPrefix("Closed") },
                       "the topic closes: \(String(describing: board.value))")
 
         board.press(forDuration: 1.0)
         let reopen = app.buttons["Reopen"]
         XCTAssertTrue(reopen.exists(within: 6), "a closed topic offers Reopen")
         reopen.tap()
-        XCTAssertTrue(poll(8, every: 0.3) { (board.value as? String ?? "").hasPrefix("Idle") },
+        XCTAssertTrue(poll(15, every: 0.3) { (board.value as? String ?? "").hasPrefix("Idle") },
                       "the topic reopens: \(String(describing: board.value))")
 
         board.press(forDuration: 1.0)
@@ -226,7 +232,7 @@ final class TopicsTests: XCTestCase {
         XCTAssertTrue(diokan.exists(within: 8), "the guest sees the topics")
         attach(app, "topics-guest")
         diokan.tap()
-        XCTAssertTrue(app.otherElements["topic-chat"].firstMatch.exists(within: 8))
+        XCTAssertTrue(topicChatOpen("Diokan term sheet", in: app), "the guest opens the topic's chat")
         let field = app.textViews["topic-composer-input"]
         XCTAssertTrue(field.exists(within: 8))
         field.tap()

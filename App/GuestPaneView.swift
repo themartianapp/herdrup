@@ -192,10 +192,11 @@ struct GuestPaneView: View {
                 }
             }
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { terminalHeight = $0 }
+            // Under Topics: invisible and untouchable, with no accessibility modifier (which
+            // would turn the block into one element carrying its composer's identifier).
             bottomBlock
                 .opacity(showingTopics ? 0 : 1)
                 .allowsHitTesting(!showingTopics)
-                .accessibilityHidden(showingTopics)
         }
         .background(pageGround.ignoresSafeArea())
         .overlay { EdgeSwipeBack { onClose() } }
