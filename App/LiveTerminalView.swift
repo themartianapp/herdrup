@@ -184,11 +184,12 @@ struct LiveTerminalView: UIViewRepresentable {
     /// The host's own copy of the stuck-stream threshold, so it judges staleness by the
     /// same rule the watchdog reconnects on rather than a second, drifting number.
     static var streamStuckTimeout: TimeInterval { Coordinator.streamStuckTimeout }
-    /// DEBUG builds take `HERDR_STEADY_CARET` for UI tests that tap with a pane on screen: a
-    /// blinking caret never lets XCUITest's "wait for the app to idle" finish (60 s a tap).
+    /// DEBUG builds take `HERDR_STEADY_CARET` (and `UITestMotion.off`) for UI tests that tap
+    /// with a pane on screen: a blinking caret never lets XCUITest's "wait for the app to
+    /// idle" finish (60 s a tap).
     private static let steadyCaret: Bool = {
         #if DEBUG
-        return ProcessInfo.processInfo.environment["HERDR_STEADY_CARET"] != nil
+        return ProcessInfo.processInfo.environment["HERDR_STEADY_CARET"] != nil || UITestMotion.off
         #else
         return false
         #endif
@@ -1111,13 +1112,18 @@ struct LiveTerminalView: UIViewRepresentable {
         /// the history rows off the top — no more (blank rows below them stay on screen, and
         /// the seed's clear erases them), no fewer, however short the history is.
         private func seedKeyframeHistory(_ history: Data, rows: Int, into view: TerminalView) {
-            view.feed(byteArray: Self.historyResetSequence[...])
+            var clean = graphicsFilter.filter([UInt8](history)[...])
+            while let last = clean.last, last == 0x0A || last == 0x0D { clean.removeLast() }
+            // History to parse: from the state a fresh terminal starts in, whatever modes this
+            // one kept (`Terminal.historyReplacementSequence`; a retained scroll region kept
+            // all but one screen of it out of the scrollback, #726). None: only clear, which
+            // leaves a full-screen app on its alternate screen.
+            view.feed(byteArray: (clean.isEmpty ? Self.historyResetSequence
+                                                 : Terminal.historyReplacementSequence)[...])
             // The screen's top row is where the history starts, and so what the cursor's
             // page must adjoin. Taken before the history is fed: if feeding it overflows the
             // ring, this row is gone and paging ends rather than stitching across the gap.
             historyTop = view.getTerminal().historyTop
-            var clean = graphicsFilter.filter([UInt8](history)[...])
-            while let last = clean.last, last == 0x0A || last == 0x0D { clean.removeLast() }
             guard !clean.isEmpty else { return }
             view.feed(byteArray: clean[...])
             // SGR reset first so the scrolled-in blank rows aren't tinted by the history's colours.
@@ -3209,11 +3215,13 @@ struct LiveTerminalView: UIViewRepresentable {
                         // Hidden and parked again while the read was out: the next show re-seeds.
                         if parked { return }
                         if let history, !history.isEmpty, !stopped {
-                            // After an unpark the screen still shows the pane from before it was
-                            // parked, and feeding the history from the cursor would push those
-                            // stale rows into the scrollback under it: start from an empty
-                            // terminal, as an attach does. (Parking already freed the scrollback.)
-                            if !firstReset { view.feed(byteArray: Self.historyResetSequence[...]) }
+                            // Parsed from the state a fresh terminal starts in, on an empty one,
+                            // whichever reset this is. After an unpark the emulator kept the
+                            // pane's modes from before it was parked: a scroll region among them
+                            // kept all but one screen of the history out of the scrollback (#726),
+                            // and its screen would push stale rows in under the history. A no-op
+                            // on the first reset's fresh emulator. (Parking freed the scrollback.)
+                            view.feed(byteArray: Terminal.historyReplacementSequence[...])
                             let cleanHistory = graphicsFilter.filter(history[...])   // backfill can carry graphics too
                             if !cleanHistory.isEmpty { view.feed(byteArray: cleanHistory[...]) }
                             view.feed(byteArray: [UInt8]("\u{1b}[0m".utf8)[...])
@@ -4334,8 +4342,9 @@ struct LiveTerminalView: UIViewRepresentable {
         /// keep no scrollback of their own regardless; scrolling THOSE is handled by
         /// `handleScrollPan`, which sends wheel/arrow scroll INTO the agent.)
         private static let clearSequence = [UInt8]("\u{1b}[2J\u{1b}[H".utf8)
-        /// Clear scrollback AND screen and home: the emulator's history is about to be
-        /// replaced wholesale by a keyframe's (`seedKeyframeHistory`).
+        /// Clear scrollback AND screen and home, modes untouched: a keyframe replaces the
+        /// history with none (`seedKeyframeHistory`). History to parse goes in after
+        /// `Terminal.historyReplacementSequence` instead.
         private static let historyResetSequence = [UInt8]("\u{1b}[0m\u{1b}[3J\u{1b}[2J\u{1b}[H".utf8)
         /// The dim terminated marker shown when the process exits.
         private static let exitedNotice = [UInt8]("\r\n\u{1b}[2mprocess exited\u{1b}[0m\r\n".utf8)

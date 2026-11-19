@@ -15,17 +15,17 @@ final class CachedHomeTests: XCTestCase {
 
         // Well inside the 8 s the daemon takes: these rows can only have come from the cache.
         let keptAlfa = element(app, "agent-row-w1:p1")
-        XCTAssertTrue(keptAlfa.waitForExistence(timeout: 4), "the kept roster did not paint before agent.list answered")
+        XCTAssertTrue(keptAlfa.exists(within: 4), "the kept roster did not paint before agent.list answered")
         XCTAssertTrue(element(app, "agent-row-w1:p2").exists, "every kept agent shows")
         XCTAssertTrue(app.staticTexts["kept-alfa"].exists)
         XCTAssertTrue(element(app, "agents-updating").exists, "a kept roster is marked as updating")
 
         // The answer lands: the same pane's row now carries the fresh name, the new agent
         // appears, the vanished one goes, and the mark clears.
-        XCTAssertTrue(element(app, "agent-row-w1:p3").waitForExistence(timeout: 15), "the fresh roster never replaced the kept one")
-        XCTAssertTrue(app.staticTexts["fresh-alfa"].waitForExistence(timeout: 2))
+        XCTAssertTrue(element(app, "agent-row-w1:p3").exists(within: 15), "the fresh roster never replaced the kept one")
+        XCTAssertTrue(app.staticTexts["fresh-alfa"].exists(within: 2))
         XCTAssertFalse(app.staticTexts["kept-alfa"].exists)
-        XCTAssertTrue(poll(3, every: 0.2) { !self.element(app, "agents-updating").exists }, "the Updating mark stayed")
+        XCTAssertTrue(element(app, "agents-updating").gone(within: 3), "the Updating mark stayed")
     }
 
     /// The first connection fails (herdr is not running): the kept rows were never confirmed,
@@ -35,13 +35,13 @@ final class CachedHomeTests: XCTestCase {
         let app = XCUIApplication.launched(mock: "cachedhome", environment: [
             "HERDR_MOCK_LIST_DELAY": "3", "HERDR_MOCK_LIST_FAIL": "daemonUnavailable"])
 
-        XCTAssertTrue(element(app, "agent-row-w1:p1").waitForExistence(timeout: 4), "the kept roster did not paint")
+        XCTAssertTrue(element(app, "agent-row-w1:p1").exists(within: 4), "the kept roster did not paint")
         XCTAssertTrue(element(app, "agents-updating").exists, "a kept roster is marked as updating")
 
-        XCTAssertTrue(app.staticTexts["herdr isn't running on cachedhome"].waitForExistence(timeout: 10),
+        XCTAssertTrue(app.staticTexts["herdr isn't running on cachedhome"].exists(within: 10),
                       "the failed connection was hidden behind the kept roster")
         XCTAssertTrue(app.buttons["retry"].exists, "the guidance offers a retry")
-        XCTAssertTrue(poll(3, every: 0.2) { !self.element(app, "agents-updating").exists },
+        XCTAssertTrue(element(app, "agents-updating").gone(within: 3),
                       "the Updating mark stayed after the connection failed")
     }
 
@@ -52,12 +52,12 @@ final class CachedHomeTests: XCTestCase {
         let app = XCUIApplication.launched(mock: "cachedhome", environment: [
             "HERDR_MOCK_LIST_DELAY": "2", "HERDR_MOCK_LIST_FAIL": "daemonUnavailable,incompatible"])
 
-        XCTAssertTrue(element(app, "agent-row-w1:p1").waitForExistence(timeout: 4), "the kept roster did not paint")
+        XCTAssertTrue(element(app, "agent-row-w1:p1").exists(within: 4), "the kept roster did not paint")
         let notRunning = app.staticTexts["herdr isn't running on cachedhome"]
-        XCTAssertTrue(notRunning.waitForExistence(timeout: 10), "the first failure's guidance did not show")
+        XCTAssertTrue(notRunning.exists(within: 10), "the first failure's guidance did not show")
 
         app.buttons["retry"].tap()
-        XCTAssertTrue(app.staticTexts["herdr here is too old"].waitForExistence(timeout: 10),
+        XCTAssertTrue(app.staticTexts["herdr here is too old"].exists(within: 10),
                       "the Retry's failure kept the first failure's guidance")
         XCTAssertFalse(notRunning.exists)
     }
@@ -71,11 +71,11 @@ final class CachedHomeTests: XCTestCase {
         let app = XCUIApplication.launched(mock: "cachedhome", environment: [
             "HERDR_MOCK_LIST_DELAY": "0", "HERDR_MOCK_STREAM_DELAY": "8", "HERDR_STEADY_CARET": "1"])
         let row = element(app, "agent-row-w1:p3")
-        XCTAssertTrue(row.waitForExistence(timeout: 10), "the roster did not load")
+        XCTAssertTrue(row.exists(within: 10), "the roster did not load")
         row.tap()
 
         let kept = element(app, "terminal-kept-screen")
-        XCTAssertTrue(kept.waitForExistence(timeout: 4), "the terminal did not paint its kept screen")
+        XCTAssertTrue(kept.exists(within: 4), "the terminal did not paint its kept screen")
         XCTAssertTrue(kept.isHittable, "the kept screen exists but something is drawn over it")
         XCTAssertTrue((kept.value as? String)?.contains("KEPT-SCREEN-FROM-LAST-LAUNCH") == true,
                       "the kept screen does not hold last launch's text")

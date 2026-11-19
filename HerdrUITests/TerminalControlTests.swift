@@ -236,7 +236,7 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
         for _ in 0..<2 {
             let deny = springboard.buttons["Don’t Allow"].firstMatch
             let asciiDeny = springboard.buttons["Don't Allow"].firstMatch
-            if deny.waitForExistence(timeout: 2) { deny.tap() }
+            if deny.exists(within: 2) { deny.tap() }
             else if asciiDeny.exists { asciiDeny.tap() }
         }
         if app.buttons["Stop dictation"].exists { app.buttons["Stop dictation"].tap() }
@@ -261,7 +261,7 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
         // permission prompts. Decline it before refocusing: XCTest otherwise
         // taps its privacy link as an interruption and sends the next key nowhere.
         let dictationOptIn = springboard.alerts["Enable Dictation?"]
-        if dictationOptIn.waitForExistence(timeout: 5) {
+        if dictationOptIn.exists(within: 5) {
             dictationOptIn.buttons["Not Now"].tap()
         }
         // The ordinary-key half needs an input path, and a dictation attempt can leave
@@ -290,7 +290,7 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
         // shape of failure the workflow refuses to let a warm rerun hide.
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30),
                       "the app did not return to the foreground")
-        XCTAssertTrue(app.staticTexts["terminal-interaction-probe"].waitForExistence(timeout: 30),
+        XCTAssertTrue(app.staticTexts["terminal-interaction-probe"].exists(within: 30),
                       "the probe never came back after reactivation")
         focusTerminal(); typeDirect("p"); input("p", previous: 0)
         attach("app-deactivation-no-modifier-leak")
@@ -320,7 +320,7 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
     func testReplyContainingOnlyNewlinesIsNotSendable() {
         launch("control")
         let field = app.textViews["terminal-reply-input"]
-        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        XCTAssertTrue(field.exists(within: 10))
         command("newline-pasteboard")
 
         field.tap()
@@ -328,7 +328,7 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
         let paste = app.descendants(matching: .any)
             .matching(NSPredicate(format: "label == %@", "Paste"))
             .firstMatch
-        XCTAssertTrue(paste.waitForExistence(timeout: 5))
+        XCTAssertTrue(paste.exists(within: 5))
         paste.tap()
         XCTAssertEqual(field.value as? String, "\n\n",
                        "the newlines must actually reach the composer for this to test anything")
@@ -336,14 +336,14 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
                        "a newline-only reply should stay unsendable")
 
         field.typeText("message")
-        XCTAssertTrue(app.buttons["terminal-send-button"].waitForExistence(timeout: 5),
+        XCTAssertTrue(app.buttons["terminal-send-button"].exists(within: 5),
                       "visible text should make the reply sendable")
     }
 
     func testTypingKeepsReplyFocusedAcrossStateUpdates() {
         launch("control")
         let field = app.textViews["terminal-reply-input"]
-        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        XCTAssertTrue(field.exists(within: 10))
 
         field.tap()
         field.typeText("w")
@@ -354,17 +354,17 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
     func testCopiedPhotoOffersPasteAndSendsAttachment() {
         launch("control")
         let field = app.textViews["terminal-reply-input"]
-        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        XCTAssertTrue(field.exists(within: 10))
         command("photo-pasteboard")
 
         XCTAssertTrue(pasteIntoReply(field),
                       "a copied photo should offer Paste in the reply editor")
 
         let chip = replyAttachmentChip
-        XCTAssertTrue(chip.waitForExistence(timeout: 10),
+        XCTAssertTrue(chip.exists(within: 10),
                       "pasting a photo should stage a visible attachment")
         let send = app.buttons["terminal-send-button"]
-        XCTAssertTrue(send.waitForExistence(timeout: 5),
+        XCTAssertTrue(send.exists(within: 5),
                       "a photo should be sendable without caption text")
         XCTAssertTrue(poll(5, every: 0.25) { send.exists && send.isEnabled && send.isHittable },
                       "the staged photo's send action must accept a tap")
@@ -380,17 +380,17 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
     func testCopiedFileOffersPasteAndSendsAttachment() {
         launch("control")
         let field = app.textViews["terminal-reply-input"]
-        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        XCTAssertTrue(field.exists(within: 10))
         command("file-pasteboard")
 
         XCTAssertTrue(pasteIntoReply(field),
                       "a copied file should offer Paste in the reply editor")
 
         let chip = replyAttachmentChip
-        XCTAssertTrue(chip.waitForExistence(timeout: 10),
+        XCTAssertTrue(chip.exists(within: 10),
                       "pasting a file should stage a visible attachment")
         let send = app.buttons["terminal-send-button"]
-        XCTAssertTrue(send.waitForExistence(timeout: 5),
+        XCTAssertTrue(send.exists(within: 5),
                       "a file should be sendable without caption text")
         send.tap()
         XCTAssertTrue(poll(15, every: 0.25) { !chip.exists },
@@ -404,7 +404,7 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
     func testTwoPastedFilesAreBothStagedAndSentTogether() {
         launch("control")
         let field = app.textViews["terminal-reply-input"]
-        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        XCTAssertTrue(field.exists(within: 10))
         // BY NAME, not by counting elements carrying the chip identifier: SwiftUI
         // propagates an identifier to every child of the chip, so a count there reports
         // glyph + label + remove button per attachment, not attachments.
@@ -415,19 +415,19 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
 
         command("photo-pasteboard")
         XCTAssertTrue(pasteIntoReply(field), "the photo should offer Paste")
-        XCTAssertTrue(photoChip.waitForExistence(timeout: 10), "the photo should stage a chip")
+        XCTAssertTrue(photoChip.exists(within: 10), "the photo should stage a chip")
 
         command("file-pasteboard")
         XCTAssertTrue(pasteIntoReply(field), "the file should offer Paste too")
         let note = app.staticTexts["terminal-action-note"]
-        XCTAssertTrue(fileChip.waitForExistence(timeout: 10),
+        XCTAssertTrue(fileChip.exists(within: 10),
                       "the file should stage its own chip — note=\(note.exists ? note.label : "none")")
         XCTAssertTrue(photoChip.exists,
                       "a second paste must ADD an attachment, not replace the first")
         attach("terminal-composer-files")
 
         let send = app.buttons["terminal-send-button"]
-        XCTAssertTrue(send.waitForExistence(timeout: 5))
+        XCTAssertTrue(send.exists(within: 5))
         send.tap()
         for chip in [photoChip, fileChip] {
             XCTAssertTrue(poll(20, every: 0.25) { !chip.exists },
@@ -442,13 +442,13 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
     func testACopiedFileURLAttachesTheFileRatherThanItsPath() {
         launch("control")
         let field = app.textViews["terminal-reply-input"]
-        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        XCTAssertTrue(field.exists(within: 10))
         command("file-url-pasteboard")
 
         XCTAssertTrue(pasteIntoReply(field), "a copied file should offer Paste")
 
         let chip = app.staticTexts["dropped-note.txt"]
-        XCTAssertTrue(chip.waitForExistence(timeout: 10),
+        XCTAssertTrue(chip.exists(within: 10),
                       "the file itself should stage, named as it is on disk")
         XCTAssertEqual(field.value as? String ?? "", "",
                        "and its path must not be pasted as text")
@@ -461,12 +461,12 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
     func testACopiedDocumentBeatsItsFinderIcon() {
         launch("control")
         let field = app.textViews["terminal-reply-input"]
-        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        XCTAssertTrue(field.exists(within: 10))
         command("finder-document-pasteboard")
 
         XCTAssertTrue(pasteIntoReply(field), "a copied document should offer Paste")
 
-        XCTAssertTrue(app.staticTexts["quarterly-report.pdf"].waitForExistence(timeout: 10),
+        XCTAssertTrue(app.staticTexts["quarterly-report.pdf"].exists(within: 10),
                       "the document should stage under its own name, not its icon")
         let icons = app.staticTexts.matching(NSPredicate(format: "label ENDSWITH %@", ".icns"))
         XCTAssertEqual(icons.count, 0, "and no icon should be staged beside it")
@@ -480,16 +480,16 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
     func testAttachButtonPicksAFileThatUploadsAndPrompts() {
         launch("control")
         let paperclip = app.buttons["terminal-attach-button"]
-        XCTAssertTrue(paperclip.waitForExistence(timeout: 10),
+        XCTAssertTrue(paperclip.exists(within: 10),
                       "the terminal composer should offer the paperclip")
-        XCTAssertTrue(reply.waitForExistence(timeout: 5))
+        XCTAssertTrue(reply.exists(within: 5))
         XCTAssertLessThanOrEqual(abs(paperclip.frame.midY - reply.frame.midY), 4,
                                  "at rest the paperclip sits in the composer's one row, beside the text")
         attach("terminal-composer-attach-rest")
 
         paperclip.tap()
         let file = app.buttons["composer-attach-file"]
-        XCTAssertTrue(file.waitForExistence(timeout: 5), "the paperclip should open the attach sheet")
+        XCTAssertTrue(file.exists(within: 5), "the paperclip should open the attach sheet")
         XCTAssertTrue(app.buttons["composer-attach-photos"].exists,
                       "the sheet should offer the photo library as well as files")
         attach("terminal-composer-attach-sheet")
@@ -497,7 +497,7 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
 
         let chip = app.staticTexts["picked-notes.txt"]
         let note = app.staticTexts["terminal-action-note"]
-        XCTAssertTrue(chip.waitForExistence(timeout: 10),
+        XCTAssertTrue(chip.exists(within: 10),
                       "the picked file should stage a chip — note=\(note.exists ? note.label : "none")")
         attach("terminal-composer-attach-chip")
 
@@ -509,7 +509,7 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
         XCTAssertEqual(uploaded["prompts"] as? Int, 0, "picking a file must not prompt the agent")
 
         let send = app.buttons["terminal-send-button"]
-        XCTAssertTrue(send.waitForExistence(timeout: 5), "a picked file should be sendable without text")
+        XCTAssertTrue(send.exists(within: 5), "a picked file should be sendable without text")
         send.tap()
         let delivered = wait {
             ($0["prompts"] as? Int) == 1 && ($0["gramPosts"] as? Int) == 1
@@ -521,6 +521,7 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
                       "the prompt should name the picked file: \(delivered["lastPrompt"] ?? "")")
         XCTAssertTrue(poll(15, every: 0.25) { !chip.exists },
                       "the chip should clear once the prompt is delivered")
+        // Kept: a negative check — a duplicate prompt or post must have had time to arrive.
         Thread.sleep(forTimeInterval: 1)
         let settled = probe()
         XCTAssertEqual(settled["prompts"] as? Int, 1, "one prompt: \(settled)")
@@ -541,7 +542,7 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
         let paste = app.descendants(matching: .any)
             .matching(NSPredicate(format: "label == %@", "Paste"))
             .firstMatch
-        guard paste.waitForExistence(timeout: 5) else { return false }
+        guard paste.exists(within: 5) else { return false }
         paste.tap()
         return true
     }
@@ -553,13 +554,14 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
     func testReplyComposerStartsAsOneRowThenDropsToToolbarAndScrolls() {
         launch("control")
         let field = app.textViews["terminal-reply-input"]
-        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        XCTAssertTrue(field.exists(within: 10))
 
         field.tap()
         field.typeText("one")
         let send = app.buttons["terminal-send-button"]
-        XCTAssertTrue(send.waitForExistence(timeout: 5))
-        Thread.sleep(forTimeInterval: 0.6)
+        XCTAssertTrue(send.exists(within: 5))
+        field.waitForSettledFrame()
+        send.waitForSettledFrame()
         let oneLine = field.frame
         let sendBottom = send.frame.maxY
         XCTAssertEqual(oneLine.midY, send.frame.midY, accuracy: 4,
@@ -567,7 +569,9 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
         XCTAssertLessThan(oneLine.maxX, send.frame.minX, "the text sits beside the buttons")
 
         field.typeText(String(repeating: " wrapped", count: 60))
-        Thread.sleep(forTimeInterval: 0.6)
+        _ = poll(5, every: 0.1) { field.frame.height > oneLine.height }
+        field.waitForSettledFrame()
+        send.waitForSettledFrame()
         let wrapped = field.frame
         XCTAssertGreaterThan(wrapped.height, oneLine.height)
         XCTAssertEqual(send.frame.maxY, sendBottom, accuracy: 2)
@@ -578,7 +582,7 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
         attach("terminal-composer-toolbar")
 
         field.typeText(String(repeating: " overflow", count: 20) + " tail-token")
-        Thread.sleep(forTimeInterval: 0.3)
+        field.waitForSettledFrame()
         XCTAssertEqual(field.frame.height, wrapped.height, accuracy: 2)
         XCTAssertEqual(send.frame.maxY, sendBottom, accuracy: 2)
         XCTAssertTrue((field.value as? String)?.contains("tail-token") == true)
@@ -599,7 +603,7 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
         let paste = app.descendants(matching: .any)
             .matching(NSPredicate(format: "label == %@", "Paste"))
             .firstMatch
-        XCTAssertTrue(paste.waitForExistence(timeout: 5))
+        XCTAssertTrue(paste.exists(within: 5))
         paste.tap()
         XCTAssertTrue((field.value as? String)?.contains("pasted-tail") == true,
                       "a multiline paste should remain in the scrolling composer")
@@ -621,10 +625,12 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
     func testDictatedReplyKeepsItsNewestTextInView() {
         launch("control")
         let field = app.textViews["terminal-reply-input"]
-        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        XCTAssertTrue(field.exists(within: 10))
         command("reply-dictation")
         XCTAssertTrue(poll(8, every: 0.25) { (field.value as? String)?.hasSuffix("dictation-tail") == true },
                       "the dictated text should arrive in the reply field")
+        // Kept: the field's scroll to the end of the dictated text is not visible in the
+        // accessibility tree (only its content offset moves), so there is nothing to poll.
         Thread.sleep(forTimeInterval: 0.6)
         attach("terminal-composer-dictation")
 
@@ -641,20 +647,22 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
     func testReplyComposerReturnsToOneRowWhenTextFitsAgain() {
         launch("control")
         let field = app.textViews["terminal-reply-input"]
-        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        XCTAssertTrue(field.exists(within: 10))
         field.tap()
         field.typeText("wrap")
         let send = app.buttons["terminal-send-button"]
-        XCTAssertTrue(send.waitForExistence(timeout: 5))
+        XCTAssertTrue(send.exists(within: 5))
         func inToolbar() -> Bool { field.frame.maxY <= send.frame.minY + 1 }
         func inOneRow() -> Bool { abs(field.frame.midY - send.frame.midY) <= 4 }
-        Thread.sleep(forTimeInterval: 0.4)
+        field.waitForSettledFrame()
+        send.waitForSettledFrame()
         XCTAssertTrue(inOneRow(), "premise: a short reply starts in one row")
 
         var words = 0
         while !inToolbar() && words < 80 {
             field.typeText(" wrap")
             words += 1
+            // Kept: the loop's interval — lets the layout follow each word before re-checking.
             Thread.sleep(forTimeInterval: 0.25)
         }
         XCTAssertTrue(inToolbar(), "premise: the text wrapped into the toolbar layout")
@@ -664,6 +672,7 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
         while !inOneRow() && deleted < 40 {
             field.typeText(XCUIKeyboardKey.delete.rawValue)
             deleted += 1
+            // Kept: the loop's interval — lets the layout follow each delete before re-checking.
             Thread.sleep(forTimeInterval: 0.25)
         }
         XCTAssertTrue(inOneRow(), "text that fits again returns to the single row")
@@ -690,8 +699,8 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
     /// this bound is the assertion for that: before this change the same sweep committed
     /// on the order of fifteen to twenty.
     func testKeyboardSweepCommitsOneGrid() {
-        launch("control")
-        XCTAssertTrue(app.textViews["terminal-reply-input"].waitForExistence(timeout: 10))
+        launch("control", environment: Self.animatedSweeps)
+        XCTAssertTrue(app.textViews["terminal-reply-input"].exists(within: 10))
         wait { ($0["covered"] as? Bool) == false && ($0["rows"] as? Int ?? 0) >= 2 }
         let openRows = probe()["rows"] as? Int ?? 0
         var commits = probe()["commits"] as? Int ?? 0
@@ -786,7 +795,7 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
     /// The resize fixture (a full screen of history above the prompt) at the pane's real
     /// fit rather than its pinned 80x24, settled.
     private func naturalFixture() -> [String: Any] {
-        launch("resize")
+        launch("resize", environment: Self.animatedSweeps)
         command("natural")
         return wait {
             ($0["covered"] as? Bool) == false && ($0["rows"] as? Int ?? 0) >= 2
@@ -803,25 +812,31 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
     func testComposerGrowthNeverResizesTheTerminal() {
         launch("control")
         let field = reply
-        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        XCTAssertTrue(field.exists(within: 10))
         field.tap()
         field.typeText("one")
         let send = app.buttons["terminal-send-button"]
-        XCTAssertTrue(send.waitForExistence(timeout: 5))
-        // Focus may move the keyboard (or a hardware keyboard's bar): let that settle
-        // before taking the baseline.
-        Thread.sleep(forTimeInterval: 1.5)
-        wait { ($0["covered"] as? Bool) == false }
+        XCTAssertTrue(send.exists(within: 5))
+        // Focus may move the keyboard (or a hardware keyboard's bar): wait for the composer
+        // to stop moving and the terminal grid to commit before taking the baseline.
+        field.waitForSettledFrame()
+        wait {
+            ($0["covered"] as? Bool) == false
+                && ($0["rows"] as? Int) == ($0["commitRows"] as? Int)
+                && ($0["cols"] as? Int) == ($0["commitCols"] as? Int)
+        }
         let before = probe()
         let oneLine = field.frame
 
         field.typeText(String(repeating: " wrapped", count: 60))
         let handle = app.descendants(matching: .any)["composer-expand-handle"].firstMatch
-        if handle.waitForExistence(timeout: 3) {
+        if handle.exists(within: 3) {
             handle.tap()
-            Thread.sleep(forTimeInterval: 0.8)
+            field.waitForSettledFrame()
             handle.tap()
         }
+        // Kept: a negative check — a resize or cover the growth wrongly caused must have had
+        // time to land before the counters are compared.
         Thread.sleep(forTimeInterval: 1.5)
         XCTAssertGreaterThan(field.frame.height, oneLine.height, "premise: the composer grew")
         let after = probe()
@@ -842,8 +857,8 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
     func testUnchangedKeyboardNotificationDoesNotFreezeTheTerminal() throws {
         try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone,
                           "iPad never retains a frame up front for a keyboard notification")
-        launch("control")
-        XCTAssertTrue(reply.waitForExistence(timeout: 10))
+        launch("control", environment: Self.animatedSweeps)
+        XCTAssertTrue(reply.exists(within: 10))
         wait { ($0["covered"] as? Bool) == false && ($0["rows"] as? Int ?? 0) >= 2 }
         let openRows = probe()["rows"] as? Int ?? 0
         command("keyboard-show")
@@ -851,6 +866,7 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
         let before = probe()
 
         command("keyboard-nudge")
+        // Kept: a negative check — a wrongly retained frame must have had time to install.
         Thread.sleep(forTimeInterval: 1.5)
         let after = probe()
         XCTAssertEqual(after["coverInstalls"] as? Int, before["coverInstalls"] as? Int,
@@ -860,4 +876,8 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
         XCTAssertEqual(after["commits"] as? Int, before["commits"] as? Int)
     }
 
+    /// The keyboard tests drive the harness's ANIMATED keyboard sweep (0.25 s, sampled every
+    /// frame) and count what it commits; with animations off the sweep is one jump, and
+    /// "one commit per sweep" would hold however many grids a real sweep commits.
+    private static let animatedSweeps = ["HERDR_NO_ANIMATIONS": "0"]
 }

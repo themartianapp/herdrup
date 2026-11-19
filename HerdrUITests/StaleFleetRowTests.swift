@@ -29,11 +29,11 @@ final class StaleFleetRowTests: XCTestCase {
 
         // Premise first: the roster actually rendered and the federated row is present.
         // Without this a missing marker could not be told apart from a missing screen.
-        XCTAssertTrue(app.staticTexts["mcb-air/mcb-air"].waitForExistence(timeout: 12),
+        XCTAssertTrue(app.staticTexts["mcb-air/mcb-air"].exists(within: 12),
                       "the degraded federated fixture row should be on the roster")
 
         let marker = app.descendants(matching: .any).matching(identifier: markerID)
-        XCTAssertTrue(marker.firstMatch.waitForExistence(timeout: 4),
+        XCTAssertTrue(marker.firstMatch.exists(within: 4),
                       "a needs-you row resting on a last-known status must be marked stale")
 
         // The marker is SCOPED: the two locally blocked fixture rows are live, so exactly

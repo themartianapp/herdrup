@@ -33,10 +33,10 @@ final class DesktopDetailReferenceShots: DesktopReferenceCaptureCase {
         let (app, device) = try launch("detail", served: "detail", sha256: Self.inputSHA256,
                                        environment: environment)
         let row = app.staticTexts["herdr-app"].firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 15), app.debugDescription)
+        XCTAssertTrue(row.exists(within: 15), app.debugDescription)
         row.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["chat-view"].firstMatch.waitForExistence(timeout: 15))
-        XCTAssertTrue(app.descendants(matching: .any)["chat-ask"].firstMatch.waitForExistence(timeout: 15))
+        XCTAssertTrue(app.descendants(matching: .any)["chat-view"].firstMatch.exists(within: 15))
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask"].firstMatch.exists(within: 15))
         return (app, device, input)
     }
 
@@ -45,21 +45,21 @@ final class DesktopDetailReferenceShots: DesktopReferenceCaptureCase {
         capture(app, device: device, state: "detail-chat")
         app.buttons["chat-switch-terminal"].tap()
         XCTAssertTrue(app.buttons["chat-switch-terminal"].isSelected)
-        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "terminal-surface").firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "terminal-surface").firstMatch.exists(within: 10))
         capture(app, device: device, state: "detail-terminal")
     }
 
     func testNativeInlineWriterReferences() throws {
         let (app, device, input) = try launchDetail()
         let field = app.textViews["terminal-reply-input"]
-        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        XCTAssertTrue(field.exists(within: 10))
         field.tap()
         field.typeText(input.writerDraft)
         app.buttons["Collapse keyboard"].tap()
-        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 10))
+        XCTAssertTrue(app.keyboards.firstMatch.gone(within: 10))
         XCTAssertEqual(field.value as? String, input.writerDraft)
         let handle = app.descendants(matching: .any)["composer-expand-handle"].firstMatch
-        XCTAssertTrue(handle.waitForExistence(timeout: 10))
+        XCTAssertTrue(handle.exists(within: 10))
         XCTAssertEqual(handle.label, "Expand editor")
         let collapsed = field.frame
         capture(app, device: device, state: "detail-writer-collapsed")
@@ -83,7 +83,7 @@ final class DesktopDetailReferenceShots: DesktopReferenceCaptureCase {
                                        arguments: ["-dev.herdr.savedHosts.v1", argument])
         for host in input.savedHosts {
             XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", host.nickname))
-                .firstMatch.waitForExistence(timeout: 10))
+                .firstMatch.exists(within: 10))
         }
         capture(app, device: device, state: "detail-host-selection")
     }

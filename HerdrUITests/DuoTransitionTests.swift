@@ -94,14 +94,14 @@ final class DuoTransitionTests: TerminalInteractionTestCase {
     func testGramSearchRemainsEditableAcrossCompactRegularTransitions() throws {
         try start()
         try XCTUnwrap(onscreen("Gram", requiringHittable: true)).tap()
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["clientloop"].exists(within: 10))
 
         let sidebarField = app.textFields["gram-search-field"]
-        XCTAssertTrue(sidebarField.waitForExistence(timeout: 5))
+        XCTAssertTrue(sidebarField.exists(within: 5))
         sidebarField.tap()
         sidebarField.typeText("zzzz")
-        XCTAssertTrue(app.staticTexts["No matches"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["No matches"].exists(within: 5))
+        XCTAssertTrue(app.staticTexts["clientloop"].gone(within: 5))
 
         transition("compact")
         let compactField = app.textFields.matching(identifier: "gram-search-field")
@@ -117,17 +117,17 @@ final class DuoTransitionTests: TerminalInteractionTestCase {
 
         retained.tap()
         retained.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 4))
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["clientloop"].exists(within: 5))
         // Continue the existing keyboard interaction, without another hit test or tap.
         // Losing focus must fail the exact-query and filtering assertions below.
         app.typeText("zzzz")
         XCTAssertTrue(compactField.matching(NSPredicate(format: "value == %@", "zzzz")).firstMatch.exists)
-        XCTAssertTrue(app.staticTexts["No matches"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["No matches"].exists(within: 5))
 
         let toggle = app.buttons["gram-search"]
         XCTAssertTrue(toggle.isHittable)
         toggle.tap()
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["clientloop"].exists(within: 5))
         XCTAssertFalse(compactField.allElementsBoundByIndex.contains { $0.isHittable })
 
         toggle.tap()
@@ -136,12 +136,12 @@ final class DuoTransitionTests: TerminalInteractionTestCase {
         reopened.tap()
         reopened.typeText("zzzz")
         XCTAssertEqual(reopened.value as? String, "zzzz")
-        XCTAssertTrue(app.staticTexts["No matches"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["No matches"].exists(within: 5))
         transition("regular")
         XCTAssertEqual(sidebarField.value as? String, "zzzz")
         XCTAssertTrue(sidebarField.isHittable)
         app.buttons["Clear search"].firstMatch.tap()
-        XCTAssertTrue(app.staticTexts["clientloop"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["clientloop"].exists(within: 5))
         attach("gram-search-regular")
     }
 }

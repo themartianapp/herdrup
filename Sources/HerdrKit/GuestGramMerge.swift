@@ -148,6 +148,52 @@ public struct GuestGramMerge: Sendable, Equatable {
     public var defaultTarget: String? {
         items.last(where: \.message.isFromAgent)?.grant ?? grants.first
     }
+
+    /// The composer's recipient: the reader's explicit pick while it is still one of this
+    /// merge's grants (a share whose owner turned Gram off has left them), else the default.
+    public func target(choosing explicit: String?) -> String? {
+        if let explicit, grants.contains(explicit) { return explicit }
+        return defaultTarget
+    }
+}
+
+/// One "Earlier" across a merge's grants (herdrup#730). Pages the grants at the safe floor;
+/// when a successful round shows nothing new (a run of older messages at the floor's own
+/// millisecond), it pages again, until the shown range grows, history is exhausted, a page
+/// fails (thrown, and kept in that feed's `pageError`), or nothing lands at all (an answer a
+/// concurrent refresh made moot: the caller may ask again).
+@MainActor
+public enum GuestGramEarlier {
+    public struct Source {
+        public let grant: String
+        public let feed: GuestGramFeed
+        public let client: HerdrClient
+
+        public init(grant: String, feed: GuestGramFeed, client: HerdrClient) {
+            self.grant = grant
+            self.feed = feed
+            self.client = client
+        }
+    }
+
+    public static func load(_ sources: [Source]) async throws {
+        func merge() -> GuestGramMerge {
+            GuestGramMerge(lanes: sources.map { $0.feed.lane(grant: $0.grant) })
+        }
+        var current = merge()
+        let shown = current.items.count
+        while current.hasMore, !Task.isCancelled {
+            let held = sources.map(\.feed.messages.count)
+            for grant in current.grantsToPage {
+                guard let source = sources.first(where: { $0.grant == grant }) else { continue }
+                try await source.feed.loadMore(client: source.client)
+            }
+            current = merge()
+            // Shown more, or nothing landed this round: done (the caller decides whether to
+            // ask again). A round that landed messages but showed none pages on.
+            if current.items.count > shown || sources.map(\.feed.messages.count) == held { return }
+        }
+    }
 }
 
 extension GuestGramFeed {

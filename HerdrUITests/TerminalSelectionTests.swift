@@ -94,6 +94,24 @@ final class TerminalSelectionTests: XCTestCase {
 
     override func setUp() { continueAfterFailure = false }
 
+    /// A screenshot taken once the screen has held still for `hold` seconds: consecutive frames
+    /// 0.25 s apart show no pixel differing (`pixelDiffFraction`). Replaces fixed settles before
+    /// a pixel measurement — a repaint or relayout still in flight keeps it waiting, a settled
+    /// screen returns at once. After `timeout` it returns the last frame and the measurement
+    /// that follows judges it, so a screen that never settles still fails there, by name.
+    private func settledScreenshot(_ app: XCUIApplication, hold: TimeInterval = 0.5,
+                                   timeout: TimeInterval = 10) -> XCUIScreenshot {
+        var last = app.screenshot()
+        var stillSince = Date()
+        _ = poll(timeout, every: 0.25) {
+            let now = app.screenshot()
+            if pixelDiffFraction(last, now) > 0 { stillSince = Date() }
+            last = now
+            return Date().timeIntervalSince(stillSince) >= hold
+        }
+        return last
+    }
+
     func testDoubleTapSelectsAWordAndASingleTapDeselectsIt() {
         // If ANY system dialog appears, dismiss it rather than letting the run hang to the job
         // timeout with no results — the shape of lesson 2 above, guarded generally.
@@ -106,14 +124,19 @@ final class TerminalSelectionTests: XCTestCase {
         let app = XCUIApplication.launched(mock: "scroll")
 
         // The mock feeds 200 numbered lines into a real SwiftTerm view asynchronously.
+        XCTAssertTrue(app.terminalSurface.exists(within: 10), "the terminal pane never came up")
+        // Kept: nothing on screen says the feed has been drawn, and a still-blank baseline would
+        // pass the keyboard premise below (a large diff) without the keyboard. Then a second
+        // without a redraw.
         Thread.sleep(forTimeInterval: 3.0)
 
         // (1) PREMISES, both asserted before anything is concluded from them.
-        let baseline = app.screenshot()
+        let baseline = settledScreenshot(app, hold: 1.0)
         attach(baseline, "01-baseline")
 
         // 1a. The terminal is static when untouched, so a later change means the gesture did
         // something rather than the stream repainting under us.
+        // Kept: this premise IS a stretch of time in which nothing may change.
         Thread.sleep(forTimeInterval: 1.0)
         let idleDiff = pixelDiffFraction(baseline, app.screenshot())
         XCTAssertLessThan(idleDiff, 0.02,
@@ -138,8 +161,9 @@ final class TerminalSelectionTests: XCTestCase {
         // diff IS the keyboard arriving, so if it ever stops arriving this fails here, naming
         // the cause, instead of failing later as a mysteriously absent selection.
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.30)).tap()
-        Thread.sleep(forTimeInterval: 2.5)
-        let focused = app.screenshot()
+        // Wait for the keyboard, then for the relaid-out terminal band to finish redrawing.
+        _ = app.keyboards.element.exists(within: 10)
+        let focused = settledScreenshot(app)
         attach(focused, "02-keyboard-up")
         let focusDiff = pixelDiffFraction(baseline, focused)
         XCTAssertGreaterThan(focusDiff, 0.10,
@@ -174,8 +198,11 @@ final class TerminalSelectionTests: XCTestCase {
         //
         // dy=0.30 stays in the terminal band, which the keyboard has shrunk to roughly the top 58%.
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.150, dy: 0.30)).doubleTap()
-        Thread.sleep(forTimeInterval: 1.5)
-        let selected = app.screenshot()
+        // Wait for SwiftTerm to report the selection (the state asserted in step 4), then for
+        // its highlight and the Copy menu to finish drawing.
+        let selectionProbe = app.descendants(matching: .any)["terminal-selection-probe"]
+        _ = poll(10, every: 0.25) { selectionProbe.exists && selectionProbe.label.contains("sel=1") }
+        let selected = settledScreenshot(app)
         attach(selected, "03-selection-held")
 
         // (4) READ THE STATE, THEN THE PIXELS — in that order, because for four consecutive CI
@@ -186,7 +213,7 @@ final class TerminalSelectionTests: XCTestCase {
         // `terminal-selection-probe` is published by the app under the same mock env var and
         // reports sel/len/rows/cols/resizes, so the diagnosis now comes from SwiftTerm.
         let probe = app.descendants(matching: .any)["terminal-selection-probe"]
-        let reading = probe.waitForExistence(timeout: 5) ? (probe.label) : "PROBE ABSENT"
+        let reading = probe.exists(within: 5) ? (probe.label) : "PROBE ABSENT"
 
         // THE STATE ASSERTIONS, in order of how badly a failure would mislead.
         XCTAssertTrue(reading.contains("sel=1"),
@@ -279,7 +306,7 @@ final class TerminalSelectionTests: XCTestCase {
 
         // Secondary only: Copy SHOULD be offered, but its presence alone proves nothing, since
         // an empty-but-active selection also offers it.
-        XCTAssertTrue(app.menuItems["Copy"].waitForExistence(timeout: 5),
+        XCTAssertTrue(app.menuItems["Copy"].exists(within: 5),
                       "a word is highlighted but Copy is not offered, so the selection cannot be acted on")
 
         // (5) DESELECTION still works, so the fix did not simply disable it.
@@ -321,11 +348,10 @@ final class TerminalSelectionTests: XCTestCase {
         _ = poll(10, every: 0.25) {
             probe.exists && probe.label.contains("sel=0") && probe.label != beforeReading
         }
-        // One extra settle past the state change, so the screenshot cannot catch a half-drawn
+        // Then wait for the screen to hold still, so the screenshot cannot catch a half-drawn
         // repaint: the clear reaches the model synchronously but selectionChanged repaints on the
         // next main-queue hop.
-        Thread.sleep(forTimeInterval: 0.75)
-        let cleared = app.screenshot()
+        let cleared = settledScreenshot(app)
         attach(cleared, "04-after-single-tap")
 
         // STATE BEFORE PIXELS HERE TOO, which this step lacked while step 4 had it — so the one
@@ -404,18 +430,23 @@ final class TerminalSelectionTests: XCTestCase {
         let app = XCUIApplication.launched(mock: "scroll")
 
         let probe = app.descendants(matching: .any)["terminal-selection-probe"]
-        XCTAssertTrue(probe.waitForExistence(timeout: 20),
+        XCTAssertTrue(probe.exists(within: 20),
                       "the terminal never came up, so nothing below is about the chevron")
 
         // Two stages for the same reason the other test uses two: tap 1 raises the keyboard and
         // relayouts the terminal band, so a double tap fired into that motion selects whatever
         // slid under the finger. Settle first, then select.
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.30)).tap()
-        Thread.sleep(forTimeInterval: 2.5)
+        _ = app.keyboards.element.exists(within: 10)
+        app.terminalSurface.waitForSettledFrame()
         // dx 0.150 is col 7 — written on BOTH the primary and continuation row types with a
         // column of slack either side. See the long note in the other test for the enumeration.
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.150, dy: 0.30)).doubleTap()
-        Thread.sleep(forTimeInterval: 1.5)
+        // Wait for the double tap's selection to be reported while the terminal still holds the
+        // responder; the premises below judge the reading either way.
+        _ = poll(10, every: 0.25) {
+            probe.exists && probe.label.contains("sel=1") && probe.label.contains("fr=1")
+        }
 
         // PREMISES FIRST. Without a live selection AND a held responder this test would pass on a
         // pane that simply never focused, which is the vacuity that cost this PR a round already.
@@ -425,7 +456,7 @@ final class TerminalSelectionTests: XCTestCase {
         XCTAssertTrue(beforeReading.contains("fr=1"),
                       "premise: the terminal does not hold the responder, so there is nothing for the chevron to resign. probe[\(beforeReading)]")
 
-        XCTAssertTrue(app.keyboards.element.waitForExistence(timeout: 10),
+        XCTAssertTrue(app.keyboards.element.exists(within: 10),
                       "premise: the software keyboard must be visible")
         let chevron = app.buttons["Collapse keyboard"]
         // Only a full software keyboard is dismissible. With a hardware keyboard iOS shows a
@@ -433,13 +464,13 @@ final class TerminalSelectionTests: XCTestCase {
         // it can say "attached" while the full keyboard is on screen.
         let fullKeyboard = app.keyboards.element.frame.height >= 150
         if !fullKeyboard {
-            XCTAssertFalse(chevron.waitForExistence(timeout: 2),
+            XCTAssertFalse(chevron.exists(within: 2),
                            "a hardware keyboard's shortcut bar must not offer dismissal")
             print("Selection dismissal: only a shortcut bar is shown; hidden control verified. Dismissal was not exercised. probe[\(beforeReading)]")
             return
         }
         print("Selection dismissal: full software keyboard; exercising dismissal with selection. probe[\(beforeReading)]")
-        XCTAssertTrue(chevron.waitForExistence(timeout: 5),
+        XCTAssertTrue(chevron.exists(within: 5),
                       "the chevron is absent while the keyboard is up with a selection held — which IS the original defect: no affordance to dismiss with")
         chevron.tap()
 
@@ -491,7 +522,7 @@ final class TerminalSelectionTests: XCTestCase {
         let app = XCUIApplication.launched(mock: "scroll")
 
         let probe = app.descendants(matching: .any)["terminal-selection-probe"]
-        XCTAssertTrue(probe.waitForExistence(timeout: 20), "the terminal never came up")
+        XCTAssertTrue(probe.exists(within: 20), "the terminal never came up")
 
         // PREMISE: start from an UNFOCUSED pane, so any fr=1 below is this test's own doing. A
         // pane that already held the responder would pass the assertion for the wrong reason.
@@ -504,10 +535,17 @@ final class TerminalSelectionTests: XCTestCase {
         for _ in 1...6 {
             // Fling to get real motion, then tap into it immediately — the arrest-the-scroll
             // gesture a reader actually makes.
+            let beforeTap = probe.exists ? probe.label : ""
             app.swipeDown(velocity: .fast)
             term.tap()
-            Thread.sleep(forTimeInterval: 0.4)
-            let reading = probe.exists ? probe.label : ""
+            // Wait for the focus decision's own publish (a fresh label naming it, see below)
+            // rather than a fixed 0.4 s; a reading that never qualifies is discarded below.
+            var reading = ""
+            _ = poll(2, every: 0.1) {
+                reading = probe.exists ? probe.label : ""
+                return reading != beforeTap
+                    && (reading.contains("pub=scrollTapIgnored") || reading.contains("pub=focusTap"))
+            }
             let motionMs = value(of: "motionms", in: reading)
 
             // ONLY A READING PUBLISHED BY THE FOCUS DECISION ITSELF CAN BE JUDGED, and the previous
@@ -551,11 +589,13 @@ final class TerminalSelectionTests: XCTestCase {
             // iteration where focus was not taken it legitimately does not exist. A RESET STEP MUST
             // NOT BE ABLE TO FAIL THE TEST IT IS RESETTING FOR — that reports a harness defect as a
             // product verdict, which is the same class of error as a test that passes vacuously.
+            // Kept: the fling's deceleration must die out, so the next attempt's motion age is
+            // its own swipe's and not this one's residue.
             Thread.sleep(forTimeInterval: 1.2)
             let chevron = app.buttons["Collapse keyboard"].firstMatch
-            if probe.exists, probe.label.contains("fr=1"), chevron.waitForExistence(timeout: 2) {
+            if probe.exists, probe.label.contains("fr=1"), chevron.exists(within: 2) {
                 chevron.tap()
-                Thread.sleep(forTimeInterval: 1.0)
+                _ = poll(5, every: 0.25) { probe.exists && probe.label.contains("fr=0") }
             }
         }
 
@@ -608,7 +648,7 @@ final class TerminalSelectionTests: XCTestCase {
         let app = XCUIApplication.launched(mock: "busyscroll")
 
         let probe = app.descendants(matching: .any)["terminal-selection-probe"]
-        XCTAssertTrue(probe.waitForExistence(timeout: 20), "the terminal never came up")
+        XCTAssertTrue(probe.exists(within: 20), "the terminal never came up")
         XCTAssertTrue(probe.label.contains("fr=0"),
                       "premise: the terminal already holds the responder before any tap. probe[\(probe.label)]")
 
@@ -626,10 +666,16 @@ final class TerminalSelectionTests: XCTestCase {
         // tests in this file use the same helper for the same reason, and the `scroll` fixture
         // hides the cursor so a STATIC terminal is byte-identical frame to frame — meaning any
         // measurable diff here is content, not a blinking caret.
+        // Polled within the same 2 s: the premise is a redraw, so the first frame showing one
+        // ends the wait.
         let busyBefore = app.screenshot()
-        Thread.sleep(forTimeInterval: 2.0)
-        let busyAfter = app.screenshot()
-        let flowing = pixelDiffFraction(busyBefore, busyAfter)
+        var busyAfter = busyBefore
+        var flowing = 0.0
+        _ = poll(2, every: 0.25) {
+            busyAfter = app.screenshot()
+            flowing = pixelDiffFraction(busyBefore, busyAfter)
+            return flowing > 0.005
+        }
         attach(busyBefore, "01-busy-before")
         attach(busyAfter, "02-busy-after")
         XCTAssertGreaterThan(flowing, 0.005,

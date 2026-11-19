@@ -13,11 +13,10 @@
 #   - ipad-script is its script shard (mac-evidence/org-ios-sim-script-v1/ipad-script):
 #     Tools/ci/macserve-ipad-script.sh creates the iPads and runs this shard as it is.
 #
-#   iphone-terminal  TERMINAL_CLASSES, then ChatViewTests, PagingTests, GramTests and
+#   iphone-terminal  TERMINAL_CLASSES, then HerdrFontTests, PagingTests, GramTests and
 #                    CachedHomeTests in rounds of their own, on iPhone
-#   iphone-app       HerdrFontTests, then StatusMotionTests, the guest classes and
-#                    ChatUXSmokeTests in rounds of their own, then every other HerdrUITests
-#                    class on iPhone
+#   iphone-app       ChatViewTests, StatusMotionTests, the guest classes and ChatUXSmokeTests
+#                    in rounds of their own, then every other HerdrUITests class on iPhone
 #   ipad             iPad-specific rounds, on iPad
 #   ipad-script      what the UI-test template cannot run: Herdrup Desktop's references on
 #                    both iPads (dark, status bar pinned by simctl), AgentListChromeTests on
@@ -693,16 +692,10 @@ case "$shard" in
     # its 300 s allowance, then the runner restarted) and 42200270228 short.
     run_suite iPhoneTerminal "$IPHONE_UDID" 50m "${only[@]}" || failed=1
     check_classes_ran TestReceipts/iPhoneTerminal-first.xcresult "${TERMINAL_CLASSES[@]}" || failed=1
-    # ChatViewTests (#485, ~3.5 min on a hosted runner) run here: in the app round they
-    # pushed iPhoneApp to 29 min of tests against its 30 m budget, which run 39930335960
-    # exceeded. This shard had ~18 min of tests in that run against 40 m.
-    # 15m: p95 9.5 min, slowest pass 9.8 (n=20 since ChatViewTests grew on 2026-11-06);
-    # 10m cut 42632930170, 41996536208, 41402657305 and 41209406682 short.
-    # 20m since the form-ask stepper tests (#650) added nine walk-throughs of omp's HTML
-    # form: its two passing hosted rounds took 14.3 and 10.7 min (runs 42880218168 and
-    # 42907183978), so slowest pass + 2 min = 16.3 and 1.3 x 14.3 = 18.5 round up to 20m.
-    run_suite iPhoneChat "$IPHONE_UDID" 20m -only-testing:HerdrUITests/ChatViewTests || failed=1
-    check_classes_ran TestReceipts/iPhoneChat-first.xcresult ChatViewTests || failed=1
+    # HerdrFontTests (unit tests, seconds) run here; ChatViewTests moved to iphone-app.
+    # Measured on #694's macserve run: iphone-terminal 60.7 min of tests, iphone-app 39.0;
+    # ChatViewTests (11.6 min) moving across makes them 49.1 and 50.6.
+    run_suite font-contract "$IPHONE_UDID" 10m -only-testing:HerdrFontTests || failed=1
     # PagingTests (~4.3 min) run here too: every class in the app round slowed together
     # from run to run (23.7, 26.9 and 29.0 min of tests in runs 39938860577, 39954390114
     # and 39966934030), and 39966934030 ran out of the 30 m on the last class. This shard
@@ -714,12 +707,19 @@ case "$shard" in
     run_suite iPhoneGram "$IPHONE_UDID" 45m -only-testing:HerdrUITests/GramTests || failed=1
     check_classes_ran TestReceipts/iPhoneGram-first.xcresult GramTests || failed=1
     # The cold-start cache (#674): the kept roster and the kept terminal screen, each behind
-    # a mock that answers 8 s late. Here because iphone-app is at macserve's 32-selector cap.
+    # a mock that answers 8 s late. Here because iphone-app is the longer iPhone shard since
+    # ChatViewTests moved there (50.6 against 49.1 min above).
     run_suite iPhoneCachedHome "$IPHONE_UDID" 10m -only-testing:HerdrUITests/CachedHomeTests || failed=1
     check_classes_ran TestReceipts/iPhoneCachedHome-first.xcresult CachedHomeTests || failed=1
     ;;
   iphone-app)
-    run_suite font-contract "$IPHONE_UDID" 10m -only-testing:HerdrFontTests || failed=1
+    # ChatViewTests (#485) run in a round of their own: in the catch-all round they pushed
+    # iPhoneApp to 29 min of tests against its 30 m budget, which run 39930335960 exceeded.
+    # 20m since the form-ask stepper tests (#650) added nine walk-throughs of omp's HTML
+    # form: its two passing hosted rounds took 14.3 and 10.7 min (runs 42880218168 and
+    # 42907183978), so slowest pass + 2 min = 16.3 and 1.3 x 14.3 = 18.5 round up to 20m.
+    run_suite iPhoneChat "$IPHONE_UDID" 20m -only-testing:HerdrUITests/ChatViewTests || failed=1
+    check_classes_ran TestReceipts/iPhoneChat-first.xcresult ChatViewTests || failed=1
     # StatusMotionTests photograph shapes over time and wait out tab switches: with them in
     # the app round, #433's run 38703928881 ran out of its 30 m on the last class.
     # 15m: p95 7.3 min, slowest pass 8.4 (n=150).

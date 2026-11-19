@@ -26,7 +26,7 @@ final class AgentFoldersTests: XCTestCase {
     /// Waits for the list and the folders document: the Enyo folder row is on screen.
     private func waitForFolders(_ app: XCUIApplication) -> XCUIElement {
         let enyo = folder(app, "enyo")
-        XCTAssertTrue(enyo.waitForExistence(timeout: 15), "the folders did not load")
+        XCTAssertTrue(enyo.exists(within: 15), "the folders did not load")
         XCTAssertTrue(enyo.waitForHittable(timeout: 5), "the Enyo folder row is not on screen")
         return enyo
     }
@@ -45,7 +45,7 @@ final class AgentFoldersTests: XCTestCase {
         let action = element(app, identifier)
         for _ in 0..<3 where !action.exists {
             row.swipeRight()
-            _ = action.waitForExistence(timeout: 2)
+            _ = action.exists(within: 2)
         }
         XCTAssertTrue(action.waitForHittable(timeout: 3), "swiping right did not reveal \(identifier)")
         return action
@@ -111,7 +111,7 @@ final class AgentFoldersTests: XCTestCase {
         app.terminate()
         app = launch(["HERDR_MOCK_KEEP_OPEN_FOLDERS": "1"])
         _ = waitForFolders(app)
-        XCTAssertTrue(row(app, "w1:p4").waitForExistence(timeout: 5), "Herdr is still open after a relaunch")
+        XCTAssertTrue(row(app, "w1:p4").exists(within: 5), "Herdr is still open after a relaunch")
         XCTAssertFalse(row(app, "w1:p3").exists, "Enyo is still closed")
     }
 
@@ -121,7 +121,7 @@ final class AgentFoldersTests: XCTestCase {
         let app = launch()
         let enyo = waitForFolders(app)
         let herdr = folder(app, "herdr")
-        XCTAssertTrue(herdr.waitForExistence(timeout: 5))
+        XCTAssertTrue(herdr.exists(within: 5))
         XCTAssertFalse(row(app, "w1:p3").exists, "Enyo is closed: only its picture shows its agents")
 
         func cell(_ name: String) -> XCUIElement {
@@ -137,7 +137,7 @@ final class AgentFoldersTests: XCTestCase {
         ]
         for (name, owner, kind, label) in expected {
             let picture = cell(name)
-            XCTAssertTrue(picture.waitForExistence(timeout: 5), "\(owner) has no picture cell for \(name)")
+            XCTAssertTrue(picture.exists(within: 5), "\(owner) has no picture cell for \(name)")
             XCTAssertTrue(poll(5, every: 0.1) { (picture.value as? String) == kind },
                           "\(name)'s cell should show \(kind), got \(String(describing: picture.value))")
             XCTAssertEqual(picture.label, label, "\(name)'s cell reads as its avatar")
@@ -157,7 +157,7 @@ final class AgentFoldersTests: XCTestCase {
         let pill = element(app, "needs-you-pill")
         let scroll = app.scrollViews["agent-roster-scroll"]
         for _ in 0..<6 where !pill.exists { scroll.swipeUp() }
-        XCTAssertTrue(pill.waitForExistence(timeout: 3), "the pill appears once the waiting rows scroll away")
+        XCTAssertTrue(pill.exists(within: 3), "the pill appears once the waiting rows scroll away")
         XCTAssertEqual(pill.label, "4 agents need you",
                        "jarvis and vetrina, plus enyo-review and herdr-ios inside closed folders")
     }
@@ -187,7 +187,7 @@ final class AgentFoldersTests: XCTestCase {
         scrollTo(trendScout, in: app, up: true)
         trendScout.press(forDuration: 1.0)
         let unstar = app.buttons["Unstar"]
-        XCTAssertTrue(unstar.waitForExistence(timeout: 5), "long-press offers Unstar")
+        XCTAssertTrue(unstar.exists(within: 5), "long-press offers Unstar")
         XCTAssertTrue(app.buttons["Move to folder"].exists, "and Move to folder")
         unstar.tap()
         XCTAssertTrue(poll(5, every: 0.1) { bankQA.frame.minY < trendScout.frame.minY }, "unstarred, back in place")
@@ -200,14 +200,14 @@ final class AgentFoldersTests: XCTestCase {
         swipeAction("agent-swipe-move", on: jarvis, in: app).tap()
 
         let newFolder = app.buttons["New folder…"]
-        XCTAssertTrue(newFolder.waitForExistence(timeout: 5), "Move offers a new folder")
+        XCTAssertTrue(newFolder.exists(within: 5), "Move offers a new folder")
         XCTAssertTrue(app.buttons["Enyo"].exists && app.buttons["Herdr"].exists, "and the existing ones")
         newFolder.tap()
 
         let alert = app.alerts.firstMatch
-        XCTAssertTrue(alert.waitForExistence(timeout: 5), "a new folder asks for its name")
+        XCTAssertTrue(alert.exists(within: 5), "a new folder asks for its name")
         let field = alert.textFields.firstMatch
-        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        XCTAssertTrue(field.exists(within: 3))
         field.tap()
         field.typeText("Ops")
         alert.buttons["Create"].tap()
@@ -216,7 +216,7 @@ final class AgentFoldersTests: XCTestCase {
         let ops = app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH 'agent-folder-' AND label BEGINSWITH 'Ops, '"))
             .firstMatch
-        XCTAssertTrue(ops.waitForExistence(timeout: 5), "the Ops folder appears")
+        XCTAssertTrue(ops.exists(within: 5), "the Ops folder appears")
         XCTAssertEqual(ops.label, "Ops, 1 agent, jarvis needs you")
         XCTAssertTrue(jarvis.waitForHittable(timeout: 5))
         XCTAssertGreaterThanOrEqual(jarvis.frame.minY, ops.frame.maxY - 1, "jarvis is inside it")
@@ -225,7 +225,7 @@ final class AgentFoldersTests: XCTestCase {
         // Delete from the folder's long-press: jarvis goes back to the list.
         ops.press(forDuration: 1.0)
         let delete = app.buttons["Delete folder"]
-        XCTAssertTrue(delete.waitForExistence(timeout: 5), "folder long-press offers Delete")
+        XCTAssertTrue(delete.exists(within: 5), "folder long-press offers Delete")
         XCTAssertTrue(app.buttons["Rename"].exists)
         delete.tap()
         XCTAssertTrue(poll(5, every: 0.1) { !ops.exists }, "the folder is gone")
@@ -235,7 +235,7 @@ final class AgentFoldersTests: XCTestCase {
     func testNoCapabilityShowsNoFolders() {
         let app = launch(["HERDR_MOCK_GROUPS": "off"])
         let review = row(app, "w1:p3")
-        XCTAssertTrue(review.waitForExistence(timeout: 15), "the roster did not load")
+        XCTAssertTrue(review.exists(within: 15), "the roster did not load")
         // Give the ping time to answer: nothing about folders may arrive.
         let folders = app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH 'agent-folder-'"))
@@ -247,7 +247,7 @@ final class AgentFoldersTests: XCTestCase {
         // long-press menu is where the folder actions would show.
         let jarvis = row(app, "w1:p1")
         jarvis.press(forDuration: 1.0)
-        XCTAssertTrue(app.buttons["Rename"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Rename"].exists(within: 5))
         XCTAssertFalse(app.buttons["Star"].exists, "no Star in the long-press menu")
         XCTAssertFalse(app.buttons["Move to folder"].exists, "no Move to folder either")
     }

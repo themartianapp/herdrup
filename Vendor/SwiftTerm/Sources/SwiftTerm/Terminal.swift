@@ -5583,6 +5583,36 @@ open class Terminal {
         changeScrollback(newScrollback)
     }
 
+    // MARK: - herdr: replacing the history of a terminal that has been live
+
+    /**
+     * herdr: fed before history text an embedder replaces a live terminal's history with
+     * (a keyframe's, or a backfill read's). It puts the terminal in the state a fresh one
+     * starts in for everything that decides where text lands, then clears it:
+     *
+     * - the main screen (`?1049l`): history belongs to the normal buffer's scrollback;
+     * - origin mode off (`?6l`) and left/right margin mode off (`?69l`);
+     * - full-height scrolling margins (`DECSTBM`, `CSI r`): with a region set, a line
+     *   feed at its bottom scrolls only the region, so the rows never reach the
+     *   scrollback and all but one screen of the history is lost (#726);
+     * - insert mode off (`4l`) and autowrap on (`?7h`);
+     * - G0 = ASCII, shifted in: a DEC line-drawing set would draw letters as boxes;
+     * - no SGR, no scrollback, a blank screen, the cursor home.
+     *
+     * Applied only when there IS history to parse: it leaves the alternate screen, which
+     * a full-screen app keeps no history on.
+     */
+    public static let historyReplacementSequence: [UInt8] = Array ((
+        "\u{1b}[?1049l"     // main screen
+        + "\u{1b}[?6l"      // DECOM off
+        + "\u{1b}[?69l"     // DECLRMM off
+        + "\u{1b}[r"        // DECSTBM: full height
+        + "\u{1b}[4l"       // IRM off
+        + "\u{1b}[?7h"      // DECAWM on
+        + "\u{1b}(B\u{0f}"  // G0 = ASCII, SI
+        + "\u{1b}[0m\u{1b}[3J\u{1b}[2J\u{1b}[H"
+    ).utf8)
+
     // MARK: - herdr: scrollback memory budget
     //
     // The scrollback ring is sized in rows, but a row's cost is its width: every row holds
