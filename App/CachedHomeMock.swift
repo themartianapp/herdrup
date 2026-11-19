@@ -8,15 +8,17 @@ import HerdrKit
 /// daemon answers `agent.list` after `HERDR_MOCK_LIST_DELAY` seconds (default 6) with today's
 /// roster (`fresh-alfa` on the same pane, `fresh-charlie` new), and starts every pane stream
 /// and backfill read `HERDR_MOCK_STREAM_DELAY` seconds late (default 0). The cache lives in
-/// its own temporary directory, never the app's.
+/// its own temporary directory, never the app's. No agent here is idle: the home folds idle
+/// agents into a closed "Idle" row (`AgentGroup.startsCollapsed`), and the tests find each
+/// row by its identifier.
 ///
 /// `HERDR_MOCK_LIST_FAIL` makes `agent.list` fail (after the same delay), as a first
 /// connection to a broken machine does: a comma-separated list of `daemonUnavailable`
 /// (herdr is not running) and `incompatible` (herdr is too old), one per request in order.
 /// The last one repeats, so a background poll cannot run out of failures before a Retry.
 enum CachedHomeMock {
-    static let keptList = #"{"id":"mock","result":{"type":"agent_list","agents":[{"pane_id":"w1:p1","name":"kept-alfa","agent":"omp","agent_status":"idle","cwd":"/root/alfa"},{"pane_id":"w1:p2","name":"kept-bravo","agent":"claude","agent_status":"blocked","cwd":"/root/bravo"}]}}"#
-    static let freshList = #"{"id":"mock","result":{"type":"agent_list","agents":[{"pane_id":"w1:p1","name":"fresh-alfa","agent":"omp","agent_status":"working","cwd":"/root/alfa"},{"pane_id":"w1:p3","name":"fresh-charlie","agent":"codex","agent_status":"idle","cwd":"/root/charlie"}]}}"#
+    static let keptList = #"{"id":"mock","result":{"type":"agent_list","agents":[{"pane_id":"w1:p1","name":"kept-alfa","agent":"omp","agent_status":"working","cwd":"/root/alfa"},{"pane_id":"w1:p2","name":"kept-bravo","agent":"claude","agent_status":"blocked","cwd":"/root/bravo"}]}}"#
+    static let freshList = #"{"id":"mock","result":{"type":"agent_list","agents":[{"pane_id":"w1:p1","name":"fresh-alfa","agent":"omp","agent_status":"working","cwd":"/root/alfa"},{"pane_id":"w1:p3","name":"fresh-charlie","agent":"codex","agent_status":"working","cwd":"/root/charlie"}]}}"#
     /// The kept screen's marker line, which the UI test looks for.
     static let keptScreenMarker = "KEPT-SCREEN-FROM-LAST-LAUNCH"
     static let keptScreen = "$ cargo test\n   Compiling charlie v0.1.0\n\(keptScreenMarker)\ntest result: ok. 42 passed\n$ "
