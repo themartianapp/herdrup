@@ -88,14 +88,35 @@ extension XCUIElement {
 /// off-screen or occluded — precisely the state the original assertion was written to
 /// rule out. A bounded wait on existence would be green against a roster that never
 /// becomes reachable at all.
+///
+/// AN ELEMENT WITH NO ON-SCREEN FRAME IS NOT YET HITTABLE, NOT AN ERROR. Asked about an
+/// element that exists but whose frame is empty or lies wholly outside the app's window,
+/// `isHittable` does not answer false: XCTest records "Failed to determine hittability …
+/// Activation point invalid and no suggested hit points based on element frame" and the
+/// test stops. DesktopGramReferenceShots.testGramMixedLatestReference hit that on
+/// ipad-script (j_e583ccf1 on iPad 11, j_f6303b1f on iPad Pro). In j_e583ccf1 it asked about
+/// "1 unread" 0.86 s after opening Gram and failed; earlier in the same job, on iPad Pro 13,
+/// it asked 1.24 s after and the element was hittable at once. So these check the frame
+/// first (a frame read of an existing element never raises) and ask for hittability only
+/// once the element has a hit point to give.
 extension XCUIElement {
 
     func waitForHittable(timeout: TimeInterval) -> Bool {
-        poll(timeout, every: 0.1) { isHittable }
+        poll(timeout, every: 0.1) { hasOnScreenFrame && isHittable }
     }
 
     func waitForNotHittable(timeout: TimeInterval) -> Bool {
-        poll(timeout, every: 0.1) { !isHittable }
+        poll(timeout, every: 0.1) { !hasOnScreenFrame || !isHittable }
+    }
+
+    /// Exists with a non-empty frame that overlaps the app under test's window. Every caller
+    /// of the waits above queries the app under test (`XCUIApplication()`), whose frame is
+    /// the window in the current orientation.
+    private var hasOnScreenFrame: Bool {
+        guard exists else { return false }
+        let frame = frame
+        guard !frame.isEmpty else { return false }
+        return !frame.intersection(XCUIApplication().frame).isEmpty
     }
 
     /// iPadOS animates a restored or resized window into place; frames read during that
