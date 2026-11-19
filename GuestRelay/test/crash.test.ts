@@ -1,8 +1,9 @@
 import { SELF, env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// POST /v1/crash and its admin reads, against the real Worker, R2 bucket and rate limits in
-// workerd. Each test sends from its own IPs, so the per-IP limits never collide.
+// POST /v1/crash and its admin reads, against the real Worker and R2 bucket in workerd. The
+// rate limits are per-key counters with wrangler.toml's limits that start at zero in each
+// test and never reset on the clock (test/setup.ts). Each test sends from its own IPs.
 
 const ORIGIN = "https://guest.herdrup.app";
 const ADMIN = "test-admin-token-0123456789abcdefghijklmnop";
@@ -189,7 +190,7 @@ describe("crash reports", () => {
       body: JSON.stringify({ v: 1, install, app: "ios", version: "1.3.4", build: "245" }),
     });
     expect(ping.status).toBe(204);
-  }, 20_000);
+  });
 });
 
 describe("crash report admin reads", () => {
