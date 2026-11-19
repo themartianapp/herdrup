@@ -7,12 +7,13 @@ import UIKit
 // draws the same motion from the same values. Presentation only: the prompt is sent and the
 // folder state saved in the frame of the tap, whatever these animations do afterwards.
 
-/// Whether these motions run at all. False in the DEBUG desktop-reference mock and under
-/// `HERDR_DESKTOPREF_CAPTURE`, whose screenshots need every row at rest: those already run
-/// with animations disabled (`RootView`), and a transition's own animation would slip past that.
+/// Whether these motions run at all. False in the DEBUG desktop-reference mock, under
+/// `HERDR_DESKTOPREF_CAPTURE`, whose screenshots need every row at rest, and in UI tests
+/// (`UITestMotion.off`): those already run with animations disabled (`RootView`), and a
+/// transition's own animation would slip past that.
 private let sendFolderMotionAllowed: Bool = {
     #if DEBUG
-    return !DesktopReferenceMock.holdsStill
+    return !DesktopReferenceMock.holdsStill && !UITestMotion.off
         && ProcessInfo.processInfo.environment["HERDR_DESKTOPREF_CAPTURE"] != "1"
     #else
     return true

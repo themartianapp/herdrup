@@ -13,7 +13,7 @@ final class LiveEventsTests: XCTestCase {
     func testStatusEventUpdatesTheRowWithoutReloadingTheList() {
         let app = XCUIApplication.launched(mock: "liveevents")
         let remote = row(app, "build/w1:p2")
-        XCTAssertTrue(remote.waitForExistence(timeout: 15), "the federated row should be listed")
+        XCTAssertTrue(remote.exists(within: 15), "the federated row should be listed")
         XCTAssertEqual(remote.value as? String, "working")
         let before = waitForSettledSubscription(app)
 
@@ -22,8 +22,8 @@ final class LiveEventsTests: XCTestCase {
                       "the streamed status should move the remote row into needs you")
         XCTAssertEqual(counters(app).list, before, "the row must change from the event, not a reload")
 
-        // Past a 5 s poll tick and well short of the 30 s backstop: an open stream
-        // replaces the poll.
+        // Kept: a negative check, past a 5 s poll tick and well short of the 30 s backstop:
+        // an open stream replaces the poll.
         Thread.sleep(forTimeInterval: 7)
         XCTAssertEqual(counters(app).list, before, "no 5 s poll while the stream is open")
         XCTAssertEqual(counters(app).subscribe, 1, "one subscription is held, not reopened")
@@ -32,7 +32,7 @@ final class LiveEventsTests: XCTestCase {
     func testLaggedLineReloadsTheListAndADroppedStreamReconnects() {
         let app = XCUIApplication.launched(mock: "liveevents")
         let lead = row(app, "w1:p1")
-        XCTAssertTrue(lead.waitForExistence(timeout: 15), "the local row should be listed")
+        XCTAssertTrue(lead.exists(within: 15), "the local row should be listed")
         XCTAssertEqual(lead.value as? String, "working")
         let before = waitForSettledSubscription(app)
 
@@ -52,7 +52,7 @@ final class LiveEventsTests: XCTestCase {
     func testOlderDaemonKeepsTheFiveSecondPoll() {
         let app = XCUIApplication.launched(mock: "liveevents-legacy")
         let remote = row(app, "build/w1:p2")
-        XCTAssertTrue(remote.waitForExistence(timeout: 15), "the federated row should be listed")
+        XCTAssertTrue(remote.exists(within: 15), "the federated row should be listed")
         XCTAssertTrue(poll(5, every: 0.25) { counters(app).list >= 1 })
         let before = counters(app).list
 
@@ -76,6 +76,8 @@ final class LiveEventsTests: XCTestCase {
     private func waitForSettledSubscription(_ app: XCUIApplication) -> Int {
         XCTAssertTrue(poll(10, every: 0.25) { counters(app).subscribe == 1 && counters(app).list >= 2 },
                       "the capability should open one subscription and resynchronize")
+        // Kept: a quiet window so a reload still in flight lands before the count is taken,
+        // and is not later mistaken for a poll or an event-driven reload.
         Thread.sleep(forTimeInterval: 1)
         return counters(app).list
     }

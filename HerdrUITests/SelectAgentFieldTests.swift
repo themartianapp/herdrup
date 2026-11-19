@@ -13,8 +13,9 @@ final class SelectAgentFieldTests: XCTestCase {
         }
         let app = XCUIApplication.launched(mock: "list")
         let label = app.staticTexts["Select an agent"]
-        XCTAssertTrue(label.waitForExistence(timeout: 30))
-        // Let the field's pointer autopilot and typing wake a few hundred cells.
+        XCTAssertTrue(label.exists(within: 30))
+        // Kept: time must pass for the field's pointer autopilot and typing to wake a few
+        // hundred cells; the check is that none of them reach the accessibility tree.
         Thread.sleep(forTimeInterval: 5)
 
         let column = label.frame.midX

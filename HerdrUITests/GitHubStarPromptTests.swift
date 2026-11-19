@@ -24,18 +24,18 @@ final class GitHubStarPromptTests: XCTestCase {
 
     private func openHerdrApp(_ app: XCUIApplication) {
         let row = app.staticTexts["herdr-app"].firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 12), "the home should list herdr-app")
+        XCTAssertTrue(row.exists(within: 12), "the home should list herdr-app")
         row.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["chat-view"].firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.descendants(matching: .any)["chat-view"].firstMatch.exists(within: 10))
     }
 
     /// iPhone: the pane covers the home, so go back to it. iPad: the roster is beside the pane.
     private func showHome(_ app: XCUIApplication) {
         guard !pad else { return }
         let back = app.buttons["Back"].firstMatch
-        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        XCTAssertTrue(back.exists(within: 5))
         back.tap()
-        XCTAssertTrue(app.staticTexts["herdr-app"].firstMatch.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["herdr-app"].firstMatch.exists(within: 8))
     }
 
     private func bar(_ app: XCUIApplication) -> XCUIElement {
@@ -45,7 +45,7 @@ final class GitHubStarPromptTests: XCTestCase {
     /// Types and sends one prompt, then waits for the chat to show it.
     private func sendPrompt(_ text: String, in app: XCUIApplication) {
         let field = app.textViews["terminal-reply-input"]
-        XCTAssertTrue(field.waitForExistence(timeout: 8))
+        XCTAssertTrue(field.exists(within: 8))
         field.tap()
         field.typeText(text)
         var send: XCUIElement?
@@ -56,13 +56,13 @@ final class GitHubStarPromptTests: XCTestCase {
         }, "the reply should be sendable")
         send?.tap()
         let sent = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", text)).firstMatch
-        XCTAssertTrue(sent.waitForExistence(timeout: 10), "the chat should show \"\(text)\"")
+        XCTAssertTrue(sent.exists(within: 10), "the chat should show \"\(text)\"")
     }
 
     /// From a fresh launch: sends five prompts in herdr-app's Chat and returns to the home,
     /// where the bar must now show.
     private func showBarAfterFivePrompts(_ app: XCUIApplication) {
-        XCTAssertTrue(app.staticTexts["herdr-app"].firstMatch.waitForExistence(timeout: 12))
+        XCTAssertTrue(app.staticTexts["herdr-app"].firstMatch.exists(within: 12))
         XCTAssertFalse(bar(app).exists, "a fresh install shows no bar")
         openHerdrApp(app)
         for n in 1...4 {
@@ -71,7 +71,7 @@ final class GitHubStarPromptTests: XCTestCase {
         }
         sendPrompt("Star prompt check 5", in: app)
         showHome(app)
-        XCTAssertTrue(bar(app).waitForExistence(timeout: 5), "the fifth prompt shows the bar on the agents home")
+        XCTAssertTrue(bar(app).exists(within: 5), "the fifth prompt shows the bar on the agents home")
     }
 
     func testBarAppearsAfterFivePromptsAndNotNowRetiresIt() {
@@ -85,11 +85,11 @@ final class GitHubStarPromptTests: XCTestCase {
         attach(app, "github-star-bar")
 
         notNow.tap()
-        XCTAssertTrue(bar(app).waitForNonExistence(timeout: 5), "Not now removes the bar")
+        XCTAssertTrue(bar(app).gone(within: 5), "Not now removes the bar")
         app.terminate()
 
         let again = launch("keep")
-        XCTAssertTrue(again.staticTexts["herdr-app"].firstMatch.waitForExistence(timeout: 12))
+        XCTAssertTrue(again.staticTexts["herdr-app"].firstMatch.exists(within: 12))
         XCTAssertFalse(bar(again).exists, "the answer survives a relaunch")
         openHerdrApp(again)
         sendPrompt("Star prompt check 6", in: again)
@@ -110,7 +110,7 @@ final class GitHubStarPromptTests: XCTestCase {
         let title = app.staticTexts["github-star-card-title"]
         let subtitle = app.staticTexts["github-star-card-subtitle"]
         let star = app.buttons["github-star-card-star"]
-        XCTAssertTrue(title.waitForExistence(timeout: 3))
+        XCTAssertTrue(title.exists(within: 3))
         XCTAssertEqual(title.label, "Enjoying HerdrUp?", "the full title is exposed")
         XCTAssertEqual(subtitle.label, "Star it on GitHub")
         attach(app, "github-star-bar-ipad")

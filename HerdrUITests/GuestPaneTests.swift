@@ -13,7 +13,7 @@ final class GuestPaneTests: XCTestCase {
 
     private func forbiddenCalls(_ app: XCUIApplication) -> String {
         let probe = app.descendants(matching: .any)["guest-forbidden-calls"]
-        XCTAssertTrue(probe.waitForExistence(timeout: 5), "the DEBUG forbidden-calls probe should exist")
+        XCTAssertTrue(probe.exists(within: 5), "the DEBUG forbidden-calls probe should exist")
         return probe.label
     }
 
@@ -21,17 +21,18 @@ final class GuestPaneTests: XCTestCase {
     /// to present it.
     private func tapMenuItem(_ app: XCUIApplication, _ item: String, label: String, _ what: String) {
         let actions = app.buttons["guest-actions"]
-        XCTAssertTrue(actions.waitForExistence(timeout: 5), "the guest header should offer ⋯")
+        XCTAssertTrue(actions.exists(within: 5), "the guest header should offer ⋯")
         actions.tap()
         let entry = app.menuEntry(item, label: label)
-        XCTAssertTrue(entry.waitForExistence(timeout: 5), what)
+        XCTAssertTrue(entry.exists(within: 5), what)
         entry.tap()
     }
 
-    /// Closes an open menu by tapping outside it (the header's title area).
+    /// Closes an open ⋯ menu by tapping outside it (the header's title area), and waits for
+    /// its entries to go. Every guest ⋯ menu holds Copy screen.
     private func dismissMenu(_ app: XCUIApplication) {
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.5)).tap()
-        Thread.sleep(forTimeInterval: 0.6)
+        XCTAssertTrue(app.buttons["Copy screen"].gone(within: 5), "tapping outside should close the ⋯ menu")
     }
 
     /// The terminal's `terminal-grid-probe`: "cols=C rows=R font=F fill=X".
@@ -72,13 +73,13 @@ final class GuestPaneTests: XCTestCase {
     func testLargerTextResizesTheAgentsTerminal() {
         let app = XCUIApplication.launched(mock: "guestpane")
         let terminal = app.descendants(matching: .any)["guest-terminal"]
-        XCTAssertTrue(terminal.waitForExistence(timeout: 10))
+        XCTAssertTrue(terminal.exists(within: 10))
         // The mock host's pane starts 120 columns wide; the guest's first proposal replaces it
         // with the grid that fits the guest's screen at the default text size.
         let before = waitForGrid(app, "the guest's fit should replace the desktop's 120 columns") {
             $0.cols != 120 && $0.font == 12.5 && $0.fill <= 1.0
         }
-        Thread.sleep(forTimeInterval: 1)
+        terminal.waitForSettledFrame()
         attach(app, "guest-resize-before")
 
         // The guest's own text size lives in ⋯ → Text size, where the owner's is.
@@ -86,7 +87,7 @@ final class GuestPaneTests: XCTestCase {
         let after = waitForGrid(app, "A+ should make the agent's grid narrower") {
             $0.cols < before.cols && $0.font > before.font
         }
-        Thread.sleep(forTimeInterval: 1)
+        terminal.waitForSettledFrame()
         attach(app, "guest-resize-after")
 
         tapMenuItem(app, "guest-font-decrease", label: "Decrease", "the guest pane's ⋯ should offer Decrease")
@@ -115,14 +116,13 @@ final class GuestPaneTests: XCTestCase {
     func testOldHostKeepsTheFitToWidthViewAndStopsProposing() {
         let app = XCUIApplication.launched(mock: "guestoldhost")
         let terminal = app.descendants(matching: .any)["guest-terminal"]
-        XCTAssertTrue(terminal.waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["View-only · this host doesn't support guest resizing"]
-            .waitForExistence(timeout: 10), "the pane should say why the size can't change")
+        XCTAssertTrue(terminal.exists(within: 10))
+        XCTAssertTrue(app.staticTexts["View-only · this host doesn't support guest resizing"].exists(within: 10), "the pane should say why the size can't change")
         // ⋯ still opens (Copy), but holds no Text size on an older host.
         let actions = app.buttons["guest-actions"]
-        XCTAssertTrue(actions.waitForExistence(timeout: 5))
+        XCTAssertTrue(actions.exists(within: 5))
         actions.tap()
-        XCTAssertTrue(app.buttons["Copy screen"].waitForExistence(timeout: 5), "the ⋯ menu should open")
+        XCTAssertTrue(app.buttons["Copy screen"].exists(within: 5), "the ⋯ menu should open")
         XCTAssertFalse(app.menuEntry("guest-font-increase", label: "Increase").exists, "no size controls on an older host")
         XCTAssertFalse(app.menuEntry("guest-font-decrease", label: "Decrease").exists, "no size controls on an older host")
         dismissMenu(app)
@@ -135,12 +135,14 @@ final class GuestPaneTests: XCTestCase {
         waitForGrid(app, "the host's 120 columns should fill the width", fitsWidth)
         // Anything that would re-propose: a rotation on iPad, a keyboard raising and dropping.
         XCUIDevice.shared.orientation = .landscapeLeft
+        // Kept: a negative check; the rotation must have time to relayout and (wrongly) re-propose.
         Thread.sleep(forTimeInterval: 1.5)
         XCUIDevice.shared.orientation = .portrait
         let input = app.textViews["guest-composer-input"]
         input.tap()
-        Thread.sleep(forTimeInterval: 1)
-        if app.buttons["guest-keyboard-button"].exists { app.buttons["guest-keyboard-button"].tap() }
+        let collapse = app.buttons["guest-keyboard-button"]
+        if collapse.exists(within: 3) { collapse.tap() }
+        // Kept: a negative check; the window in which a relayout would (wrongly) re-propose.
         Thread.sleep(forTimeInterval: 3)
         waitForGrid(app, "the fallback should still fit the width", fitsWidth)
         attach(app, "guest-resize-old-host")
@@ -153,7 +155,7 @@ final class GuestPaneTests: XCTestCase {
     func testTerminalIsViewOnly() {
         let app = XCUIApplication.launched(mock: "guestpane")
 
-        XCTAssertTrue(app.staticTexts["WORKING"].waitForExistence(timeout: 10),
+        XCTAssertTrue(app.staticTexts["WORKING"].exists(within: 10),
                       "the running agent's status pill should render")
         XCTAssertTrue(app.staticTexts["Shared by Jerry"].exists)
         XCTAssertTrue(app.staticTexts["Message llm-opt as plotarmordev"].exists,
@@ -162,13 +164,15 @@ final class GuestPaneTests: XCTestCase {
         XCTAssertFalse(app.staticTexts["jarvis"].exists, "an agent not shared with the guest must not show")
 
         let terminal = app.descendants(matching: .any)["guest-terminal"]
-        XCTAssertTrue(terminal.waitForExistence(timeout: 5))
-        // Let the stream seed and the fit-to-width settle before the screenshot and taps.
-        Thread.sleep(forTimeInterval: 2)
+        XCTAssertTrue(terminal.exists(within: 5))
+        // Wait for the stream to seed and the fit-to-width to replace the host's 120 columns
+        // before the screenshot and taps.
+        waitForGrid(app, "the guest's fit should replace the desktop's 120 columns") { $0.cols != 120 }
         attach(app, "guest-pane")
 
         for _ in 0..<3 {
             terminal.tap()
+            // Kept: a negative check; each tap has time to (wrongly) raise a keyboard.
             Thread.sleep(forTimeInterval: 0.4)
         }
         XCTAssertEqual(app.keyboards.count, 0, "tapping the terminal must not raise a keyboard")
@@ -176,6 +180,7 @@ final class GuestPaneTests: XCTestCase {
         XCTAssertFalse(app.descendants(matching: .any)["guest-menu-keys"].exists,
                        "no menu keys while the agent isn't asking anything")
 
+        // Kept: a negative check; a window in which a forbidden call would show up.
         Thread.sleep(forTimeInterval: 3)
         XCTAssertEqual(forbiddenCalls(app), "", "watching must not call anything a guest may not call")
 
@@ -184,11 +189,12 @@ final class GuestPaneTests: XCTestCase {
         input.tap()
         input.typeText("rerun it on Q4 too")
         let send = app.buttons["guest-send-button"]
-        XCTAssertTrue(send.waitForExistence(timeout: 3), "typing should offer Send")
+        XCTAssertTrue(send.exists(within: 3), "typing should offer Send")
         send.tap()
-        XCTAssertTrue(app.staticTexts["Message llm-opt as plotarmordev"].waitForExistence(timeout: 5),
+        XCTAssertTrue(app.staticTexts["Message llm-opt as plotarmordev"].exists(within: 5),
                       "a delivered message clears the composer")
         XCTAssertFalse(app.descendants(matching: .any)["guest-note"].exists, "the send should not fail")
+        // Kept: a negative check; a window in which a forbidden call from the send would show up.
         Thread.sleep(forTimeInterval: 1.5)
         XCTAssertEqual(forbiddenCalls(app), "", "sending must go out as agent.prompt only")
     }
@@ -199,23 +205,23 @@ final class GuestPaneTests: XCTestCase {
     func testKeyboardCanBeDismissedFromTheComposer() throws {
         let app = XCUIApplication.launched(mock: "guestpane")
         let input = app.textViews["guest-composer-input"]
-        XCTAssertTrue(input.waitForExistence(timeout: 10))
+        XCTAssertTrue(input.exists(within: 10))
         let collapse = app.buttons["guest-keyboard-button"]
         XCTAssertFalse(collapse.exists, "no collapse button while the keyboard is down")
 
         input.tap()
         let keyboard = app.keyboards.firstMatch
-        guard keyboard.waitForExistence(timeout: 5), keyboard.frame.height >= 150 else {
+        guard keyboard.exists(within: 5), keyboard.frame.height >= 150 else {
             throw XCTSkip("no full software keyboard on this destination; nothing to dismiss")
         }
-        XCTAssertTrue(collapse.waitForExistence(timeout: 5), "a visible software keyboard must be dismissible")
+        XCTAssertTrue(collapse.exists(within: 5), "a visible software keyboard must be dismissible")
         XCTAssertTrue(app.buttons["guest-attach-button"].exists, "the collapse button sits beside attach, not over it")
-        Thread.sleep(forTimeInterval: 0.6)
+        keyboard.waitForSettledFrame()
         attach(app, "guest-pane-keyboard")
 
         collapse.tap()
-        XCTAssertTrue(keyboard.waitForNonExistence(timeout: 5), "the collapse button puts the keyboard away")
-        XCTAssertTrue(collapse.waitForNonExistence(timeout: 5), "the button goes with the keyboard")
+        XCTAssertTrue(keyboard.gone(within: 5), "the collapse button puts the keyboard away")
+        XCTAssertTrue(collapse.gone(within: 5), "the button goes with the keyboard")
     }
 
     /// A guest scrolls back past what streamed in since connecting: like the owner's pane, the
@@ -226,11 +232,12 @@ final class GuestPaneTests: XCTestCase {
         let app = XCUIApplication.launched(mock: "guestpane")
 
         let terminal = app.descendants(matching: .any)["guest-terminal"]
-        XCTAssertTrue(terminal.waitForExistence(timeout: 10))
+        XCTAssertTrue(terminal.exists(within: 10))
         let topRow = app.descendants(matching: .any)["terminal-top-row-probe"]
-        XCTAssertTrue(topRow.waitForExistence(timeout: 10),
+        XCTAssertTrue(topRow.exists(within: 10),
                       "the DEBUG top-row probe should publish once the stream seeds")
-        // Let the backfill, the seed and the fit-to-width settle.
+        // Kept: a negative check; the backfill and the seed have time to (wrongly) leave the
+        // pane scrolled into history.
         Thread.sleep(forTimeInterval: 2)
         XCTAssertFalse(topRow.label.contains("earlier"),
                        "the pane should open on the live screen, not in history: \(topRow.label)")
@@ -239,12 +246,12 @@ final class GuestPaneTests: XCTestCase {
         let low = terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
         for _ in 0..<3 {
             high.press(forDuration: 0.05, thenDragTo: low)
+            // Kept: a gap between swipes so each lands as its own gesture.
             Thread.sleep(forTimeInterval: 0.2)
         }
-        Thread.sleep(forTimeInterval: 1)
+        let revealed = poll(5, every: 0.25) { topRow.label.contains("earlier") }
         attach(app, "guest-scrollback")
-        XCTAssertTrue(topRow.label.contains("earlier"),
-                      "a swipe down should reveal the backfilled scrollback: \(topRow.label)")
+        XCTAssertTrue(revealed, "a swipe down should reveal the backfilled scrollback: \(topRow.label)")
         XCTAssertEqual(forbiddenCalls(app), "", "the backfill is an allowed agent.read")
     }
 
@@ -253,11 +260,12 @@ final class GuestPaneTests: XCTestCase {
     func testPausedAgentDisablesTheComposer() {
         let app = XCUIApplication.launched(mock: "guestpaused")
 
-        XCTAssertTrue(app.buttons["guest-attach-button"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["guest-attach-button"].exists(within: 10))
         XCTAssertFalse(app.buttons["guest-attach-button"].isEnabled, "attach is disabled while paused")
         XCTAssertFalse(app.buttons["guest-mic-button"].isEnabled, "dictation is disabled while paused")
 
         app.textViews["guest-composer-input"].tap()
+        // Kept: a negative check; the tap has time to (wrongly) raise a keyboard.
         Thread.sleep(forTimeInterval: 0.8)
         XCTAssertEqual(app.keyboards.count, 0, "the paused composer must not take input")
         attach(app, "guest-paused")
@@ -269,13 +277,12 @@ final class GuestPaneTests: XCTestCase {
     func testBlockedAgentOffersTheMenuKeys() {
         let app = XCUIApplication.launched(mock: "guestblocked")
 
-        XCTAssertTrue(app.staticTexts["llm-opt is asking a question · answer with the keys below"]
-            .waitForExistence(timeout: 10), "the question banner should render")
+        XCTAssertTrue(app.staticTexts["llm-opt is asking a question · answer with the keys below"].exists(within: 10), "the question banner should render")
         XCTAssertTrue(app.staticTexts["NEEDS YOU"].exists)
         XCTAssertFalse(app.staticTexts["NEEDS JERRY"].exists, "the guest can answer, so it doesn't wait for Jerry")
         XCTAssertTrue(app.descendants(matching: .any)["guest-menu-keys"].exists, "the menu keys should show")
         XCTAssertTrue(app.textViews["guest-composer-input"].exists, "the guest can still send a message")
-        Thread.sleep(forTimeInterval: 2)
+        app.descendants(matching: .any)["guest-menu-keys"].waitForSettledFrame()
         attach(app, "guest-blocked")
 
         app.buttons["Down"].tap()
@@ -295,12 +302,12 @@ final class GuestPaneTests: XCTestCase {
         let app = XCUIApplication.launched(mock: "guestblocked", environment: ["HERDR_MOCK_GUEST_OWNER_ANSWERS": "1"])
 
         let keys = app.descendants(matching: .any)["guest-menu-keys"]
-        XCTAssertTrue(keys.waitForExistence(timeout: 10), "the menu keys should show")
+        XCTAssertTrue(keys.exists(within: 10), "the menu keys should show")
         app.buttons["Enter"].tap()
         XCTAssertTrue(poll(6, every: 0.3) { self.forbiddenCalls(app).contains("pane.send_keys") },
                       "the host refuses the key: \(forbiddenCalls(app))")
         let note = app.staticTexts["guest-note"]
-        XCTAssertTrue(note.waitForExistence(timeout: 6), "the guest hears the key wasn't taken")
+        XCTAssertTrue(note.exists(within: 6), "the guest hears the key wasn't taken")
         XCTAssertEqual(note.label, "That key wasn't taken. Try again in a moment.")
         XCTAssertTrue(keys.exists, "the keys stay")
         XCTAssertFalse(app.staticTexts["llm-opt is asking a question only Jerry can answer"].exists,
@@ -317,7 +324,7 @@ final class GuestPaneTests: XCTestCase {
                                            environment: ["HERDR_MOCK_GUEST_KEYS_PAUSE_AFTER_FIRST": "1"])
 
         let keys = app.descendants(matching: .any)["guest-menu-keys"]
-        XCTAssertTrue(keys.waitForExistence(timeout: 10), "the menu keys should show")
+        XCTAssertTrue(keys.exists(within: 10), "the menu keys should show")
         app.buttons["Down"].tap()
         let hostCalls = app.descendants(matching: .any)["guest-host-calls"]
         XCTAssertTrue(poll(6, every: 0.3) { hostCalls.label.contains("pane.send_keys:Down") },
@@ -325,6 +332,7 @@ final class GuestPaneTests: XCTestCase {
         app.buttons["Enter"].tap()
         XCTAssertTrue(poll(6, every: 0.3) { self.forbiddenCalls(app).contains("pane.send_keys:Enter") },
                       "the host refuses the second key: \(forbiddenCalls(app))")
+        // Kept: a negative check; the refusal has time to (wrongly) hand the question to the owner.
         Thread.sleep(forTimeInterval: 2)
         XCTAssertTrue(keys.exists, "the keys stay: this host lets the guest answer")
         XCTAssertFalse(app.staticTexts["llm-opt is asking a question only Jerry can answer"].exists,
@@ -339,9 +347,9 @@ final class GuestPaneTests: XCTestCase {
     /// and so is the quick-key bar; the status pill and "Shared by" chip stay under it.
     func testHeaderOffersTheGuestsButtonsAndNoOwnerOnlyActions() {
         let app = XCUIApplication.launched(mock: "guestpane", environment: ["HERDR_MOCK_STILL": "1"])
-        XCTAssertTrue(app.descendants(matching: .any)["guest-terminal"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.descendants(matching: .any)["guest-terminal"].exists(within: 10))
         for id in ["guest-back", "guest-find", "guest-refresh", "guest-actions"] {
-            XCTAssertTrue(app.buttons[id].waitForExistence(timeout: 5), "the header should offer \(id)")
+            XCTAssertTrue(app.buttons[id].exists(within: 5), "the header should offer \(id)")
         }
         XCTAssertTrue(app.descendants(matching: .any)["guest-status-pill"].exists, "the status pill stays")
         XCTAssertTrue(app.staticTexts["Shared by Jerry"].exists, "the Shared by chip stays")
@@ -351,13 +359,14 @@ final class GuestPaneTests: XCTestCase {
 
         app.buttons["guest-actions"].tap()
         for label in ["Copy screen", "Copy recent output", "Increase", "Decrease", "Reset"] {
-            XCTAssertTrue(app.buttons[label].waitForExistence(timeout: 5), "⋯ should offer \(label)")
+            XCTAssertTrue(app.buttons[label].exists(within: 5), "⋯ should offer \(label)")
         }
         XCTAssertFalse(app.buttons["Share with someone"].exists, "only the owner can share")
         XCTAssertFalse(app.buttons["terminal-share"].exists, "only the owner can share")
         XCTAssertFalse(app.buttons["Close agent"].exists, "only the owner can close the agent")
         attach(app, "guest-actions-menu")
         app.buttons["Copy screen"].tap()
+        // Kept: a negative check; a window in which a forbidden call from Copy screen would show up.
         Thread.sleep(forTimeInterval: 1.5)
         XCTAssertEqual(forbiddenCalls(app), "", "Copy screen is an allowed agent.read")
     }
@@ -366,15 +375,16 @@ final class GuestPaneTests: XCTestCase {
     /// calls a guest may make.
     func testRefreshReconnectsTheStream() {
         let app = XCUIApplication.launched(mock: "guestpane", environment: ["HERDR_MOCK_STILL": "1"])
-        XCTAssertTrue(app.descendants(matching: .any)["guest-terminal"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.descendants(matching: .any)["guest-terminal"].exists(within: 10))
         let opens = app.descendants(matching: .any)["guest-stream-opens"]
         XCTAssertTrue(poll(10, every: 0.25) { (Int(opens.label) ?? 0) >= 1 }, "the pane should open a stream")
+        // Kept: lets any further opens from the launch land, so `before` is the settled count.
         Thread.sleep(forTimeInterval: 2)
         let before = Int(opens.label) ?? 0
         app.buttons["guest-refresh"].tap()
         XCTAssertTrue(poll(10, every: 0.25) { (Int(opens.label) ?? 0) > before },
                       "Refresh should open a new stream (was \(before), now \(opens.label))")
-        XCTAssertTrue(app.descendants(matching: .any)["guest-terminal"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["guest-terminal"].exists(within: 5))
         XCTAssertEqual(forbiddenCalls(app), "", "a reconnect calls only what a guest may")
     }
 
@@ -383,10 +393,13 @@ final class GuestPaneTests: XCTestCase {
     func testLatestPillAppearsInHistoryAndReturnsToTheTail() {
         let app = XCUIApplication.launched(mock: "guestpane", environment: ["HERDR_MOCK_STILL": "1"])
         let terminal = app.descendants(matching: .any)["guest-terminal"]
-        XCTAssertTrue(terminal.waitForExistence(timeout: 10))
+        XCTAssertTrue(terminal.exists(within: 10))
         let topRow = app.descendants(matching: .any)["terminal-top-row-probe"]
-        XCTAssertTrue(topRow.waitForExistence(timeout: 10))
-        Thread.sleep(forTimeInterval: 2)
+        XCTAssertTrue(topRow.exists(within: 10))
+        // Wait for the seeded screen to hold still for a beat (two reads 0.5 s apart agree)
+        // before reading it as the live one.
+        XCTAssertTrue(waitForStable(timeout: 10, interval: 0.5, accept: { !$0.isEmpty }) { topRow.label }.stable,
+                      "the top row should settle once the stream seeds: \(topRow.label)")
         let latest = app.buttons["guest-latest"]
         XCTAssertFalse(latest.exists, "no pill at the tail")
         let live = topRow.label
@@ -395,15 +408,16 @@ final class GuestPaneTests: XCTestCase {
         let low = terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
         for _ in 0..<3 {
             high.press(forDuration: 0.05, thenDragTo: low)
+            // Kept: a gap between swipes so each lands as its own gesture.
             Thread.sleep(forTimeInterval: 0.2)
         }
-        XCTAssertTrue(latest.waitForExistence(timeout: 5), "scrolled into history, the Latest pill should show")
+        XCTAssertTrue(latest.exists(within: 5), "scrolled into history, the Latest pill should show")
         XCTAssertNotEqual(topRow.label, live, "the swipe should have moved into history")
-        Thread.sleep(forTimeInterval: 0.5)
+        latest.waitForSettledFrame()
         attach(app, "guest-latest-pill")
 
         latest.tap()
-        XCTAssertTrue(latest.waitForNonExistence(timeout: 5), "back at the tail, the pill goes")
+        XCTAssertTrue(latest.gone(within: 5), "back at the tail, the pill goes")
         XCTAssertTrue(poll(5, every: 0.25) { topRow.label == live },
                       "the tap should return to the live screen: \(topRow.label)")
         XCTAssertEqual(forbiddenCalls(app), "", "jumping to the tail sends nothing")

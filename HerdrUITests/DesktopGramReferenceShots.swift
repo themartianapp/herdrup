@@ -65,12 +65,12 @@ final class DesktopGramReferenceShots: DesktopReferenceCaptureCase {
             let save = app.buttons["Save"].firstMatch
             XCTAssertTrue(save.waitForHittable(timeout: 5))
             save.tap()
-            XCTAssertTrue(bubble.descendants(matching: .any)["gram-saved-badge"].waitForExistence(timeout: 5))
+            XCTAssertTrue(bubble.descendants(matching: .any)["gram-saved-badge"].exists(within: 5))
         }
         let saved = app.buttons["gram-saved-toggle"]
         XCTAssertTrue(saved.waitForHittable(timeout: 5))
         saved.tap()
-        XCTAssertTrue(app.scrollViews["gram-saved-feed"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.scrollViews["gram-saved-feed"].exists(within: 10))
         XCTAssertTrue(gramElement(app, "gram-saved-gr-owner").waitForHittable(timeout: 10))
         XCTAssertTrue(gramElement(app, "gram-saved-gr-file").waitForHittable(timeout: 10))
         capture(app, device: device, state: "gram-saved")
@@ -80,7 +80,7 @@ final class DesktopGramReferenceShots: DesktopReferenceCaptureCase {
         let (app, device) = try launchGramReference()
         searchGramReference(app, for: "handoff")
         XCTAssertTrue(gramElement(app, "gram-bubble-gr-file").waitForHittable(timeout: 10))
-        XCTAssertTrue(gramElement(app, "gram-bubble-gr-owner").waitForNonExistence(timeout: 5))
+        XCTAssertTrue(gramElement(app, "gram-bubble-gr-owner").gone(within: 5))
         XCTAssertFalse(app.staticTexts["No matches"].exists)
         capture(app, device: device, state: "gram-search-results")
     }
@@ -88,8 +88,8 @@ final class DesktopGramReferenceShots: DesktopReferenceCaptureCase {
     func testGramSearchEmptyReference() throws {
         let (app, device) = try launchGramReference()
         searchGramReference(app, for: "no-such-reference")
-        XCTAssertTrue(app.staticTexts["No matches"].waitForExistence(timeout: 10))
-        XCTAssertTrue(gramElement(app, "gram-bubble-gr-owner").waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["No matches"].exists(within: 10))
+        XCTAssertTrue(gramElement(app, "gram-bubble-gr-owner").gone(within: 5))
         capture(app, device: device, state: "gram-search-empty")
     }
 
@@ -121,10 +121,10 @@ final class DesktopGramReferenceShots: DesktopReferenceCaptureCase {
         field.typeText("@clientloop Please review the attachment.")
         finishGramComposerReference(app)
         let send = app.buttons["gram-send-button"]
-        XCTAssertTrue(send.waitForExistence(timeout: 5))
+        XCTAssertTrue(send.exists(within: 5))
         XCTAssertFalse(send.isEnabled)
         let hint = gramElement(app, "gram-composer-hint")
-        XCTAssertTrue(hint.waitForExistence(timeout: 5))
+        XCTAssertTrue(hint.exists(within: 5))
         XCTAssertTrue(hint.label.contains("Several agents are called clientloop: pick one"))
         capture(app, device: device, state: "gram-composer-ambiguous")
     }
@@ -132,7 +132,7 @@ final class DesktopGramReferenceShots: DesktopReferenceCaptureCase {
     func testGramEmptyReference() throws {
         let (app, device) = try launch("gram", served: "gram-empty", sha256: Self.gramEmptySHA256)
         openGramReference(app)
-        XCTAssertTrue(app.staticTexts["No messages yet"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["No messages yet"].exists(within: 10))
         XCTAssertFalse(app.staticTexts["No matches"].exists)
         capture(app, device: device, state: "gram-empty")
     }
@@ -140,7 +140,7 @@ final class DesktopGramReferenceShots: DesktopReferenceCaptureCase {
     func testGramLoadingReference() throws {
         let (app, device) = try launch("gram-loading", served: "gram-loading", sha256: Self.gramLoadingSHA256)
         openGramReference(app)
-        XCTAssertTrue(app.activityIndicators.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.activityIndicators.firstMatch.exists(within: 10))
         XCTAssertFalse(app.staticTexts["No messages yet"].exists)
         XCTAssertFalse(app.scrollViews["gram-feed"].exists)
         capture(app, device: device, state: "gram-loading")
@@ -152,7 +152,7 @@ final class DesktopGramReferenceShots: DesktopReferenceCaptureCase {
             environment: attachment ? ["HERDR_MOCK_PICKED_FILE": "1"] : [:]
         )
         openGramReference(app)
-        XCTAssertTrue(app.scrollViews["gram-feed"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.scrollViews["gram-feed"].exists(within: 15))
         XCTAssertTrue(gramElement(app, "gram-bubble-gr-owner").waitForHittable(timeout: 10))
         return (app, device)
     }
@@ -161,7 +161,7 @@ final class DesktopGramReferenceShots: DesktopReferenceCaptureCase {
         let gram = app.buttons["Gram"].firstMatch
         XCTAssertTrue(gram.waitForHittable(timeout: 15))
         gram.tap()
-        XCTAssertTrue(app.textViews["gram-composer-input"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.textViews["gram-composer-input"].exists(within: 10))
     }
 
     private func searchGramReference(_ app: XCUIApplication, for query: String) {
@@ -174,7 +174,7 @@ final class DesktopGramReferenceShots: DesktopReferenceCaptureCase {
         // A focused caret blink is real UI motion, not a reason to relax PNG stability.
         field.typeText("\n")
         XCTAssertEqual(field.value as? String, query)
-        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.keyboards.firstMatch.gone(within: 5))
     }
 
     private func finishGramComposerReference(_ app: XCUIApplication) {
@@ -183,7 +183,7 @@ final class DesktopGramReferenceShots: DesktopReferenceCaptureCase {
         let collapse = app.buttons["Collapse keyboard"]
         XCTAssertTrue(collapse.waitForHittable(timeout: 5))
         collapse.tap()
-        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.keyboards.firstMatch.gone(within: 5))
     }
 
     private func attachGramReferenceFile(_ app: XCUIApplication) {
@@ -211,7 +211,7 @@ final class DesktopGramReferenceShots: DesktopReferenceCaptureCase {
 
     private func revealOlderGramReference(_ element: XCUIElement, in app: XCUIApplication) {
         let feed = app.scrollViews["gram-feed"]
-        XCTAssertTrue(feed.waitForExistence(timeout: 10))
+        XCTAssertTrue(feed.exists(within: 10))
         // Small real drags keep a target from jumping straight across the viewport.
         // Keep the whole target clear of the floating header and composer, not merely hittable.
         func visible() -> Bool {
