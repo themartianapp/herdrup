@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Runs one simulator shard of the device suite on any Mac, in rounds with measured budgets,
-# boot checks, one infrastructure-only rerun and first-failure diagnostics. The caller has
-# built the app and test bundles into .build-dd (build-for-testing) and exported
-# IPHONE_UDID, IPAD_UDID and, for ipad-script and focused reference runs, IPAD11_UDID
+# boot checks, one infrastructure-only rerun and one retry of a round's failed tests. The
+# caller has built the app and test bundles into .build-dd (build-for-testing) and exported
+# IPHONE_UDID, IPAD_UDID and, for desktop-refs and focused reference runs, IPAD11_UDID
 # (`eval "$(python3 Tools/ci/pick-simulators.py)"` picks them).
 #
 # The shard names and classes are .macserve.json's, where macserve runs them as PR checks:
@@ -10,19 +10,21 @@
 #     UI-test template runs each as one xcodebuild test run of the listed classes on one
 #     simulator (mac-evidence/org-ios-sim-uitest-v1/<shard>). Here the same classes run in
 #     rounds, for a local or diagnostic run of that shard.
-#   - ipad-script is its script shard (mac-evidence/org-ios-sim-script-v1/ipad-script):
-#     Tools/ci/macserve-ipad-script.sh creates the iPads and runs this shard as it is.
+#   - ipad-script and desktop-refs are its script shards
+#     (mac-evidence/org-ios-sim-script-v1/<shard>): Tools/ci/macserve-ipad-script.sh and
+#     Tools/ci/macserve-desktop-refs.sh create the iPads each needs and run that shard as it is.
 #
 #   iphone-terminal  TERMINAL_CLASSES, then HerdrFontTests, PagingTests and GramTests in
 #                    rounds of their own, on iPhone
 #   iphone-app       ChatViewTests, StatusMotionTests, the guest classes and ChatUXSmokeTests
 #                    in rounds of their own, then every other HerdrUITests class on iPhone
 #   ipad             iPad-specific rounds, on iPad
-#   ipad-script      what the UI-test template cannot run: Herdrup Desktop's references on
-#                    both iPads (dark, status bar pinned by simctl), AgentListChromeTests on
-#                    iPad, the iPad Settings resize/resume regression on an optimized
-#                    Distribution build with the device-sized stack (herdrup#416), and the
-#                    SwiftTerm UIKit API tests on iPad and iPhone
+#   ipad-script      the other rounds the UI-test template cannot run:
+#                    AgentListChromeTests on iPad, the iPad Settings resize/resume regression
+#                    on an optimized Distribution build with the device-sized stack
+#                    (herdrup#416), and the SwiftTerm UIKit API tests on iPad and iPhone
+#   desktop-refs     Herdrup Desktop's references on both iPads (dark, status bar pinned by
+#                    simctl): 58 tests, about 19 min, a script shard of their own
 #   focused          ONLY_SUITE on ONLY_DEVICE: iphone, ipad, or ipad-pro-13 for the references
 #
 # The iPhone rounds are complementary BY CONSTRUCTION here: iphone-terminal runs exactly
@@ -33,7 +35,7 @@
 # Tools/ci/test_macserve_shards.py fails when a test class is in no macserve shard.
 set -uo pipefail
 
-shard="${1:?usage: ui-shard.sh iphone-terminal|iphone-app|ipad|ipad-script|focused}"
+shard="${1:?usage: ui-shard.sh iphone-terminal|iphone-app|ipad|ipad-script|desktop-refs|focused}"
 TERMINAL_CLASSES=(TerminalControlTests TerminalResizeTests TerminalSearchTests TerminalSelectionTests TerminalDropTests)
 SIM_STATE="$(cd "$(dirname "$0")" && pwd)/sim-state.py"
 XCRESULT_TESTS="$(dirname "$SIM_STATE")/xcresult-tests.py"
@@ -97,7 +99,8 @@ trap stop_recording EXIT
 # CoreSimulator must leave time for receipt upload. TERM gets 15 s before KILL.
 # First-boot data migration took 5m41s in run 38916529804. Each device's first (cold)
 # boot gets 10m; later readiness checks of the same device keep the shorter 5m.
-# Per device, because ipad-script cold-boots three: both iPads and then the iPhone.
+# Per device, because a shard can cold-boot several: ipad-script the iPad and then the
+# iPhone, desktop-refs both iPads.
 cold_booted=" "
 # Devices that bootstatus reported ready earlier in this job. Do not repeat bootstatus
 # for a still-booted device: on Xcode 27, with the screen recorder running, the second
@@ -486,24 +489,84 @@ run_suite() {
       return "$rerun"
     fi
   fi
-  echo "::error::$label first run failed; the failure stands. Rerunning only the failed tests for raw diagnostics"
+  retry_failed_tests "$label" "$udid" "$failed" "$APP_UNDER_TEST" || return 1
+  last_round_result=passed
+  return 0
+}
+
+# A FAILED TEST GETS ONE RETRY (owner's decision, 2026-11-19: flaky tests blocked merges, and
+# this rerun of the failed tests used to be diagnostics only, "the failure stands"). When
+# infra_rerun does not take a failed round, exactly its failed Class/method cases run once
+# more on the same device. The round passes only if the first run's failure is nothing but
+# those cases (no test-runner error outside a Class/method case, no issue that mentions a
+# crash, no crash report of the app) and the retry exits 0, records every one of them as
+# passed and no other case as anything else, and attaches no crash report of the app. Each
+# such case is a flake: a `<label> <Class/method>` line in TestReceipts/FLAKES.txt and a
+# ::warning::. Otherwise the first failure stands and the retry is its diagnostics. A round
+# with no failed case recorded (it never ran a test, or its result bundle is unreadable)
+# gets no retry, and a round that ran out of its budget never gets here.
+# retry_failed_tests LABEL UDID FAILED APP: returns 0 when the retry passed.
+retry_failed_tests() {
+  local label="$1" udid="$2" failed="$3" app="$4" status=0 bundle_id verdict="" selector flaky
+  local verdicts="TestReceipts/$label-retry-verdict.txt" selectors=()
   if [ -z "$failed" ]; then
-    echo "::warning::$label: no failed test case recorded in the result bundle; no diagnostic rerun"
+    echo "::error::$label first run failed with no failed test case recorded in its result bundle; the failure stands, no retry"
     return 1
   fi
-  echo "$failed" | tee "TestReceipts/$label-diagnostic-selection.txt"
-  # Diagnostics only: the failed tests usually rerun in 1-3 min. A short cap keeps a
-  # pathological rerun from eating the job budget that the receipt upload needs.
-  # shellcheck disable=SC2086 # one -only-testing argument per line
+  # One -only-testing:Bundle/Class/method per line, no spaces (failed_tests); no mapfile:
+  # macOS's /bin/bash is 3.2.
+  # shellcheck disable=SC2206
+  selectors=($failed)
+  echo "$label first run failed; running only its failed tests once more. If every one passes, the round passes and each is recorded as a flake"
+  printf '%s\n' "${selectors[@]}" | tee "TestReceipts/$label-retry-selection.txt"
+  # The failed tests usually rerun in 1-3 min. A short cap keeps a pathological retry from
+  # eating the job budget that the receipt upload needs; a retry that runs out fails.
   "$TIMEOUT_BIN" --signal=INT 10m xcodebuild test-without-building "${PROJECT[@]}" \
       -destination "platform=iOS Simulator,id=$udid" \
       -parallel-testing-enabled NO \
       -test-timeouts-enabled YES \
       -default-test-execution-time-allowance 300 \
       -maximum-test-execution-time-allowance 600 \
-      -resultBundlePath "TestReceipts/$label-diagnostic.xcresult" \
-      $failed 2>&1 | tee "TestReceipts/$label-diagnostic.log" >/dev/null || true
-  return 1
+      -resultBundlePath "TestReceipts/$label-retry.xcresult" \
+      "${selectors[@]}" 2>&1 | tee "TestReceipts/$label-retry.log" | beautify || status=$?
+  bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist" 2>/dev/null)
+  if xcrun xcresulttool get test-results tests --path "TestReceipts/$label-first.xcresult" 2>/dev/null \
+      | python3 "$XCRESULT_TESTS" runner-error >"$verdicts"; then
+    verdict="the first run's test runner failed outside a test case"
+  elif python3 "$XCRESULT_TESTS" crash-issues "TestReceipts/$label-first.xcresult" >>"$verdicts"; then
+    verdict="an issue of the first run mentions a crash, or its issues could not be read"
+  elif [ -z "$bundle_id" ]; then
+    verdict="no bundle identifier in $app/Info.plist to check for crash reports"
+  elif app_crash_in "TestReceipts/$label-first.xcresult" "$bundle_id" >>"$verdicts"; then
+    verdict="the first run attached a crash report of $bundle_id, or its attachments could not be exported"
+  elif [ "$status" -ne 0 ]; then
+    verdict="the retry failed too (xcodebuild exit $status)"
+  elif ! xcrun xcresulttool get test-results tests --path "TestReceipts/$label-retry.xcresult" 2>/dev/null \
+      | python3 "$XCRESULT_TESTS" all-passed "${selectors[@]}" >>"$verdicts"; then
+    verdict="the retry's result bundle does not show every failed test passed"
+  elif app_crash_in "TestReceipts/$label-retry.xcresult" "$bundle_id" >>"$verdicts"; then
+    verdict="the retry attached a crash report of $bundle_id, or its attachments could not be exported"
+  fi
+  if [ -n "$verdict" ]; then
+    echo "::error::$label first run failed and $verdict; the failure stands. See TestReceipts/$label-first.* and $label-retry.* ($(paste -sd ';' "$verdicts"))"
+    return 1
+  fi
+  for selector in "${selectors[@]}"; do
+    flaky="${selector#-only-testing:}"
+    flaky="${flaky#*/}"
+    echo "$label $flaky" >>TestReceipts/FLAKES.txt
+    echo "::warning::flaky (passed on retry): $label $flaky"
+  done
+  return 0
+}
+
+# app_crash_in BUNDLE BUNDLE_ID: succeeds when BUNDLE's attachments hold a crash report of
+# BUNDLE_ID, or cannot be exported: then nothing shows that the app did not crash.
+app_crash_in() {
+  local bundle="$1" bundle_id="$2" out
+  out="$SIM_TMP/$(basename "$bundle" .xcresult)-crash-check"
+  xcrun xcresulttool export attachments --path "$bundle" --output-path "$out" >/dev/null 2>&1 || return 0
+  python3 "$XCRESULT_TESTS" app-crashed "$out" "$bundle_id"
 }
 
 # A ROUND WHOSE EVERY FAILURE IS THE SIMULATOR'S. When every issue of every failed case was
@@ -807,22 +870,16 @@ case "$shard" in
         -destination "platform=iOS Simulator,id=$IPAD_UDID" \
         -only-testing:HerdrUITests/SettingsTests/testCompactSettingsSurviveResizeAndResume \
         2>&1 | tee TestReceipts/settings-device-stack-build.log | beautify || failed=1
-    # Herdrup Desktop's references at both sizes, full screen, dark, with the status bar
-    # pinned: the 13-inch iPad, then the 1180x820 pt one, which is shut down afterwards.
-    desktop_reference_round iPadDesktopReference "$IPAD_UDID" || failed=1
-    desktop_reference_round iPad11DesktopReference "$IPAD11_UDID" || failed=1
-    bounded 120 xcrun simctl shutdown "$IPAD11_UDID" >/dev/null 2>&1 || true
-    ready_devices="${ready_devices/ $IPAD11_UDID / }"
     # AgentListChromeTests shrinks the app into a window on purpose, and iPadOS keeps that
     # window for later launches, even across a reinstall. Run 40537708095 (and 40552658219,
     # which uninstalled the app after this round) ran NeedsYouPill and the first ChatUX
     # cases in a 715-722 pt window: no room for the chat column and pixel probes off the
     # window, failing four ChatUX cases that pass full screen. So it runs after every
-    # full-screen iPad round, and the iPad is erased before the Settings regression.
+    # full-screen iPad round, and the iPad is erased before the Settings regression. Herdrup
+    # Desktop's full-screen references run in desktop-refs, on that shard's own iPads.
     # 10m: p95 2.9 min, slowest pass 4.2 (n=151).
     run_suite iPadAgentListChrome "$IPAD_UDID" 10m -only-testing:HerdrUITests/AgentListChromeTests || failed=1
     check_classes_ran TestReceipts/iPadAgentListChrome-first.xcresult AgentListChromeTests || failed=1
-    stop_recording
     bounded 120 xcrun simctl shutdown "$IPAD_UDID" >/dev/null 2>&1 || true
     ready_devices="${ready_devices/ $IPAD_UDID / }"
     if bounded 180 xcrun simctl erase "$IPAD_UDID" >TestReceipts/iPad-erase.log 2>&1; then
@@ -877,6 +934,21 @@ case "$shard" in
     xcrun simctl shutdown "$IPAD_UDID" >/dev/null 2>&1 || true
     ready_devices="${ready_devices/ $IPAD_UDID / }"
     swiftterm_api iPhone "$IPHONE_UDID" || failed=1
+    ;;
+  desktop-refs)
+    # Herdrup Desktop's references at both sizes, full screen, dark, with the status bar
+    # pinned: the 13-inch iPad, then the 1180x820 pt one. Their own script shard since
+    # 2026-11-19: their 58 tests, about 19 min, were most of ipad-script's 35-60 min, and
+    # macserve runs script shards one at a time. Each iPad is shut down after its round: a
+    # second booted simulator adds to the memory pressure measured during launch stalls
+    # (herdrup#418). No windowed round (AgentListChromeTests) runs on these fresh iPads, so
+    # every round here is full screen.
+    desktop_reference_round iPadDesktopReference "$IPAD_UDID" || failed=1
+    bounded 120 xcrun simctl shutdown "$IPAD_UDID" >/dev/null 2>&1 || true
+    ready_devices="${ready_devices/ $IPAD_UDID / }"
+    desktop_reference_round iPad11DesktopReference "$IPAD11_UDID" || failed=1
+    bounded 120 xcrun simctl shutdown "$IPAD11_UDID" >/dev/null 2>&1 || true
+    ready_devices="${ready_devices/ $IPAD11_UDID / }"
     ;;
   focused)
     case "${ONLY_DEVICE:-iphone}" in

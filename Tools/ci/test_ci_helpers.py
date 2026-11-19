@@ -140,6 +140,43 @@ class XcresultTests(unittest.TestCase):
                 report.write(json.dumps({"bundleID": "com.jerryfane.herdr"}) + "\n{}\n")
             self.assertEqual(run("xcresult-tests.py", ["app-crashed", directory, "com.jerryfane.herdr"])[0], 0)
 
+    def test_runner_error_only_for_a_failure_outside_a_class_method_case(self):
+        data = json.loads(bundle([("A", "testOne", "Failed", ["x"])]))
+        self.assertEqual(run("xcresult-tests.py", ["runner-error"], json.dumps(data))[0], 1)
+        data["testNodes"][0]["children"][0]["children"].append({"nodeType": "Test Case", "result": "Failed",
+            "nodeIdentifier": "HerdrUITests-Runner (21391) encountered an error"})
+        self.assertEqual(run("xcresult-tests.py", ["runner-error"], json.dumps(data))[0], 0)
+        self.assertEqual(run("xcresult-tests.py", ["runner-error"], "not json")[0], 0)
+
+    def test_crash_issues_blocks_a_retry_after_a_crash(self):
+        assertion, auto = "Assertion Failure", "UI Automation Failure"
+        plain = self.issues_bundle([("A/testOne", "Failure", [(assertion, "XCTAssertTrue failed")])])
+        self.assertEqual(run("xcresult-tests.py", ["crash-issues", plain])[0], 1)
+        crashed = self.issues_bundle([("A/testOne", "Failure", [(auto, "Herdr crashed in Foo.bar()")])])
+        code, out, _ = run("xcresult-tests.py", ["crash-issues", crashed])
+        self.assertEqual(code, 0)
+        self.assertIn("A/testOne()", out)
+        self.assertEqual(run("xcresult-tests.py", ["crash-issues", tempfile.gettempdir() + "/no-such.xcresult"])[0], 0)
+
+    def test_all_passed_needs_every_retried_case_passed_and_nothing_else(self):
+        one, two = "-only-testing:HerdrUITests/A/testOne", "-only-testing:HerdrUITests/A/testTwo"
+        passed = bundle([("A", "testOne", "Passed", []), ("A", "testTwo", "Passed", [])])
+        self.assertEqual(run("xcresult-tests.py", ["all-passed", one, two], passed)[0], 0)
+        # A case that did not run, failed, or was skipped keeps the failure.
+        self.assertEqual(run("xcresult-tests.py", ["all-passed", one, two],
+                             bundle([("A", "testOne", "Passed", [])]))[0], 1)
+        self.assertEqual(run("xcresult-tests.py", ["all-passed", one, two],
+                             bundle([("A", "testOne", "Passed", []), ("A", "testTwo", "Failed", ["x"])]))[0], 1)
+        self.assertEqual(run("xcresult-tests.py", ["all-passed", one],
+                             bundle([("A", "testOne", "Skipped", [])]))[0], 1)
+        # A runner error next to passing cases, no test case at all, or no readable bundle.
+        data = json.loads(bundle([("A", "testOne", "Passed", [])]))
+        data["testNodes"][0]["children"][0]["children"].append({"nodeType": "Test Case", "result": "Failed",
+            "nodeIdentifier": "HerdrUITests-Runner (21391) encountered an error"})
+        self.assertEqual(run("xcresult-tests.py", ["all-passed", one], json.dumps(data))[0], 1)
+        self.assertEqual(run("xcresult-tests.py", ["all-passed", one], json.dumps({"testNodes": []}))[0], 1)
+        self.assertEqual(run("xcresult-tests.py", ["all-passed", one], "not json")[0], 1)
+
 
 class SimStateTests(unittest.TestCase):
     def setUp(self):

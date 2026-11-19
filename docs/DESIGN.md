@@ -206,21 +206,30 @@ job builds the app for itself, so there are few, long shards:
 | `mac-evidence/org-ios-sim-uitest-v1/iphone-terminal` | UI test, iPhone 18 Pro | `HerdrFontTests`, the terminal classes, `PagingTests`, `GramTests` |
 | `mac-evidence/org-ios-sim-uitest-v1/iphone-app` | UI test, iPhone 18 Pro | `ChatViewTests` and every other iPhone class |
 | `mac-evidence/org-ios-sim-uitest-v1/ipad` | UI test, iPad Pro 13-inch | the iPad rounds: resize, Duo transition, control, drop, chat column, Gram column, needs-you, star bar, guest Settings |
-| `mac-evidence/org-ios-sim-script-v1/ipad-script` | script, iPhone 18 Pro + its own iPads | `Tools/ci/macserve-ipad-script.sh`: the built-version check, Herdrup Desktop's references on both iPads, iPad `AgentListChromeTests`, the optimized Settings stack regression, the SwiftTerm UIKit API tests |
+| `mac-evidence/org-ios-sim-script-v1/ipad-script` | script, iPhone 18 Pro + its own iPad | `Tools/ci/macserve-ipad-script.sh`: the built-version check, iPad `AgentListChromeTests`, the optimized Settings stack regression, the SwiftTerm UIKit API tests |
+| `mac-evidence/org-ios-sim-script-v1/desktop-refs` | script, iPhone 18 Pro + its own two iPads | `Tools/ci/macserve-desktop-refs.sh`: Herdrup Desktop's references (`DESKTOP_REFERENCE_CLASSES`, 58 tests) on the 13-inch and the 1180x820 pt iPad |
 
 The UI-test template runs a shard's `-only-testing` selectors as one `xcodebuild test`;
 [`Tools/ci/test_macserve_shards.py`](../Tools/ci/test_macserve_shards.py) fails the Linux job
-when a test class is in no shard. The script shard runs the rounds a plain selector list
+when a test class is in no shard. The script shards run the rounds a plain selector list
 cannot: the references need a dark simulator with a pinned status bar,
 `AgentListChromeTests` leaves iPadOS's window shrunk for every later launch, the Settings
 regression needs a Distribution build, and SwiftTerm's tests are their own package scheme.
+The references were most of `ipad-script` (about 19 of its 35-60 minutes) and macserve runs
+script shards one at a time, so since 2026-11-19 they are the `desktop-refs` shard, on iPads
+of its own (`macserve-desktop-refs.sh` runs `macserve-ipad-script.sh desktop-refs`).
 A failed shard is not rerun automatically; macserve reruns only jobs its own service
-cancelled. macserve does not skip docs-only or version-only pull requests;
+cancelled. Inside a shard, `ui-shard.sh` retries a failed round's failed tests once (below).
+macserve does not skip pull requests that cannot change the app;
 [`Tools/ci/ci_scope.py`](../Tools/ci/ci_scope.py) still records that decision in the
-*Scope* job.
+*Scope* job: docs and Markdown, `.gitignore`, version-only `project.yml` bumps, the
+`GuestRelay/` and `AccountService/` Workers, `Tools/crash/` and `.github/workflows/` say
+`ui=false` (a `ci.yml` change only when every changed line is inside a job other than
+`scope` or is a comment outside the jobs); anything else, a rename into or out of those
+paths included, says `ui=true`.
 
 **The `smoke` shard is the fast tier's.** macserve's two-tier matrix will run it on every push,
-drafts included, on an iPhone 18 Pro from the head's one prebuilt app, while the four shards
+drafts included, on an iPhone 18 Pro from the head's one prebuilt app, while the five shards
 above become the full tier, which runs only on the final head before merge. Until macserve's
 policy names it, macserve ignores it. It lists 30 selectors (36 tests, about 7.4 minutes of
 test time at #694's durations) on the critical paths: launch and onboarding, pairing and the
@@ -237,9 +246,9 @@ selector's class also runs in an iPhone shard, so a green smoke never stands in 
 tier, which still gates the merge.
 
 **Running a shard on any Mac.** [`Tools/ci/ui-shard.sh`](../Tools/ci/ui-shard.sh) runs the
-same shards round by round, with measured per-round budgets, an infrastructure-only rerun
-and receipts in `TestReceipts/` (it needs no Homebrew: `xcbeautify` and GNU `timeout` are
-used when present):
+same shards round by round, with measured per-round budgets, an infrastructure-only rerun,
+one retry of a failed round's failed tests, and receipts in `TestReceipts/` (it needs no
+Homebrew: `xcbeautify` and GNU `timeout` are used when present):
 
 ```bash
 xcodegen generate
@@ -247,7 +256,7 @@ eval "$(python3 Tools/ci/pick-simulators.py)"     # IPHONE_UDID, IPAD_UDID, IPAD
 xcodebuild build-for-testing -project Herdr.xcodeproj -scheme Herdr \
   -destination "platform=iOS Simulator,id=$IPHONE_UDID" \
   -derivedDataPath .build-dd -clonedSourcePackagesDirPath SourcePackages CODE_SIGNING_ALLOWED=NO
-Tools/ci/ui-shard.sh iphone-app                    # or iphone-terminal, ipad, ipad-script
+Tools/ci/ui-shard.sh iphone-app                    # or iphone-terminal, ipad, ipad-script, desktop-refs
 ONLY_SUITE=GramTests ONLY_DEVICE=iphone Tools/ci/ui-shard.sh focused
 ```
 
@@ -262,8 +271,8 @@ To run a shard on macserve at a commit, submit a job to its API with the shard's
 ```
 
 The `ipad` shard uses `com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-12GB`;
-`ipad-script` uses `"kind":"simulator_script"`, `"profile":"org-ios-sim-script-v1"` and the
-iPhone 18 Pro.
+`ipad-script` and `desktop-refs` use `"kind":"simulator_script"`, `"profile":"org-ios-sim-script-v1"`
+and the iPhone 18 Pro.
 
 The reconnect-history UI receipt recognizes the fixture's numbered history rows
 before and after real swipes, requiring earlier rows to become visible instead of
@@ -312,8 +321,13 @@ The four simulator jobs run in parallel. Gram shares the optimized Settings job;
 iPhone app job runs font, status-motion, agent-list and server-update tests in their own rounds
 before the remaining app tests. The server-update round has a ten-minute budget and checks
 that its class actually ran; the remaining app round has a forty-minute budget on Xcode 27.
-A failed first run still fails its job even if the diagnostic rerun passes; manual reruns
-execute the entire selected job.
+A round whose first run fails, when the infrastructure-only rerun does not take it, runs
+exactly its failed tests once more on the same device (owner's decision, 2026-11-19). If
+every one of them passes, with no crash report and no test-runner error, the round passes,
+and each such test is a flake: a `<round> <Class/method>` line in `TestReceipts/FLAKES.txt`
+(in the exported receipts) and a `::warning::flaky (passed on retry)` line. A retry that
+fails, runs out, or leaves no passing record, and a round that ran no test case, crashed or
+ran out of its budget, keeps the failure; manual reruns execute the entire selected job.
 The optimized Settings job builds only the selected simulator architecture and caches
 `Build/Products` for the same workflow run, commit, Xcode/SDK, OS, architecture and workspace.
 It saves a successful build before testing, so a test failure does not discard the build.
