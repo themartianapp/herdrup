@@ -19,11 +19,11 @@ class TerminalInteractionTestCase: XCTestCase {
 
     func launch(_ mode: String, environment: [String: String] = [:]) {
         fixtureMode = mode
-        app = XCUIApplication()
-        app.launchEnvironment = environment
+        app = XCUIApplication.forUITest()
+        app.launchEnvironment.merge(environment) { _, new in new }
         app.launchEnvironment["HERDR_SCREENSHOT_MOCK"] = mode
         app.launch()
-        XCTAssertTrue(app.staticTexts["terminal-interaction-probe"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["terminal-interaction-probe"].exists(within: 15))
         wait {
             ($0["opens"] as? Int) == 1 && ($0["requests"] as? Int ?? 0) > 0
                 && ($0["covered"] as? Bool) == false && $0["top"] != nil
@@ -105,12 +105,28 @@ class TerminalInteractionTestCase: XCTestCase {
         anchor.coordinate(withNormalizedOffset: CGVector(dx: 6.0, dy: 0.5))
             .press(forDuration: 0.05,
                    thenDragTo: anchor.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.5)))
-        Thread.sleep(forTimeInterval: 0.25)
+        // Let any deceleration finish: the caller judges reachability by frame geometry, and
+        // a cap read while the bar still glides can be tapped where it no longer is. Three
+        // equal frames 0.15 s apart (`waitForStable`): a glide spans at least that.
+        _ = waitForStable(timeout: 2, interval: 0.15, matches: 2) { anchor.frame }
     }
 
 
+    /// Taps the terminal once any keyboard transition has come to rest, then waits for focus.
+    ///
+    /// A TAP DURING THE KEYBOARD'S HIDE SWEEP IS LOST. testExplicitKeycapAndKeyboardDismissalDisarm
+    /// taps here right after "Collapse keyboard": with XCTest's one-second existence wait in
+    /// front of it the tap landed 2.2 s after the collapse (#694's log) and focused; with the
+    /// polling wait it landed 0.47 s after, inside the 441 ms keyboard-hide resize the receipt
+    /// records, and the terminal never took focus (#716, runs j_811c0a13 and j_edd06db1). So
+    /// the tap waits for what that second used to cover: the software keyboard's frame (or
+    /// its absence) unchanged over 0.3 s, and the pane uncovered with its grid held for 0.5 s
+    /// by the app's own measure (`stableMs`, longer than that 441 ms sweep).
     func focusTerminal() {
-        XCTAssertTrue(terminal.waitForExistence(timeout: 5))
+        XCTAssertTrue(terminal.exists(within: 5))
+        let keyboard = app.keyboards.firstMatch
+        _ = waitForStable(timeout: 5, interval: 0.15, matches: 2) { keyboard.exists ? keyboard.frame : .zero }
+        wait { ($0["covered"] as? Bool) == false && ($0["stableMs"] as? Int ?? 0) >= 500 }
         terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)).tap()
         wait { ($0["focused"] as? Bool) == true }
     }
@@ -135,7 +151,7 @@ class TerminalInteractionTestCase: XCTestCase {
         // silently drop the keystroke after a responder transition.
         if probe()["physicalKeyboard"] as? Bool != true, !app.keyboards.element.exists {
             terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)).tap()
-            XCTAssertTrue(app.keyboards.element.waitForExistence(timeout: 10),
+            XCTAssertTrue(app.keyboards.element.exists(within: 10),
                           "direct input needs the software keyboard. \(elementDump())")
         }
         app.typeText(text)
@@ -402,6 +418,7 @@ final class TerminalResizeTests: TerminalInteractionTestCase {
             let state = probe()
             XCTAssertFalse((state["visible"] as? String ?? "").contains("INCOMPLETE"))
             attach("split-frame-\(index)")
+            // Kept: the measurement — fixed samples spread across the split redraw.
             if index < 5 { Thread.sleep(forTimeInterval: 0.15) }
         }
         settled(cols: 120); anchor()
@@ -517,6 +534,7 @@ final class TerminalResizeTests: TerminalInteractionTestCase {
             let from = terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.35))
             let to = terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.75))
             from.press(forDuration: 0.05, thenDragTo: to)
+            // Kept: the beat between drags, so each lands as its own gesture.
             Thread.sleep(forTimeInterval: 0.2)
         }
         wait { ($0["covered"] as? Bool) == false && ($0["markerRow"] as? Int) != 0 }
@@ -590,7 +608,7 @@ final class TerminalResizeTests: TerminalInteractionTestCase {
         app.activate()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30),
                       "the app did not return to the foreground")
-        XCTAssertTrue(app.staticTexts["terminal-interaction-probe"].waitForExistence(timeout: 30),
+        XCTAssertTrue(app.staticTexts["terminal-interaction-probe"].exists(within: 30),
                       "the probe never came back after reactivation")
         let after = wait { self.claimCount("claims", pane: "ix:a", in: $0) > claimsBefore }
         XCTAssertGreaterThanOrEqual(claimCount("inactiveReleases", pane: "ix:a", in: after), 1,

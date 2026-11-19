@@ -12,7 +12,7 @@ final class TerminalSearchTests: TerminalInteractionTestCase {
     /// not a contract, hittability is.
     private func headerButton(_ id: String) -> XCUIElement {
         let matches = app.buttons.matching(identifier: id)
-        XCTAssertTrue(matches.firstMatch.waitForExistence(timeout: 10), "no \(id) in the header")
+        XCTAssertTrue(matches.firstMatch.exists(within: 10), "no \(id) in the header")
         return matches.allElementsBoundByIndex.first(where: { $0.isHittable }) ?? matches.firstMatch
     }
 
@@ -32,7 +32,7 @@ final class TerminalSearchTests: TerminalInteractionTestCase {
 
     private func openFind() {
         headerButton("terminal-find").tap()
-        XCTAssertTrue(findField().waitForExistence(timeout: 5),
+        XCTAssertTrue(findField().exists(within: 5),
                       "tapping the magnifier must reveal the field")
     }
 
@@ -62,7 +62,7 @@ final class TerminalSearchTests: TerminalInteractionTestCase {
         openFind()
         findField().typeText("RECORD")
         let count = findCount()
-        XCTAssertTrue(count.waitForExistence(timeout: 5))
+        XCTAssertTrue(count.exists(within: 5))
         XCTAssertNotEqual(count.label, "none",
                           "SwiftTerm reports \(engine) matches for RECORD, so an empty counter is the app's wiring")
     }
@@ -78,7 +78,7 @@ final class TerminalSearchTests: TerminalInteractionTestCase {
         findField().typeText("ANCHOR020")
 
         let count = findCount()
-        XCTAssertTrue(count.waitForExistence(timeout: 5))
+        XCTAssertTrue(count.exists(within: 5))
         XCTAssertNotEqual(count.label, "none", "the seeded anchor must be findable")
 
         // REVEALED, not scrolled-to-top: SwiftTerm's scrollToReveal brings the match into
@@ -108,7 +108,7 @@ final class TerminalSearchTests: TerminalInteractionTestCase {
         findField().typeText("zzz-not-in-this-buffer")
 
         let count = findCount()
-        XCTAssertTrue(count.waitForExistence(timeout: 5))
+        XCTAssertTrue(count.exists(within: 5))
         XCTAssertEqual(count.label, "none")
     }
 
@@ -139,7 +139,7 @@ final class TerminalSearchTests: TerminalInteractionTestCase {
         findField().typeText("RECORD")
 
         let count = findCount()
-        XCTAssertTrue(count.waitForExistence(timeout: 5))
+        XCTAssertTrue(count.exists(within: 5))
         XCTAssertNotEqual(count.label, "none")
 
         // Stepping moves the CURRENT match, which the counter reports as "i/N". Asserting

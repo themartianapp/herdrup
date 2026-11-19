@@ -2877,7 +2877,8 @@ struct GramFeedEntry: Identifiable {
     /// `rows` (oldest first) with their separators, the unread rule above `unreadRule`'s
     /// message, and their sender groups. A separator or the rule breaks a group.
     static func entries(oldestFirst rows: [GramMessage],
-                        unreadRule: (messageID: String, count: Int)? = nil) -> [GramFeedEntry] {
+                        unreadRule: (messageID: String, count: Int)? = nil,
+                        runKeys: [String]? = nil) -> [GramFeedEntry] {
         let calendar = Calendar.current
         let markers: [(separator: Date?, unread: Int?)] = rows.indices.map { index in
             let date = rows[index].createdAt
@@ -2888,14 +2889,20 @@ struct GramFeedEntry: Identifiable {
             return (separates ? date : nil, unread)
         }
         func breaks(_ index: Int) -> Bool { markers[index].separator != nil || markers[index].unread != nil }
+        // `runKeys`, one per row: who the row belongs to beyond its names (the guest's
+        // combined Gram passes each row's grant, so two shares' same-named agents never
+        // form one sender run, herdrup#732).
+        func sameRun(_ a: Int, _ b: Int) -> Bool {
+            GramRow.sameRun(rows[a], rows[b]) && (runKeys.map { $0[a] == $0[b] } ?? true)
+        }
         return rows.indices.map { index in
             let next = index + 1
             return GramFeedEntry(
                 message: rows[index],
                 separator: markers[index].separator,
                 unreadCount: markers[index].unread,
-                startsGroup: index == 0 || breaks(index) || !GramRow.sameRun(rows[index - 1], rows[index]),
-                endsGroup: next == rows.count || breaks(next) || !GramRow.sameRun(rows[index], rows[next])
+                startsGroup: index == 0 || breaks(index) || !sameRun(index - 1, index),
+                endsGroup: next == rows.count || breaks(next) || !sameRun(index, next)
             )
         }
     }

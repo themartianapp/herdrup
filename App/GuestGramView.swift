@@ -205,9 +205,14 @@ struct GuestGramConversation: View {
     /// The feed's rows, oldest first, always keyed by grant and message id
     /// (`GuestGramMergedItem.id`): ids are not unique across hosts, and a row must keep its
     /// identity (scroll anchor, unfolded text, download) whatever else pages in.
+    /// Two shares' same-named agents keep apart (herdrup#732): runs break at a grant change,
+    /// an agent's sender line adds what its recipient label adds, and the guest's own posts
+    /// read "Delivered to" that label.
     private func rows(_ merge: GuestGramMerge) -> [Row] {
-        let messages = merge.items.map { $0.message.gramMessage(agent: inbox.agentName($0.grant)) }
-        let entries = GramFeedEntry.entries(oldestFirst: messages)
+        let messages = merge.items.map {
+            $0.message.gramMessage(agent: inbox.label($0.grant), machineLabel: inbox.labelSuffix($0.grant))
+        }
+        let entries = GramFeedEntry.entries(oldestFirst: messages, runKeys: merge.items.map(\.grant))
         return zip(merge.items, entries).map { Row(id: $0.id, item: $0, entry: $1) }
     }
 
@@ -252,6 +257,11 @@ struct GuestGramConversation: View {
         }
         // Viewed is read: whatever lands in the feed while it shows is marked read, and what
         // landed while it was hidden once it shows again. Never while another tab is up.
+        // A pick whose Gram was turned off is dropped, not kept for when it comes back
+        // (herdrup#731): the composer follows the default until the reader picks again.
+        .onChange(of: inbox.shares.map(\.id)) { _, shared in
+            if let target, !shared.contains(target) { self.target = nil }
+        }
         .onChange(of: merge.items.map(\.id)) { _, _ in
             guard active else { return }
             Task { await inbox.markShown(selection) }
@@ -393,6 +403,13 @@ struct GuestGramConversation: View {
                 if let top { anchorID = top }
             } else {
                 visibility.pageArmed = true
+                // Nothing new shows and nothing failed, though older pages remain: an answer a
+                // concurrent refresh made moot. The sentinel is still on screen, so no scroll
+                // will arrive at it again: ask again here (herdrup#730).
+                if pageError == nil, inbox.merge(selection).hasMore {
+                    try? await Task.sleep(for: .milliseconds(500))
+                    if visibility.sentinelOnScreen { loadOlder(top: top) }
+                }
             }
         }
     }
@@ -455,8 +472,7 @@ struct GuestGramConversation: View {
     /// The composer's agent: the reader's pick, else the merge's default (the newest
     /// incoming Gram's agent, else the first share).
     private func resolvedTarget(_ merge: GuestGramMerge) -> GuestAccess.ID? {
-        if let target, inbox.access(target) != nil { return target }
-        return merge.defaultTarget
+        merge.target(choosing: target)
     }
 
     private func composer(_ merge: GuestGramMerge) -> some View {

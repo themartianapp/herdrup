@@ -16,7 +16,9 @@ relay, which authenticates the guest's device key and encrypts everything after 
 The relay never holds a key that can read the traffic.
 
 The relay also counts active installs: the HerdrUp apps send an anonymous ping at most
-once a day (`POST /v1/ping`, see [Usage ping](#usage-ping)).
+once a day (`POST /v1/ping`, see [Usage ping](#usage-ping)). With the same switch on, the
+iOS app also sends its crash and hang reports (`POST /v1/crash`, see
+[Crash reports](#crash-reports)).
 
 ## Privacy
 
@@ -27,7 +29,8 @@ once a day (`POST /v1/ping`, see [Usage ping](#usage-ping)).
   runs. `/i/<payload>` and other `/web/` paths reach the Worker, which hands them the same
   page from `ASSETS` without logging anything.
   `POST /v1/ping` logs nothing about a ping, accepted or refused: only a missing binding
-  or an internal error logs, with just `endpoint` and `outcome`.
+  or an internal error logs, with just `endpoint` and `outcome`. `POST /v1/crash` and its
+  admin reads log the same way: nothing about a report or a read.
 - **Platform logs:** `wrangler.toml` turns off Workers Logs (including invocation logs,
   which record every request URL), traces and Logpush, so Cloudflare keeps no record of
   invite paths. `wrangler tail` still shows request URLs to whoever runs it, so don't tail
@@ -42,6 +45,12 @@ once a day (`POST /v1/ping`, see [Usage ping](#usage-ping)).
   it stores the ping nowhere else. The per-IP ping limit keys Cloudflare's rate-limit
   counter on `CF-Connecting-IP`, as the connect limits do. The install id is 16 random
   bytes made on the device, derived from no device, Apple or account identifier.
+- **Crash reports:** each accepted report becomes one R2 object, rebuilt from the
+  validated fields of [Crash reports](#crash-reports): app version and build, OS, device
+  model, exception, termination reason or hang duration, and stacks as binary names, UUIDs
+  and offsets. No IP, headers, country, user agent or install id, so a report can't be
+  tied to an install's pings. The bucket deletes each object after 90 days. The per-IP
+  crash limit keys a rate-limit counter on `CF-Connecting-IP`, as the others do.
 - **Invite links:** the invite lives in the path of `/i/<payload>`, so it reaches the
   Worker once, on the way to the landing page. Nothing stores or logs it, and the page is
   `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. The "Open in HerdrUp"
@@ -74,6 +83,8 @@ once a day (`POST /v1/ping`, see [Usage ping](#usage-ping)).
 | `GET /v1/invite/<id>` | The blob, `application/octet-stream` and `Cache-Control: no-store`. No auth. 404 `not_found` when absent or expired. |
 | `DELETE /v1/invite/<id>` | Same auth as `PUT`. 204 with no body, also when the blob is already gone. Only the host that stored it may delete it. |
 | `POST /v1/ping` | The anonymous usage ping. No auth. The body is exactly the JSON in [Usage ping](#usage-ping), at most 512 bytes. 204 with no body once counted. |
+| `POST /v1/crash` | A crash or hang report. No auth. The body is exactly the JSON in [Crash reports](#crash-reports), at most 65536 bytes. 204 with no body once stored. |
+| `GET /v1/crash/reports`, `GET /v1/crash/reports/<key>` | Admin reads of stored reports: `Authorization: Bearer <CRASH_ADMIN_TOKEN>`. 404 when the secret isn't set. See [Crash reports](#crash-reports). |
 
 A `host_id` is b64url (no padding) of 16 bytes, so 22 characters. A `relay_secret` is
 b64url of 32 bytes, so 43 characters. The Durable Object is `idFromName(host_id)`. A short
@@ -97,11 +108,14 @@ isn't an upgrade still gets 426, and the host endpoint keeps its HTTP errors.
 | close 4503 | `host_offline` | Guest only. No host socket is connected. |
 | close 4504 | `host_busy` | Guest only. The host already has 32 open sessions. |
 | close 4429 | `rate_limited` | Guest. More than 30 guest connects from one `CF-Connecting-IP` in 60 s. Checked in the Worker before any Durable Object is reached. |
-| 429 | `rate_limited` | Keyed by `CF-Connecting-IP`: more than 10 host connects and invite `PUT`/`DELETE` together in 60 s, checked in the Worker before any Durable Object is reached. Also more than 60 pings in 60 s, on a separate budget that never spends the connect limits. |
+| 429 | `rate_limited` | Keyed by `CF-Connecting-IP`: more than 10 host connects and invite `PUT`/`DELETE` together in 60 s, checked in the Worker before any Durable Object is reached. Also more than 60 pings in 60 s, and more than 10 crash reports in 60 s, each on a separate budget that never spends the connect limits. |
 | 426 | `upgrade_required` | Either role. The request isn't a WebSocket upgrade. |
-| 404 | `not_found` | Any other method or path, or a malformed `host_id` or invite `id`. Also `GET /v1/invite/<id>` when the blob is absent or expired. |
-| 405 | `method_not_allowed` | `/v1/ping` with any method but `POST`. Sends `Allow: POST`. |
+| 404 | `not_found` | Any other method or path, or a malformed `host_id` or invite `id`. Also `GET /v1/invite/<id>` when the blob is absent or expired, and the crash admin reads when `CRASH_ADMIN_TOKEN` isn't set or the key is malformed or absent. |
+| 405 | `method_not_allowed` | `/v1/ping` or `/v1/crash` with any method but `POST`. Sends `Allow: POST`. |
 | 400 | `bad_request` | Ping. The body is over 512 bytes, isn't UTF-8 JSON, or isn't exactly the ping object: other or missing keys, `v` other than `1`, or a field out of range. |
+| 400 | `bad_request` | Crash report. The body isn't UTF-8 JSON or isn't exactly the report object. Also a crash admin list with a `prefix` not under `v1/`. |
+| 413 | `too_large` | Crash report. The body is over 65536 bytes. |
+| 401 | `unauthorized` | Crash admin reads with a bearer other than `CRASH_ADMIN_TOKEN`. |
 | 400 | `bad_request` | Invite `PUT`/`DELETE`. `X-Herdr-Host` isn't a `host_id`, or the `PUT` body is under 29 bytes (nonce, one byte, tag). |
 | 400 | `bad_expiry` | Invite `PUT`. `X-Herdr-Expires` isn't whole unix seconds in the future and at most 30 days away. |
 | 413 | `too_large` | Invite `PUT`. The body is over 2048 bytes. |
@@ -225,6 +239,69 @@ curl "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/analy
 Weekly and monthly actives are the same `count(DISTINCT index1)` over 7 and 30 days.
 Group by `blob2` for versions.
 
+### Crash reports
+
+The app collects its own crash and hang diagnostics from MetricKit (owner decision
+2026-11-13), because TestFlight's crash logs often never reach App Store Connect's API. It
+sends them only while Settings › About › "Share anonymous usage count" is on, and turning
+that off deletes any report still queued on the device. MetricKit hands the app a crash or
+hang on its next launch; the app reduces it to this, and sends at most 5 a UTC day,
+keeping up to 20 on the device until the relay accepts them:
+
+```
+POST /v1/crash
+Content-Type: application/json
+
+{"v":1,"kind":"crash","version":"1.3.4","build":"245","os":"iPhone OS 27.2 (24C101)",
+ "device":"iPhone19,4","exception":{"code":0,"signal":6,"type":10},
+ "termination":"Namespace SIGNAL, Code 6 Abort trap: 6",
+ "binaries":[{"name":"Herdr","uuid":"913AE206-9644-328F-9952-176ECA385CA0"}, …],
+ "stacks":[{"attributed":true,"frames":[[0,740520],[0,3347124], …]}, …]}
+```
+
+- `v` is `1`; `kind` is `crash` or `hang`.
+- `version` and `build` are 1 to 32 characters of `0-9 A-Z a-z . _ -`; `device` the same
+  plus `,` (a model identifier such as `iPhone19,4`); `os` 1 to 64 printable ASCII
+  characters, as MetricKit writes it.
+- A crash may carry `exception` (any of `type`, `code`, `signal`, integers: the Mach
+  exception type and code and the signal) and `termination` (MetricKit's termination
+  reason, 1 to 512 printable ASCII characters). A hang may carry `hangSeconds`, 0 to 86400.
+- `binaries` lists each binary the stacks name once: its file name (1 to 128 printable
+  ASCII characters) and its Mach-O UUID, upper-case. At most 8192.
+- `stacks` is one entry per thread (more if a frame had more than one caller), `attributed`
+  true for the thread MetricKit blames. Each frame is `[binary index, offset into that
+  binary's __TEXT segment]`, the top of the stack first. 1 to 512 frames a stack, at most
+  1024 stacks and 8192 frames in all.
+- `truncated: true` when the app dropped threads or frames to fit 64 KB.
+
+No other key is allowed, so nothing else MetricKit reports can arrive: not the Objective-C
+exception message (which can quote app data), the region format, the PID, the bundle id or
+memory region details. The body is at most 65536 bytes (413 `too_large` above that).
+
+The Worker rebuilds the report from its validated fields and stores it as one object in
+the `CRASHES` R2 bucket (`herdrup-crash-reports`), keyed
+`v1/<UTC day>/<version>-<build>/<kind>-<22 random b64url characters>.json`, with nothing
+else: not the IP, headers, country or user agent. The bucket's lifecycle rule deletes each
+object 90 days after upload, the time GitHub keeps the matching dSYMs.
+
+**Why R2.** Analytics Engine can't hold a 64 KB blob. R2 is already enabled on the account
+and, at this volume, free (10 GB-month and a million writes a month; at most 64 KB a report).
+One object per report lists by day and build through a key prefix, a bucket lifecycle rule
+enforces the 90 days whatever the code does, and reads are free of egress charges. KV with an
+`expirationTtl` would also fit, but its free tier stops at 1000 writes and 1000 lists a day
+and it lists eventually consistently; nothing here needs KV's edge caching.
+
+**Reading them.** `GET /v1/crash/reports?prefix=v1/2026-11-13/` lists keys (500 a page,
+`cursor` for the next) and `GET /v1/crash/reports/<key>` returns one report. Both need
+`Authorization: Bearer <CRASH_ADMIN_TOKEN>`, a Worker secret of at least 32 characters;
+without the secret they are 404 and with another bearer 401. They spend no rate limit.
+`Tools/crash/symbolicate.py` (repo root) reads them, fetches the TestFlight run's
+`dSYMs-<build>` artifact and symbolicates each report with `atos` or `llvm-symbolizer`:
+
+```sh
+CRASH_ADMIN_TOKEN=… Tools/crash/symbolicate.py --prefix v1/2026-11-13/ --out /tmp/crashes
+```
+
 ## Bindings
 
 | Binding | Kind | Purpose |
@@ -235,9 +312,12 @@ Group by `blob2` for versions.
 | `HOST_CONNECT_LIMIT` | Rate limit, 10 per 60 s | Host connects plus invite `PUT`/`DELETE`, keyed by `CF-Connecting-IP` |
 | `PING_LIMIT` | Rate limit, 60 per 60 s | `POST /v1/ping`, keyed by `CF-Connecting-IP`; its own budget, apart from the connect limits |
 | `USAGE` | Analytics Engine dataset `herdrup_usage` | One data point per accepted ping. Analytics Engine creates the dataset on the first write. |
+| `CRASH_LIMIT` | Rate limit, 10 per 60 s | `POST /v1/crash`, keyed by `CF-Connecting-IP`; its own budget |
+| `CRASHES` | R2 bucket `herdrup-crash-reports` | One object per accepted crash or hang report; a lifecycle rule deletes it after 90 days |
 | `ASSETS` | Static assets from `public/` | The `/i` page and the `/web/` browser guest. The Worker serves `/i` for `/i/<payload>`, and `/web/` for any `/web/` path that matches no file. |
 
-The Worker needs no secrets.
+One optional secret: `CRASH_ADMIN_TOKEN` (at least 32 characters) for the crash admin
+reads. Without it they are 404 and everything else works.
 
 ## Browser guest
 
@@ -280,6 +360,16 @@ npm test                 # public/web against its manifest, then vitest in worke
 npm run typecheck
 npx wrangler deploy --dry-run --outdir /tmp/guestrelay-dry   # bundle check only
 wrangler deploy
+```
+
+Before the first deploy with crash reports, create the bucket, its 90-day lifecycle rule
+and the admin secret once (a deploy fails while a bound bucket is missing):
+
+```sh
+wrangler r2 bucket create herdrup-crash-reports
+wrangler r2 bucket lifecycle add herdrup-crash-reports expire-90-days --expire-days 90 --force
+wrangler r2 bucket lifecycle list herdrup-crash-reports
+openssl rand -base64 33 | tr '+/' '-_' | tr -d '=\n' | wrangler secret put CRASH_ADMIN_TOKEN
 ```
 
 `wrangler.toml` routes two custom domains with `custom_domain = true`, so a deploy

@@ -11,12 +11,14 @@ final class NeedsYouPillTests: XCTestCase {
         XCUIApplication.launched(mock: "needsyou", environment: ["HERDR_MOCK_WAITING": "\(waiting)"])
     }
 
+    // Typed queries: the pill and the rows are SwiftUI Buttons, and resolving them among
+    // buttons is cheaper than among every descendant of a roster several screens tall.
     private func needsYouPill(_ app: XCUIApplication) -> XCUIElement {
-        app.descendants(matching: .any).matching(identifier: "needs-you-pill").firstMatch
+        app.buttons.matching(identifier: "needs-you-pill").firstMatch
     }
 
     private func row(_ app: XCUIApplication, _ paneID: String) -> XCUIElement {
-        app.descendants(matching: .any)["agent-row-\(paneID)"]
+        app.buttons["agent-row-\(paneID)"]
     }
 
     /// Scrolls the roster down until `done` holds, at most `swipes` times.
@@ -32,7 +34,7 @@ final class NeedsYouPillTests: XCTestCase {
 
     /// Waits for the roster with its first row on screen: the waiting rows are visible.
     private func waitForTopOfList(_ app: XCUIApplication, firstRow paneID: String) {
-        XCTAssertTrue(row(app, paneID).waitForExistence(timeout: 10), "the roster did not load")
+        XCTAssertTrue(row(app, paneID).exists(within: 10), "the roster did not load")
         XCTAssertTrue(row(app, paneID).waitForHittable(timeout: 5), "the first row is not on screen")
     }
 
@@ -43,7 +45,7 @@ final class NeedsYouPillTests: XCTestCase {
         XCTAssertFalse(pill.exists, "no pill while the waiting rows are on screen")
 
         scrollDown(app) { pill.exists }
-        XCTAssertTrue(pill.waitForExistence(timeout: 3), "the pill appears once the waiting rows scroll away")
+        XCTAssertTrue(pill.exists(within: 3), "the pill appears once the waiting rows scroll away")
         XCTAssertFalse(onScreen(row(app, "w1:p3")), "the last waiting row is out of sight")
         XCTAssertEqual(pill.label, "3 agents need you")
         pill.waitForSettledFrame()
@@ -75,7 +77,7 @@ final class NeedsYouPillTests: XCTestCase {
         XCTAssertTrue(startWaiting.waitForHittable(timeout: 5))
         startWaiting.tap()
 
-        XCTAssertTrue(pill.waitForExistence(timeout: 30), "the pill appears when agents start waiting off screen")
+        XCTAssertTrue(pill.exists(within: 30), "the pill appears when agents start waiting off screen")
         XCTAssertEqual(pill.label, "3 agents need you")
         XCTAssertFalse(onScreen(row(app, "w1:p1")), "the waiting rows are still out of sight")
 
@@ -91,13 +93,13 @@ final class NeedsYouPillTests: XCTestCase {
         XCTAssertFalse(pill.exists, "no pill while the waiting row is on screen")
 
         scrollDown(app) { pill.exists }
-        XCTAssertTrue(pill.waitForExistence(timeout: 3), "the pill appears once the waiting row scrolls away")
+        XCTAssertTrue(pill.exists(within: 3), "the pill appears once the waiting row scrolls away")
         XCTAssertEqual(pill.label, "jarvis needs you")
         pill.waitForSettledFrame()
         attach(app, "needs-you-pill-1")
 
         pill.tap()
-        XCTAssertTrue(app.terminalSurface.waitForExistence(timeout: 10), "tap opens the waiting agent")
+        XCTAssertTrue(app.terminalSurface.exists(within: 10), "tap opens the waiting agent")
         // The pane heading is "name · kind · folder": the mock's jarvis is "jarvis · claude".
         let heading = app.staticTexts.matching(NSPredicate(format: "label == %@", "jarvis · claude"))
         XCTAssertTrue(poll(5, every: 0.2) { heading.allElementsBoundByIndex.contains(where: \.isHittable) },
@@ -108,7 +110,7 @@ final class NeedsYouPillTests: XCTestCase {
         let app = launch(waiting: 0)
         let search = app.descendants(matching: .any)["agent-search"]
         XCTAssertTrue(search.waitForHittable(timeout: 10), "the roster did not load")
-        XCTAssertTrue(row(app, "w2:p1").waitForExistence(timeout: 10), "the roster did not load")
+        XCTAssertTrue(row(app, "w2:p1").exists(within: 10), "the roster did not load")
         scrollDown(app, swipes: 4)
         XCTAssertFalse(onScreen(search), "the list scrolled")
         XCTAssertFalse(poll(1.5, every: 0.1) { needsYouPill(app).exists }, "nobody waits: no pill")

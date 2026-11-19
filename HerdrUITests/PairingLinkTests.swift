@@ -32,7 +32,7 @@ final class PairingLinkTests: XCTestCase {
     func testPastingACodeShowsTheConfirmation() {
         let app = XCUIApplication.launched(mock: "onboarding")
         let scan = app.buttons["Scan pairing code"]
-        XCTAssertTrue(scan.waitForExistence(timeout: 10))
+        XCTAssertTrue(scan.exists(within: 10))
         scan.tap()
 
         UIPasteboard.general.string = Self.json
@@ -42,14 +42,14 @@ final class PairingLinkTests: XCTestCase {
 
     func testOpeningALinkWhileRunningShowsTheConfirmation() {
         let app = XCUIApplication.launched(mock: "onboarding")
-        XCTAssertTrue(app.buttons["Scan pairing code"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Scan pairing code"].exists(within: 10))
         app.open(URL(string: Self.link)!)
         assertConfirmation(app, "pairing-link-running")
     }
 
     func testOpeningALinkColdShowsTheConfirmation() {
         let app = XCUIApplication.launched(mock: "onboarding")
-        XCTAssertTrue(app.buttons["Scan pairing code"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Scan pairing code"].exists(within: 10))
         app.terminate()
         XCTAssertTrue(app.wait(for: .notRunning, timeout: 10))
         app.open(URL(string: Self.link)!)
@@ -60,7 +60,7 @@ final class PairingLinkTests: XCTestCase {
     /// machine must still reach pairing a machine of its own, Scan and Paste.
     func testAGuestOnlyPhoneCanPairItsOwnMachineFromSettings() {
         let app = XCUIApplication.launched(mock: "guest")
-        XCTAssertTrue(app.buttons["guest-agent-row"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["guest-agent-row"].exists(within: 10))
         let settingsTab = app.tabBars.firstMatch.buttons["Settings"]
         for _ in 0..<3 where !settingsTab.isSelected {
             settingsTab.tap()
@@ -68,15 +68,16 @@ final class PairingLinkTests: XCTestCase {
         }
 
         let connect = app.buttons["guest-settings-connect-own-machine"]
-        XCTAssertTrue(connect.waitForExistence(timeout: 10), "guest Settings should offer Connect your own machine")
+        XCTAssertTrue(connect.exists(within: 10), "guest Settings should offer Connect your own machine")
         attach(app, "pairing-guest-settings")
         connect.tap()
 
         let scan = app.buttons["Scan pairing code"]
-        XCTAssertTrue(scan.waitForExistence(timeout: 10), "the machine list should open its pairing setup")
+        XCTAssertTrue(scan.exists(within: 10), "the machine list should open its pairing setup")
         scan.tap()
-        XCTAssertTrue(app.navigationBars["Scan to connect"].waitForExistence(timeout: 10),
+        XCTAssertTrue(app.navigationBars["Scan to connect"].exists(within: 10),
                       "Scan pairing code should open the pairing sheet")
+
 
         UIPasteboard.general.string = Self.link
         tapPaste(in: app, identifier: "pairing-paste-button")
@@ -94,32 +95,32 @@ final class PairingLinkTests: XCTestCase {
         // The mock list starts connected; its Back is the disconnect. Saved hosts start
         // empty (argument domain); in a mock the key stays in memory, nothing is pinned and
         // the list is never written, so nothing outlives the run.
-        let app = XCUIApplication()
+        let app = XCUIApplication.forUITest()
         app.launchEnvironment["HERDR_SCREENSHOT_MOCK"] = "list"
         app.launchArguments = ["-dev.herdr.savedHosts.v1", "<5b5d>"]
         app.launch()
         let back = Self.backButton(app)
-        XCTAssertTrue(back.waitForExistence(timeout: 10))
+        XCTAssertTrue(back.exists(within: 10))
         back.tap()
 
         let scan = app.buttons["Scan pairing code"]
-        XCTAssertTrue(scan.waitForExistence(timeout: 10), "Back should show the machine list")
+        XCTAssertTrue(scan.exists(within: 10), "Back should show the machine list")
         scan.tap()
         UIPasteboard.general.string = json
         tapPaste(in: app, identifier: "pairing-paste-button")
         let connect = app.buttons["pairing-confirm-connect"]
-        XCTAssertTrue(connect.waitForExistence(timeout: 15), "the confirmation should show")
+        XCTAssertTrue(connect.exists(within: 15), "the confirmation should show")
         connect.tap()
 
         let openIt = app.buttons["Open it"]
-        XCTAssertTrue(openIt.waitForExistence(timeout: 20), "pairing with the stub listener should succeed")
+        XCTAssertTrue(openIt.exists(within: 20), "pairing with the stub listener should succeed")
         attach(app, "pairing-paired")
         openIt.tap()
-        XCTAssertTrue(back.waitForExistence(timeout: 10), "Open it should connect to the paired machine")
+        XCTAssertTrue(back.exists(within: 10), "Open it should connect to the paired machine")
         back.tap()
 
         let row = Self.pairedRow(app)
-        XCTAssertTrue(row.waitForExistence(timeout: 10), "Back should show the machine list with the paired machine")
+        XCTAssertTrue(row.exists(within: 10), "Back should show the machine list with the paired machine")
         // The bug this guards: the list replayed the pairing and connected by itself.
         XCTAssertFalse(poll(4, every: 0.25) { back.exists },
                        "returning to the machine list must not reconnect without a tap")
@@ -138,13 +139,13 @@ final class PairingLinkTests: XCTestCase {
         let json = #"{"v":2,"host":"127.0.0.1","port":\#(daemon.port),"user":"forge","token":"t0k3n","fp":"SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","ssh_port":2222}"#
 
         let app = XCUIApplication.launched(mock: "onboarding")
-        XCTAssertTrue(app.buttons["Scan pairing code"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Scan pairing code"].exists(within: 10))
         app.open(URL(string: Self.pairingLink(json))!)
         let connect = app.buttons["pairing-confirm-connect"]
-        XCTAssertTrue(connect.waitForExistence(timeout: 15), "the link should open its confirmation")
+        XCTAssertTrue(connect.exists(within: 15), "the link should open its confirmation")
         connect.tap()
 
-        XCTAssertTrue(app.buttons["Open it"].waitForExistence(timeout: 20),
+        XCTAssertTrue(app.buttons["Open it"].exists(within: 20),
                       "pairing with the stub listener should succeed")
         attach(app, "pairing-link-paired")
     }
@@ -155,15 +156,15 @@ final class PairingLinkTests: XCTestCase {
     /// label.
     private func tapPaste(in app: XCUIApplication, identifier: String) {
         let byID = app.buttons[identifier]
-        let button = byID.waitForExistence(timeout: 5) ? byID : app.buttons["Paste"].firstMatch
-        XCTAssertTrue(button.waitForExistence(timeout: 10), "a Paste pairing code button should show")
+        let button = byID.exists(within: 5) ? byID : app.buttons["Paste"].firstMatch
+        XCTAssertTrue(button.exists(within: 10), "a Paste pairing code button should show")
         for _ in 0..<4 where !button.isHittable { app.swipeUp() }
         button.tap()
     }
 
     private func assertConfirmation(_ app: XCUIApplication, _ shot: String) {
         let host = app.staticTexts["pairing-confirm-host"]
-        XCTAssertTrue(host.waitForExistence(timeout: 15), "the confirmation should show")
+        XCTAssertTrue(host.exists(within: 15), "the confirmation should show")
         XCTAssertEqual(host.label, "192.0.2.44")
         XCTAssertEqual(app.staticTexts["pairing-confirm-user"].label, "forge")
         XCTAssertEqual(app.staticTexts["pairing-confirm-port"].label, "2222")
