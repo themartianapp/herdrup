@@ -1,0 +1,253 @@
+{
+ "timeStampBegin": "2026-11-04 13:00:00",
+ "timeStampEnd": "2026-11-04 13:59:00",
+ "crashDiagnostics": [
+  {
+   "version": "1.0.0",
+   "callStackTree": {
+    "callStackPerThread": true,
+    "callStacks": [
+     {
+      "threadAttributed": true,
+      "callStackRootFrames": [
+       {
+        "binaryUUID": "18665B3F-6D51-33AB-B9E9-63062200EC42",
+        "offsetIntoBinaryTextSegment": 45520,
+        "sampleCount": 1,
+        "binaryName": "libsystem_kernel.dylib",
+        "address": 9836659152,
+        "subFrames": [
+         {
+          "binaryUUID": "34B44744-BC64-386E-AB90-EEE86B23AC46",
+          "offsetIntoBinaryTextSegment": 30684,
+          "sampleCount": 1,
+          "binaryName": "libsystem_pthread.dylib",
+          "address": 8493979612,
+          "subFrames": [
+           {
+            "binaryUUID": "FF429821-80DE-3A68-99CB-0B2E707E8D48",
+            "offsetIntoBinaryTextSegment": 487372,
+            "sampleCount": 1,
+            "binaryName": "libsystem_c.dylib",
+            "address": 7087058892,
+            "subFrames": [
+             {
+              "binaryUUID": "1539FAA7-31DA-3C41-B14A-A9691063824D",
+              "offsetIntoBinaryTextSegment": 592012,
+              "sampleCount": 1,
+              "binaryName": "libswiftCore.dylib",
+              "address": 6837053580,
+              "subFrames": [
+               {
+                "binaryUUID": "1539FAA7-31DA-3C41-B14A-A9691063824D",
+                "offsetIntoBinaryTextSegment": 591868,
+                "sampleCount": 1,
+                "binaryName": "libswiftCore.dylib",
+                "address": 6837053436,
+                "subFrames": [
+                 {
+                  "binaryUUID": "1539FAA7-31DA-3C41-B14A-A9691063824D",
+                  "offsetIntoBinaryTextSegment": 20596,
+                  "sampleCount": 1,
+                  "binaryName": "libswiftCore.dylib",
+                  "address": 6836482164,
+                  "subFrames": [
+                   {
+                    "binaryUUID": "1539FAA7-31DA-3C41-B14A-A9691063824D",
+                    "offsetIntoBinaryTextSegment": 19852,
+                    "sampleCount": 1,
+                    "binaryName": "libswiftCore.dylib",
+                    "address": 6836481420,
+                    "subFrames": [
+                     {
+                      "binaryUUID": "82A21CE4-4E43-38FB-9862-F0BE7B909DF1",
+                      "offsetIntoBinaryTextSegment": 1619764,
+                      "sampleCount": 1,
+                      "binaryName": "SwiftUICore",
+                      "address": 7062927156,
+                      "subFrames": [
+                       {
+                        "binaryUUID": "82A21CE4-4E43-38FB-9862-F0BE7B909DF1",
+                        "offsetIntoBinaryTextSegment": 1619068,
+                        "sampleCount": 1,
+                        "binaryName": "SwiftUICore",
+                        "address": 7062926460,
+                        "subFrames": [
+                         {
+                          "binaryUUID": "82A21CE4-4E43-38FB-9862-F0BE7B909DF1",
+                          "offsetIntoBinaryTextSegment": 1439216,
+                          "sampleCount": 1,
+                          "binaryName": "SwiftUICore",
+                          "address": 7062746608,
+                          "subFrames": [
+                           {
+                            "binaryUUID": "82A21CE4-4E43-38FB-9862-F0BE7B909DF1",
+                            "offsetIntoBinaryTextSegment": 10431164,
+                            "sampleCount": 1,
+                            "binaryName": "SwiftUICore",
+                            "address": 7071738556,
+                            "subFrames": [
+                             {
+                              "binaryUUID": "913AE206-9644-328F-9952-176ECA385CA0",
+                              "offsetIntoBinaryTextSegment": 740520,
+                              "sampleCount": 1,
+                              "binaryName": "Herdr",
+                              "address": 4369812648,
+                              "subFrames": [
+                               {
+                                "binaryUUID": "913AE206-9644-328F-9952-176ECA385CA0",
+                                "offsetIntoBinaryTextSegment": 3347124,
+                                "sampleCount": 1,
+                                "binaryName": "Herdr",
+                                "address": 4372419252,
+                                "subFrames": [
+                                 {
+                                  "binaryUUID": "17ADC54E-93AB-3F13-B469-E3F53181FC4D",
+                                  "offsetIntoBinaryTextSegment": 1514292,
+                                  "sampleCount": 1,
+                                  "binaryName": "SwiftUI",
+                                  "address": 7043058484
+                                 }
+                                ]
+                               }
+                              ]
+                             }
+                            ]
+                           }
+                          ]
+                         }
+                        ]
+                       }
+                      ]
+                     }
+                    ]
+                   }
+                  ]
+                 }
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "threadAttributed": false,
+      "callStackRootFrames": [
+       {
+        "binaryUUID": "18665B3F-6D51-33AB-B9E9-63062200EC42",
+        "offsetIntoBinaryTextSegment": 3284,
+        "sampleCount": 1,
+        "binaryName": "libsystem_kernel.dylib",
+        "address": 9836616916,
+        "subFrames": [
+         {
+          "binaryUUID": "18665B3F-6D51-33AB-B9E9-63062200EC42",
+          "offsetIntoBinaryTextSegment": 17164,
+          "sampleCount": 1,
+          "binaryName": "libsystem_kernel.dylib",
+          "address": 9836630796,
+          "subFrames": [
+           {
+            "binaryUUID": "18665B3F-6D51-33AB-B9E9-63062200EC42",
+            "offsetIntoBinaryTextSegment": 16940,
+            "sampleCount": 1,
+            "binaryName": "libsystem_kernel.dylib",
+            "address": 9836630572
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "diagnosticMetaData": {
+    "appBuildVersion": "238",
+    "appVersion": "1.2.1",
+    "osVersion": "iPhone OS 26.6.2 (23G90)",
+    "deviceType": "iPhone18,1",
+    "platformArchitecture": "arm64e",
+    "exceptionType": 10,
+    "exceptionCode": 0,
+    "signal": 6,
+    "terminationReason": "Namespace SIGNAL, Code 6 Abort trap: 6",
+    "regionFormat": "IT",
+    "isTestFlightApp": true,
+    "lowPowerModeEnabled": false,
+    "pid": 89470,
+    "bundleIdentifier": "com.jerryfane.herdr",
+    "virtualMemoryRegionInfo": "0x0 is not in any region. /private/var/containers/Bundle/Application/A2B0D7F8/Herdr.app/Herdr",
+    "exceptionReason": {
+     "composedMessage": "Agent claude-secret said: deploy prod",
+     "formatString": "%@",
+     "arguments": [
+      "claude-secret"
+     ],
+     "exceptionName": "NSInternalInconsistencyException",
+     "className": "NSException",
+     "exceptionType": "ObjectiveC"
+    }
+   }
+  }
+ ],
+ "hangDiagnostics": [
+  {
+   "version": "1.0.0",
+   "callStackTree": {
+    "callStackPerThread": true,
+    "callStacks": [
+     {
+      "threadAttributed": true,
+      "callStackRootFrames": [
+       {
+        "binaryUUID": "18665B3F-6D51-33AB-B9E9-63062200EC42",
+        "offsetIntoBinaryTextSegment": 45520,
+        "sampleCount": 1,
+        "binaryName": "libsystem_kernel.dylib",
+        "address": 9836659152,
+        "subFrames": [
+         {
+          "binaryUUID": "34B44744-BC64-386E-AB90-EEE86B23AC46",
+          "offsetIntoBinaryTextSegment": 30684,
+          "sampleCount": 1,
+          "binaryName": "libsystem_pthread.dylib",
+          "address": 8493979612,
+          "subFrames": [
+           {
+            "binaryUUID": "FF429821-80DE-3A68-99CB-0B2E707E8D48",
+            "offsetIntoBinaryTextSegment": 487372,
+            "sampleCount": 1,
+            "binaryName": "libsystem_c.dylib",
+            "address": 7087058892
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "diagnosticMetaData": {
+    "appBuildVersion": "245",
+    "appVersion": "1.3.4",
+    "osVersion": "iPhone OS 27.2 (24C101)",
+    "deviceType": "iPhone19,4",
+    "hangDuration": "4.25 sec",
+    "platformArchitecture": "arm64e",
+    "regionFormat": "IT",
+    "pid": 4242,
+    "bundleIdentifier": "com.jerryfane.herdr",
+    "isTestFlightApp": true,
+    "lowPowerModeEnabled": false
+   }
+  }
+ ]
+}

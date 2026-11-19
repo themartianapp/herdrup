@@ -13,7 +13,7 @@ final class SettingsTests: XCTestCase {
         }
         continueAfterFailure = false
         let app = XCUIApplication.launched(mock: "list")
-        XCTAssertTrue(app.buttons["Settings"].firstMatch.waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["Settings"].firstMatch.exists(within: 15))
         let window = app.windows.firstMatch
         let initialSize = window.frame.size
         if window.frame.width > 600 {
@@ -37,7 +37,7 @@ final class SettingsTests: XCTestCase {
         XCTAssertLessThan(window.frame.width, 600, "The regression must exercise compact Settings")
         app.buttons["Settings"].firstMatch.tap()
         let machines = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Machines")).firstMatch
-        XCTAssertTrue(machines.waitForExistence(timeout: 5))
+        XCTAssertTrue(machines.exists(within: 5))
         // Each check follows a navigation or a resume, and an element exists before the
         // push/pop animation settles; check hittability once it settles (failed after Back
         // on CI for #587 and #594, and #611 run 41702793698, with the card on screen).
@@ -46,15 +46,15 @@ final class SettingsTests: XCTestCase {
         XCTAssertNotEqual(app.state, .notRunning, "Settings must not crash during the Home transition")
         app.activate()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 5))
-        XCTAssertTrue(machines.waitForExistence(timeout: 5))
+        XCTAssertTrue(machines.exists(within: 5))
         XCTAssertTrue(machines.waitForHittable(timeout: 5))
         machines.tap()
         let back = app.buttons["Back"].firstMatch
-        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        XCTAssertTrue(back.exists(within: 5))
         XCTAssertTrue(back.waitForHittable(timeout: 5))
         attach(app, "settings-compact-resumed-width-\(Int(window.frame.width))")
         back.tap()
-        XCTAssertTrue(machines.waitForExistence(timeout: 5))
+        XCTAssertTrue(machines.exists(within: 5))
         XCTAssertTrue(machines.waitForHittable(timeout: 5), "Settings must be reachable again after Back")
         // iPadOS resizes this floating window around its centre: a 275-point handle
         // movement widened 375 to 915, moving both edges. Request half the width delta.
@@ -66,7 +66,7 @@ final class SettingsTests: XCTestCase {
         window.waitForSettledFrame()
         XCTAssertGreaterThanOrEqual(window.frame.width, 600)
         XCTAssertLessThan(window.frame.width, 800)
-        XCTAssertTrue(machines.waitForExistence(timeout: 5))
+        XCTAssertTrue(machines.exists(within: 5))
         XCTAssertTrue(machines.isHittable, "Narrow regular width must keep Settings navigation reachable")
         attach(app, "settings-narrow-regular-width-\(Int(window.frame.width))")
         // Returning to full width must preserve that navigation too.
@@ -79,9 +79,9 @@ final class SettingsTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(window.frame.width, 800,
                                     "The final resize must leave the narrow regular-width range")
         let settings = app.buttons["Settings"].firstMatch
-        XCTAssertTrue(settings.waitForExistence(timeout: 5))
+        XCTAssertTrue(settings.exists(within: 5))
         XCTAssertTrue(settings.isHittable)
-        XCTAssertTrue(machines.waitForExistence(timeout: 5))
+        XCTAssertTrue(machines.exists(within: 5))
         XCTAssertTrue(machines.isHittable)
         attach(app, "settings-expanded-width-\(Int(window.frame.width))")
     }
@@ -100,10 +100,10 @@ final class SettingsTests: XCTestCase {
         // Proposal B (#572): the switch is an inline row of the root's Preferences group,
         // its explanation the row's subtitle.
         let heading = app.staticTexts["PREFERENCES"]
-        XCTAssertTrue(heading.waitForExistence(timeout: 10), "Settings should carry a Preferences group")
+        XCTAssertTrue(heading.exists(within: 10), "Settings should carry a Preferences group")
 
         let row = app.staticTexts["Run JavaScript in previews"]
-        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        XCTAssertTrue(row.exists(within: 10))
         var scrolls = 0
         while !app.frame.contains(row.frame), scrolls < 8 {
             app.swipeUp()
@@ -116,11 +116,11 @@ final class SettingsTests: XCTestCase {
             NSPredicate(format: "label CONTAINS[c] %@", "are ignored")).firstMatch
 
         if !willRun.exists { row.tap() }
-        XCTAssertTrue(willRun.waitForExistence(timeout: 5),
+        XCTAssertTrue(willRun.exists(within: 5),
                       "turning the switch on must say scripts will run")
 
         row.tap()
-        XCTAssertTrue(ignored.waitForExistence(timeout: 5),
+        XCTAssertTrue(ignored.exists(within: 5),
                       "and turning it off must say they are ignored")
     }
 
@@ -134,7 +134,7 @@ final class SettingsTests: XCTestCase {
     /// can actually be created.
     func testAPreviewedScriptDoesNotRunWhenTheSwitchIsOff() {
         let app = launchPreview(javaScript: false)
-        XCTAssertTrue(app.webViews.staticTexts["script did not run"].waitForExistence(timeout: 20),
+        XCTAssertTrue(app.webViews.staticTexts["script did not run"].exists(within: 20),
                       "the document must render unexecuted")
         XCTAssertFalse(app.webViews.staticTexts["script ran"].exists,
                        "and the script must not have rewritten it")
@@ -145,12 +145,12 @@ final class SettingsTests: XCTestCase {
     /// against a viewer that ignored the setting entirely.
     func testAPreviewedScriptRunsWhenTheSwitchIsOn() {
         let app = launchPreview(javaScript: true)
-        XCTAssertTrue(app.webViews.staticTexts["script ran"].waitForExistence(timeout: 20),
+        XCTAssertTrue(app.webViews.staticTexts["script ran"].exists(within: 20),
                       "turning the switch on must let the document's script run")
     }
 
     private func launchPreview(javaScript: Bool) -> XCUIApplication {
-        let app = XCUIApplication()
+        let app = XCUIApplication.forUITest()
         app.launchEnvironment["HERDR_SCREENSHOT_MOCK"] = "htmlpreview"
         app.launchArguments += ["-previews.javascript", javaScript ? "YES" : "NO"]
         app.launch()
@@ -191,7 +191,7 @@ final class SettingsTests: XCTestCase {
         let app = XCUIApplication.launched(mock: "settings")
 
         let row = app.buttons["settings-discord"]
-        guard row.waitForExistence(timeout: 15) else {
+        guard row.exists(within: 15) else {
             return XCTFail("Settings should build the Discord row in its ABOUT section")
         }
         // Scroll on CONTAINMENT, not existence: the row can exist below the fold.
@@ -226,7 +226,7 @@ final class SettingsTests: XCTestCase {
     /// The mock's `acc-claude-2` is exactly this case (active false, both windows at
     /// 100%), which is why this is checkable at all.
     func testAnExhaustedAccountRowKeepsItsShape() {
-        let app = XCUIApplication()
+        let app = XCUIApplication.forUITest()
         app.launchEnvironment["HERDR_SCREENSHOT_MOCK"] = "settings"
         // TEXT SCALE PINNED. `ui.fontScale` is @AppStorage and survives between simulator
         // launches, so without this the measurements below depend on whatever a previous
@@ -235,14 +235,14 @@ final class SettingsTests: XCTestCase {
         app.launch()
 
         let accountsRow = app.staticTexts["Accounts"]
-        XCTAssertTrue(accountsRow.waitForExistence(timeout: 15), "Settings should list Accounts")
+        XCTAssertTrue(accountsRow.exists(within: 15), "Settings should list Accounts")
         accountsRow.tap()
 
         let pill = app.staticTexts["exhausted"].firstMatch
-        XCTAssertTrue(pill.waitForExistence(timeout: 10), "the exhausted account must show its status")
+        XCTAssertTrue(pill.exists(within: 10), "the exhausted account must show its status")
 
         let exhaustedRow = app.staticTexts["Claude Pro (personal)"]
-        XCTAssertTrue(exhaustedRow.waitForExistence(timeout: 5))
+        XCTAssertTrue(exhaustedRow.exists(within: 5))
 
         // THE PILL MUST BE ONE LINE, expressed against a known single line of text rather
         // than a point constant. The bug wrapped "exhausted" to one letter per line into a
@@ -298,7 +298,7 @@ final class SettingsTests: XCTestCase {
         // Above ~472pt all three layouts converge, which is honest: nothing truncates
         // there, so there is no defect to detect.
         XCTAssertTrue(
-            app.staticTexts["100% · weekly"].waitForExistence(timeout: 5),
+            app.staticTexts["100% · weekly"].exists(within: 5),
             """
             the yardstick row's readout is not exactly "100% · weekly" any more, so \
             `acc-claude-2` has gained a reset hint and the ratio gate below is no longer \
@@ -309,7 +309,7 @@ final class SettingsTests: XCTestCase {
         // 136.25pt and "Claude Pro (personal)" is 156.38pt, so the row this gate measures
         // is the NARROWER of the two and a fully healthy render tops out at 0.871.
         let measuredName = app.staticTexts["Claude Max (work)"]
-        XCTAssertTrue(measuredName.waitForExistence(timeout: 5))
+        XCTAssertTrue(measuredName.exists(within: 5))
         let yardstick = exhaustedRow
         let ratio = measuredName.frame.width / yardstick.frame.width
         XCTAssertGreaterThan(
@@ -327,7 +327,7 @@ final class SettingsTests: XCTestCase {
         // tells them apart, so assert it rendered.
         XCTAssertTrue(
             app.staticTexts.containing(NSPredicate(format: "label CONTAINS[c] %@", "weekly"))
-                .firstMatch.waitForExistence(timeout: 5),
+                .firstMatch.exists(within: 5),
             "the weekly meter lost its window label, so two stacked meters cannot be told apart")
     }
 
@@ -347,14 +347,14 @@ final class SettingsTests: XCTestCase {
             let app = XCUIApplication.launched(mock: "settings", environment: ["HERDR_MOCK_PUSH_STATE": state])
 
             let manage = app.staticTexts["Notifications"].firstMatch
-            XCTAssertTrue(manage.waitForExistence(timeout: 15), "Settings should list Notifications")
+            XCTAssertTrue(manage.exists(within: 15), "Settings should list Notifications")
             manage.tap()
 
             let row = app.staticTexts[title]
             // The row sits under the four toggles; bring it into view before judging it.
             var scrolls = 0
             while scrolls < 6 {
-                if row.waitForExistence(timeout: 3), app.frame.contains(row.frame) { break }
+                if row.exists(within: 3), app.frame.contains(row.frame) { break }
                 app.swipeUp()
                 scrolls += 1
             }
@@ -376,10 +376,10 @@ final class SettingsTests: XCTestCase {
             let app = XCUIApplication.launched(mock: "settings",
                                                environment: turnOrigin ? ["HERDR_MOCK_TURN_ORIGIN": "1"] : [:])
             let manage = app.staticTexts["Notifications"].firstMatch
-            XCTAssertTrue(manage.waitForExistence(timeout: 15), "Settings should list Notifications")
+            XCTAssertTrue(manage.exists(within: 15), "Settings should list Notifications")
             manage.tap()
             let picker = app.buttons["settings-notify-finishes"]
-            XCTAssertTrue(picker.waitForExistence(timeout: 10), "\"An agent finishes\" should be a picker")
+            XCTAssertTrue(picker.exists(within: 10), "\"An agent finishes\" should be a picker")
 
             func choose(_ option: String) {
                 // Tap the item once it is hittable; reopen if the first tap hit the dismissing
@@ -401,9 +401,9 @@ final class SettingsTests: XCTestCase {
             choose("Only my requests")
             let note = app.staticTexts["settings-notify-finishes-fallback"]
             if turnOrigin {
-                XCTAssertFalse(note.waitForExistence(timeout: 3), "a herdr with turn origins filters: no fallback note")
+                XCTAssertFalse(note.exists(within: 3), "a herdr with turn origins filters: no fallback note")
             } else {
-                XCTAssertTrue(note.waitForExistence(timeout: 10), "without turn origins the row says it falls back")
+                XCTAssertTrue(note.exists(within: 10), "without turn origins the row says it falls back")
             }
             attach(app, "settings-notify-finishes-\(turnOrigin ? "turn-origin" : "fallback")")
             choose("Always")
@@ -423,18 +423,18 @@ final class SettingsTests: XCTestCase {
         let app = XCUIApplication.launched(mock: "serverupdate", environment: ["HERDR_MOCK_UPDATE": "available"])
         let settingsTab = app.tabBars.buttons["Settings"].exists
             ? app.tabBars.buttons["Settings"] : app.buttons["Settings"].firstMatch
-        XCTAssertTrue(settingsTab.waitForExistence(timeout: 15))
+        XCTAssertTrue(settingsTab.exists(within: 15))
         settingsTab.tap()
 
         let card = app.buttons["settings-machine-card"]
-        XCTAssertTrue(card.waitForExistence(timeout: 15), "the machine card should lead Settings")
+        XCTAssertTrue(card.exists(within: 15), "the machine card should lead Settings")
         XCTAssertTrue(card.label.contains("mac-mini"), "the card names the machine (got \(card.label))")
 
         let update = app.buttons["settings-suggestion-update"]
-        XCTAssertTrue(update.waitForExistence(timeout: 15), "an available herdr update is a suggestion")
+        XCTAssertTrue(update.exists(within: 15), "an available herdr update is a suggestion")
         XCTAssertTrue(update.label.contains("Update herdr to 0.9.5"), "got \(update.label)")
         let exhausted = app.buttons["settings-suggestion-exhausted"]
-        XCTAssertTrue(exhausted.waitForExistence(timeout: 15), "an exhausted account is a suggestion")
+        XCTAssertTrue(exhausted.exists(within: 15), "an exhausted account is a suggestion")
         XCTAssertTrue(exhausted.label.contains("Claude Pro (personal)"), "got \(exhausted.label)")
         XCTAssertGreaterThan(exhausted.frame.minY, update.frame.minY, "the update leads, the account follows")
         XCTAssertGreaterThan(update.frame.minY, card.frame.maxY, "suggestions sit under the machine card")
@@ -442,7 +442,7 @@ final class SettingsTests: XCTestCase {
 
         // The update opens Machines, where the shipped update card waits.
         update.tap()
-        XCTAssertTrue(app.staticTexts["server-update-title"].firstMatch.waitForExistence(timeout: 15),
+        XCTAssertTrue(app.staticTexts["server-update-title"].firstMatch.exists(within: 15),
                       "the update suggestion should open Machines and its update card")
         XCTAssertTrue(app.staticTexts["Machines"].firstMatch.exists)
         attach(app, "settings-b-machines")
@@ -450,14 +450,14 @@ final class SettingsTests: XCTestCase {
         // Back to the root (iPhone) — on the iPad the sidebar stays beside the detail.
         if UIDevice.current.userInterfaceIdiom != .pad {
             let back = app.buttons["Back"].firstMatch
-            XCTAssertTrue(back.waitForExistence(timeout: 5))
+            XCTAssertTrue(back.exists(within: 5))
             back.tap()
         }
-        XCTAssertTrue(exhausted.waitForExistence(timeout: 10))
+        XCTAssertTrue(exhausted.exists(within: 10))
         exhausted.tap()
-        XCTAssertTrue(app.staticTexts["ACCOUNTS"].waitForExistence(timeout: 10),
+        XCTAssertTrue(app.staticTexts["ACCOUNTS"].exists(within: 10),
                       "the exhausted suggestion should open Accounts")
-        XCTAssertTrue(app.staticTexts["exhausted"].firstMatch.waitForExistence(timeout: 10),
+        XCTAssertTrue(app.staticTexts["exhausted"].firstMatch.exists(within: 10),
                       "Accounts should show the exhausted account's status")
         attach(app, "settings-b-accounts")
     }

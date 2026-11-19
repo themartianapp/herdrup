@@ -82,7 +82,7 @@ class DesktopReferenceCaptureCase: XCTestCase {
         app.launch()
 
         let probe = app.otherElements["desktopref-probe"]
-        XCTAssertTrue(probe.waitForExistence(timeout: 30), "the desktopref probe should be on screen")
+        XCTAssertTrue(probe.exists(within: 30), "the desktopref probe should be on screen")
         let fields = conditions(probe)
         let window = fields["window"] ?? "?"
         let device = try XCTUnwrap(Self.devices[window],

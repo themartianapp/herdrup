@@ -10,16 +10,16 @@ final class SessionPillsTests: XCTestCase {
     func testRunningSessionsShowAsPillsWithTheCurrentOneSelected() {
         let app = XCUIApplication.launched(mock: "sessions")
 
-        XCTAssertTrue(app.staticTexts["mcb-air/mcb-air"].waitForExistence(timeout: 12),
+        XCTAssertTrue(app.staticTexts["mcb-air/mcb-air"].exists(within: 12),
                       "the roster should have loaded")
 
         // Labels are what VoiceOver reads: name, then the needs-you count.
         let work = app.buttons["work, 3 need you"]
-        XCTAssertTrue(work.waitForExistence(timeout: 6), "the current session should have a pill")
+        XCTAssertTrue(work.exists(within: 6), "the current session should have a pill")
         XCTAssertTrue(work.isSelected, "the session the app is on should read as selected")
 
         let personal = app.buttons["personal, 3 need you"]
-        XCTAssertTrue(personal.waitForExistence(timeout: 6), "another running session should have a pill")
+        XCTAssertTrue(personal.exists(within: 6), "another running session should have a pill")
         XCTAssertFalse(personal.isSelected)
         XCTAssertTrue(app.buttons["default, 3 need you"].exists, "the default session should have a pill")
 
@@ -34,17 +34,17 @@ final class SessionPillsTests: XCTestCase {
     func testSwitchingShowsTheNewSessionsAgentsWithoutWaitingForItsLoad() {
         let app = XCUIApplication.launched(mock: "sessions")
 
-        XCTAssertTrue(app.staticTexts["mcb-air/mcb-air"].waitForExistence(timeout: 12),
+        XCTAssertTrue(app.staticTexts["mcb-air/mcb-air"].exists(within: 12),
                       "the roster should have loaded")
         let personal = app.buttons["personal, 3 need you"]
-        XCTAssertTrue(personal.waitForExistence(timeout: 6), "the pills should have checked the other sessions")
+        XCTAssertTrue(personal.exists(within: 6), "the pills should have checked the other sessions")
 
         personal.tap()
 
-        XCTAssertTrue(app.buttons["personal, 3 need you"].waitForExistence(timeout: 1.5),
+        XCTAssertTrue(app.buttons["personal, 3 need you"].exists(within: 1.5),
                       "the pills should stay up through the switch")
         XCTAssertTrue(app.buttons["personal, 3 need you"].isSelected, "the tapped session should be the current one")
-        XCTAssertTrue(app.staticTexts["mcb-air/mcb-air"].waitForExistence(timeout: 1.5),
+        XCTAssertTrue(app.staticTexts["mcb-air/mcb-air"].exists(within: 1.5),
                       "the new session's agents should show at once, not after its 4 s load")
     }
 }

@@ -6,6 +6,7 @@
 // path of /i/<payload>).
 import type { HostRelay } from "./host";
 import { handleInvite, type InviteBlob } from "./invite";
+import { handleCrash } from "./crash";
 import { handlePing } from "./ping";
 
 export const VERSION = "1.0.0";
@@ -17,10 +18,15 @@ export interface Env {
   HOST_CONNECT_LIMIT?: RateLimit;
   PING_LIMIT?: RateLimit;
   USAGE?: AnalyticsEngineDataset;
+  CRASH_LIMIT?: RateLimit;
+  /** R2 bucket `herdrup-crash-reports`: one object per accepted crash or hang report. */
+  CRASHES?: R2Bucket;
+  /** Secret for the admin reads of stored reports (Tools/crash/symbolicate.py). */
+  CRASH_ADMIN_TOKEN?: string;
   ASSETS: Fetcher;
 }
 
-export type Endpoint = "/v1/host" | "/v1/guest" | "/v1/invite" | "/v1/ping";
+export type Endpoint = "/v1/host" | "/v1/guest" | "/v1/invite" | "/v1/ping" | "/v1/crash";
 
 export interface LogLine {
   endpoint: Endpoint;
@@ -66,6 +72,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     return handleInvite(request, env, invite[1]);
   }
   if (pathname === "/v1/ping") return handlePing(request, env);
+  if (pathname === "/v1/crash" || pathname.startsWith("/v1/crash/")) return handleCrash(request, env, pathname);
   const match = request.method === "GET" ? SOCKET_PATH.exec(pathname) : null;
   if (match === null) return errorResponse(404, "not_found");
 

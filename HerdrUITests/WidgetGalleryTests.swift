@@ -15,13 +15,14 @@ final class WidgetGalleryTests: XCTestCase {
     func testCaptureLiveActivityLayouts() {
         let app = XCUIApplication.launched(mock: "widgets")
 
-        XCTAssertTrue(app.scrollViews.firstMatch.waitForExistence(timeout: 20),
+        XCTAssertTrue(app.scrollViews.firstMatch.exists(within: 20),
                       "the gallery must render before anything is captured")
         XCTAssertTrue(app.descendants(matching: .any)
-            .matching(identifier: "live-activity-open").firstMatch.waitForExistence(timeout: 10),
+            .matching(identifier: "live-activity-open").firstMatch.exists(within: 10),
                       "the card's action must render, not just the gallery container")
 
-        // Let the timers settle before the first capture.
+        // Kept (all sleeps here): the product is the image. The widgets' timers and the scroll's
+        // deceleration have no element condition marking them settled for a screenshot.
         Thread.sleep(forTimeInterval: 1.5)
         attach(XCUIScreen.main.screenshot(), "widget-gallery-top")
 

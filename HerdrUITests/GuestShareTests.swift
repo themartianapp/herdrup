@@ -38,22 +38,23 @@ final class GuestShareTests: XCTestCase {
             .matching(NSPredicate(format: "label CONTAINS %@", needle)).firstMatch
     }
 
+    /// No settle wait: UI tests run with animations off, so sheets and rows are already in
+    /// place by the time the caller's own waits pass. The shots are receipts, not assertions.
     private func shoot(_ name: String) {
-        Thread.sleep(forTimeInterval: 0.8)   // let sheet and row animations settle
         attach(XCUIScreen.main.screenshot(), name)
     }
 
     private func openShareSheet() {
         let menu = element("terminal-actions")
-        XCTAssertTrue(menu.waitForExistence(timeout: 20), "the pane header never rendered")
+        XCTAssertTrue(menu.exists(within: 20), "the pane header never rendered")
         let item = app.buttons["Share with someone"]
         for _ in 0..<3 where !item.exists {
             menu.tap()
-            _ = item.waitForExistence(timeout: 3)
+            _ = item.exists(within: 3)
         }
         XCTAssertTrue(item.exists, "••• should offer Share with someone")
         item.tap()
-        XCTAssertTrue(element("guest-share-name").waitForExistence(timeout: Self.actionTimeout), "share sheet did not open")
+        XCTAssertTrue(element("guest-share-name").exists(within: Self.actionTimeout), "share sheet did not open")
     }
 
     private func typeGuestName(_ name: String) {
@@ -73,20 +74,20 @@ final class GuestShareTests: XCTestCase {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["HERDR_CAPTURE_GUEST_SCREENS"] == "1",
                           "screenshot capture only; set TEST_RUNNER_HERDR_CAPTURE_GUEST_SCREENS=1")
         launch("share", still: false)
-        XCTAssertTrue(text(containing: "Shared with plotarmordev").waitForExistence(timeout: 30))
+        XCTAssertTrue(text(containing: "Shared with plotarmordev").exists(within: 30))
         shoot("owner-4-chip")
         openShareSheet()
         typeGuestName("plotarmordev\n")
         shoot("owner-1-share")
         element("guest-share-create").tap()
-        XCTAssertTrue(element("guest-invite-qr").waitForExistence(timeout: 30))
+        XCTAssertTrue(element("guest-invite-qr").exists(within: 30))
         shoot("owner-2-invite")
     }
 
     func testShareShowsTheLabelThenCreatesAnInviteWithQRAndLinks() {
         launch("share")
         // The chip names the guest who already holds llm-opt.
-        XCTAssertTrue(text(containing: "Shared with plotarmordev").waitForExistence(timeout: 20),
+        XCTAssertTrue(text(containing: "Shared with plotarmordev").exists(within: 20),
                       "the pane header should say who the agent is shared with")
 
         openShareSheet()
@@ -95,28 +96,28 @@ final class GuestShareTests: XCTestCase {
         XCTAssertFalse(create.isEnabled, "Create invite needs a name first")
 
         typeGuestName("plotarmordev")
-        XCTAssertTrue(text(containing: "plotarmordev (via HerdrUp):").waitForExistence(timeout: Self.actionTimeout),
+        XCTAssertTrue(text(containing: "plotarmordev (via HerdrUp):").exists(within: Self.actionTimeout),
                       "the preview must show the exact label the agent will see")
         XCTAssertTrue(text(containing: "Type into the terminal").exists)
         XCTAssertTrue(text(containing: "keystrokes can't carry a name").exists)
         XCTAssertTrue(create.isEnabled)
 
         create.tap()
-        XCTAssertTrue(element("guest-invite-qr").waitForExistence(timeout: Self.actionTimeout), "no QR code after Create invite")
+        XCTAssertTrue(element("guest-invite-qr").exists(within: Self.actionTimeout), "no QR code after Create invite")
         XCTAssertTrue(app.staticTexts["Invite for plotarmordev"].exists)
         XCTAssertTrue(text(containing: "Works once · expires in 24 h").exists)
         XCTAssertTrue(text(containing: "Jerry's Mac Studio").exists)
         XCTAssertTrue(element("guest-invite-send").exists, "Send… (share sheet) is missing")
         let copy = element("guest-invite-copy")
         copy.tap()
-        XCTAssertTrue(app.buttons["Copied"].waitForExistence(timeout: Self.actionTimeout), "Copy link gave no feedback")
+        XCTAssertTrue(app.buttons["Copied"].exists(within: Self.actionTimeout), "Copy link gave no feedback")
     }
 
     func testAnInvalidNameIsRejectedBeforeAnythingIsSent() {
         launch("share")
         openShareSheet()
         typeGuestName("-bad name")
-        XCTAssertTrue(element("guest-share-name-error").waitForExistence(timeout: Self.actionTimeout),
+        XCTAssertTrue(element("guest-share-name-error").exists(within: Self.actionTimeout),
                       "a name the daemon would reject must be flagged")
         XCTAssertFalse(element("guest-share-create").isEnabled)
 
@@ -142,11 +143,11 @@ final class GuestShareTests: XCTestCase {
         let create = element("guest-share-create")
         XCTAssertTrue(create.isEnabled)
         create.tap()
-        XCTAssertTrue(element("guest-invite-qr").waitForExistence(timeout: Self.actionTimeout))
+        XCTAssertTrue(element("guest-invite-qr").exists(within: Self.actionTimeout))
 
         // Close and share again: the name is remembered.
         app.swipeDown(velocity: .fast)
-        XCTAssertTrue(element("guest-invite-qr").waitForNonExistence(timeout: Self.actionTimeout))
+        XCTAssertTrue(element("guest-invite-qr").gone(within: Self.actionTimeout))
         openShareSheet()
         XCTAssertFalse(element("guest-owner-name").exists, "Your name must only be asked the first time")
     }
@@ -155,15 +156,15 @@ final class GuestShareTests: XCTestCase {
 
     private func openSharedAccess() {
         let row = app.staticTexts["Shared access"]
-        XCTAssertTrue(row.waitForExistence(timeout: 20), "Settings should list Shared access")
+        XCTAssertTrue(row.exists(within: 20), "Settings should list Shared access")
         row.tap()
-        XCTAssertTrue(text(containing: "PEOPLE").waitForExistence(timeout: Self.actionTimeout), "Shared access did not open")
+        XCTAssertTrue(text(containing: "PEOPLE").exists(within: Self.actionTimeout), "Shared access did not open")
     }
 
     func testSharedAccessListsPeopleAndTheActivityLog() {
         launch("sharedaccess")
         openSharedAccess()
-        XCTAssertTrue(element("guest-revoke-plotarmordev").waitForExistence(timeout: Self.actionTimeout))
+        XCTAssertTrue(element("guest-revoke-plotarmordev").exists(within: Self.actionTimeout))
         XCTAssertTrue(text(containing: "llm-opt on Jerry's Mac Studio").exists)
         XCTAssertTrue(text(containing: "active · 2 min ago").exists)
         XCTAssertTrue(text(containing: "SHA256:9f3a·e71c·04bd·c21e").exists, "the key fingerprint must be shown")
@@ -181,19 +182,19 @@ final class GuestShareTests: XCTestCase {
         launch("sharedaccess")
         openSharedAccess()
         let revoke = element("guest-revoke-plotarmordev")
-        XCTAssertTrue(revoke.waitForExistence(timeout: Self.actionTimeout))
+        XCTAssertTrue(revoke.exists(within: Self.actionTimeout))
         revoke.tap()
 
         let confirm = app.buttons["Revoke"].firstMatch
-        XCTAssertTrue(app.staticTexts["Revoke plotarmordev?"].waitForExistence(timeout: Self.actionTimeout),
+        XCTAssertTrue(app.staticTexts["Revoke plotarmordev?"].exists(within: Self.actionTimeout),
                       "revoking must ask for confirmation")
         shoot("owner-5-revoke-confirm")
         XCTAssertTrue(revoke.exists, "nothing is revoked before the confirmation")
         confirm.tap()
 
-        XCTAssertTrue(element("guest-revoke-plotarmordev").waitForNonExistence(timeout: Self.actionTimeout))
+        XCTAssertTrue(element("guest-revoke-plotarmordev").gone(within: Self.actionTimeout))
         XCTAssertTrue(text(containing: "Nobody has access").exists)
-        XCTAssertTrue(text(containing: "Access revoked").waitForExistence(timeout: Self.actionTimeout),
+        XCTAssertTrue(text(containing: "Access revoked").exists(within: Self.actionTimeout),
                       "the revoke must show up in the activity log")
     }
 
@@ -201,11 +202,11 @@ final class GuestShareTests: XCTestCase {
         launch("sharedaccess", pendingInvite: true)
         openSharedAccess()
         let cancel = element("guest-cancel-sam")
-        XCTAssertTrue(cancel.waitForExistence(timeout: Self.actionTimeout), "the pending invite should be listed")
+        XCTAssertTrue(cancel.exists(within: Self.actionTimeout), "the pending invite should be listed")
         XCTAssertTrue(text(containing: "PENDING INVITES").exists)
         shoot("owner-6-pending-invite")
         cancel.tap()
-        XCTAssertTrue(cancel.waitForNonExistence(timeout: Self.actionTimeout))
+        XCTAssertTrue(cancel.gone(within: Self.actionTimeout))
         XCTAssertFalse(text(containing: "PENDING INVITES").exists)
         XCTAssertTrue(element("guest-revoke-plotarmordev").exists, "cancelling an invite must not touch guests")
     }
@@ -216,13 +217,13 @@ final class GuestShareTests: XCTestCase {
         launch("sharedaccess", environment: ["HERDR_MOCK_SAVED_PEER_GUEST": "1"])
         openSharedAccess()
         let revoke = element("guest-revoke-sam")
-        XCTAssertTrue(revoke.waitForExistence(timeout: Self.actionTimeout),
+        XCTAssertTrue(revoke.exists(within: Self.actionTimeout),
                       "a guest on an agent-less saved machine must be listed")
         XCTAssertTrue(text(containing: "notes on mcb-air").exists, "the row must name the machine that holds it")
         revoke.tap()
-        XCTAssertTrue(app.staticTexts["Revoke sam?"].waitForExistence(timeout: Self.actionTimeout))
+        XCTAssertTrue(app.staticTexts["Revoke sam?"].exists(within: Self.actionTimeout))
         app.buttons["Revoke"].firstMatch.tap()
-        XCTAssertTrue(revoke.waitForNonExistence(timeout: Self.actionTimeout))
+        XCTAssertTrue(revoke.gone(within: Self.actionTimeout))
         XCTAssertTrue(element("guest-revoke-plotarmordev").exists, "only sam is revoked")
     }
 
@@ -232,7 +233,7 @@ final class GuestShareTests: XCTestCase {
         launch("sharedaccess", pendingInvite: true, environment: ["HERDR_MOCK_AUDIT_FAIL": "1"])
         openSharedAccess()
         let failure = element("guest-log-failure")
-        XCTAssertTrue(failure.waitForExistence(timeout: Self.actionTimeout), "the audit failure must be shown")
+        XCTAssertTrue(failure.exists(within: Self.actionTimeout), "the audit failure must be shown")
         XCTAssertTrue(failure.label.contains("Couldn't load the activity log"))
         XCTAssertTrue(failure.label.contains("audit.jsonl is unreadable"), "the reason must be shown: \(failure.label)")
         XCTAssertFalse(text(containing: "Nothing yet").exists, "a failed log is not an empty one")
@@ -246,7 +247,7 @@ final class GuestShareTests: XCTestCase {
     /// Taps a SwiftUI switch row on its switch (the right edge), until its value reads `on`.
     private func setSwitch(_ id: String, on: Bool) {
         let row = element(id)
-        XCTAssertTrue(row.waitForExistence(timeout: Self.actionTimeout), "\(id) is missing")
+        XCTAssertTrue(row.exists(within: Self.actionTimeout), "\(id) is missing")
         for _ in 0..<3 where !row.isHittable { app.swipeUp() }
         let want = on ? "1" : "0"
         for _ in 0..<3 where (row.value as? String) != want {
@@ -261,13 +262,13 @@ final class GuestShareTests: XCTestCase {
         openShareSheet()
         typeGuestName("plotarmordev\n")
         let toggle = element("guest-share-gram")
-        XCTAssertTrue(toggle.waitForExistence(timeout: Self.actionTimeout), "the sheet should offer Share Gram")
+        XCTAssertTrue(toggle.exists(within: Self.actionTimeout), "the sheet should offer Share Gram")
         XCTAssertEqual(toggle.value as? String, "0", "Gram is not shared unless the owner asks")
         setSwitch("guest-share-gram", on: true)
         shoot("guest-gram-owner-share-switch")
         element("guest-share-create").tap()
         let gram = element("guest-invite-gram")
-        XCTAssertTrue(gram.waitForExistence(timeout: Self.actionTimeout), "the invite should state its Gram sharing")
+        XCTAssertTrue(gram.exists(within: Self.actionTimeout), "the invite should state its Gram sharing")
         XCTAssertTrue(gram.label.contains("Shared") && !gram.label.contains("Not shared"),
                       "the daemon stored share_gram: \(gram.label)")
     }
@@ -277,8 +278,7 @@ final class GuestShareTests: XCTestCase {
         openSharedAccess()
         XCTAssertEqual(element("guest-share-gram-plotarmordev").value as? String, "0")
         setSwitch("guest-share-gram-plotarmordev", on: true)
-        XCTAssertTrue(text(containing: "llm-opt on Jerry's Mac Studio · Gram shared")
-            .waitForExistence(timeout: Self.actionTimeout), "the reloaded list shows the guest.update")
+        XCTAssertTrue(text(containing: "llm-opt on Jerry's Mac Studio · Gram shared").exists(within: Self.actionTimeout), "the reloaded list shows the guest.update")
         shoot("guest-gram-owner-guest-toggle")
     }
 }

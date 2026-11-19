@@ -25,7 +25,7 @@ final class GuestPushTests: XCTestCase {
 
     private func openTab(_ app: XCUIApplication, _ name: String) {
         let tab = app.tabBars.firstMatch.buttons[name]
-        XCTAssertTrue(tab.waitForExistence(timeout: 10), "the guest tab bar should offer \(name)")
+        XCTAssertTrue(tab.exists(within: 10), "the guest tab bar should offer \(name)")
         tab.tap()
     }
 
@@ -34,17 +34,17 @@ final class GuestPushTests: XCTestCase {
     private func openSharedWithYou(_ app: XCUIApplication) {
         openTab(app, "Settings")
         let card = app.buttons["guest-settings-agent-card"]
-        XCTAssertTrue(card.waitForExistence(timeout: 10), "guest Settings should lead with the share's card")
+        XCTAssertTrue(card.exists(within: 10), "guest Settings should lead with the share's card")
         card.tap()
-        XCTAssertTrue(element(app, "guest-push-status").waitForExistence(timeout: 10))
+        XCTAssertTrue(element(app, "guest-push-status").exists(within: 10))
     }
 
     private func openAgent(_ app: XCUIApplication) {
         openTab(app, "Agents")
         let row = app.buttons["guest-agent-row"]
-        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        XCTAssertTrue(row.exists(within: 10))
         row.tap()
-        XCTAssertTrue(element(app, "guest-terminal").waitForExistence(timeout: 10))
+        XCTAssertTrue(element(app, "guest-terminal").exists(within: 10))
     }
 
     /// A phone iOS already lets notify registers as soon as it connects, without a question,
@@ -62,6 +62,7 @@ final class GuestPushTests: XCTestCase {
             $0.contains(self.registration)
         }
         XCTAssertFalse(element(app, "guest-push-prompt").exists, "nothing to ask when iOS already allows")
+        // Kept: a negative check; a window in which a second registration would show up.
         Thread.sleep(forTimeInterval: 2)
         XCTAssertEqual(element(app, "guest-host-calls").label.components(separatedBy: "notifications.register_device").count - 1,
                        1, "one connection registers once: \(calls)")
@@ -72,9 +73,9 @@ final class GuestPushTests: XCTestCase {
         let app = launch(authorization: nil)
         openAgent(app)
         let notNow = app.buttons["guest-push-not-now"]
-        XCTAssertTrue(notNow.waitForExistence(timeout: 10), "an undecided phone gets the explanation")
+        XCTAssertTrue(notNow.exists(within: 10), "an undecided phone gets the explanation")
         notNow.tap()
-        XCTAssertTrue(element(app, "guest-push-prompt").waitForNonExistence(timeout: 5))
+        XCTAssertTrue(element(app, "guest-push-prompt").gone(within: 5))
         app.buttons["guest-back"].tap()
 
         openSharedWithYou(app)
@@ -97,6 +98,7 @@ final class GuestPushTests: XCTestCase {
         XCTAssertEqual(app.buttons["guest-push-action"].label, "Open Settings")
 
         openAgent(app)
+        // Kept: a negative check; a window in which a prompt or a registration would show up.
         Thread.sleep(forTimeInterval: 3)
         XCTAssertFalse(element(app, "guest-push-prompt").exists, "iOS won't ask again, so neither does the app")
         XCTAssertFalse(element(app, "guest-host-calls").label.contains("notifications.register_device"))
@@ -110,12 +112,12 @@ final class GuestPushTests: XCTestCase {
         openAgent(app)
         pollLabel(app, "guest-host-calls", "a granted phone registers on connect") { $0.contains(self.registration) }
         let actions = app.buttons["guest-actions"]
-        XCTAssertTrue(actions.waitForExistence(timeout: 5))
+        XCTAssertTrue(actions.exists(within: 5))
         XCTAssertEqual(actions.value as? String, "Notifications on", "push on: the ⋯ shows no struck bell")
 
         actions.tap()
         let toggle = app.buttons["guest-notifications"]
-        XCTAssertTrue(toggle.waitForExistence(timeout: 5), "the ⋯ should offer this share's notifications")
+        XCTAssertTrue(toggle.exists(within: 5), "the ⋯ should offer this share's notifications")
         XCTAssertEqual(toggle.label, "Turn off notifications")
         toggle.tap()
         pollLabel(app, "guest-host-calls", "Turn off should unregister this phone") {
@@ -126,7 +128,7 @@ final class GuestPushTests: XCTestCase {
         attach(app, "guest-notifications-off")
 
         actions.tap()
-        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+        XCTAssertTrue(toggle.exists(within: 5))
         XCTAssertEqual(toggle.label, "Turn on notifications")
         toggle.tap()
         pollLabel(app, "guest-host-calls", "Turn on should register this phone again") {

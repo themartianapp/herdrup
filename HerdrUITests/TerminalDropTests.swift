@@ -17,8 +17,8 @@ final class TerminalDropTests: TerminalInteractionTestCase {
     /// there long enough for the drop target to light up before letting go.
     private func drag(_ identifier: String, file: StaticString = #filePath, line: UInt = #line) {
         let from = source(identifier)
-        XCTAssertTrue(from.waitForExistence(timeout: 10), "the fixture drag source should exist", file: file, line: line)
-        XCTAssertTrue(terminal.waitForExistence(timeout: 10), "the terminal should be on screen", file: file, line: line)
+        XCTAssertTrue(from.exists(within: 10), "the fixture drag source should exist", file: file, line: line)
+        XCTAssertTrue(terminal.exists(within: 10), "the terminal should be on screen", file: file, line: line)
         from.press(forDuration: 1.5, thenDragTo: terminal, withVelocity: .slow, thenHoldForDuration: 1.5)
     }
 
@@ -26,10 +26,18 @@ final class TerminalDropTests: TerminalInteractionTestCase {
     /// snippet, dropped in ONE drag on the terminal: both files stage as composer chips
     /// under their own names and start uploading at once, exactly as on the composer bar;
     /// the text lands nowhere. Send then posts those uploads without uploading again.
+    ///
+    /// WITH ANIMATIONS: the app stages a drop's files one after another, so the PDF's load
+    /// starts only once the note has staged, after `performDrop` returned, while the drop
+    /// session that vends it stays open for the system's drop animation. With animations off
+    /// (`HERDR_NO_ANIMATIONS=1`) the session ended first and the PDF could not be read
+    /// ("Couldn't add that attachment.", #716 on iPhone and iPad). This test is about staging,
+    /// so it runs with the drop as users see it; a first file slow enough to outlast the
+    /// animation would hit the same failure, and that is the app's to fix, not this test's.
     func testFilesDroppedOnTheTerminalStageInTheComposerAndUploadEarly() {
-        launch("control")
+        launch("control", environment: ["HERDR_NO_ANIMATIONS": "0"])
         let reply = app.textViews["terminal-reply-input"]
-        XCTAssertTrue(reply.waitForExistence(timeout: 10))
+        XCTAssertTrue(reply.exists(within: 10))
         XCTAssertEqual(probe()["dropTargets"] as? Int, 0)
 
         drag("fixture-drag-files")
@@ -37,9 +45,9 @@ final class TerminalDropTests: TerminalInteractionTestCase {
         let note = app.staticTexts["terminal-action-note"]
         let noteChip = app.staticTexts["dragged-note.txt"]
         let pdfChip = app.staticTexts["dragged-report.pdf"]
-        XCTAssertTrue(noteChip.waitForExistence(timeout: 15),
+        XCTAssertTrue(noteChip.exists(within: 15),
                       "the dropped file url should stage as a chip — note=\(note.exists ? note.label : "none") receipt=\(probe())")
-        XCTAssertTrue(pdfChip.waitForExistence(timeout: 10),
+        XCTAssertTrue(pdfChip.exists(within: 10),
                       "the dropped PDF should stage its own chip — note=\(note.exists ? note.label : "none")")
         attach("terminal-drop-staged")
         XCTAssertGreaterThanOrEqual(probe()["dropTargets"] as? Int ?? 0, 1,
@@ -56,7 +64,7 @@ final class TerminalDropTests: TerminalInteractionTestCase {
                        "the dragged text must not reach the terminal: \(uploaded)")
 
         let send = app.buttons["terminal-send-button"]
-        XCTAssertTrue(send.waitForExistence(timeout: 5), "dropped files should be sendable without text")
+        XCTAssertTrue(send.exists(within: 5), "dropped files should be sendable without text")
         send.tap()
         let delivered = wait { ($0["prompts"] as? Int) == 1 && ($0["gramPosts"] as? Int) == 2 }
         XCTAssertEqual(delivered["uploadedBytes"] as? Int, uploaded["uploadedBytes"] as? Int,
@@ -72,10 +80,12 @@ final class TerminalDropTests: TerminalInteractionTestCase {
     func testATextDragOnTheTerminalIsNotADrop() {
         launch("control")
         let reply = app.textViews["terminal-reply-input"]
-        XCTAssertTrue(reply.waitForExistence(timeout: 10))
+        XCTAssertTrue(reply.exists(within: 10))
 
         drag("fixture-drag-text")
 
+        // Kept: a negative check — the drag must have had time to light the terminal or stage
+        // something (if it still could) before asserting that it did neither.
         Thread.sleep(forTimeInterval: 1)
         let after = probe()
         XCTAssertEqual(after["dropTargets"] as? Int, 0, "a text-only drag must not light the terminal: \(after)")
@@ -89,7 +99,8 @@ final class TerminalDropTests: TerminalInteractionTestCase {
         // The highlight a file drag shows, held on by the fixture: XCUITest cannot take a
         // screenshot while its own drag is in flight.
         command("drop-highlight-on")
-        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "terminal-drop-highlight")
+                        .firstMatch.exists(within: 5), "the fixture should hold the drop highlight on")
         attach("terminal-drop-highlight")
         command("drop-highlight-off")
     }

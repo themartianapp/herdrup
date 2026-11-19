@@ -17,8 +17,8 @@ final class StoreScreenshotTests: XCTestCase {
 
         XCTAssertTrue(poll(20, every: 0.25) { until(app) }, "\(mode) never reached a capturable state")
 
-        // Let the first paint settle: animations and async rows land after the element
-        // that proves the screen exists.
+        // Kept: the product is the image. Async rows land after the element that proves the
+        // screen exists, and no single element marks "everything painted" across the five screens.
         Thread.sleep(forTimeInterval: 1.5)
 
         attach(XCUIScreen.main.screenshot(), name)

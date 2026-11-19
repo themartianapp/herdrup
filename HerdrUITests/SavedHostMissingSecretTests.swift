@@ -22,7 +22,7 @@ final class SavedHostMissingSecretTests: XCTestCase {
         for _ in 0..<3 where !opened {
             row.press(forDuration: 1.0)
             let edit = app.buttons["Edit"]
-            if edit.waitForExistence(timeout: 3) {
+            if edit.exists(within: 3) {
                 edit.tap()
                 opened = true
             }
@@ -38,19 +38,19 @@ final class SavedHostMissingSecretTests: XCTestCase {
             "nickname": "Duo Mac", "authKind": "key",
         ]
         let json = try JSONSerialization.data(withJSONObject: [host])
-        let app = XCUIApplication()
+        let app = XCUIApplication.forUITest()
         // The argument domain wins over the app-group defaults the store reads, and
         // writes nothing to them.
         app.launchArguments += ["-dev.herdr.savedHosts.v1",
                                 "<" + json.map { String(format: "%02x", $0) }.joined() + ">"]
         app.launch()
         let row = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Duo Mac")).firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 15), "the seeded host is listed")
+        XCTAssertTrue(row.exists(within: 15), "the seeded host is listed")
         return (app, row)
     }
 
     private func assertReconnectEditor(_ app: XCUIApplication) {
-        XCTAssertTrue(app.navigationBars["Reconnect"].waitForExistence(timeout: 10),
+        XCTAssertTrue(app.navigationBars["Reconnect"].exists(within: 10),
                       "a host without its key opens the reconnect editor, not Edit host")
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@",
                                                            "This phone doesn't have the key"))
