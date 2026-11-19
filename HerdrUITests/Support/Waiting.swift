@@ -90,7 +90,7 @@ extension XCUIElement {
 /// becomes reachable at all.
 ///
 /// AN ELEMENT WITH NO ON-SCREEN FRAME IS NOT YET HITTABLE, NOT AN ERROR. Asked about an
-/// element that exists but whose frame is empty or lies wholly outside the app's window,
+/// element that exists but whose frame is empty or lies wholly off the screen,
 /// `isHittable` does not answer false: XCTest records "Failed to determine hittability …
 /// Activation point invalid and no suggested hit points based on element frame" and the
 /// test stops. DesktopGramReferenceShots.testGramMixedLatestReference hit that on
@@ -99,24 +99,35 @@ extension XCUIElement {
 /// it asked 1.24 s after and the element was hittable at once. So these check the frame
 /// first (a frame read of an existing element never raises) and ask for hittability only
 /// once the element has a hit point to give.
+///
+/// THE BOUND IS THE SCREEN (SpringBoard's frame), NOT `XCUIApplication().frame`. In an iPad
+/// window shrunk out of full screen the app's frame did not contain its own Back button:
+/// SettingsTests.testCompactSettingsSurviveResizeAndResume, window {{329, 359}, {375, 543}},
+/// waited 5 s on a Back button XCTest had found every 0.1 s (j_e5656147), where main's
+/// plain `isHittable` passed. The screen holds every window, in every orientation.
 extension XCUIElement {
 
     func waitForHittable(timeout: TimeInterval) -> Bool {
-        poll(timeout, every: 0.1) { hasOnScreenFrame && isHittable }
+        let screen = Self.screenFrame
+        return poll(timeout, every: 0.1) { hasFrame(on: screen) && isHittable }
     }
 
     func waitForNotHittable(timeout: TimeInterval) -> Bool {
-        poll(timeout, every: 0.1) { !hasOnScreenFrame || !isHittable }
+        let screen = Self.screenFrame
+        return poll(timeout, every: 0.1) { !hasFrame(on: screen) || !isHittable }
     }
 
-    /// Exists with a non-empty frame that overlaps the app under test's window. Every caller
-    /// of the waits above queries the app under test (`XCUIApplication()`), whose frame is
-    /// the window in the current orientation.
-    private var hasOnScreenFrame: Bool {
+    /// The screen in the current orientation: SpringBoard's frame, read once per wait.
+    private static var screenFrame: CGRect {
+        XCUIApplication(bundleIdentifier: "com.apple.springboard").frame
+    }
+
+    /// Exists with a non-empty frame that overlaps `screen`.
+    private func hasFrame(on screen: CGRect) -> Bool {
         guard exists else { return false }
         let frame = frame
         guard !frame.isEmpty else { return false }
-        return !frame.intersection(XCUIApplication().frame).isEmpty
+        return !frame.intersection(screen).isEmpty
     }
 
     /// iPadOS animates a restored or resized window into place; frames read during that
