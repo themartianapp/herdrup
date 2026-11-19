@@ -10,19 +10,22 @@
 #     UI-test template runs each as one xcodebuild test run of the listed classes on one
 #     simulator (mac-evidence/org-ios-sim-uitest-v1/<shard>). Here the same classes run in
 #     rounds, for a local or diagnostic run of that shard.
-#   - ipad-script and desktop-refs are its script shards
-#     (mac-evidence/org-ios-sim-script-v1/<shard>): Tools/ci/macserve-ipad-script.sh and
-#     Tools/ci/macserve-desktop-refs.sh create the iPads each needs and run that shard as it is.
+#   - swiftterm-ipad and swiftterm-iphone are its unit_test shards: the same selector from
+#     the same Herdr build, on the iPad and on the iPhone.
+#   - desktop-refs and settings-stack are its script shards
+#     (mac-evidence/org-ios-sim-script-v1/<shard>): Tools/ci/macserve-desktop-refs.sh and
+#     Tools/ci/macserve-settings-stack.sh run Tools/ci/macserve-script-shard.sh, which creates
+#     the iPads the shard needs and runs that shard as it is.
 #
 #   iphone-terminal  TERMINAL_CLASSES, then HerdrFontTests, PagingTests, GramTests and
 #                    CachedHomeTests in rounds of their own, on iPhone
 #   iphone-app       ChatViewTests, StatusMotionTests, the guest classes and ChatUXSmokeTests
 #                    in rounds of their own, then every other HerdrUITests class on iPhone
-#   ipad             iPad-specific rounds, on iPad
-#   ipad-script      the other rounds the UI-test template cannot run:
-#                    AgentListChromeTests on iPad, the iPad Settings resize/resume regression
-#                    on an optimized Distribution build with the device-sized stack
-#                    (herdrup#416), and the SwiftTerm UIKit API tests on iPad and iPhone
+#   ipad             iPad-specific rounds, then AgentListChromeTests, on iPad
+#   swiftterm-ipad   the SwiftTerm UIKit API tests (SWIFTTERM_TESTS), on iPad / on iPhone
+#   swiftterm-iphone
+#   settings-stack   the iPad Settings resize/resume regression on an optimized Distribution
+#                    build with the device-sized stack (herdrup#416), with its crash check
 #   desktop-refs     Herdrup Desktop's references on both iPads (dark, status bar pinned by
 #                    simctl): 58 tests, about 19 min, a script shard of their own
 #   focused          ONLY_SUITE on ONLY_DEVICE: iphone, ipad, or ipad-pro-13 for the references
@@ -35,7 +38,7 @@
 # Tools/ci/test_macserve_shards.py fails when a test class is in no macserve shard.
 set -uo pipefail
 
-shard="${1:?usage: ui-shard.sh iphone-terminal|iphone-app|ipad|ipad-script|desktop-refs|focused}"
+shard="${1:?usage: ui-shard.sh iphone-terminal|iphone-app|ipad|swiftterm-ipad|swiftterm-iphone|settings-stack|desktop-refs|focused}"
 TERMINAL_CLASSES=(TerminalControlTests TerminalResizeTests TerminalSearchTests TerminalSelectionTests TerminalDropTests)
 SIM_STATE="$(cd "$(dirname "$0")" && pwd)/sim-state.py"
 XCRESULT_TESTS="$(dirname "$SIM_STATE")/xcresult-tests.py"
@@ -99,8 +102,7 @@ trap stop_recording EXIT
 # CoreSimulator must leave time for receipt upload. TERM gets 15 s before KILL.
 # First-boot data migration took 5m41s in run 38916529804. Each device's first (cold)
 # boot gets 10m; later readiness checks of the same device keep the shorter 5m.
-# Per device, because a shard can cold-boot several: ipad-script the iPad and then the
-# iPhone, desktop-refs both iPads.
+# Per device, because a shard can cold-boot several: desktop-refs both iPads.
 cold_booted=" "
 # Devices that bootstatus reported ready earlier in this job. Do not repeat bootstatus
 # for a still-booted device: on Xcode 27, with the screen recorder running, the second
@@ -274,7 +276,6 @@ boot_simulator() {
 # xcodebuild installs the same build again; that install finds the system settled.
 # Every round that launches an app through XCUIApplication on a booted simulator does this:
 # run_suite (the Debug app) and the iPad Settings regression (the Distribution app).
-# swiftterm_api runs package unit tests in a test host, with no app for XCUITest to launch.
 # Callers must obtain current readiness through boot_simulator before using simctl.
 APP_UNDER_TEST=.build-dd/Build/Products/Debug-iphonesimulator/Herdr.app
 SETTINGS_APP_UNDER_TEST=.build-dd-settings-stack/Build/Products/Distribution-iphonesimulator/Herdr.app
@@ -365,8 +366,8 @@ recover_simulator() {
   fi
 }
 
-# Steps that need a booted device but install no app (screen recorders, the SwiftTerm package
-# tests, the desktop references' device settings): boot, with the one recovery.
+# Steps that need a booted device but install no app (screen recorders, the desktop
+# references' device settings): boot, with the one recovery.
 ensure_simulator() {
   local udid="$1" label="$2"
   simulator_is_dead "$udid" "$label" && return 1
@@ -808,60 +809,9 @@ desktop_reference_round() {
   return "$status"
 }
 
-swiftterm_api() {
-  local device="$1" udid="$2" label="SwiftTermUIKit-$1"
-  # The build resolves its destination by UDID, so it needs the device's runtime: "SwiftTerm
-  # test build failed" in 41841861442 and 42319983254 was "Unable to find a device matching
-  # the provided destination specifier" after the runtime was unmounted. Boot (with the one
-  # recovery) first; no install_app_under_test: these are package unit tests, and no
-  # XCUIApplication launches an app, so the cold-boot install race (#418) does not apply.
-  ensure_simulator "$udid" "$label" || return 1
-  (
-    cd Vendor/SwiftTerm || exit 1
-    bounded 120 xcodebuild -list -json > ../../TestReceipts/SwiftTermSchemes.json
-    scheme=$(python3 - <<'PY'
-import json
-with open("../../TestReceipts/SwiftTermSchemes.json") as source:
-    result = json.load(source)
-schemes = next((result[key]["schemes"] for key in ("workspace", "project") if key in result), [])
-for candidate in ("SwiftTerm", "SwiftTerm-Package"):
-    if candidate in schemes:
-        print(candidate)
-        break
-else:
-    raise SystemExit("::error::SwiftTerm package test scheme unavailable")
-PY
-    ) || exit 1
-    # Build outside the timed test window.
-    if ! "$TIMEOUT_BIN" --signal=INT --kill-after=60s 10m xcodebuild build-for-testing -scheme "$scheme" \
-        -destination "platform=iOS Simulator,id=$udid" \
-        -derivedDataPath ../../.build-dd-swiftterm \
-        CODE_SIGNING_ALLOWED=NO 2>&1 | tee "../../TestReceipts/SwiftTermUIKit-$device-build.log" | beautify; then
-      echo "::error::SwiftTerm test build failed; see TestReceipts/SwiftTermUIKit-$device-build.log"
-      exit 1
-    fi
-    if ! "$TIMEOUT_BIN" --signal=INT --kill-after=60s 15m xcodebuild test-without-building -scheme "$scheme" \
-        -destination "platform=iOS Simulator,id=$udid" \
-        -parallel-testing-enabled NO \
-        -test-timeouts-enabled YES \
-        -only-testing:SwiftTermTests/TerminalViewGeometryTests \
-        -derivedDataPath ../../.build-dd-swiftterm \
-        -resultBundlePath "../../TestReceipts/$label-first.xcresult" \
-        CODE_SIGNING_ALLOWED=NO 2>&1 | tee "../../TestReceipts/$label-first.log" | beautify; then
-      echo "::error::$label first run failed; collecting raw diagnostics without erasing failure"
-      boot_simulator "$udid" "../../TestReceipts/$label-diagnostic-boot.log" || exit 1
-      "$TIMEOUT_BIN" --signal=INT --kill-after=60s 15m xcodebuild test-without-building -scheme "$scheme" \
-          -destination "platform=iOS Simulator,id=$udid" \
-          -parallel-testing-enabled NO \
-          -test-timeouts-enabled YES \
-          -only-testing:SwiftTermTests/TerminalViewGeometryTests \
-          -derivedDataPath ../../.build-dd-swiftterm \
-          -resultBundlePath "../../TestReceipts/$label-diagnostic.xcresult" \
-          CODE_SIGNING_ALLOWED=NO 2>&1 | tee "../../TestReceipts/$label-diagnostic.log" >/dev/null || true
-      exit 1
-    fi
-  )
-}
+# The vendored SwiftTerm's UIKit API tests: .macserve.json's unit_test shards swiftterm-ipad
+# and swiftterm-iphone list exactly this selector (Tools/ci/test_macserve_shards.py checks).
+SWIFTTERM_TESTS=SwiftTermTests/TerminalViewGeometryTests
 
 failed=0
 # ROUND BUDGETS, FROM MEASURED DURATIONS. Each round's budget is the larger of 1.3 x the p95
@@ -991,39 +941,33 @@ case "$shard" in
     run_suite iPadStarPrompt "$IPAD_UDID" 10m \
       -only-testing:HerdrUITests/GitHubStarPromptTests/testBarFitsTheIPadSidebar || failed=1
     check_classes_ran TestReceipts/iPadStarPrompt-first.xcresult GitHubStarPromptTests || failed=1
+    # AgentListChromeTests shrinks the app into a window on purpose, and iPadOS keeps that
+    # window for later launches, even across a reinstall: run 40537708095 ran NeedsYouPill
+    # and the first ChatUX cases in a 715-722 pt window afterwards and failed four ChatUX
+    # cases that pass full screen. So it used to run last, in the ipad-script shard. Since
+    # 2026-11-19 its window tests return the app to full screen in their tear-down, and every
+    # launch returns a window left behind to full screen (HerdrUITests/Support/FullScreen.swift),
+    # so it runs in this shard, in any position (macserve's `ipad` shard runs it in one run with
+    # the classes above). 10m: p95 2.9 min, slowest pass 4.2 (n=151).
+    run_suite iPadAgentListChrome "$IPAD_UDID" 10m -only-testing:HerdrUITests/AgentListChromeTests || failed=1
+    check_classes_ran TestReceipts/iPadAgentListChrome-first.xcresult AgentListChromeTests || failed=1
     ;;
-  ipad-script)
-    # The optimized build for the Settings regression below, before any simulator boots:
-    # compiler and simulator compete for the Mac's CPUs.
+  settings-stack)
+    # The iPad Settings resize/resume regression on an optimized Distribution build with the
+    # device-sized 1008 KiB main stack (herdrup#416), and its attached-crash check. A script
+    # shard because macserve's UI-test template builds only the scheme's Debug configuration.
+    # The optimized build first, before the simulator boots: compiler and simulator compete
+    # for the Mac's CPUs.
     "$TIMEOUT_BIN" --signal=INT --kill-after=15s 40m \
         xcodebuild build-for-testing "${SETTINGS_PROJECT[@]}" \
         -destination "platform=iOS Simulator,id=$IPAD_UDID" \
         -only-testing:HerdrUITests/SettingsTests/testCompactSettingsSurviveResizeAndResume \
         2>&1 | tee TestReceipts/settings-device-stack-build.log | beautify || failed=1
-    # AgentListChromeTests shrinks the app into a window on purpose, and iPadOS keeps that
-    # window for later launches, even across a reinstall. Run 40537708095 (and 40552658219,
-    # which uninstalled the app after this round) ran NeedsYouPill and the first ChatUX
-    # cases in a 715-722 pt window: no room for the chat column and pixel probes off the
-    # window, failing four ChatUX cases that pass full screen. So it runs after every
-    # full-screen iPad round, and the iPad is erased before the Settings regression. Herdrup
-    # Desktop's full-screen references run in desktop-refs, on that shard's own iPads.
-    # 10m: p95 2.9 min, slowest pass 4.2 (n=151).
-    run_suite iPadAgentListChrome "$IPAD_UDID" 10m -only-testing:HerdrUITests/AgentListChromeTests || failed=1
-    check_classes_ran TestReceipts/iPadAgentListChrome-first.xcresult AgentListChromeTests || failed=1
-    bounded 120 xcrun simctl shutdown "$IPAD_UDID" >/dev/null 2>&1 || true
-    ready_devices="${ready_devices/ $IPAD_UDID / }"
-    if bounded 180 xcrun simctl erase "$IPAD_UDID" >TestReceipts/iPad-erase.log 2>&1; then
-      cold_booted="${cold_booted/ $IPAD_UDID / }"
-    else
-      echo "::error::could not erase $IPAD_UDID before the Settings regression; see TestReceipts/iPad-erase.log"
-      failed=1
-    fi
     # Distribution, so the optimizer produces the frame sizes that overflowed a
     # device's 1008 KiB main stack; project.yml gives simulator builds that stack.
     # DEBUG keeps the screenshot fixtures; testability lets the UI tests attach.
     # The test-run file uses __TESTROOT__ paths, so Build/Products is self-contained.
-    # Never fall back to a different configuration. A missing prerequisite fails the shard
-    # but still lets the SwiftTerm tests below run: they need no Distribution products.
+    # Never fall back to a different configuration.
     settings_runs=(.build-dd-settings-stack/Build/Products/Herdr_*.xctestrun)
     if [ "${#settings_runs[@]}" -ne 1 ] || [ ! -f "${settings_runs[0]}" ]; then
       echo "::error::expected one optimized Settings .xctestrun in Build/Products"
@@ -1031,15 +975,16 @@ case "$shard" in
     elif ! prepare_round settings-device-stack "$IPAD_UDID" "$SETTINGS_APP_UNDER_TEST" settings_device_setup; then
       failed=1
     else
-      "$TIMEOUT_BIN" --signal=INT --kill-after=60s 40m xcodebuild test-without-building -xctestrun "${settings_runs[0]}" \
+      watched_test_run TestReceipts/settings-device-stack.log 40m \
+          xcodebuild test-without-building -xctestrun "${settings_runs[0]}" \
           -destination "platform=iOS Simulator,id=$IPAD_UDID" \
           -parallel-testing-enabled NO \
           -test-timeouts-enabled YES \
           -default-test-execution-time-allowance 300 \
           -maximum-test-execution-time-allowance 600 \
           -resultBundlePath TestReceipts/settings-device-stack.xcresult \
-          -only-testing:HerdrUITests/SettingsTests/testCompactSettingsSurviveResizeAndResume \
-          2>&1 | tee TestReceipts/settings-device-stack.log | beautify || failed=1
+          -only-testing:HerdrUITests/SettingsTests/testCompactSettingsSurviveResizeAndResume || failed=1
+      accessibility_stopped settings-device-stack "$IPAD_UDID" TestReceipts/settings-device-stack.log && failed=1
       # XCTest activation can restart a crashed app and still report a pass.
       # Without a readable export the guard cannot tell, so that fails the shard too.
       if ! bounded 600 xcrun xcresulttool export attachments \
@@ -1057,13 +1002,19 @@ case "$shard" in
         fi
       fi
     fi
-    # The vendored SwiftTerm's UIKit API tests, on the iPad and then the iPhone. The iPad is
-    # shut down before the iPhone boots: a second booted simulator adds to the memory
-    # pressure measured during launch stalls (herdrup#418).
-    swiftterm_api iPad "$IPAD_UDID" || failed=1
-    bounded 120 xcrun simctl shutdown "$IPAD_UDID" >/dev/null 2>&1 || true
-    ready_devices="${ready_devices/ $IPAD_UDID / }"
-    swiftterm_api iPhone "$IPHONE_UDID" || failed=1
+    ;;
+  swiftterm-ipad|swiftterm-iphone)
+    # The vendored SwiftTerm's UIKit API tests (its SwiftTermTests target, which project.yml
+    # adds to the Herdr scheme's test action), as macserve's unit_test shards of the same
+    # names run them from the Herdr build. Package unit tests: no XCUIApplication launches
+    # the app, so the install before the round is only the round's usual preparation.
+    if [ "$shard" = swiftterm-ipad ]; then
+      label=SwiftTermUIKit-iPad; udid="$IPAD_UDID"
+    else
+      label=SwiftTermUIKit-iPhone; udid="$IPHONE_UDID"
+    fi
+    run_suite "$label" "$udid" 15m "-only-testing:$SWIFTTERM_TESTS" || failed=1
+    check_classes_ran "TestReceipts/$label-first.xcresult" "${SWIFTTERM_TESTS##*/}" || failed=1
     ;;
   desktop-refs)
     # Herdrup Desktop's references at both sizes, full screen, dark, with the status bar

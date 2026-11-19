@@ -1,39 +1,41 @@
 #!/usr/bin/env bash
-# The macserve script shards `ipad-script` and `desktop-refs` (.macserve.json; template
+# The macserve script shards `desktop-refs` and `settings-stack` (.macserve.json; template
 # org-ios-sim-script-v1, PR checks mac-evidence/org-ios-sim-script-v1/<shard>):
 # Tools/ci/ui-shard.sh SHARD, the device rounds macserve's UI-test template cannot run as
-# plain -only-testing selectors. SHARD is the first argument, ipad-script by default (the
-# template runs this file with no arguments); Tools/ci/macserve-desktop-refs.sh runs it with
-# desktop-refs.
-#   ipad-script:
-#   - first, the built Herdr.app's version against project.yml's MARKETING_VERSION;
-#   - AgentListChromeTests on the iPad: it leaves the app in a window, and iPadOS keeps that
-#     window for later launches, so the iPad is erased after it;
-#   - the iPad Settings resize/resume regression on an optimized Distribution build with the
-#     device-sized 1008 KiB main stack (herdrup#416), with its attached-crash check;
-#   - the vendored SwiftTerm's UIKit API tests (its own package scheme) on iPad and iPhone.
+# plain -only-testing selectors. The template runs a shard's file with no arguments, so
+# Tools/ci/macserve-desktop-refs.sh and Tools/ci/macserve-settings-stack.sh run this one
+# with their shard.
 #   desktop-refs:
 #   - Herdrup Desktop's references on the 13-inch and the 1180x820 pt iPad, which need the
 #     simulator in dark appearance with a pinned status bar (simctl, before each round).
+#   settings-stack:
+#   - the iPad Settings resize/resume regression on an optimized Distribution build with the
+#     device-sized 1008 KiB main stack (herdrup#416), with its attached-crash check. The
+#     UI-test template builds only the scheme's Debug configuration.
+# These were the `ipad-script` shard with three more pieces, which run in parallel jobs now:
+# AgentListChromeTests in the `ipad` UI-test shard (it returns the app to full screen), the
+# SwiftTerm UIKit API tests in the unit_test shards swiftterm-ipad and swiftterm-iphone, and
+# the built-version check as Tools/ci/test_project_version.py in CI's Linux job.
 #
 # The template has built the Debug app for its iPhone 18 Pro (MACSERVE_SIMULATOR_ID) into the
 # derived data above MACSERVE_APP_DIR. ui-shard.sh builds into .build-dd and resolves packages
-# into SourcePackages, so both link to that derived data, and build-for-testing adds only the
-# test bundles. The iPads are this script's own simulators, only those its shard uses, as
+# into SourcePackages, so both link to that derived data. desktop-refs adds the UI-test
+# bundle for the iPad there (build-for-testing); settings-stack builds its own Distribution
+# products. The iPads are this script's own simulators, only those its shard uses, as
 # duo-column.sh creates its iPhone Duo; they are deleted on exit. TestReceipts, with
 # FLAKES.txt when a failed test passed on its retry, is copied to MACSERVE_OUTPUT, the
 # directory the job exports. The exit status is ui-shard.sh's (a round whose failed tests
-# all passed their one retry passes) or a failed check here.
+# all passed their one retry passes) or a failed step here.
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
 : "${MACSERVE_SIMULATOR_ID:?run by the macserve script template, which sets MACSERVE_SIMULATOR_ID}"
 : "${MACSERVE_APP_DIR:?run by the macserve script template, which sets MACSERVE_APP_DIR}"
 : "${MACSERVE_OUTPUT:?run by the macserve script template, which sets MACSERVE_OUTPUT}"
-shard="${1:-ipad-script}"
+shard="${1:-}"
 case "$shard" in
-  ipad-script|desktop-refs) ;;
+  desktop-refs|settings-stack) ;;
   *)
-    echo "::error::usage: macserve-ipad-script.sh [ipad-script|desktop-refs], not $shard" >&2
+    echo "::error::usage: macserve-script-shard.sh desktop-refs|settings-stack, not '$shard'" >&2
     exit 64
     ;;
 esac
@@ -88,32 +90,17 @@ fi
 mkdir -p "$DERIVED_DATA/SourcePackages" || exit 1
 ln -sfn "$DERIVED_DATA" .build-dd || exit 1
 ln -sfn "$DERIVED_DATA/SourcePackages" SourcePackages || exit 1
-if ! "$TIMEOUT_BIN" --signal=INT --kill-after=15s 30m \
+# Only the references' UI-test bundle: the scheme's test action also holds HerdrFontTests and
+# SwiftTerm's tests, which no round here runs.
+if [ "$shard" = desktop-refs ] && ! "$TIMEOUT_BIN" --signal=INT --kill-after=15s 30m \
     xcodebuild build-for-testing -project Herdr.xcodeproj -scheme Herdr \
       -destination "platform=iOS Simulator,id=$IPAD_UDID" \
       -derivedDataPath .build-dd -clonedSourcePackagesDirPath SourcePackages \
+      -only-testing:HerdrUITests \
       CODE_SIGNING_ALLOWED=NO >TestReceipts/debug-build-for-testing.log 2>&1; then
   echo "::error::Debug build-for-testing failed; see TestReceipts/debug-build-for-testing.log"
   tail -40 TestReceipts/debug-build-for-testing.log
   exit 1
-fi
-
-failed=0
-# THE BUILT BUNDLE VERSION, read from the built product, not the generated source plist:
-# xcodegen writes the literal "$(MARKETING_VERSION)" into App/Info.plist and Xcode
-# substitutes it during the build. Nothing set CFBundleShortVersionString for months, so
-# xcodegen's default "1.0" shipped while project.yml said 0.1, and it surfaced only when
-# Apple closed the 1.0 train (altool 90186). build-for-testing also produces a runner .app,
-# whose version is unrelated, so this reads Herdr.app. Once per head, in ipad-script.
-if [ "$shard" = ipad-script ]; then
-  APP=.build-dd/Build/Products/Debug-iphonesimulator/Herdr.app
-  BUILT=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist" 2>/dev/null)
-  EXPECTED=$(grep -m1 'MARKETING_VERSION:' project.yml | sed 's/.*MARKETING_VERSION:[[:space:]]*//' | tr -d '" ')
-  echo "built CFBundleShortVersionString=${BUILT:-<none>}  project.yml MARKETING_VERSION=$EXPECTED"
-  if [ -z "$BUILT" ] || [ "$BUILT" != "$EXPECTED" ]; then
-    echo "::error::built version (${BUILT:-none}) does not match project.yml MARKETING_VERSION ($EXPECTED)"
-    failed=1
-  fi
 fi
 
 # THE WHOLE SHARD IS BOUNDED BELOW macserve's 2 h JOB CAP, so a hang the rounds' own bounds
@@ -125,5 +112,4 @@ status=$?
 if [ "$status" -eq 124 ]; then
   echo "::error::Tools/ci/ui-shard.sh $shard ran past its 80m bound; see TestReceipts"
 fi
-[ "$status" -eq 0 ] || failed=1
-exit "$failed"
+exit "$status"

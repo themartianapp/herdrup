@@ -154,10 +154,16 @@ targets:
     # archive) is unaffected. `storeKitConfiguration` points RUN/TEST at the local
     # `.storekit` file, so the tip jar resolves prices in Simulator without App Store
     # Connect — the archive action is untouched, so shipped builds hit the real store.
+    # The vendored SwiftTerm's test target is in the TEST action too, so macserve's
+    # `unit_test` shards (swiftterm-ipad, swiftterm-iphone) run its UIKit API tests from
+    # the Herdr scheme's build-for-testing, like every other shard; .macserve.json names one
+    # scheme for all of them. Every shard selects its tests with -only-testing, so no other
+    # shard runs SwiftTerm's tests.
     scheme:
       testTargets:
         - HerdrFontTests
         - HerdrUITests
+        - package: SwiftTerm/SwiftTermTests
       storeKitConfiguration: App/Herdr.storekit
     info:
       path: App/Info.plist
