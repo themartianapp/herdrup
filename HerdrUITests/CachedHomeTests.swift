@@ -31,14 +31,18 @@ final class CachedHomeTests: XCTestCase {
     /// The first connection fails (herdr is not running): the kept rows were never confirmed,
     /// so this is the connect failing, not a background refresh, and its guidance must show.
     /// The "Updating" mark must not stay up for good.
+    ///
+    /// The failure lands after 8 s, as in the test above: with 3 s, a slow cold start
+    /// (the rows may take up to 4 s to paint) found the failure already in and the mark
+    /// already gone, failing on two attempts in one run (herdrup #765, j_67d20ce4).
     func testAFirstConnectionFailureShowsItsGuidanceOverTheKeptRoster() {
         let app = XCUIApplication.launched(mock: "cachedhome", environment: [
-            "HERDR_MOCK_LIST_DELAY": "3", "HERDR_MOCK_LIST_FAIL": "daemonUnavailable"])
+            "HERDR_MOCK_LIST_DELAY": "8", "HERDR_MOCK_LIST_FAIL": "daemonUnavailable"])
 
         XCTAssertTrue(element(app, "agent-row-w1:p1").exists(within: 4), "the kept roster did not paint")
         XCTAssertTrue(element(app, "agents-updating").exists, "a kept roster is marked as updating")
 
-        XCTAssertTrue(app.staticTexts["herdr isn't running on cachedhome"].exists(within: 10),
+        XCTAssertTrue(app.staticTexts["herdr isn't running on cachedhome"].exists(within: 15),
                       "the failed connection was hidden behind the kept roster")
         XCTAssertTrue(app.buttons["retry"].exists, "the guidance offers a retry")
         XCTAssertTrue(element(app, "agents-updating").gone(within: 3),
