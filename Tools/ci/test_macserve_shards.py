@@ -9,8 +9,8 @@ HerdrUITests and HerdrFontTests must therefore appear as a whole class in an iPh
 class in the ipad shard, or be one of the classes the `desktop-refs` script shard runs
 (Herdrup Desktop's references, ui-shard.sh DESKTOP_REFERENCE_CLASSES). Every selector must
 name an existing class or method, and every script shard's `run` an executable file. The
-unit_test shards run SwiftTerm's UIKit API tests from the same Herdr scheme, so their target
-must be in that scheme's test action (project.yml).
+Herdr scheme's test action holds only hosted bundles: macserve's UI shards import one shared
+.xctestrun, which a hostless package test target would break.
 
 The `smoke` shard is the fast tier's: a few dozen tests run on every push, while the full
 shards above still run before merge. It may overlap them, but only as a subset: each smoke
@@ -48,10 +48,7 @@ class MacserveShardTests(unittest.TestCase):
         config = json.loads((ROOT / ".macserve.json").read_text())
         cls.ui = config["ui_test"]["shards"]
         cls.script = config["script"]["shards"]
-        cls.unit = config["unit_test"]["shards"]
-        cls.swiftterm_classes = {
-            key.rpartition("/")[2]: methods
-            for key, methods in test_classes("Vendor/SwiftTerm/Tests/SwiftTermTests").items()}
+        cls.project = (ROOT / "project.yml").read_text()
         cls.classes = {**test_classes("HerdrUITests"), **test_classes("HerdrFontTests")}
         cls.ui_shard = (ROOT / "Tools/ci/ui-shard.sh").read_text()
         references = re.search(r"^DESKTOP_REFERENCE_CLASSES=\(([^)]*)\)", cls.ui_shard, re.M)
@@ -88,7 +85,7 @@ class MacserveShardTests(unittest.TestCase):
                             "smoke: %s runs in no iPhone shard, so the full tier would skip it" % selector)
 
     def test_every_shard_fits_macserve(self):
-        for shard, selectors in {**self.ui, **self.unit}.items():
+        for shard, selectors in self.ui.items():
             self.assertLessEqual(len(selectors), MAX_SELECTORS, "%s has more than %d selectors" % (shard, MAX_SELECTORS))
 
     def test_every_script_shard_runs_an_executable_file(self):
@@ -98,31 +95,30 @@ class MacserveShardTests(unittest.TestCase):
         for shard in ("desktop-refs", "settings-stack"):
             self.assertRegex(self.ui_shard, r"(?m)^  %s\)$" % re.escape(shard), "ui-shard.sh has no %s case" % shard)
 
-    def test_ipad_script_moved_to_parallel_shards(self):
-        # 2026-11-19: its pieces run in parallel jobs; only the Settings regression keeps a
-        # (short) script shard, and no shard may quietly bring the long one back.
+    def test_ipad_script_moved_out_of_the_long_script_lane(self):
+        # 2026-11-19: AgentListChromeTests runs in the ipad UI-test shard; the Settings
+        # regression, SwiftTerm's UIKit API tests and the built-version check keep a short
+        # script shard; no shard may quietly bring the long one back.
         self.assertNotIn("ipad-script", self.script)
         self.assertIn("HerdrUITests/AgentListChromeTests", self.ui["ipad"])
         self.assertEqual(self.script["settings-stack"]["run"], "Tools/ci/macserve-settings-stack.sh")
+        case = re.search(r"(?ms)^  settings-stack\)$(.*?)^    ;;$", self.ui_shard)
+        self.assertIsNotNone(case, "ui-shard.sh has no settings-stack case")
+        for step in ("testCompactSettingsSurviveResizeAndResume", "swiftterm_api iPad", "swiftterm_api iPhone"):
+            self.assertIn(step, case.group(1), "settings-stack no longer runs %s" % step)
+        runner = (ROOT / "Tools/ci/macserve-script-shard.sh").read_text()
+        self.assertIn("CFBundleShortVersionString", runner, "the built-version check is gone")
 
-    def test_swiftterm_unit_shards_run_from_the_herdr_scheme(self):
-        # .macserve.json names one scheme for every shard: the unit_test shards' target must be
-        # in the Herdr scheme's test action (project.yml), and each selector a SwiftTerm class.
-        swiftterm = re.search(r"^SWIFTTERM_TESTS=(\S+)$", self.ui_shard, re.M).group(1)
-        self.assertEqual(self.unit, {"swiftterm-ipad": [swiftterm], "swiftterm-iphone": [swiftterm]})
-        self.assertRegex(self.ui_shard, r"(?m)^  swiftterm-ipad\|swiftterm-iphone\)$")
-        classes = {"SwiftTermTests/" + name for name in self.swiftterm_classes}
-        project = (ROOT / "project.yml").read_text()
-        scheme = re.search(r"^    scheme:\n      testTargets:\n((?:        - .*\n)+)", project, re.M)
+    def test_the_herdr_scheme_tests_only_hosted_bundles(self):
+        # Review of #750: SwiftTerm's package test target in the Herdr scheme's test action
+        # added TestHostPath="__PLATFORMS__/…/Xcode/Agents/xctest" to the shared .xctestrun,
+        # which macserve's product import refuses as outside the products: every UI shard
+        # failed with no test run. Hostless package tests run from their own scheme
+        # (ui-shard.sh swiftterm_api, in settings-stack), and no unit_test shard selects them.
+        scheme = re.search(r"^    scheme:\n      testTargets:\n((?:        - .*\n)+)", self.project, re.M)
         self.assertIsNotNone(scheme, "project.yml's Herdr target has no scheme testTargets")
-        for selectors in self.unit.values():
-            for selector in selectors:
-                target, name, *method = selector.split("/")
-                self.assertIn("        - package: SwiftTerm/%s\n" % target, scheme.group(1),
-                              "%s is not in the Herdr scheme's test action" % target)
-                self.assertIn("%s/%s" % (target, name), classes, "%s is no SwiftTerm test class" % selector)
-                if method:
-                    self.assertIn(method[0].removesuffix("()"), self.swiftterm_classes[name], selector)
+        self.assertNotIn("package:", scheme.group(1))
+        self.assertNotIn("unit_test", json.loads((ROOT / ".macserve.json").read_text()))
 
 
 if __name__ == "__main__":

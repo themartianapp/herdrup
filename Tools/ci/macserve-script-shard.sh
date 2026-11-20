@@ -8,21 +8,21 @@
 #   desktop-refs:
 #   - Herdrup Desktop's references on the 13-inch and the 1180x820 pt iPad, which need the
 #     simulator in dark appearance with a pinned status bar (simctl, before each round).
-#   settings-stack:
+#   settings-stack, three things that need the job's own checkout:
+#   - the built Herdr.app's version against project.yml's MARKETING_VERSION (below);
 #   - the iPad Settings resize/resume regression on an optimized Distribution build with the
 #     device-sized 1008 KiB main stack (herdrup#416), with its attached-crash check. The
-#     UI-test template builds only the scheme's Debug configuration.
-# These were the `ipad-script` shard with three more pieces, which run in parallel jobs now:
-# AgentListChromeTests in the `ipad` UI-test shard (it returns the app to full screen), the
-# SwiftTerm UIKit API tests in the unit_test shards swiftterm-ipad and swiftterm-iphone, and
-# the built-version check as Tools/ci/test_project_version.py in CI's Linux job.
+#     UI-test template builds only the scheme's Debug configuration;
+#   - the vendored SwiftTerm's UIKit API tests (its own package scheme) on iPad and iPhone.
+# These were the `ipad-script` shard with AgentListChromeTests, which runs in the `ipad`
+# UI-test shard now (it returns the app to full screen), and the references (desktop-refs).
 #
 # The template has built the Debug app for its iPhone 18 Pro (MACSERVE_SIMULATOR_ID) into the
 # derived data above MACSERVE_APP_DIR. ui-shard.sh builds into .build-dd and resolves packages
 # into SourcePackages, so both link to that derived data. desktop-refs adds the UI-test
 # bundle for the iPad there (build-for-testing); settings-stack builds its own Distribution
-# products. The iPads are this script's own simulators, only those its shard uses, as
-# duo-column.sh creates its iPhone Duo; they are deleted on exit. TestReceipts, with
+# and SwiftTerm products. The iPads are this script's own simulators, only those its shard
+# uses, as duo-column.sh creates its iPhone Duo; they are deleted on exit. TestReceipts, with
 # FLAKES.txt when a failed test passed on its retry, is copied to MACSERVE_OUTPUT, the
 # directory the job exports. The exit status is ui-shard.sh's (a round whose failed tests
 # all passed their one retry passes) or a failed step here.
@@ -90,8 +90,8 @@ fi
 mkdir -p "$DERIVED_DATA/SourcePackages" || exit 1
 ln -sfn "$DERIVED_DATA" .build-dd || exit 1
 ln -sfn "$DERIVED_DATA/SourcePackages" SourcePackages || exit 1
-# Only the references' UI-test bundle: the scheme's test action also holds HerdrFontTests and
-# SwiftTerm's tests, which no round here runs.
+# Only the references' UI-test bundle: the scheme's test action also holds HerdrFontTests,
+# which no round here runs.
 if [ "$shard" = desktop-refs ] && ! "$TIMEOUT_BIN" --signal=INT --kill-after=15s 30m \
     xcodebuild build-for-testing -project Herdr.xcodeproj -scheme Herdr \
       -destination "platform=iOS Simulator,id=$IPAD_UDID" \
@@ -103,6 +103,26 @@ if [ "$shard" = desktop-refs ] && ! "$TIMEOUT_BIN" --signal=INT --kill-after=15s
   exit 1
 fi
 
+failed=0
+# THE BUILT BUNDLE VERSION, read from the built product, not the generated source plist:
+# xcodegen writes the literal "$(MARKETING_VERSION)" into App/Info.plist and Xcode
+# substitutes it during the build. Nothing set CFBundleShortVersionString for months, so
+# xcodegen's default "1.0" shipped while project.yml said 0.1, and it surfaced only when
+# Apple closed the 1.0 train (altool 90186). It reads the template's Debug Herdr.app (not the
+# UI-test runner .app) against this job's own checkout, once per head, in settings-stack. A
+# hosted test in a UI shard cannot: those run relocated, prebuilt products in another
+# workspace, where the build's checkout may be gone (review of #750).
+if [ "$shard" = settings-stack ]; then
+  APP=.build-dd/Build/Products/Debug-iphonesimulator/Herdr.app
+  BUILT=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist" 2>/dev/null)
+  EXPECTED=$(grep -m1 'MARKETING_VERSION:' project.yml | sed 's/.*MARKETING_VERSION:[[:space:]]*//' | tr -d '" ')
+  echo "built CFBundleShortVersionString=${BUILT:-<none>}  project.yml MARKETING_VERSION=$EXPECTED"
+  if [ -z "$BUILT" ] || [ "$BUILT" != "$EXPECTED" ]; then
+    echo "::error::built version (${BUILT:-none}) does not match project.yml MARKETING_VERSION ($EXPECTED)"
+    failed=1
+  fi
+fi
+
 # THE WHOLE SHARD IS BOUNDED BELOW macserve's 2 h JOB CAP, so a hang the rounds' own bounds
 # miss still leaves time to copy TestReceipts to MACSERVE_OUTPUT (finish): herdrup #674's
 # ipad-script job j_1b3bd71b hung in an unbounded simctl call until macserve killed it at
@@ -112,4 +132,5 @@ status=$?
 if [ "$status" -eq 124 ]; then
   echo "::error::Tools/ci/ui-shard.sh $shard ran past its 80m bound; see TestReceipts"
 fi
-exit "$status"
+[ "$status" -eq 0 ] || failed=1
+exit "$failed"

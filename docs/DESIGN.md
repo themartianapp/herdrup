@@ -218,24 +218,26 @@ job builds the app for itself, so there are few, long shards:
 
 | Check | macserve template, device | What it runs |
 |---|---|---|
-| `mac-evidence/org-ios-sim-uitest-v1/iphone-terminal` | UI test, iPhone 18 Pro | `HerdrFontTests` (with `BundleVersionTests`, the built-version check), the terminal classes, `PagingTests`, `GramTests` |
+| `mac-evidence/org-ios-sim-uitest-v1/iphone-terminal` | UI test, iPhone 18 Pro | `HerdrFontTests`, the terminal classes, `PagingTests`, `GramTests` |
 | `mac-evidence/org-ios-sim-uitest-v1/iphone-app` | UI test, iPhone 18 Pro | `ChatViewTests` and every other iPhone class |
 | `mac-evidence/org-ios-sim-uitest-v1/ipad` | UI test, iPad Pro 13-inch | the iPad rounds: resize, Duo transition, control, drop, chat column, Gram column, needs-you, star bar, guest Settings, `AgentListChromeTests` |
-| `mac-evidence/<unit-test profile>/swiftterm-ipad`, `…/swiftterm-iphone` | unit test, iPad Pro 13-inch / iPhone 18 Pro | the vendored SwiftTerm's UIKit API tests (`SwiftTermTests/TerminalViewGeometryTests`); the profile is the unit-test template's that macserve's policy names |
-| `mac-evidence/org-ios-sim-script-v1/settings-stack` | script, iPhone 18 Pro + its own iPad | `Tools/ci/macserve-settings-stack.sh`: the optimized Settings stack regression (#416) and its crash check |
+| `mac-evidence/org-ios-sim-script-v1/settings-stack` | script, iPhone 18 Pro + its own iPad | `Tools/ci/macserve-settings-stack.sh`: the built-version check, the optimized Settings stack regression (#416) and its crash check, the SwiftTerm UIKit API tests on iPad and iPhone |
 | `mac-evidence/org-ios-sim-script-v1/desktop-refs` | script, iPhone 18 Pro + its own two iPads | `Tools/ci/macserve-desktop-refs.sh`: Herdrup Desktop's references (`DESKTOP_REFERENCE_CLASSES`, 58 tests) on the 13-inch and the 1180x820 pt iPad |
 
 The UI-test template runs a shard's `-only-testing` selectors as one `xcodebuild test`;
 [`Tools/ci/test_macserve_shards.py`](../Tools/ci/test_macserve_shards.py) fails the Linux job
-when a test class is in no shard. The unit-test template does the same for `unit_test.shards`:
-`.macserve.json` names one scheme for every shard, so SwiftTerm's `SwiftTermTests` target is in
-the `Herdr` scheme's test action (`project.yml`). The script shards run what a plain selector
-list cannot: the references need a dark simulator with a pinned status bar, and the Settings
-regression needs a Distribution build (`macserve-desktop-refs.sh` and
+when a test class is in no shard. The script shards run what a plain selector list cannot:
+the references need a dark simulator with a pinned status bar; the Settings regression needs
+a Distribution build; SwiftTerm's tests are their own package scheme; and the built-version
+check reads `project.yml` from the job's own checkout (`macserve-desktop-refs.sh` and
 `macserve-settings-stack.sh` both run `macserve-script-shard.sh`). macserve runs script shards
 one at a time, so since 2026-11-19 the 35-60 minute `ipad-script` shard is gone: its
-references are `desktop-refs`, its Settings regression `settings-stack` (about 5 minutes), and
-the rest moved to parallel jobs. `AgentListChromeTests` shrinks the app into a window, which
+references are `desktop-refs`, the rest but `AgentListChromeTests` is `settings-stack` (about
+8-9 minutes after the template's build). The UI shards cannot take SwiftTerm's tests or the
+version check: a package test target in the `Herdr` scheme puts a hostless `TestHostPath` into
+the shared `.xctestrun`, which macserve's product import refuses, and they run relocated,
+prebuilt products where the build's checkout may be gone. `AgentListChromeTests` shrinks the
+app into a window, which
 iPadOS keeps for later launches; its window tests return the app to full screen in their
 tear-down, and every launch returns a window left behind to full screen
 (`HerdrUITests/Support/FullScreen.swift`), so it runs in the `ipad` shard in any position.
@@ -278,7 +280,7 @@ eval "$(python3 Tools/ci/pick-simulators.py)"     # IPHONE_UDID, IPAD_UDID, IPAD
 xcodebuild build-for-testing -project Herdr.xcodeproj -scheme Herdr \
   -destination "platform=iOS Simulator,id=$IPHONE_UDID" \
   -derivedDataPath .build-dd -clonedSourcePackagesDirPath SourcePackages CODE_SIGNING_ALLOWED=NO
-Tools/ci/ui-shard.sh iphone-app                    # or iphone-terminal, ipad, swiftterm-ipad, swiftterm-iphone, settings-stack, desktop-refs
+Tools/ci/ui-shard.sh iphone-app                    # or iphone-terminal, ipad, settings-stack, desktop-refs
 ONLY_SUITE=GramTests ONLY_DEVICE=iphone Tools/ci/ui-shard.sh focused
 ```
 
@@ -292,9 +294,8 @@ To run a shard on macserve at a commit, submit a job to its API with the shard's
  "shard":"iphone-app"}
 ```
 
-The `ipad` shard uses `com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-12GB`. The
-`swiftterm-*` shards use `"kind":"unit_test"` with the unit-test profile, on that iPad and on
-the iPhone 18 Pro. `settings-stack` and `desktop-refs` use `"kind":"simulator_script"`,
+The `ipad` shard uses `com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-12GB`.
+`settings-stack` and `desktop-refs` use `"kind":"simulator_script"`,
 `"profile":"org-ios-sim-script-v1"` and the iPhone 18 Pro.
 
 The reconnect-history UI receipt recognizes the fixture's numbered history rows
@@ -330,8 +331,7 @@ A watcher that fails (ax-watch.py or the console filter exits non-zero) fails it
 an unwatched run never passes on xcodebuild's status alone.
 Debug resize receipts are per pane, so a background terminal's fixed grid
 cannot overwrite the foreground terminal's keyboard-resize result.
-The built-version check (`HerdrFontTests/BundleVersionTests`, hosted in the app) reads
-`Herdr.app`'s own Info.plist, not the separate test runner bundle, against `project.yml`.
+The built-version check (in `settings-stack`) selects `Herdr.app`, not the separate UI test runner bundle.
 Focused `Class/method` selectors keep their XCTest selector intact but replace the
 slash with a hyphen in receipt filenames, so the boot log remains inside `TestReceipts`.
 Gram search regressions check matching results and older-page fetch counts, not prompt wording.
