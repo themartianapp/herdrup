@@ -980,6 +980,21 @@ Logging copies the relay's rule:
   session ids, device keys, host ids, IPs, user agents, request bodies or URLs.
 - Workers Logs, traces and Logpush are off in `wrangler.toml`.
 
+**Health and features (step 5).** `GET /v1/health` answers `{ok, version, features}`. The apps
+ship separately from the Worker, so an app offers a feature only when the live Worker lists it.
+The names are a stable contract:
+
+- `native_sign_in`, `devices`, `statements`, `sync` and `delete` are always listed.
+- `web_sign_in_apple` is listed when `APPLE_WEB_CLIENT_ID` is set.
+- `web_sign_in_google` is listed when both `GOOGLE_WEB_CLIENT_ID` and `GOOGLE_WEB_CLIENT_SECRET`
+  are set.
+- `apple_revoke` is listed when `APPLE_SIWA_P8` and `APPLE_KEY_ID` are set and the key parses,
+  checked by the same loader the revoke uses (§6.5).
+
+Each flag is a boolean fact about the configuration: health never returns a var's or secret's
+value. Health takes no rate limit and touches no D1 row. Parsing the key happens once per isolate
+(cached).
+
 ---
 
 ## 9. Phasing into PRs

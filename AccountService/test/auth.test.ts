@@ -103,11 +103,58 @@ describe("routing", () => {
   it("answers health, unknown paths and wrong methods", async () => {
     const health = await get("/v1/health");
     expect(health.status).toBe(200);
-    expect(await health.json()).toEqual({ ok: true, version: "0.5.0" });
+    expect(await health.json()).toEqual({ ok: true, version: "0.5.0", features: expect.any(Array) });
     expect((await get("/v1/nope")).status).toBe(404);
     const wrong = await get("/v1/auth/nonce");
     expect(wrong.status).toBe(405);
     expect(wrong.headers.get("Allow")).toBe("POST");
+  });
+
+  it("lists in health exactly the features the configuration allows, and no configured value", async () => {
+    const pair = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair;
+    const der = new Uint8Array((await crypto.subtle.exportKey("pkcs8", pair.privateKey)) as ArrayBuffer);
+    const base64 = btoa(String.fromCharCode(...der));
+    const pem = `-----BEGIN PRIVATE KEY-----\n${base64.match(/.{1,64}/g)?.join("\n")}\n-----END PRIVATE KEY-----\n`;
+    const config = env as unknown as Record<string, string | undefined>;
+    const names = ["APPLE_WEB_CLIENT_ID", "GOOGLE_WEB_CLIENT_ID", "GOOGLE_WEB_CLIENT_SECRET", "APPLE_SIWA_P8", "APPLE_KEY_ID"];
+    const saved = Object.fromEntries(names.map((name) => [name, config[name]]));
+    const ALWAYS = ["native_sign_in", "devices", "statements", "sync", "delete"];
+    const listed = async (values: Record<string, string | undefined>) => {
+      for (const name of names) config[name] = values[name];
+      const response = await get("/v1/health");
+      const text = await response.text();
+      // No value of any var or secret comes back, whatever is listed.
+      for (const value of Object.values(values)) if (value !== undefined && value.trim().length > 0) expect(text).not.toContain(value.trim().slice(0, 40));
+      expect(text).not.toContain(base64.slice(0, 40));
+      return (JSON.parse(text) as { features: string[] }).features;
+    };
+    try {
+      expect(await listed({})).toEqual(ALWAYS);
+      expect(await listed({ APPLE_WEB_CLIENT_ID: "com.example.web" })).toEqual([...ALWAYS, "web_sign_in_apple"]);
+      expect(await listed({ APPLE_WEB_CLIENT_ID: "  " })).toEqual(ALWAYS);
+      expect(await listed({ GOOGLE_WEB_CLIENT_ID: "web.apps.googleusercontent.com" })).toEqual(ALWAYS);
+      expect(await listed({ GOOGLE_WEB_CLIENT_SECRET: "GOCSPX-test-secret-value" })).toEqual(ALWAYS);
+      expect(await listed({ GOOGLE_WEB_CLIENT_ID: "web.apps.googleusercontent.com", GOOGLE_WEB_CLIENT_SECRET: "GOCSPX-test-secret-value" })).toEqual([
+        ...ALWAYS,
+        "web_sign_in_google",
+      ]);
+      expect(await listed({ APPLE_SIWA_P8: pem })).toEqual(ALWAYS);
+      expect(await listed({ APPLE_KEY_ID: "TESTKEY123" })).toEqual(ALWAYS);
+      expect(await listed({ APPLE_SIWA_P8: pem, APPLE_KEY_ID: "short" })).toEqual(ALWAYS);
+      expect(await listed({ APPLE_SIWA_P8: "-----BEGIN PRIVATE KEY-----\nbm90IGEga2V5\n-----END PRIVATE KEY-----", APPLE_KEY_ID: "TESTKEY123" })).toEqual(ALWAYS);
+      expect(await listed({ APPLE_SIWA_P8: pem, APPLE_KEY_ID: "TESTKEY123" })).toEqual([...ALWAYS, "apple_revoke"]);
+      expect(
+        await listed({
+          APPLE_WEB_CLIENT_ID: "com.example.web",
+          GOOGLE_WEB_CLIENT_ID: "web.apps.googleusercontent.com",
+          GOOGLE_WEB_CLIENT_SECRET: "GOCSPX-test-secret-value",
+          APPLE_SIWA_P8: pem,
+          APPLE_KEY_ID: "TESTKEY123",
+        }),
+      ).toEqual([...ALWAYS, "web_sign_in_apple", "web_sign_in_google", "apple_revoke"]);
+    } finally {
+      for (const name of names) config[name] = saved[name];
+    }
   });
 
   it("marks every answer no-store", async () => {

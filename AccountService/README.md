@@ -15,7 +15,7 @@ own deploys, so a bug or rollback here can't drop a guest session.
 
 | Call | Body | Answer |
 |---|---|---|
-| `GET /v1/health` | | `{ok, version}` |
+| `GET /v1/health` | | `{ok, version, features: [...]}` (below) |
 | `POST /v1/auth/nonce` | | `{nonce, expires_unix}`: valid 10 minutes, spent by one sign-in |
 | `POST /v1/auth/apple` | `{id_token, nonce, platform}` | `{account_id, created, access_token, access_expires_in, refresh_token, refresh_expires_in}` |
 | `POST /v1/auth/google` | same | same, plus `display_hint` (the Google email, for the device to show) |
@@ -39,6 +39,19 @@ own deploys, so a bug or rollback here can't drop a guest session.
 
 `platform` is one of `ios`, `ipados`, `macos`, `windows`, `linux`, `web`. Errors are
 `{"error": "<code>"}`; a refused ID token adds `reason` (`wrong_audience`, `expired`, …).
+
+**Features.** `GET /v1/health` lists what the live Worker can do. The apps ship separately, so
+they show a feature only when it is listed. The names are stable; a name is never reused for
+something else.
+
+| Feature | Listed when |
+|---|---|
+| `native_sign_in`, `devices`, `statements`, `sync`, `delete` | always (this build) |
+| `web_sign_in_apple` | `APPLE_WEB_CLIENT_ID` is set |
+| `web_sign_in_google` | `GOOGLE_WEB_CLIENT_ID` and `GOOGLE_WEB_CLIENT_SECRET` are both set |
+| `apple_revoke` | `APPLE_SIWA_P8` and `APPLE_KEY_ID` are both set and the key parses (the revoke's own loader); otherwise deletion answers `manual_revoke: true` for Apple |
+
+Each flag only says whether something is configured. No value of a var or secret is returned.
 
 **Sign-in.** The app gets a nonce, passes it unchanged to Apple (`ASAuthorizationAppleIDRequest.nonce`,
 no scopes) or Google (the `nonce` parameter, scopes `openid email`), and posts the ID token

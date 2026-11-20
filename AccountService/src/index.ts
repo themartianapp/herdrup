@@ -6,6 +6,7 @@
 // Log lines carry only endpoint and outcome (src/http.ts): never tokens, nonces, provider user
 // ids or their hashes, emails, account, session or device ids, device keys, host ids, IPs,
 // bodies or URLs.
+import { appleSigner } from "./apple";
 import { handleAccountDelete } from "./deletion";
 import { handleAppleNotification } from "./apple_notify";
 import { handleAccount, handleNonce, handleRefresh, handleSignIn, handleSignOut } from "./auth";
@@ -19,6 +20,22 @@ import { corsHeaders, preflight } from "./browser";
 import { handleAppleCallback, handleGoogleCallback, handleHandoff, handleWebStart } from "./web";
 
 export const VERSION = "0.5.0";
+
+/**
+ * What this Worker can do right now, for `GET /v1/health`: the apps ship separately, so they show
+ * a feature only when the live Worker lists it. The names are a stable contract (README "API").
+ * Each flag is a boolean fact about the configuration; no value of a var or secret is ever
+ * returned.
+ */
+export async function features(env: Env): Promise<string[]> {
+  const set = (value: string | undefined) => (value?.trim() ?? "").length > 0;
+  const list = ["native_sign_in", "devices", "statements", "sync", "delete"];
+  if (set(env.APPLE_WEB_CLIENT_ID)) list.push("web_sign_in_apple");
+  if (set(env.GOOGLE_WEB_CLIENT_ID) && set(env.GOOGLE_WEB_CLIENT_SECRET)) list.push("web_sign_in_google");
+  // The same loader the revoke uses: the key must be present and parse, with a valid Key ID.
+  if ((await appleSigner(env)) !== null) list.push("apple_revoke");
+  return list;
+}
 
 type RoutedEndpoint = Exclude<Endpoint, "cron">;
 
@@ -85,7 +102,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
   try {
     switch (route.endpoint) {
       case "/v1/health":
-        return json(200, { ok: true, version: VERSION });
+        return json(200, { ok: true, version: VERSION, features: await features(env) });
       case "/v1/auth/nonce":
         return await handleNonce(request, env, now);
       case "/v1/auth/apple":
