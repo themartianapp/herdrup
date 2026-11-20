@@ -5,6 +5,7 @@ declare namespace Cloudflare {
     ACCOUNT_LIMIT: RateLimit;
     STATEMENT_LIMIT: RateLimit;
     ENROL_LIMIT: RateLimit;
+    SYNC_WRITE_LIMIT: RateLimit;
     ACCOUNT_HMAC_KEY: string;
     APPLE_APP_CLIENT_ID: string;
     APPLE_WEB_CLIENT_ID: string;

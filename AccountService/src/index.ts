@@ -1,6 +1,7 @@
 // herdrup-accounts: HerdrUp's optional accounts (herdrup#698, epic #696). Sign-in with Apple or
 // Google and sessions (step 1); devices, bound by proof of possession of their guest key, and
-// the short-lived statements hosts check (step 2). Sync and account deletion follow.
+// the short-lived statements hosts check (step 2); sync of non-secret settings (step 3).
+// Account deletion follows.
 // Log lines carry only endpoint and outcome (src/http.ts): never tokens, nonces, provider user
 // ids or their hashes, emails, account, session or device ids, device keys, host ids, IPs,
 // bodies or URLs.
@@ -10,8 +11,9 @@ import { handleChallenge, handleDevice, handleEnrol, handleListDevices } from ".
 import type { Env } from "./env";
 import { errorResponse, json, log, type Endpoint } from "./http";
 import { handleJwks, handleStatements } from "./statements";
+import { handlePull, handlePush } from "./sync";
 
-export const VERSION = "0.2.0";
+export const VERSION = "0.3.0";
 
 type RoutedEndpoint = Exclude<Endpoint, "cron">;
 
@@ -31,6 +33,7 @@ const ROUTES: Record<string, Route> = {
   "/v1/devices/challenge": { methods: ["POST"], endpoint: "/v1/devices/challenge" },
   "/v1/devices": { methods: ["GET", "POST"], endpoint: "/v1/devices" },
   "/v1/statements": { methods: ["POST"], endpoint: "/v1/statements" },
+  "/v1/sync": { methods: ["GET", "POST"], endpoint: "/v1/sync" },
   "/.well-known/jwks.json": { methods: ["GET"], endpoint: "/.well-known/jwks.json" },
 };
 
@@ -69,6 +72,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         return await handleDevice(request, env, deviceId ?? "", now);
       case "/v1/statements":
         return await handleStatements(request, env, now);
+      case "/v1/sync":
+        return request.method === "GET" ? await handlePull(request, env, now) : await handlePush(request, env, now);
       case "/.well-known/jwks.json":
         return await handleJwks(env);
     }

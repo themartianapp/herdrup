@@ -110,7 +110,7 @@ AccountService/
 
 | Table | Columns (PK first) | Notes |
 |---|---|---|
-| `accounts` | `id` (22-char b64url of 16 random bytes), `created_ms`, `last_seen_day`, `sync_rev` | `last_seen_day` is written at most once a day |
+| `accounts` | `id` (22-char b64url of 16 random bytes), `created_ms`, `last_seen_day`, `sync_rev`, `sync_floor`, `sync_items`, `sync_bytes`, `sync_tombstones` | `last_seen_day` is written at most once a day; the `sync_*` counters are kept by triggers (§5.5, migration 0003) |
 | `identities` | `(provider, subject_hash)`, `account_id`, `created_ms` | `subject_hash = HMAC-SHA256(K_subject, provider‖sub)`; a raw `sub` is never stored |
 | `devices` | `id`, `account_id`, `device_pub` (32 B, UNIQUE), `name` (≤64), `platform` (enum), `created_ms`, `last_statement_day` | A device key belongs to at most one account |
 | `sessions` | `id`, `account_id`, `device_id` (nullable until enrolment), `access_hash`, `access_exp_ms`, `refresh_hash`, `refresh_exp_ms`, `platform`, `created_ms` | Token hashes are SHA-256 of 32 random bytes; one row is one session family (§2.5) |
@@ -119,7 +119,8 @@ AccountService/
 | `enrol_challenges` | `id`, `account_id`, `session_id`, `server_pkcs8`, `salt`, `exp_ms` | 60 s; bound to the session that asked; deleted when used |
 | `web_flows` | `state_hash`, `provider`, `nonce`, `pkce_verifier`, `client` (app\|web), `handoff_challenge`, `exp_ms` | 10 min |
 | `handoffs` | `code_hash`, `account_id`, `handoff_challenge`, `platform`, `display_hint`, `exp_ms` | 2 min, single use |
-| `sync_items` | `(account_id, collection, item_id)`, `rev`, `updated_ms`, `deleted`, `body` (JSON) | Index `(account_id, rev)` |
+| `sync_items` | `(account_id, collection, item_id)`, `rev`, `updated_ms`, `deleted`, `body` (JSON) | Unique index `(account_id, rev)` |
+| `sync_usage` | `(account_id, collection)`, `items` | Live items per collection, against its cap (§5.5) |
 
 Every table that holds account data has an `account_id` column. That makes deletion one batch
 (§6), and a test can sweep every table for leftovers.
@@ -516,7 +517,7 @@ because sign-in is a top-level navigation, not a form post.
 |---|---|---|---|
 | `hosts` | `SavedHost.id` (UUID) | `nickname` ≤64, `host` ≤253, `port` 1–65535, `username` ≤64, `auth_kind` (`key`\|`password`), `label` ≤64 | 200 items |
 | `prompts` | UUID | `title` ≤128, `text` ≤8 KB, `order` | 500 items |
-| `settings` | the settings key | `value`: bool, number or string ≤256, for **allowlisted keys only**, e.g. `terminal.fontSize`, `ui.fontScale`, `notify.*`, theme. Device-shaped keys such as `ui.sidebarWidth`, `hasSeenGesturesHelp` and `gram.setupCardDismissed` stay local. | 300 items |
+| `settings` | the settings key | `value`: bool, number or string ≤256, for **allowlisted keys only** (the list is in §5.5). Device-shaped keys such as `ui.sidebarWidth`, `hasSeenGesturesHelp` and `gram.setupCardDismissed` stay local. | 300 items |
 | `agent_prefs` | `<host item id>/<agent key>` | `pinned`, `hidden`, `order` | 1000 items |
 | `shares` (guest side, #700) | `<host_id>/<guest_id>` | `relay` URL, `host_id`, `node_pub` (public), `guest_id`, `agent_name`, `owner_name`, `machine_label`, `share_gram` | 500 items |
 
@@ -535,8 +536,8 @@ because sign-in is a top-level navigation, not a form post.
   does.
 - Limits: 16 KB per item; 2,000 items and 1 MB per account. A push carries at most 100 changes
   and 256 KB (`413 too_large`, `403 quota`).
-- `GET /v1/sync?since=<rev>` returns `{rev, changes[]}`, at most 500 per page. A client more than
-  90 days behind gets `410 reset_required`, and then does a full pull and merge.
+- `GET /v1/sync?since=<rev>` returns `{rev, changes[], more}`, at most 500 per page. A client more than
+  90 days behind gets `410 reset_required`, and then does a full pull and merge (§5.5 says exactly when).
 - `POST /v1/sync {changes: [{collection, id, base_rev?, deleted?, body?}]}` returns
   `{rev, applied[], conflicts[]}`.
 
@@ -577,6 +578,71 @@ Three things enforce this:
 3. A client test rejects any payload containing `-----BEGIN`, `ssh-` key blobs, or strings that
    look like 32-byte b64url secrets in a non-id field.
 
+### 5.5 Decided in step 3 (20 Nov)
+
+The design left these open; PR 3 (`src/sync.ts`, `migrations/0003_sync.sql`) settles them.
+
+**Synced settings keys.** Exactly these, each with its own check; any other key is `400`:
+
+| Key | Value |
+|---|---|
+| `terminal.fontSize`, `guest.terminal.fontSize`, `chat.fontSize` | number 6–72 |
+| `ui.fontScale` | number 0.5–3 |
+| `ui.theme` | `system`, `light` or `dark` (the apps have no theme switch yet; this reserves the key) |
+| `guest.ownerName` | string ≤64 code points, no control characters |
+| `notify.<name>` (`<name>` = a letter, then ≤47 letters or digits) | bool |
+
+`previews.javascript` stays local: it is a per-device safety switch, and syncing it would turn
+script on for a device that never chose it.
+
+**Field rules.** Strings are well-formed UTF-16 with no control characters (prompt `text` may
+hold tabs and line breaks), counted in code points (`text` in UTF-8 bytes):
+
+- `hosts`: `host` (required, no whitespace) and `username` (required, non-empty); `port` an integer.
+- `prompts`: `text` required and non-empty.
+- `order` (prompts, agent_prefs): any finite number within ±2^53, so a client can insert between two.
+- `shares`: `relay`, `host_id`, `node_pub` and `guest_id` are required. `host_id` and `guest_id` are
+  22-character b64url and must equal the two halves of the item id. `node_pub` is 43-character b64url.
+  `relay` is an `http(s)` URL of ≤256 characters with no credentials, query, fragment or `/i` path
+  segment, so an invite link can't be stored in it. `agent_name` and `machine_label` are ≤128,
+  `owner_name` ≤64.
+- Item ids: `hosts`, `prompts` and the host half of an `agent_prefs` id are **lowercase** UUIDs
+  (Swift clients send `uuidString.lowercased()`). The agent half is 1–128 code points.
+- The `16 KB` item limit applies to the re-serialised body (`413 too_large`).
+
+**Refusals.** A bad change refuses the whole push with
+`400 {"error":"invalid_item","index":<i>,"field":"<key>"}`, where `field` names the unknown or
+invalid key (`id`, `collection`, `body`, …). The same item twice in one push is `400` too. Other
+malformed bodies and query strings are `400 bad_request`.
+
+**One push, one transaction.** A push is one D1 batch. If it would pass a cap, it rolls back
+whole (`403 quota`). Its deletes run before its writes, so swapping one item for another at a cap
+works whatever order the client lists them in. The caps are `CHECK` constraints on counters
+that triggers keep (`accounts.sync_items`, `sync_bytes`, and `sync_usage.items` per collection),
+so two devices pushing at once can't pass them either. The 1 MB counts the stored bodies' UTF-8
+bytes.
+
+**Answers.** `applied[]` is `{collection, id, rev}`. A write identical to the stored item isn't
+written again and keeps its `rev`. Deleting an item the server doesn't hold writes nothing and
+reports `rev: 0`. `conflicts[]` is `{collection, id, server}`, where `server` is the stored item
+(perhaps a tombstone) or null. `base_rev: 0` means "create only". `base_rev` is compared with the
+stored revision, tombstones included.
+
+**Paging.** `since` defaults to 0. While `more` is true, `rev` is the last returned item's
+revision, and the client asks again from it.
+
+**When a reset is required.** This is decided by revision, not by the clock. Each account keeps
+`sync_floor`, the highest revision of any tombstone pruned so far. A cursor below the floor (other
+than 0) may have missed a delete, so it gets `410 reset_required`. A cursor past the account's
+`sync_rev` comes from another history (for example a restored database), so it gets the same
+answer. A device that is 90 days behind but missed no pruned delete still catches up normally.
+
+**Tombstones.** The hourly cron prunes tombstones older than 90 days (by the server's
+`updated_ms`). Each push also keeps only the newest 2,000 tombstones per account, so
+create-and-delete loops can't grow D1 without bound. Either way the floor rises.
+
+**Rate limits.** `SYNC_WRITE_LIMIT` (30/min) covers `POST` only. Pulls count against `ACCOUNT_LIMIT` alone.
+
 ---
 
 ## 6. Account deletion
@@ -600,7 +666,7 @@ code needed to revoke. Then:
    We never store Apple tokens. If the exchange or revoke fails, the deletion still goes ahead
    (TN3194), and the app shows Apple's manual path: Settings → Apple Account → Sign in with
    Apple → HerdrUp → Stop using.
-3. Delete everything in one `db.batch()`: `sync_items`, `sessions`, `devices`, `handoffs`,
+3. Delete everything in one `db.batch()`: `sync_items`, `sync_usage`, `sessions`, `devices`, `handoffs`,
    `enrol_challenges`, `identities`, `accounts`, matched on `account_id`.
 4. The app clears its Keychain account items and statement cache, and returns to signed out.
    Local copies of hosts and prompts stay on the device, as they did before sign-in. The
@@ -710,7 +776,7 @@ Logging copies the relay's rule:
 |---|---|---|---|
 | 1 | herdrup | **Worker skeleton + native auth** (built 19 Nov). `AccountService/`, migration 0001, `/v1/health`, nonce, Apple/Google ID-token sign-in, sessions (refresh, rotation, reuse revokes the family, sign-out), `/v1/account`, rate limits, logging rules, hourly cleanup, README with deploy/rollback like GuestRelay's, CI job "Account service (Linux)". | `@cloudflare/vitest-plugin` in workerd with a local D1; test-generated RSA keys served by a fetch spy at the real JWKS URLs; per-key counter rate limits (no clock windows). Cases: good tokens (both Apple audiences, both Google clients); wrong `iss`/`aud`/`azp`; expired / future / too-old `iat`; `alg: none`/HS256/`crit`; unknown `kid`; bad signature; nonce mismatch, forgery, expiry, reuse; refresh rotation, reuse revokes, racing refreshes; per-IP and per-account limits; no stored sub/email/token; logs hold only endpoint and outcome; JWKS cache timing with an explicit clock. |
 | 2 | herdrup | **Devices + statements** (built 20 Nov). Challenge/enrol, device list/rename/remove, `/v1/statements`, `/.well-known/jwks.json`, two-slot rotation vars, migration `0002_devices.sql`, `STATEMENT_LIMIT` and `ENROL_LIMIT`. | X25519 PoP vectors in `AccountService/test/vectors/enrol-v1.json` (made with Node's crypto, RFC 7748 key pairs), shared with the iOS, Go and TS clients; low-order points rejected; 409 for another account; one device per session; device cap; removal stops statements; pairwise `sub` stable per host, different across hosts and accounts; golden `statement-v1.json` (RFC 8032 test key) that herdr's tests reuse; JWKS during rotation and after a revocation. |
-| 3 | herdrup | **Sync.** `GET`/`POST /v1/sync`, schemas per collection, caps, tombstones, `reset_required`. | Ordering and last-writer-wins; per-key settings don't clobber; `base_rev` conflict; unknown field → 400; caps → 413/403; tombstone pruning; full-reset path. |
+| 3 | herdrup | **Sync** (built 20 Nov). `GET`/`POST /v1/sync`, schemas per collection, caps, tombstones, `reset_required`, migration `0003_sync.sql`, `SYNC_WRITE_LIMIT`; open points settled in §5.5. | Ordering and last-writer-wins; per-key settings don't clobber; `base_rev` conflict; unknown field → 400; caps → 413/403; tombstone pruning; full-reset path. |
 | 4 | herdrup | **Deletion + Apple revoke + notifications.** `/v1/account/delete`, client secret signed in the Worker from `APPLE_SIWA_P8`, `/v1/apple/notifications`. | Table sweep: no row with the `account_id` remains in any table; client-secret JWT claims and ES256 signature checked against a generated P-256 key; revoke called with the client_id matching the token `aud`; revoke failure still deletes and returns `manual_revoke: true`; notification JWS verify (bad sig, wrong `aud`); `consent-revoked` deletes. |
 | 5 | herdrup + herdrup-desktop | **Web sign-in flow + sign-in UI (1B) + sync client (#699).** Worker: `/v1/auth/web/start`, the Apple `form_post` and Google callbacks, handoff with PKCE, the web refresh cookie and CORS for `guest.herdrup.app` (moved here from PR1, next to their only clients). Apps: HerdrKit `AccountClient`, `AccountSession` (Keychain), `DeviceEnroller`, `StatementCache`, `SyncEngine` (Linux-testable, protocols like `GuestKeyStore`); onboarding 1B with Apple + Google; account screen (devices, sign-out, delete); desktop `internal/account` + `herdrup://account#`; web guest sign-in. | Worker: web `state` reuse, handoff without/with wrong verifier, CORS only for `guest.herdrup.app`, cookie flags. HerdrKit unit tests with URLProtocol stubs (single-flight refresh, 401 → re-auth, PoP vector); sync merge tests; encoder test that payloads hold no secret patterns; UI test for 1B with a mock server; Go tests for the handoff and Secrets fallback; web guest vitest for the cookie flow. |
 | 6 | jerryfane/herdr (#440) | **Account-bound shares on the host.** Statement verify (ring Ed25519), JWKS cache, `GuestRecord.account`/`devices`, hello `account`, in-band refresh, `guest.revoke {person}`, `guest.remove_device`, `acct:1` in invites, config switch. | Golden statements from PR 2; expired / wrong `aud` / wrong `dev` / unknown `kid` → refetch / stale-JWKS grace; plain shares unchanged (old `guests.json` loads); account-bound device without statement refused; new device added + audit; removed device refused with a valid statement; revoke by person closes live sessions; session closed at the statement deadline. |

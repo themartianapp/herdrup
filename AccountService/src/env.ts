@@ -4,6 +4,7 @@ export interface Env {
   ACCOUNT_LIMIT?: RateLimit;
   STATEMENT_LIMIT?: RateLimit;
   ENROL_LIMIT?: RateLimit;
+  SYNC_WRITE_LIMIT?: RateLimit;
   /** 32 random bytes, standard base64 (wrangler secret). See src/keys.ts. */
   ACCOUNT_HMAC_KEY?: string;
   APPLE_APP_CLIENT_ID?: string;
