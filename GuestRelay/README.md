@@ -119,7 +119,7 @@ isn't an upgrade still gets 426, and the host endpoint keeps its HTTP errors.
 | 400 | `bad_request` | Invite `PUT`/`DELETE`. `X-Herdr-Host` isn't a `host_id`, or the `PUT` body is under 29 bytes (nonce, one byte, tag). |
 | 400 | `bad_expiry` | Invite `PUT`. `X-Herdr-Expires` isn't whole unix seconds in the future and at most 30 days away. |
 | 413 | `too_large` | Invite `PUT`. The body is over 2048 bytes. |
-| 409 | `exists` | Invite `PUT`. A live blob already holds this `id`, whichever host stored it. |
+| 409 | `exists` | Invite `PUT`. A live blob already holds this `id`, from another host or with other bytes. The same host sending the same bytes again gets 201 (see [Short invites](#short-invites)). |
 | 429 | `too_many_invites` | Invite `PUT`. The host already has 200 live short invites. |
 | 403 | `forbidden` | Invite `DELETE`. Another host stored this blob. |
 
@@ -188,8 +188,11 @@ key (16 random bytes). Any other `/i/<payload>` is a long v1 link, which stays v
 - **Store:** the host daemon `PUT`s the blob with its expiry. The blob's Durable Object
   keeps the blob, the owning `host_id` and the expiry, and sets an alarm that deletes all
   three at expiry. A blob past its expiry is already gone to `GET` before the alarm runs.
+- **Retry:** a `PUT` of the same bytes again from the host that stored them, as the daemon
+  sends after a slow first `PUT`, gets 201 and changes nothing (the first expiry stands).
+  Any other `PUT` to a live `id` gets 409 `exists`.
 - **Cap:** the host's own Durable Object keeps the ids and expiries of its live invites
-  and refuses a 201st with 429 `too_many_invites`.
+  and refuses a 201st with 429 `too_many_invites`. A retry takes no second slot.
 - **Delete:** the daemon deletes the blob when the invite is revoked or redeemed. Another
   host gets 403 `forbidden`.
 - **Open:** the landing page fetches `GET /v1/invite/<id>` from its own origin (never

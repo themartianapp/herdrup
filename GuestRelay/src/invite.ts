@@ -110,9 +110,14 @@ interface StoredInvite {
  * already authenticated the host.
  */
 export class InviteBlob extends DurableObject<Env> {
-  /** Stores the blob unless a live one already holds this id. */
+  /**
+   * Stores the blob unless a live one already holds this id. The same host storing the
+   * same bytes again, as a daemon retrying a slow PUT does, succeeds and changes nothing:
+   * the stored expiry stands. Any other host, or other bytes, is refused.
+   */
   async store(hostId: string, expiresUnix: number, blob: ArrayBuffer): Promise<boolean> {
-    if ((await this.current()) !== null) return false;
+    const live = await this.current();
+    if (live !== null) return live.host === hostId && sameBytes(live.blob, blob);
     await this.ctx.storage.put<StoredInvite[keyof StoredInvite]>({ blob, host: hostId, expires: expiresUnix });
     await this.ctx.storage.setAlarm(expiresUnix * 1000);
     return true;
@@ -153,4 +158,11 @@ export class InviteBlob extends DurableObject<Env> {
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
   }
+}
+
+function sameBytes(a: ArrayBuffer, b: ArrayBuffer): boolean {
+  if (a.byteLength !== b.byteLength) return false;
+  const x = new Uint8Array(a);
+  const y = new Uint8Array(b);
+  return x.every((byte, i) => byte === y[i]);
 }
