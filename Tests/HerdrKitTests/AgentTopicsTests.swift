@@ -59,12 +59,17 @@ final class AgentTopicsTests: XCTestCase {
             }
             XCTAssertFalse(transport.requests.contains { $0.method == "agent.transcript" },
                            "refused before sending")
+            let pages = await client.advertisesTopicTranscripts()
+            XCTAssertFalse(pages, "the page shows topic conversations as unavailable for good")
             _ = try await client.agentTopicsList(target: "w1:p1")
             XCTAssertEqual(transport.requests.last?.method, "agent.topics.list", "agent_topics still gates topics calls")
         }
         let both = RecordingTransport { method, _ in method == "ping" ? Self.pongWithTopics : Self.emptyPage }
-        _ = try await HerdrClient(transport: both).agentTranscript(target: "w1:p1", topic: "t1")
+        let bothClient = HerdrClient(transport: both)
+        _ = try await bothClient.agentTranscript(target: "w1:p1", topic: "t1")
         XCTAssertEqual(try both.last().params["topic"] as? String, "t1", "both advertised: the topic is sent")
+        let pages = await bothClient.advertisesTopicTranscripts()
+        XCTAssertTrue(pages)
     }
 
     // MARK: Discovery schedule (#758)

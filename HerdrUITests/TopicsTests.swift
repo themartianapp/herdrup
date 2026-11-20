@@ -355,4 +355,25 @@ final class TopicsTests: XCTestCase {
                        "and no conversation drawn from the Inbox instead")
         attach(app, "topics-transcript-unavailable")
     }
+
+    // MARK: Post-merge review of #768
+
+    /// #775: on a capable server a topic whose session is still starting answers its first
+    /// transcript calls with `transcript_unsupported`. That is passing: the chat stays mounted,
+    /// keeps polling (1 s, 2 s, …) and shows the conversation once the server answers, without
+    /// leaving and reopening the topic, and never shows the permanent unavailable state.
+    func testATransientTranscriptRefusalRecoversInPlace() {
+        let app = launch("chatview", ["HERDR_MOCK_TOPICS_TRANSCRIPT_STARTUP": "2"])
+        openHerdrApp(app)
+        _ = openTopics(app)
+        let diokan = row("t-diokan", in: app)
+        XCTAssertTrue(diokan.exists(within: 8))
+        diokan.tap()
+        XCTAssertTrue(topicChatOpen("Diokan term sheet", in: app))
+        XCTAssertFalse(app.staticTexts["topic-chat-unavailable"].exists, "a passing refusal is not the permanent state")
+        XCTAssertTrue(app.staticTexts["Draft the term sheet comparison for Diokan."].firstMatch.exists(within: 15),
+                      "the conversation appears once the server answers")
+        XCTAssertTrue(app.textViews["topic-composer-input"].exists, "and the composer is there")
+        XCTAssertFalse(app.staticTexts["topic-chat-unavailable"].exists)
+    }
 }

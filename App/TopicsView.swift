@@ -21,6 +21,9 @@ final class TopicsModel: ObservableObject {
     @Published private(set) var loaded = false
     /// The agent answered `agent.topics.list` this session: the page offers Topics.
     @Published private(set) var offered = false
+    /// The server pages a topic's conversation (`agent_transcript_topic`); nil until known.
+    /// False is for good: no topic chat can be shown on this server (herdrup#766, #775).
+    @Published private(set) var topicTranscripts: Bool?
     /// The agent will not offer topics for this page's life (`topics_unsupported`, no
     /// `agent_topics`, the agent is gone): discovery stopped for good.
     private(set) var refused = false
@@ -140,6 +143,8 @@ final class TopicsModel: ObservableObject {
             let ordered = list.ordered
             if ordered != topics { topics = ordered }
             if !offered { offered = true }
+            let pages = await client.advertisesTopicTranscripts()
+            if topicTranscripts != pages { topicTranscripts = pages }
             refused = false
             lastListError = nil
             if problem != nil { problem = nil }
@@ -760,10 +765,12 @@ private struct TopicChat: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            // The server lists topics but cannot page a topic's conversation (`agent_topics`
-            // without `agent_transcript_topic`, or it refused the transcript): say so, and offer
-            // no composer that could not show what it sent (herdrup#766).
-            if chat.unsupported {
+            // The server lists topics but cannot page a topic's conversation (no
+            // `agent_transcript_topic`): say so, and offer no composer that could not show what
+            // it sent (herdrup#766). Decided by the capability, which does not change, not by the
+            // chat's latest answer: a `transcript_unsupported` while the agent or its session
+            // starts is passing, and the mounted chat keeps following and recovers (#775).
+            if model.topicTranscripts == false {
                 unavailable
             } else {
                 ChatView(client: client, model: chat, viewer: viewer, eventsPaneID: eventsPaneID,

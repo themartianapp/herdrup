@@ -2147,6 +2147,12 @@ public actor HerdrClient {
         await supports(\.agentTopics)
     }
 
+    /// The server pages a topic's conversation (`agent_transcript_topic`): without it every
+    /// topic transcript is refused before sending, for good. From the capability cache.
+    public func advertisesTopicTranscripts() async -> Bool {
+        await supports(\.agentTranscriptTopic)
+    }
+
     /// Every `agent.topics.*` call: refused before sending on a server without `agent_topics`,
     /// and its refusals typed (`AgentTopicsError`).
     private func topicsCall<P: Encodable, R: Decodable>(
