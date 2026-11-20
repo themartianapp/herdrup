@@ -41,7 +41,8 @@ esac
 TYPES=com.apple.CoreSimulator.SimDeviceType
 RUNTIMES=(com.apple.CoreSimulator.SimRuntime.iOS-27-0 com.apple.CoreSimulator.SimRuntime.iOS-27-1)
 DERIVED_DATA=$(cd "$MACSERVE_APP_DIR/../../.." && pwd) || exit 1
-TIMEOUT_BIN=$(command -v timeout || command -v gtimeout || echo Tools/ci/timeout.py)
+# shellcheck source=Tools/ci/timeout-bin.sh
+. Tools/ci/timeout-bin.sh
 mkdir -p TestReceipts "$MACSERVE_OUTPUT"
 
 created=()

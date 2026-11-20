@@ -32,6 +32,13 @@ def gone(pid):
         return True
 
 
+def pick_timeout_bin(path=None):
+    """The TIMEOUT_BIN that Tools/ci/timeout-bin.sh sets, with PATH (default: this one)."""
+    env = dict(os.environ) if path is None else dict(os.environ, PATH=path)
+    return subprocess.run(["bash", "-c", '. "$1"; printf %s "$TIMEOUT_BIN"', "_", str(HERE / "timeout-bin.sh")],
+                          env=env, capture_output=True, text=True, check=True).stdout
+
+
 def bundle(cases):
     """xcresulttool-shaped tree: one UI test bundle, suites holding (class, method, result, messages)."""
     suites = {}
@@ -436,10 +443,13 @@ exit "$status"
         return result.returncode, result.stdout + result.stderr, elapsed, not gone(pid)
 
     def timeouts(self):
+        """timeout.py, and the one Tools/ci/timeout-bin.sh picks on this host when it is
+        another: GNU timeout where installed (on ubuntu-latest, uutils' /usr/bin/timeout is
+        refused and timeout.py picked, so it runs once)."""
+        picked = pick_timeout_bin()
         yield str(HERE / "timeout.py")
-        gnu = shutil.which("timeout")
-        if gnu:
-            yield gnu
+        if picked != str(HERE / "timeout.py"):
+            yield picked
 
     def test_three_accessibility_timeouts_in_a_row_stop_the_round(self):
         lines = self.case("testAvatars") + [
@@ -511,6 +521,48 @@ exit "$status"
         self.assertNotIn("accessibility watcher failed", out)
         self.assertIn("round status 0 result passed", out)
         self.assertIn("testEmpty]' passed", out)
+
+
+class TimeoutBinTests(unittest.TestCase):
+    """Tools/ci/timeout-bin.sh: GNU coreutils' timeout or timeout.py, never another one.
+    #748's CI on ubuntu-latest (Ubuntu 26.04) ran uutils' /usr/bin/timeout 0.10.0: started
+    from the round's background job, its command ignored the SIGINT it passed on, so a round
+    stopped by the accessibility watcher ran on until the 60 s KILL (61.3 s, not ~1.5 s)."""
+
+    def path_with(self, **versions):
+        """A PATH of fake timeout binaries printing VERSION (name -> first --version line),
+        plus the system's bash essentials."""
+        bin_dir = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+        for name, version in versions.items():
+            fake = bin_dir / name
+            fake.write_text("#!/bin/sh\necho '%s'\n" % version)
+            fake.chmod(0o755)
+        return "%s:%s" % (bin_dir, os.environ["PATH"]), bin_dir
+
+    def test_gnu_timeout_is_used(self):
+        path, bin_dir = self.path_with(timeout="timeout (GNU coreutils) 9.7")
+        self.assertEqual(pick_timeout_bin(path), str(bin_dir / "timeout"))
+
+    def test_homebrew_gtimeout_is_used_after_a_refused_timeout(self):
+        path, bin_dir = self.path_with(timeout="timeout (uutils coreutils) 0.10.0",
+                                       gtimeout="timeout (GNU coreutils) 9.8")
+        self.assertEqual(pick_timeout_bin(path), str(bin_dir / "gtimeout"))
+
+    def test_any_other_timeout_falls_back_to_timeout_py(self):
+        for version in ("timeout (uutils coreutils) 0.10.0", "busybox timeout", ""):
+            with self.subTest(version):
+                path, _ = self.path_with(timeout=version)
+                if shutil.which("gtimeout"):
+                    self.skipTest("a real gtimeout on PATH would be picked")
+                self.assertEqual(pick_timeout_bin(path), str(HERE / "timeout.py"))
+
+    def test_uutils_timeout_is_refused_where_installed(self):
+        # The runner's own /usr/bin/timeout, when it is uutils' (ubuntu-latest).
+        system = shutil.which("timeout")
+        version = subprocess.run([system, "--version"], capture_output=True, text=True).stdout if system else ""
+        if "uutils" not in version:
+            self.skipTest("no uutils timeout on this host")
+        self.assertNotEqual(pick_timeout_bin(), system)
 
 
 class SimStateTests(unittest.TestCase):

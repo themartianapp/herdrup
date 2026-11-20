@@ -248,7 +248,8 @@ tier, which still gates the merge.
 **Running a shard on any Mac.** [`Tools/ci/ui-shard.sh`](../Tools/ci/ui-shard.sh) runs the
 same shards round by round, with measured per-round budgets, an infrastructure-only rerun,
 one retry of a failed round's failed tests, and receipts in `TestReceipts/` (it needs no
-Homebrew: `xcbeautify` and GNU `timeout` are used when present):
+Homebrew: `xcbeautify` and GNU `timeout` are used when present; any other `timeout`, such as
+uutils', is refused for `Tools/ci/timeout.py` by `Tools/ci/timeout-bin.sh`):
 
 ```bash
 xcodegen generate

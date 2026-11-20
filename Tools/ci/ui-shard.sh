@@ -42,9 +42,9 @@ XCRESULT_TESTS="$(dirname "$SIM_STATE")/xcresult-tests.py"
 mkdir -p TestReceipts
 SIM_TMP=$(mktemp -d)
 
-# GNU timeout from coreutils where installed; otherwise Tools/ci/timeout.py, the same
-# options in Python (macOS has no `timeout`, and macserve's job PATH has no Homebrew).
-TIMEOUT_BIN=$(command -v timeout || command -v gtimeout || echo "$(dirname "$SIM_STATE")/timeout.py")
+# GNU timeout, or Tools/ci/timeout.py, never another `timeout` (timeout-bin.sh says why).
+# shellcheck source=Tools/ci/timeout-bin.sh
+. "$(dirname "$SIM_STATE")/timeout-bin.sh"
 
 # xcbeautify where installed, for a readable console; the raw log is always tee'd first.
 beautify() {
