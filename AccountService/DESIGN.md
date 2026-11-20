@@ -536,8 +536,9 @@ because sign-in is a top-level navigation, not a form post.
   does.
 - Limits: 16 KB per item; 2,000 items and 1 MB per account. A push carries at most 100 changes
   and 256 KB (`413 too_large`, `403 quota`).
-- `GET /v1/sync?since=<rev>` returns `{rev, changes[], more}`, at most 500 per page. A client more than
-  90 days behind gets `410 reset_required`, and then does a full pull and merge (§5.5 says exactly when).
+- `GET /v1/sync?since=<rev>` returns `{rev, changes[], more, cursor?}`, at most 500 per page; the next
+  page is `GET /v1/sync?cursor=<cursor>`. A client more than 90 days behind gets `410 reset_required`,
+  and then does a full pull and merge (§5.5 says exactly when).
 - `POST /v1/sync {changes: [{collection, id, base_rev?, deleted?, body?}]}` returns
   `{rev, applied[], conflicts[]}`.
 
@@ -603,8 +604,11 @@ hold tabs and line breaks), counted in code points (`text` in UTF-8 bytes):
 - `order` (prompts, agent_prefs): any finite number within ±2^53, so a client can insert between two.
 - `shares`: `relay`, `host_id`, `node_pub` and `guest_id` are required. `host_id` and `guest_id` are
   22-character b64url and must equal the two halves of the item id. `node_pub` is 43-character b64url.
-  `relay` is an `http(s)` URL of ≤256 characters with no credentials, query, fragment or `/i` path
-  segment, so an invite link can't be stored in it. `agent_name` and `machine_label` are ≤128,
+  `relay` is an `http(s)` URL of ≤256 characters with no credentials, query, fragment, or path
+  segment that is (or percent-decodes to) `i`, so an invite link can't be stored in it. The server
+  stores only its canonical form, origin plus path without a trailing slash, so dot segments
+  (`/i/<id>/../..`) can't carry an invite path past the check. `@` in the path is allowed.
+  `agent_name` and `machine_label` are ≤128,
   `owner_name` ≤64.
 - Item ids: `hosts`, `prompts` and the host half of an `agent_prefs` id are **lowercase** UUIDs
   (Swift clients send `uuidString.lowercased()`). The agent half is 1–128 code points.
@@ -630,14 +634,36 @@ reports `rev: 0`. `conflicts[]` is `{collection, id, server}`, where `server` is
 (perhaps a tombstone) or null. `base_rev: 0` means "create only". `base_rev` is compared with the
 stored revision, tombstones included.
 
-**Paging.** `since` defaults to 0. While `more` is true, `rev` is the last returned item's
-revision, and the client asks again from it.
+**Paging.** `since` defaults to 0, and `since=0` is a full pull. When `more` is true, the answer
+also carries `cursor`. The client sends it back unchanged (`?cursor=<cursor>`) for the next page,
+and stores the last page's `rev` as its next `since`. A cursor is `<position>.<base>`:
+
+- `position` is the last revision sent.
+- `base` is the revision up to which the caller's copy is known complete. That is `since` for an
+  incremental pull, and for a full pull the account's `sync_rev` when the pull began.
 
 **When a reset is required.** This is decided by revision, not by the clock. Each account keeps
-`sync_floor`, the highest revision of any tombstone pruned so far. A cursor below the floor (other
-than 0) may have missed a delete, so it gets `410 reset_required`. A cursor past the account's
-`sync_rev` comes from another history (for example a restored database), so it gets the same
-answer. A device that is 90 days behind but missed no pruned delete still catches up normally.
+`sync_floor`, the highest revision of any tombstone pruned so far. A pull is refused with
+`410 reset_required` in two cases:
+
+- `max(position, base) < sync_floor`, or
+- either value is past `sync_rev`, which means another history, for example a restored database.
+
+Why this is safe: a tombstone the caller could still need has a revision above
+`max(position, base)`. Either the caller hasn't paged past it yet, or it was written during a full
+pull to delete an item already sent. Pruning such a tombstone lifts the floor to its revision or
+above, so the caller is refused instead of missing the delete. This has three consequences:
+
+- A plain `since=N` below the floor is refused, because `base = N`.
+- A full pull pages past a floor that already existed when it began, however many pages it takes
+  (PR 3 review, P1: 600 live items plus a newer pruned tombstone).
+- A full pull is refused partway only when a prune during it could hide the delete of an item it
+  already sent.
+
+A full pull doesn't list tombstones that were pruned while it ran. That is why a full pull is a
+replace: the client drops every local item the pull didn't list as live. Writes that land during
+a full pull get revisions above `position`, so later pages deliver them. A device that is 90 days
+behind but missed no pruned delete still catches up normally.
 
 **Tombstones.** The hourly cron prunes tombstones older than 90 days (by the server's
 `updated_ms`). Each push also keeps only the newest 2,000 tombstones per account, so

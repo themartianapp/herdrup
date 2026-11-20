@@ -63,6 +63,7 @@ interface PullResult {
   rev: number;
   changes: Item[];
   more: boolean;
+  cursor?: string;
 }
 
 interface ChangeIn {
@@ -79,22 +80,50 @@ async function push(session: Session, changes: ChangeIn[]): Promise<PushResult> 
   return response.json<PushResult>();
 }
 
-async function pull(session: Session, since?: number): Promise<PullResult> {
-  const response = await call("GET", since === undefined ? "/v1/sync" : `/v1/sync?since=${since}`, session);
+/** A pull from `since` (a revision), or the continuation `cursor` (a string) of an earlier page. */
+async function pull(session: Session, from?: number | string): Promise<PullResult> {
+  const query = from === undefined ? "" : typeof from === "number" ? `?since=${from}` : `?cursor=${from}`;
+  const response = await call("GET", `/v1/sync${query}`, session);
   expect(response.status).toBe(200);
   return response.json<PullResult>();
 }
 
-/** Every page from `since`, as a client catches up. */
+/** Every page from `since`, following each page's cursor, as a client catches up. */
 async function pullAll(session: Session, since = 0): Promise<{ rev: number; changes: Item[]; pages: number }> {
   const changes: Item[] = [];
-  let cursor = since;
+  let page = await pull(session, since);
   for (let pages = 1; ; pages++) {
-    const page = await pull(session, cursor);
     changes.push(...page.changes);
-    cursor = page.rev;
-    if (!page.more) return { rev: cursor, changes, pages };
+    if (!page.more) return { rev: page.rev, changes, pages };
+    expect(page.cursor).toEqual(expect.any(String));
+    page = await pull(session, page.cursor);
   }
+}
+
+/** `count` live agent prefs at revisions 1…count of a new account, in 100-change pushes; their ids by revision. */
+async function seedLive(session: Session, count: number): Promise<string[]> {
+  const hostId = uuid();
+  const ids = Array.from({ length: count }, (_, i) => `${hostId}/agent-${i}`);
+  for (let start = 0; start < count; start += MAX_CHANGES) {
+    await push(session, ids.slice(start, start + MAX_CHANGES).map((id) => ({ collection: "agent_prefs", id, body: { pinned: true } })));
+  }
+  return ids;
+}
+
+/** Ages every tombstone of the account past 90 days and runs the hourly cron, which prunes them. */
+async function pruneAllTombstones(accountId: string): Promise<void> {
+  await env.DB.prepare("UPDATE sync_items SET updated_ms = ? WHERE account_id = ? AND deleted = 1").bind(Date.now() - 91 * DAY_MS, accountId).run();
+  await cleanup(env.DB, Date.now());
+}
+
+/** A client's copy after applying `changes` in order: live items by id, deletes dropped. */
+function replay(changes: Item[]): Map<string, unknown> {
+  const copy = new Map<string, unknown>();
+  for (const item of changes) {
+    if (item.deleted) copy.delete(item.id);
+    else copy.set(item.id, item.body);
+  }
+  return copy;
 }
 
 const host = (fields: Record<string, unknown> = {}) => ({ host: "mac.local", username: "luca", ...fields });
@@ -222,10 +251,10 @@ describe("push and pull", () => {
     }
     const first = await pull(session, 0);
     expect(first.changes).toHaveLength(PAGE_SIZE);
-    expect(first).toMatchObject({ rev: PAGE_SIZE, more: true });
-    const second = await pull(session, first.rev);
+    expect(first).toMatchObject({ rev: PAGE_SIZE, more: true, cursor: `${PAGE_SIZE}.600` });
+    const second = await pull(session, first.cursor);
     expect(second.changes.map((item) => item.rev)).toEqual(Array.from({ length: 100 }, (_, i) => PAGE_SIZE + 1 + i));
-    expect(second).toMatchObject({ rev: 600, more: false });
+    expect(second).toEqual({ rev: 600, changes: expect.any(Array), more: false });
   });
 });
 
@@ -375,6 +404,9 @@ describe("schemas (allowlist)", () => {
       [{ collection: "shares", id: shareId, body: { ...share, relay: "https://guest.herdrup.app/i/abcdefghijklmnop0123456789abcdef" } }, "relay"],
       [{ collection: "shares", id: shareId, body: { ...share, relay: "https://guest.herdrup.app/i#payload" } }, "relay"],
       [{ collection: "shares", id: shareId, body: { ...share, relay: "https://user:pw@guest.herdrup.app" } }, "relay"],
+      [{ collection: "shares", id: shareId, body: { ...share, relay: "https://user@guest.herdrup.app" } }, "relay"],
+      [{ collection: "shares", id: shareId, body: { ...share, relay: "https://guest.herdrup.app/%69/abcdefghijklmnop" } }, "relay"],
+      [{ collection: "shares", id: shareId, body: { ...share, relay: "https://guest.herdrup.app/%zz" } }, "relay"],
       [{ collection: "shares", id: shareId, body: { ...share, relay: "herdrup://guest-invite" } }, "relay"],
       [{ collection: "shares", id: shareId, body: { ...share, share_gram: "true" } }, "share_gram"],
       [{ collection: "hosts", id: uuid(), base_rev: -1, body: host() }, "base_rev"],
@@ -396,6 +428,25 @@ describe("schemas (allowlist)", () => {
     ).toHaveLength(3);
   });
 
+  it("stores a relay URL in its canonical form only, so dot segments can't carry an invite path in", async () => {
+    const session = await newSession();
+    const shareWith = (relay: string): ChangeIn => {
+      const [hostId, guestId] = [randomB64url(16), randomB64url(16)];
+      return { collection: "shares", id: `${hostId}/${guestId}`, body: { relay, host_id: hostId, node_pub: "n".repeat(43), guest_id: guestId } };
+    };
+    const cases: [string, string][] = [
+      ["https://guest.herdrup.app/i/abcdefghijklmnop0123456789abcdef/../..", "https://guest.herdrup.app"],
+      ["https://guest.herdrup.app/relay/./i/x/../..", "https://guest.herdrup.app/relay"],
+      ["https://relay.example/@team", "https://relay.example/@team"],
+      ["https://Guest.Herdrup.App:443/relay/", "https://guest.herdrup.app/relay"],
+      ["http://localhost:8787", "http://localhost:8787"],
+    ];
+    const changes = cases.map(([relay]) => shareWith(relay));
+    expect((await push(session, changes)).applied).toHaveLength(cases.length);
+    const stored = new Map((await pull(session)).changes.map((item) => [item.id, item.body?.relay]));
+    expect(changes.map((change) => stored.get(change.id))).toEqual(cases.map(([, canonical]) => canonical));
+  });
+
   it("refuses the whole push when one change is invalid, and says which", async () => {
     const session = await newSession();
     const response = await call("POST", "/v1/sync", session, { changes: [setting("ui.fontScale", 1.1), { collection: "hosts", id: uuid(), body: host({ password: "x" }) }] });
@@ -414,7 +465,20 @@ describe("schemas (allowlist)", () => {
     for (const body of ["not json", "[]", { changes: [] }, { changes: {} }, {}]) {
       expect(await rejection(await call("POST", "/v1/sync", session, body))).toEqual({ status: 400, error: "bad_request" });
     }
-    for (const query of ["?since=-1", "?since=abc", "?since=01", "?since=1.5", "?since=1&since=2", "?since=1&x=1", "?since=1234567890123456"]) {
+    for (const query of [
+      "?since=-1",
+      "?since=abc",
+      "?since=01",
+      "?since=1.5",
+      "?since=1&since=2",
+      "?since=1&x=1",
+      "?since=1234567890123456",
+      "?cursor=5",
+      "?cursor=5.x",
+      "?cursor=5.5.5",
+      "?cursor=5.5&since=5",
+      "?cursor=5.5&cursor=5.5",
+    ]) {
       expect(await rejection(await call("GET", `/v1/sync${query}`, session))).toEqual({ status: 400, error: "bad_request" });
     }
   });
@@ -516,10 +580,83 @@ describe("full reset", () => {
     expect((await pull(mac, full.rev)).changes).toEqual([]);
   });
 
+  it("completes a full pull past a floor that was there before it began; a stale incremental cursor still gets 410", async () => {
+    const session = await newSession();
+    await seedLive(session, 600); // revs 1–600
+    const gone = uuid();
+    await push(session, [{ collection: "prompts", id: gone, body: { text: "bye" } }]); // rev 601
+    await push(session, [{ collection: "prompts", id: gone, deleted: true }]); // rev 602
+    await pruneAllTombstones(session.accountId);
+    expect(await accountCounters(session.accountId)).toMatchObject({ sync_rev: 602, sync_floor: 602 });
+
+    const full = await pullAll(session, 0);
+    expect(full.pages).toBe(2);
+    expect(full.rev).toBe(602);
+    expect(full.changes).toHaveLength(600);
+    expect(full.changes.every((item) => !item.deleted)).toBe(true);
+    // An incremental cursor that stopped at 500 may have missed the pruned delete.
+    expect(await rejection(await call("GET", "/v1/sync?since=500", session))).toEqual({ status: 410, error: "reset_required" });
+    expect(await rejection(await call("GET", "/v1/sync?cursor=500.500", session))).toEqual({ status: 410, error: "reset_required" });
+    expect(await pull(session, full.rev)).toEqual({ rev: 602, changes: [], more: false });
+  });
+
+  it("stops a full pull when a prune during it could hide a delete of an item already sent", async () => {
+    const session = await newSession();
+    const ids = await seedLive(session, 600);
+    const first = await pull(session, 0);
+    expect(first.cursor).toBe("500.600");
+    // An item on the first page is deleted (rev 601), and its tombstone pruned before the client goes on.
+    await push(session, [{ collection: "agent_prefs", id: ids[0], deleted: true }]);
+    await pruneAllTombstones(session.accountId);
+    expect(await rejection(await call("GET", `/v1/sync?cursor=${first.cursor}`, session))).toEqual({ status: 410, error: "reset_required" });
+    // Starting over gives the right state.
+    const again = await pullAll(session, 0);
+    expect(again.changes).toHaveLength(599);
+    expect(again.changes.map((item) => item.id)).not.toContain(ids[0]);
+  });
+
+  it("goes on with a full pull when a prune during it only drops tombstones from before it began", async () => {
+    const session = await newSession();
+    await seedLive(session, 600);
+    const gone = uuid();
+    await push(session, [{ collection: "prompts", id: gone, body: { text: "bye" } }]); // rev 601
+    await push(session, [{ collection: "prompts", id: gone, deleted: true }]); // rev 602, not yet pruned
+    const first = await pull(session, 0);
+    expect(first.cursor).toBe("500.602");
+    await pruneAllTombstones(session.accountId);
+    const rest = await pull(session, first.cursor);
+    expect(rest).toMatchObject({ rev: 602, more: false });
+    // The client never lists `gone`, so a resetting client drops its own copy of it.
+    const copy = replay([...first.changes, ...rest.changes]);
+    expect(copy.size).toBe(600);
+    expect(copy.has(gone)).toBe(false);
+  });
+
+  it("delivers writes that land during a full pull, so the client ends with the server's state", async () => {
+    const [phone, mac] = await twoDevices();
+    const ids = await seedLive(phone, 600);
+    const first = await pull(mac, 0);
+    const added = uuid();
+    await push(phone, [{ collection: "agent_prefs", id: ids[0], body: { pinned: false, order: 2 } }]); // rev 601
+    await push(phone, [{ collection: "prompts", id: added, body: { text: "new" } }]); // rev 602
+    await push(phone, [{ collection: "agent_prefs", id: ids[1], deleted: true }]); // rev 603
+    const rest = await pull(mac, first.cursor);
+    expect(rest.more).toBe(false);
+    expect(rest.rev).toBe(603);
+    expect(rest.changes.map((item) => item.rev)).toEqual([...Array.from({ length: 100 }, (_, i) => 501 + i), 601, 602, 603]);
+    const copy = replay([...first.changes, ...rest.changes]);
+    const server = replay((await pullAll(phone, 0)).changes);
+    expect(copy).toEqual(server);
+    expect(copy.get(ids[0])).toEqual({ pinned: false, order: 2 });
+    expect(copy.has(ids[1])).toBe(false);
+    expect(copy.has(added)).toBe(true);
+  });
+
   it("answers 410 reset_required to a cursor past the account's revision (another history)", async () => {
     const session = await newSession();
     await push(session, [setting("ui.fontScale", 1)]);
     expect(await rejection(await call("GET", "/v1/sync?since=2", session))).toEqual({ status: 410, error: "reset_required" });
+    expect(await rejection(await call("GET", "/v1/sync?cursor=1.2", session))).toEqual({ status: 410, error: "reset_required" });
     expect((await pull(session, 1)).changes).toEqual([]);
   });
 });

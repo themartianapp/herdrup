@@ -27,7 +27,7 @@ own deploys, so a bug or rollback here can't drop a guest session.
 | `PATCH /v1/devices/<id>` | bearer; `{name}` | `{device}` |
 | `DELETE /v1/devices/<id>` | bearer | 204; that device's sessions end |
 | `POST /v1/statements` | bearer; `{hosts: [host_id, … ≤ 50]}` | `{statements: [{host, jws}], exp}` |
-| `GET /v1/sync?since=<rev>` | bearer | `{rev, changes: [item, … ≤ 500], more}`; `410 reset_required` |
+| `GET /v1/sync?since=<rev>`, `GET /v1/sync?cursor=<cursor>` | bearer | `{rev, changes: [item, … ≤ 500], more, cursor?}`; `410 reset_required` |
 | `POST /v1/sync` | bearer; `{changes: [{collection, id, base_rev?, deleted?, body?}, … ≤ 100]}` | `{rev, applied: [{collection, id, rev}], conflicts: [{collection, id, server}]}` |
 | `GET /.well-known/jwks.json` | | `{keys, revoked_kids}`, `Cache-Control: public, max-age=3600` |
 
@@ -89,14 +89,16 @@ travel in.
 
 - **Order:** every write takes the account's next revision in the push's one D1 batch, so the
   last write to reach the server wins. A pull returns the items changed after `since`, in
-  revision order; while `more` is true, ask again from the returned `rev`.
+  revision order. While `more` is true, send the answer's opaque `cursor` back
+  (`?cursor=<cursor>`) for the next page. The last page's `rev` is the next `since`.
 - **Conflicts:** a change with `base_rev` is written only while the item is still at that
   revision (`0` = create only). Otherwise it is listed in `conflicts[]` with the server's copy.
   Background pushes leave `base_rev` out.
 - **Deletes** leave a tombstone (`deleted: true`, `body: null`). The hourly cron prunes
-  tombstones after 90 days, and a push keeps the newest 2,000 per account. A cursor older than
-  a pruned tombstone, or newer than the account, gets `410 reset_required`. The client then
-  pulls from 0 and drops what the server no longer lists.
+  tombstones after 90 days, and a push keeps the newest 2,000 per account. A pull that may have
+  missed a pruned delete, or whose cursor is newer than the account, gets `410 reset_required`.
+  The client then pulls from 0 and drops what the server doesn't list. A full pull pages past a
+  floor that was already there when it began (DESIGN.md §5.5).
 - **Caps:** 16 KB per item and 100 changes or 256 KB per push (`413 too_large`). Per account:
   2,000 live items, 1 MB of bodies, and 200 hosts, 500 prompts, 300 settings, 1,000 agent
   prefs and 500 shares (`403 quota`). A push that would pass a cap rolls back whole.

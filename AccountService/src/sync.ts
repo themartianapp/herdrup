@@ -1,6 +1,6 @@
 // Sync of non-secret settings (DESIGN.md §5):
 //
-//   GET  /v1/sync?since=<rev>  → {rev, changes: [item, … ≤ 500], more}
+//   GET  /v1/sync?since=<rev> | ?cursor=<cursor>  → {rev, changes: [item, … ≤ 500], more, cursor?}
 //   POST /v1/sync              {changes: [{collection, id, base_rev?, deleted?, body?}, … ≤ 100]}
 //                              → {rev, applied: [{collection, id, rev}], conflicts: [{collection, id, server}]}
 //
@@ -18,8 +18,18 @@
 //
 // Deletes leave tombstones (deleted, no body). The hourly cron prunes tombstones older than 90
 // days, and a push keeps the newest 2,000; either raises accounts.sync_floor to the highest
-// pruned revision. A pull whose cursor is below that floor, or past the account's revision,
-// answers 410 reset_required: the client pulls again from 0 and merges.
+// pruned revision. A pull answers 410 reset_required when the caller may have missed a pruned
+// delete, or when its cursor is past the account's revision (another history); the client
+// then pulls everything from 0 and drops what the server doesn't list.
+//
+// Paging: a page that isn't the last carries an opaque `cursor`, "<position>.<base>", which the
+// client sends back as is. position is the last revision returned. base is the revision up to
+// which the caller's copy is known complete: `since` itself for an incremental pull, and the
+// account's revision when a full pull (since=0) began. A tombstone the caller could still need
+// has a revision above max(position, base): it was either not yet paged past, or written after
+// a full pull began, to delete an item already sent. Pruning one lifts the floor above it, so
+// the pull stands while max(position, base) >= floor. A full pull therefore pages past a floor
+// that was already there when it began, and still stops if a prune during it could hide a delete.
 //
 // Caps: 16 KB per item, 100 changes and 256 KB per push (413 too_large); per account 2,000
 // live items, 1 MB of bodies and each collection's cap (403 quota). The account caps are
@@ -95,12 +105,13 @@ const pattern =
     typeof value === "string" && re.test(value) ? value : INVALID;
 
 /**
- * A relay's base URL: http(s), no credentials, query or fragment, and no `/i` path segment,
- * so neither an invite link (whose secret rides in its path or fragment) nor anything else
- * secret fits in it.
+ * A relay's base URL, stored in its canonical form (origin and path, no trailing slash): http(s),
+ * no credentials, query or fragment, and no path segment that is or decodes to `i`, so neither
+ * an invite link (whose secret rides in its path or fragment) nor anything else secret fits in
+ * it. Only the canonical form is stored, so dot segments can't carry an invite path past the check.
  */
 const relayUrl: Check = (value) => {
-  if (typeof value !== "string" || value.length > 256 || /[\s?#@\\]/.test(value)) return INVALID;
+  if (typeof value !== "string" || value.length > 256 || /[\s?#\\]/.test(value)) return INVALID;
   let url: URL;
   try {
     url = new URL(value);
@@ -108,7 +119,16 @@ const relayUrl: Check = (value) => {
     return INVALID;
   }
   if (url.protocol !== "https:" && url.protocol !== "http:") return INVALID;
-  return url.pathname.split("/").includes("i") ? INVALID : value;
+  if (url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") return INVALID;
+  for (const segment of url.pathname.split("/")) {
+    try {
+      if (decodeURIComponent(segment) === "i") return INVALID;
+    } catch {
+      return INVALID;
+    }
+  }
+  const canonical = url.origin + url.pathname.replace(/\/+$/, "");
+  return canonical.length <= 256 ? canonical : INVALID;
 };
 
 // --- Schemas -----------------------------------------------------------------------------------
@@ -285,33 +305,40 @@ const itemKey = (collection: string, id: string) => `${collection}\n${id}`;
 
 // --- Endpoints -----------------------------------------------------------------------------------
 
+const SINCE = /^(0|[1-9][0-9]{0,14})$/;
+const CURSOR = /^(0|[1-9][0-9]{0,14})\.(0|[1-9][0-9]{0,14})$/;
+
 export async function handlePull(request: Request, env: Env, nowMs: number): Promise<Response> {
   const principal = await openAccountRequest(request, env, "/v1/sync", nowMs);
   if (principal instanceof Response) return principal;
   const query = new URL(request.url).searchParams;
-  const since = query.get("since") ?? "0";
-  if ([...query.keys()].some((key) => key !== "since") || query.getAll("since").length > 1 || !/^(0|[1-9][0-9]{0,14})$/.test(since)) {
-    return errorResponse(400, "bad_request");
-  }
-  const cursor = Number(since);
+  const keys = [...query.keys()];
+  const since = keys.length === 1 && keys[0] === "since" ? SINCE.exec(query.get("since") ?? "") : null;
+  const cursor = keys.length === 1 && keys[0] === "cursor" ? CURSOR.exec(query.get("cursor") ?? "") : null;
+  if (keys.length > 0 && since === null && cursor === null) return errorResponse(400, "bad_request");
+  const position = Number(cursor?.[1] ?? since?.[1] ?? 0);
   // One batch is one transaction: the account's revision and the page agree.
   const [account, page] = await env.DB.batch<Record<string, unknown>>([
     env.DB.prepare("SELECT sync_rev, sync_floor FROM accounts WHERE id = ?").bind(principal.accountId),
     env.DB.prepare(`SELECT ${ITEM_COLUMNS} FROM sync_items WHERE account_id = ? AND rev > ? ORDER BY rev LIMIT ?`).bind(
       principal.accountId,
-      cursor,
+      position,
       PAGE_SIZE + 1,
     ),
   ]);
   const state = account.results[0] as { sync_rev: number; sync_floor: number } | undefined;
   if (state === undefined) return errorResponse(401, "invalid_token", { "WWW-Authenticate": "Bearer" });
-  // A cursor below the floor may have missed a pruned delete; one past the account's revision
-  // comes from another history (a restored database, an account deleted and made again).
-  if (cursor > state.sync_rev || (cursor > 0 && cursor < state.sync_floor)) return errorResponse(410, "reset_required");
+  // A full pull starts out complete up to the account's current revision (Paging, above). Past
+  // the account's revision, a cursor comes from another history (a restored database).
+  const base = cursor !== null ? Number(cursor[2]) : position === 0 ? state.sync_rev : position;
+  const complete = Math.max(position, base);
+  if (complete > state.sync_rev || complete < state.sync_floor) return errorResponse(410, "reset_required");
   const rows = page.results as unknown as ItemRow[];
   const more = rows.length > PAGE_SIZE;
   const changes = rows.slice(0, PAGE_SIZE);
-  return json(200, { rev: more ? changes[changes.length - 1].rev : state.sync_rev, changes: changes.map(itemJson), more });
+  if (!more) return json(200, { rev: state.sync_rev, changes: changes.map(itemJson), more });
+  const last = changes[changes.length - 1].rev;
+  return json(200, { rev: last, changes: changes.map(itemJson), more, cursor: `${last}.${base}` });
 }
 
 /**
