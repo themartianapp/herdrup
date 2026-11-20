@@ -72,7 +72,7 @@ final class SyncHostMergeTests: XCTestCase {
     func testASecondLocalCopyOfAMachineMergesIntoTheOneHoldingTheItem() {
         // A machine synced here (idA, no key) and the same machine paired here again (idL).
         let plan = SyncHostMerge.plan(
-            local: [local(idA, host: "fleet-hel1", nickname: "fleet"), local(idL, host: "FLEET-HEL1:22")],
+            local: [local(idA, host: "fleet-hel1", nickname: "fleet"), local(idL, host: "FLEET-HEL1", port: 22)],
             mirror: [item(idA, rev: 2, host: "fleet-hel1")], known: [idA])
         XCTAssertEqual(plan.matched, [0])
         XCTAssertEqual(plan.duplicates, [1: 0], "the second copy is merged, not pushed as a fork")
