@@ -643,6 +643,9 @@ create-and-delete loops can't grow D1 without bound. Either way the floor rises.
 
 **Rate limits.** `SYNC_WRITE_LIMIT` (30/min) covers `POST` only. Pulls count against `ACCOUNT_LIMIT` alone.
 
+**Who may sync.** Any session of the account. Unlike statements, sync doesn't need an enrolled
+device, because nothing it returns is bound to a device key.
+
 ---
 
 ## 6. Account deletion
