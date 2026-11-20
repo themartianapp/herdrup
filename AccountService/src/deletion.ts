@@ -24,7 +24,7 @@ import { serviceKeys } from "./keys";
  * list against the schema the migrations build, so a new table with account data can't be
  * left out.
  */
-export const ACCOUNT_TABLES = ["sync_items", "sync_usage", "enrol_challenges", "sessions", "devices", "identities"] as const;
+export const ACCOUNT_TABLES = ["sync_items", "sync_usage", "enrol_challenges", "handoffs", "sessions", "devices", "identities"] as const;
 
 /** Apple's authorization codes: printable ASCII, a few hundred characters. */
 const AUTHORIZATION_CODE = /^[\x21-\x7e]{1,1024}$/;

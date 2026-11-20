@@ -5,6 +5,10 @@
 export type Endpoint =
   | "/v1/health"
   | "/v1/auth/nonce"
+  | "/v1/auth/web/start"
+  | "/v1/auth/web/apple/callback"
+  | "/v1/auth/web/google/callback"
+  | "/v1/auth/handoff"
   | "/v1/auth/apple"
   | "/v1/auth/google"
   | "/v1/auth/refresh"

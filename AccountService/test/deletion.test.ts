@@ -128,6 +128,10 @@ async function populate(who: Identity): Promise<{ first: Session; second: Sessio
       Date.now(),
     ),
     env.DB.prepare("UPDATE sessions SET device_id = ? WHERE id = ?").bind(deviceId, second.access.split(".")[1]),
+    // A desktop web sign-in waiting for its handoff (test/web.test.ts runs the real flow).
+    env.DB.prepare(
+      "INSERT INTO handoffs (code_hash, account_id, handoff_challenge, platform, created, display_hint, exp_ms) VALUES (?, ?, ?, 'macos', 0, NULL, ?)",
+    ).bind(randomB64url(32), first.accountId, randomB64url(32), Date.now() + 120_000),
   ]);
   expect((await post("/v1/devices/challenge", {}, first.access)).status).toBe(200);
   const refreshed = await post("/v1/auth/refresh", { refresh_token: first.refresh });
@@ -170,6 +174,7 @@ const NOT_KEYED_BY_ACCOUNT: Record<string, string> = {
   accounts: "the account row itself, by id",
   spent_refresh_tokens: "keyed by session_id; deleted with the account's sessions",
   used_nonces: "SHA-256 of spent nonces and their expiry: nothing that names an account",
+  web_flows: "a sign-in still in progress: no account yet, gone at its callback or after 10 minutes",
 };
 
 describe("deletion covers every table", () => {
