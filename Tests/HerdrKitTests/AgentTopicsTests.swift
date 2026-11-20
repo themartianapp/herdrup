@@ -74,15 +74,43 @@ final class AgentTopicsTests: XCTestCase {
 
     // MARK: Discovery schedule (#758)
 
-    /// `topics_unsupported`, a server without `agent_topics` and a gone agent stop discovery
-    /// for good, on the first answer or after any number of retries.
+    /// `topics_unsupported` and a server without `agent_topics` stop discovery for good, on the
+    /// first answer or after any number of retries.
     func testDiscoveryStopsOnPermanentRefusals() {
-        for error in [AgentTopicsError.unsupported, .notAdvertised, .agentNotFound] {
+        for error in [AgentTopicsError.unsupported, .notAdvertised] {
+            XCTAssertTrue(error.isPermanent, "\(error)")
             var backoff = TopicsDiscoveryBackoff()
             XCTAssertEqual(backoff.decide(after: error), .stop, "\(error)")
             _ = backoff.decide(after: AgentTopicsError.unreachable)
             XCTAssertEqual(backoff.decide(after: error), .stop, "\(error) after a retry")
         }
+    }
+
+    /// herdrup#777: `agent_not_found` is what a pane answers while its agent restarts. It is not
+    /// a refusal for good: discovery backs off like `topics_unreachable`, and a list that fails
+    /// so after Topics were offered keeps them offered (`TopicsModel` acts on `isPermanent`).
+    func testAgentNotFoundIsPassing() {
+        XCTAssertFalse(AgentTopicsError.agentNotFound.isPermanent)
+        var backoff = TopicsDiscoveryBackoff()
+        XCTAssertEqual(backoff.decide(after: AgentTopicsError.agentNotFound), .retry(afterSeconds: 60))
+        XCTAssertEqual(backoff.decide(after: AgentTopicsError.agentNotFound), .retry(afterSeconds: 120))
+        XCTAssertEqual(backoff.decide(after: nil), .offered)
+    }
+
+    /// herdrup#777: the first list fails `agent_not_found` (the agent was restarting), the next
+    /// one answers: discovery keeps going and ends offered.
+    @MainActor
+    func testDiscoveryLoopOffersAfterTheAgentWasBrieflyGone() async {
+        let sleeps = FakeSleeps()
+        var answers: [(any Error)?] = [AgentTopicsError.agentNotFound, nil]
+        var attempts = 0
+        let loop = TopicsDiscoveryLoop(attempt: {
+            attempts += 1
+            return answers.removeFirst()
+        }, sleep: { sleeps.sleep($0) })
+        await loop.run()
+        XCTAssertEqual(attempts, 2, "asked again after agent_not_found")
+        XCTAssertEqual(sleeps.waits, [60])
     }
 
     /// `topics_unreachable` (every omp agent without topics on), a timeout or a dropped

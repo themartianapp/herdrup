@@ -376,4 +376,39 @@ final class TopicsTests: XCTestCase {
         XCTAssertTrue(app.textViews["topic-composer-input"].exists, "and the composer is there")
         XCTAssertFalse(app.staticTexts["topic-chat-unavailable"].exists)
     }
+
+    // MARK: The agent restarts (#777)
+
+    /// #777: the agent's pane answers its first topics list with `agent_not_found`, as while
+    /// the agent restarts. That is not "no topics for good": discovery asks again and the page
+    /// offers Topics, without leaving it.
+    func testTopicsAppearAfterTheAgentWasBrieflyGone() {
+        let app = launch("chatview", ["HERDR_MOCK_TOPICS_GONE_AT": "1", "HERDR_MOCK_TOPICS_DISCOVERY_SECONDS": "3"])
+        openHerdrApp(app)
+        XCTAssertTrue(app.buttons["chat-switch-chat"].exists(within: 12), "the page opens as before")
+        XCTAssertTrue(app.buttons["chat-switch-topics"].exists(within: 25),
+                      "a later list answers and the page offers Topics")
+        _ = openTopics(app)
+        XCTAssertTrue(row("t-diokan", in: app).exists(within: 8))
+    }
+
+    /// #777: Topics were offered, then the list Topics asks for on opening finds the pane
+    /// without its agent (`agent_not_found`, the agent restarting). The page keeps Topics and
+    /// the last list with a passing problem, and the next list clears it.
+    func testTopicsStayAfterTheAgentIsBrieflyGoneWhileOffered() {
+        let app = launch("chatview", ["HERDR_MOCK_TOPICS_GONE_AT": "2", "HERDR_MOCK_TOPICS_DISCOVERY_SECONDS": "3"])
+        openHerdrApp(app)
+        _ = openTopics(app)
+        let diokan = row("t-diokan", in: app)
+        XCTAssertTrue(diokan.exists(within: 8))
+        let problem = app.descendants(matching: .any)["topics-problem"].firstMatch
+        XCTAssertTrue(problem.exists(within: 8), "the failed list shows as a problem")
+        XCTAssertTrue(problem.label.contains("This agent is gone."), problem.label)
+        XCTAssertTrue(diokan.exists, "the last list stays")
+        XCTAssertTrue(app.buttons["chat-switch-topics"].isSelected, "and so does Topics")
+        app.buttons["terminal-refresh"].tap()
+        XCTAssertTrue(problem.gone(within: 8), "the agent is back: the next list clears the problem")
+        XCTAssertTrue(diokan.exists)
+        XCTAssertTrue(app.buttons["chat-switch-topics"].isSelected)
+    }
 }
