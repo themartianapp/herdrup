@@ -107,28 +107,38 @@ export class HostRelay extends DurableObject<Env> {
   }
 
   /**
-   * Stores a short-invite blob for this host, within its cap of live invites. A repeat of an
-   * id this host already holds takes no new slot: the invite accepts it only as the same
-   * blob again (a retry) and refuses anything else.
+   * Stores a short-invite blob for this host, within its cap of live invites. Each live blob
+   * has one row in `invite`, at the expiry the blob itself holds, so the rows count exactly
+   * the live blobs. A repeat of an id this host already holds takes no new slot: the invite
+   * accepts it only as the same blob again (a retry) and refuses anything else.
    */
   async putInvite(hostId: string, secret: string, id: string, expiresUnix: number, blob: ArrayBuffer): Promise<InviteOutcome> {
     if ((await this.authenticate(secret, "verify")) === "refused") return "unauthorized";
     const sql = this.ctx.storage.sql;
     sql.exec("DELETE FROM invite WHERE expires_unix <= ?", Math.floor(Date.now() / 1000));
     const invite = this.env.INVITES.get(this.env.INVITES.idFromName(id));
-    if (sql.exec("SELECT 1 FROM invite WHERE id = ?", id).toArray().length > 0) {
-      return (await invite.store(hostId, expiresUnix, blob)) ? "stored" : "exists";
+    const held = sql.exec<{ expires_unix: number }>("SELECT expires_unix FROM invite WHERE id = ?", id).toArray()[0];
+    if (held !== undefined) {
+      // The held blob can lapse before this call reaches it, and the retry then stores it
+      // anew under its own expiry. Until the invite answers, hold the slot to the later of
+      // the two, so no PUT meanwhile prunes it while a blob may be live. A call that throws
+      // leaves it there: an early slot errs on the side of the cap.
+      sql.exec("UPDATE invite SET expires_unix = ? WHERE id = ?", Math.max(held.expires_unix, expiresUnix), id);
+      const expires = await invite.store(hostId, expiresUnix, blob);
+      sql.exec("UPDATE invite SET expires_unix = ? WHERE id = ?", expires ?? held.expires_unix, id);
+      return expires === null ? "exists" : "stored";
     }
     if (sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM invite").one().n >= MAX_INVITES) return "too_many_invites";
     // Reserve the slot before yielding, so concurrent PUTs can't pass the cap together.
     sql.exec("INSERT INTO invite (id, expires_unix) VALUES (?, ?)", id, expiresUnix);
-    let stored = false;
+    let expires: number | null = null;
     try {
-      stored = await invite.store(hostId, expiresUnix, blob);
+      expires = await invite.store(hostId, expiresUnix, blob);
     } finally {
-      if (!stored) sql.exec("DELETE FROM invite WHERE id = ?", id);
+      if (expires === null) sql.exec("DELETE FROM invite WHERE id = ?", id);
+      else sql.exec("UPDATE invite SET expires_unix = ? WHERE id = ?", expires, id);
     }
-    return stored ? "stored" : "exists";
+    return expires === null ? "exists" : "stored";
   }
 
   /** Deletes a short-invite blob this host stored. One that is already gone counts as deleted. */

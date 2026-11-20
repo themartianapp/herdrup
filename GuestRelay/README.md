@@ -190,9 +190,11 @@ key (16 random bytes). Any other `/i/<payload>` is a long v1 link, which stays v
   three at expiry. A blob past its expiry is already gone to `GET` before the alarm runs.
 - **Retry:** a `PUT` of the same bytes again from the host that stored them, as the daemon
   sends after a slow first `PUT`, gets 201 and changes nothing (the first expiry stands).
-  Any other `PUT` to a live `id` gets 409 `exists`.
-- **Cap:** the host's own Durable Object keeps the ids and expiries of its live invites
-  and refuses a 201st with 429 `too_many_invites`. A retry takes no second slot.
+  If the first blob lapsed before the retry reached it, the retry stores it anew under its
+  own expiry. Any other `PUT` to a live `id` gets 409 `exists`.
+- **Cap:** the host's own Durable Object keeps the ids and expiries of its live invites,
+  each at the expiry its blob holds, and refuses a 201st with 429 `too_many_invites`. A
+  retry takes no second slot.
 - **Delete:** the daemon deletes the blob when the invite is revoked or redeemed. Another
   host gets 403 `forbidden`.
 - **Open:** the landing page fetches `GET /v1/invite/<id>` from its own origin (never
