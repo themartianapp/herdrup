@@ -90,11 +90,12 @@ crons = ["17 * * * *"]
 [vars]
 APPLE_APP_CLIENT_ID = "com.jerryfane.herdr"
 APPLE_WEB_CLIENT_ID = "com.jerryfane.herdr.signin"
-# The Apple client secrets (src/apple.ts) are signed with the Sign in with Apple key: its Key
-# ID here, filled in by the owner, and the .p8 itself as the secret APPLE_SIWA_P8. While
-# either is missing, deletion still deletes and answers manual_revoke: true.
+# The Apple client secrets (src/apple.ts) are signed with the Sign in with Apple key
+# "HerdrUp Sign in with Apple" (created 20 Nov 2026, primary App ID com.jerryfane.herdr):
+# its Key ID here, and the .p8 itself as the secret APPLE_SIWA_P8, set by the owner. While
+# the secret is missing, deletion still deletes and answers manual_revoke: true.
 APPLE_TEAM_ID = "FXQ5Z9HHY6"
-APPLE_KEY_ID = ""
+APPLE_KEY_ID = "A5PWJRXQG8"
 GOOGLE_IOS_CLIENT_ID = "552913387875-ujv6unveo5qtmmbnapogekc5jl8h6olk.apps.googleusercontent.com"
 GOOGLE_WEB_CLIENT_ID = "552913387875-0te8j0cm9tmt5ifai9m8nlc1igdhi844.apps.googleusercontent.com"
 # Statement signing (src/signing.ts): two key slots, so a key rotates without leaving
