@@ -786,13 +786,78 @@ describe("short invites", () => {
     expect((await SELF.fetch(`${ORIGIN}/v1/invite/${id}`)).status).toBe(200);
   });
 
-  it("refuses a duplicate id, from the same host or another", async () => {
+  it("takes the same blob again from the same host, as a daemon's retry, and keeps one invite with its first expiry", async () => {
+    const host = await enrolledHost();
+    const id = newInviteId();
+    const blob = crypto.getRandomValues(new Uint8Array(100));
+    const expires = nowUnix() + 3600;
+    expect((await putInvite(host, id, { body: blob, expires: String(expires) })).status).toBe(201);
+    expect((await putInvite(host, id, { body: blob, expires: String(expires + 5) })).status).toBe(201);
+    const get = await SELF.fetch(`${ORIGIN}/v1/invite/${id}`);
+    expect(get.status).toBe(200);
+    expect(new Uint8Array(await get.arrayBuffer())).toEqual(blob);
+    expect(await runInDurableObject(inviteStub(id), (_, state) => state.storage.getAlarm())).toBe(expires * 1000);
+
+    // A retry can also arrive while the first PUT is still in flight.
+    const raced = newInviteId();
+    const statuses = await Promise.all([0, 1].map(async () => (await putInvite(host, raced, { body: blob })).status));
+    expect(statuses).toEqual([201, 201]);
+    expect(new Uint8Array(await (await SELF.fetch(`${ORIGIN}/v1/invite/${raced}`)).arrayBuffer())).toEqual(blob);
+
+    const rows = await runInDurableObject(stub(host.hostId), (_, state) =>
+      state.storage.sql.exec<{ id: string; expires_unix: number }>("SELECT id, expires_unix FROM invite").toArray(),
+    );
+    expect(rows.map((row) => row.id).sort()).toEqual([id, raced].sort());
+    expect(rows.find((row) => row.id === id)?.expires_unix).toBe(expires);
+  });
+
+  it("counts a repeated PUT once against the host's cap, and takes it at the cap", async () => {
     const host = await enrolledHost();
     const id = newInviteId();
     const blob = crypto.getRandomValues(new Uint8Array(100));
     expect((await putInvite(host, id, { body: blob })).status).toBe(201);
-    await expectError(await putInvite(host, id), 409, "exists");
-    await expectError(await putInvite(await enrolledHost(), id), 409, "exists");
+    // 198 more live invites: 199 in all.
+    await runInDurableObject(stub(host.hostId), (_, state) => {
+      for (let i = 0; i < 198; i++) state.storage.sql.exec("INSERT INTO invite (id, expires_unix) VALUES (?, ?)", `filler${i}`, nowUnix() + 3600);
+    });
+    expect((await putInvite(host, id, { body: blob })).status).toBe(201);
+    expect((await putInvite(host, newInviteId())).status).toBe(201);
+    await expectError(await putInvite(host, newInviteId()), 429, "too_many_invites");
+    // At the cap, a repeat needs no new slot.
+    expect((await putInvite(host, id, { body: blob })).status).toBe(201);
+    const live = await runInDurableObject(stub(host.hostId), (_, state) =>
+      state.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM invite").one().n,
+    );
+    expect(live).toBe(200);
+  });
+
+  it("refuses an id another host holds, even with the same blob", async () => {
+    const owner = await enrolledHost();
+    const other = await enrolledHost();
+    const id = newInviteId();
+    const blob = crypto.getRandomValues(new Uint8Array(100));
+    expect((await putInvite(owner, id, { body: blob })).status).toBe(201);
+    await expectError(await putInvite(other, id, { body: blob }), 409, "exists");
+    await expectError(await putInvite(other, id), 409, "exists");
+    expect(new Uint8Array(await (await SELF.fetch(`${ORIGIN}/v1/invite/${id}`)).arrayBuffer())).toEqual(blob);
+    // The refused PUT holds no slot of the other host's cap, and the owner still deletes it.
+    expect(
+      await runInDurableObject(stub(other.hostId), (_, state) => state.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM invite").one().n),
+    ).toBe(0);
+    await expectError(await deleteInvite(other, id), 403, "forbidden");
+    expect((await deleteInvite(owner, id)).status).toBe(204);
+  });
+
+  it("refuses another blob for an id the same host holds, and keeps the first", async () => {
+    const host = await enrolledHost();
+    const id = newInviteId();
+    const blob = crypto.getRandomValues(new Uint8Array(100));
+    expect((await putInvite(host, id, { body: blob })).status).toBe(201);
+    const lastByteFlipped = blob.slice();
+    lastByteFlipped[99] ^= 1;
+    for (const body of [lastByteFlipped, blob.slice(0, 99), crypto.getRandomValues(new Uint8Array(100))]) {
+      await expectError(await putInvite(host, id, { body }), 409, "exists");
+    }
     expect(new Uint8Array(await (await SELF.fetch(`${ORIGIN}/v1/invite/${id}`)).arrayBuffer())).toEqual(blob);
   });
 

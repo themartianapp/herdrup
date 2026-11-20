@@ -106,18 +106,25 @@ export class HostRelay extends DurableObject<Env> {
     return crypto.subtle.timingSafeEqual(stored.secret_sha256, hash) ? "connected" : "refused";
   }
 
-  /** Stores a short-invite blob for this host, within its cap of live invites. */
+  /**
+   * Stores a short-invite blob for this host, within its cap of live invites. A repeat of an
+   * id this host already holds takes no new slot: the invite accepts it only as the same
+   * blob again (a retry) and refuses anything else.
+   */
   async putInvite(hostId: string, secret: string, id: string, expiresUnix: number, blob: ArrayBuffer): Promise<InviteOutcome> {
     if ((await this.authenticate(secret, "verify")) === "refused") return "unauthorized";
     const sql = this.ctx.storage.sql;
     sql.exec("DELETE FROM invite WHERE expires_unix <= ?", Math.floor(Date.now() / 1000));
-    if (sql.exec("SELECT 1 FROM invite WHERE id = ?", id).toArray().length > 0) return "exists";
+    const invite = this.env.INVITES.get(this.env.INVITES.idFromName(id));
+    if (sql.exec("SELECT 1 FROM invite WHERE id = ?", id).toArray().length > 0) {
+      return (await invite.store(hostId, expiresUnix, blob)) ? "stored" : "exists";
+    }
     if (sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM invite").one().n >= MAX_INVITES) return "too_many_invites";
     // Reserve the slot before yielding, so concurrent PUTs can't pass the cap together.
     sql.exec("INSERT INTO invite (id, expires_unix) VALUES (?, ?)", id, expiresUnix);
     let stored = false;
     try {
-      stored = await this.env.INVITES.get(this.env.INVITES.idFromName(id)).store(hostId, expiresUnix, blob);
+      stored = await invite.store(hostId, expiresUnix, blob);
     } finally {
       if (!stored) sql.exec("DELETE FROM invite WHERE id = ?", id);
     }
