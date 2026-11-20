@@ -287,7 +287,7 @@ describe("routing", () => {
 
   // Owner-approved policy for the browser guest (web guest contract, "Hosting").
   const WEB_CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; " +
-    "font-src 'self'; connect-src 'self' wss://guest.herdrup.app wss://guest.herdrup.themartian.app; " +
+    "font-src 'self'; connect-src 'self' wss://guest.herdrup.app wss://guest.herdrup.themartian.app https://accounts.herdrup.app; " +
     "frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'";
 
   function expectWebHeaders(response: Response, cacheControl: string) {
