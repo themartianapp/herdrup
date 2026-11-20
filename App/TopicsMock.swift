@@ -12,14 +12,23 @@ final class TopicsMock: @unchecked Sendable {
     /// `HERDR_MOCK_TOPICS_UNREACHABLE=1`: after the first list, every list call answers
     /// `topics_unreachable`, so the view keeps its last list and says the agent can't be reached.
     private static let goesUnreachable = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_UNREACHABLE"] != nil
+    /// `HERDR_MOCK_TOPICS_FAIL_FIRST=<n>`: the first `n` list calls answer `topics_unreachable`
+    /// (an agent that offers its topics only a moment later), so discovery has to retry.
+    private static let failsFirst = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_FAIL_FIRST"]
+        .flatMap(Int.init) ?? 0
+    /// `HERDR_MOCK_TOPICS_SEND_DELAY=<seconds>`: `agent.topics.send` answers that much later, and
+    /// a send to a running topic is `queued`, so its receipt can land after the reader moved on.
+    private static let sendDelay = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_SEND_DELAY"]
+        .flatMap(Double.init) ?? 0
 
     static let owner = TopicsMock(agent: "herdr-app", paneID: "w9:p1", readerAuthor: ["author": "owner"])
     static let guest = TopicsMock(agent: "llm-opt", paneID: "w1-3",
                                   readerAuthor: ["author": "guest",
                                                  "author_name": GuestMockTransport.access.guestName])
 
-    /// The pong's capability, after the other capabilities.
-    static var capability: String { enabled ? #","agent_topics":true"# : "" }
+    /// The pong's capabilities, after the other capabilities: topics, and `topic` honoured on
+    /// `agent.transcript`.
+    static var capability: String { enabled ? #","agent_topics":true,"agent_transcript_topic":true"# : "" }
 
     /// Who wrote a message: the owner (the written history), the one reading this mock (the
     /// owner, or the guest under its name), or the topic itself.
@@ -70,8 +79,15 @@ final class TopicsMock: @unchecked Sendable {
     private static func now() -> UInt64 { UInt64(max(Date().timeIntervalSince1970, 0) * 1000) }
 
     /// Answers one `agent.topics.*` request, or nil for any other method.
-    func reply(method: String, id: String, params: [String: Any]) -> String? {
+    func reply(method: String, id: String, params: [String: Any]) async -> String? {
         guard Self.enabled, method.hasPrefix("agent.topics.") else { return nil }
+        if method == "agent.topics.send", Self.sendDelay > 0 {
+            try? await Task.sleep(for: .seconds(Self.sendDelay))
+        }
+        return answer(method: method, id: id, params: params)
+    }
+
+    private func answer(method: String, id: String, params: [String: Any]) -> String {
         guard params["target"] as? String == paneID || params["target"] as? String == agent else {
             return ChatMockConversation.error(id: id, code: "agent_not_found", message: "no such agent")
         }
@@ -80,7 +96,7 @@ final class TopicsMock: @unchecked Sendable {
             switch method {
             case "agent.topics.list":
                 listCalls += 1
-                if Self.goesUnreachable, listCalls > 1 {
+                if (Self.goesUnreachable && listCalls > 1) || listCalls <= Self.failsFirst {
                     return ChatMockConversation.error(id: id, code: "topics_unreachable",
                                                       message: "the agent has not offered its topics")
                 }
@@ -118,7 +134,7 @@ final class TopicsMock: @unchecked Sendable {
                 topics[index].lastMs = now
                 return ChatMockConversation.encode(id: id, result: [
                     "type": "agent_topic_sent", "agent": agent, "pane_id": paneID, "topic_id": topicID,
-                    "mode": running ? "steered" : "turn"])
+                    "mode": running ? (Self.sendDelay > 0 ? "queued" : "steered") : "turn"])
             case "agent.topics.close", "agent.topics.reopen", "agent.topics.rename":
                 guard let index = topics.firstIndex(where: { $0.id == topicID }) else {
                     return ChatMockConversation.error(id: id, code: "topic_not_found", message: "no such topic")

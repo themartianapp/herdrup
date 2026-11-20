@@ -6016,10 +6016,12 @@ struct TerminalPaneContent: View {
             VStack(spacing: 0) {
                 header
                 // omp agents on a machine with `agent_transcript`: the Chat | Terminal switch
-                // (#481). Other agents and older servers keep exactly today's page.
-                if chatAvailable {
+                // (#481), with Topics first where the agent offers them. An agent with topics
+                // whose own transcript is refused still gets Topics | Terminal (#760). Other
+                // agents and older servers keep exactly today's page.
+                if chatAvailable || topicsAvailable {
                     ChatTerminalSwitch(mode: Binding(get: { shownMode }, set: { setMode($0) }),
-                                       showsTopics: topicsAvailable)
+                                       showsTopics: topicsAvailable, showsChat: chatAvailable)
                         .padding(.top, 2).padding(.bottom, 4)
                         .accessibilityHidden(!isForeground)
                 }
@@ -6260,13 +6262,14 @@ struct TerminalPaneContent: View {
             capabilitiesResolved = true
         }
         // Whether this omp agent offers topics: asked once it is known to be an omp agent on a
-        // machine with `agent_topics`, and again each time the pane comes to the front until
-        // the agent answers (the Topics view keeps the list current after that).
+        // machine with `agent_topics`, retrying while the list fails (`TopicsModel.discover`),
+        // and again each time the pane comes to the front or the agent's status changes, until
+        // the agent answers (#758). The Topics view keeps the list current after that.
         .task(id: [topicsCapable ? "topics" : "", ChatPreference.isOmp(agent?.agent) ? "omp" : "",
-                   isForeground ? "front" : ""]) {
+                   isForeground ? "front" : "", agent?.agentStatus ?? ""]) {
             guard topicsCapable, ChatPreference.isOmp(agent?.agent), isForeground,
                   !topicsModel.offered else { return }
-            await topicsModel.refresh(client: client)
+            await topicsModel.discover(client: client)
         }
         // While the server refuses this omp agent a transcript, ask again: soon after it
         // starts, then less often, and at once when its status changes (its first turn writes

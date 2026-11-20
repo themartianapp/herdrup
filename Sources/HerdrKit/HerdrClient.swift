@@ -2097,8 +2097,9 @@ public actor HerdrClient {
     /// `limit` counts turns and is clamped to the server's 1...50. `subagent` pages that
     /// subagent's own conversation (a `TranscriptSubagent.id` with `hasTranscript`). `topic`
     /// pages that topic's conversation (an `AgentTopic.id`); it is sent only to a server that
-    /// advertises `agent_topics`, and refused here as `.unsupported` otherwise, because an
-    /// older server would ignore it and answer with the agent's own conversation.
+    /// advertises `agent_transcript_topic`, and refused here as `.unsupported` otherwise,
+    /// because a server that ignores it would answer with the agent's own conversation.
+    /// `agent_topics` alone is not enough: it covers `agent.topics.*` only (herdrup#757).
     ///
     /// The refusals the view acts on are typed (`AgentTranscriptError`); an older server
     /// that cannot deserialize the method reports `.unsupported` like a non-omp agent.
@@ -2106,7 +2107,7 @@ public actor HerdrClient {
         target: String, before: String? = nil, after: String? = nil, limit: UInt32? = nil,
         subagent: String? = nil, heldFrom: String? = nil, topic: String? = nil
     ) async throws -> AgentTranscriptPage {
-        if topic != nil, !(await supports(\.agentTopics)) {
+        if topic != nil, !(await supports(\.agentTranscriptTopic)) {
             throw AgentTranscriptError.unsupported
         }
         let params = AgentTranscriptParams(target: target, before: before, after: after,

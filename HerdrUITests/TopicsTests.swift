@@ -241,4 +241,95 @@ final class TopicsTests: XCTestCase {
         let sent = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Guest question for Diokan"))
         XCTAssertTrue(sent.firstMatch.exists(within: 10), "the guest's message reaches the topic")
     }
+
+    // MARK: Post-merge review of #745
+
+    /// #758: the agent's first topics lists fail (`topics_unreachable`, as an agent that offers
+    /// its topics a moment late); discovery keeps asking and Topics appears, for the owner.
+    func testOwnerDiscoveryRetriesAfterAFailedFirstList() {
+        let app = launch("chatview", ["HERDR_MOCK_TOPICS_FAIL_FIRST": "2"])
+        openHerdrApp(app)
+        XCTAssertTrue(app.buttons["chat-switch-chat"].exists(within: 12), "the page opens as before")
+        XCTAssertTrue(app.buttons["chat-switch-topics"].exists(within: 25),
+                      "a later list succeeds and the page offers Topics")
+        _ = openTopics(app)
+        XCTAssertTrue(row("t-diokan", in: app).exists(within: 8))
+    }
+
+    /// #758, guest side: the same late agent, and the guest's Topics tab appears.
+    func testGuestDiscoveryRetriesAfterAFailedFirstList() {
+        let app = launch("guestchat", ["HERDR_MOCK_TOPICS_FAIL_FIRST": "2"])
+        XCTAssertTrue(app.buttons["guest-tab-chat"].exists(within: 12))
+        XCTAssertTrue(app.buttons["guest-tab-topics"].exists(within: 25),
+                      "a later list succeeds and the guest gets the Topics tab")
+    }
+
+    /// #759: Settings says Topics; the guest picks Terminal while discovery is still pending.
+    /// When the topics arrive the Topics tab appears, but the guest's pick stands. Without a
+    /// pick, the same setting does open Topics.
+    func testGuestExplicitTabSurvivesTopicsArriving() {
+        let picked = launch("guestchat", ["HERDR_MOCK_TOPICS_FAIL_FIRST": "2", "HERDR_MOCK_CHAT_OPENS_IN": "topics"])
+        let terminal = picked.buttons["guest-tab-terminal"]
+        XCTAssertTrue(terminal.exists(within: 12))
+        XCTAssertFalse(picked.buttons["guest-tab-topics"].exists, "discovery is still pending")
+        terminal.tap()
+        XCTAssertTrue(picked.buttons["guest-tab-topics"].exists(within: 25), "the topics arrive")
+        XCTAssertTrue(terminal.isSelected, "the guest's own pick stands")
+        XCTAssertFalse(picked.buttons["guest-tab-topics"].isSelected)
+        picked.terminate()
+
+        let unpicked = launch("guestchat", ["HERDR_MOCK_TOPICS_FAIL_FIRST": "2", "HERDR_MOCK_CHAT_OPENS_IN": "topics"])
+        let topics = unpicked.buttons["guest-tab-topics"]
+        XCTAssertTrue(topics.exists(within: 25))
+        XCTAssertTrue(poll(5, every: 0.3) { topics.isSelected }, "with no pick, Settings' Topics opens Topics")
+    }
+
+    /// #760: the agent's own transcript is refused (`transcript_unsupported`), so there is no
+    /// Chat, but it has topics: the page still offers Topics | Terminal.
+    func testTopicsWithoutInboxChatStillGetAModeSwitch() {
+        let refusals = Array(repeating: "transcript_unsupported", count: 80).joined(separator: ",")
+        // Opens in Chat (the default), so the page asks for the transcript and learns it is refused.
+        let app = launch("chatview", ["HERDR_MOCK_CHAT_STARTUP": refusals])
+        openHerdrApp(app)
+        let topics = app.buttons["chat-switch-topics"]
+        XCTAssertTrue(topics.exists(within: 15), "Topics is offered without the Inbox's Chat")
+        XCTAssertTrue(app.buttons["chat-switch-terminal"].exists)
+        XCTAssertFalse(app.buttons["chat-switch-chat"].exists, "no Chat segment while the transcript is refused")
+        topics.tap()
+        XCTAssertTrue(app.otherElements["topics-view"].firstMatch.exists(within: 8))
+        XCTAssertTrue(row("t-diokan", in: app).exists(within: 8))
+        app.buttons["chat-switch-terminal"].tap()
+        XCTAssertTrue(app.otherElements["topics-view"].firstMatch.gone(within: 6), "and back to the terminal")
+    }
+
+    /// P3: a send's note belongs to its topic. A queued receipt for Diokan that lands after the
+    /// reader opened Q4 board pack shows under Diokan, not under Q4 board pack.
+    func testALateSendNoteStaysWithItsTopic() {
+        let app = launch("chatview", ["HERDR_MOCK_TOPICS_SEND_DELAY": "4"])
+        openHerdrApp(app)
+        _ = openTopics(app)
+        let diokan = row("t-diokan", in: app)
+        XCTAssertTrue(diokan.exists(within: 8))
+        diokan.tap()
+        XCTAssertTrue(topicChatOpen("Diokan term sheet", in: app))
+        let field = app.textViews["topic-composer-input"]
+        XCTAssertTrue(field.exists(within: 8))
+        field.tap()
+        field.typeText("Late receipt check")
+        app.buttons["topic-send-button"].tap()
+        if !isPad { app.buttons["topic-back"].tap() }
+        let board = row("t-board", in: app)
+        XCTAssertTrue(board.exists(within: 6))
+        board.tap()
+        XCTAssertTrue(topicChatOpen("Q4 board pack", in: app))
+        // The Diokan receipt (queued, after 4 s) lands while Q4 board pack is open.
+        let note = app.staticTexts["topic-send-note"].firstMatch
+        XCTAssertFalse(note.exists(within: 8), "Diokan's note must not show under Q4 board pack")
+        if !isPad { app.buttons["topic-back"].tap() }
+        XCTAssertTrue(diokan.exists(within: 6))
+        diokan.tap()
+        XCTAssertTrue(topicChatOpen("Diokan term sheet", in: app))
+        XCTAssertTrue(note.exists(within: 6), "the note waits under Diokan")
+        XCTAssertTrue(note.label.hasPrefix("Queued"), note.label)
+    }
 }

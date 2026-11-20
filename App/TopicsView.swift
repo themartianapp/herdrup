@@ -21,13 +21,17 @@ final class TopicsModel: ObservableObject {
     @Published private(set) var loaded = false
     /// The agent answered `agent.topics.list` this session: the page offers Topics.
     @Published private(set) var offered = false
+    /// The newest list answer says this agent has no topics to offer (`topics_unsupported`,
+    /// no `agent_topics`, the agent is gone), as opposed to a failure worth retrying.
+    private(set) var refused = false
     /// Why the newest list call failed. The last list stays on screen (`topics_unreachable`
     /// keeps it, as herdr's API asks).
     @Published private(set) var problem: String?
     /// The open topic: its chat on a phone, the selected row and its chat on iPad.
     @Published var selectedTopicID: String?
-    /// The newest send's note under the open topic's composer (queued, refused).
-    @Published var sendNote: String?
+    /// Each topic's newest send note (queued, refused), shown under that topic's composer
+    /// only: a receipt that lands after the reader moved to another topic stays with its own.
+    @Published private(set) var sendNotes: [String: String] = [:]
 
     let target: String
     /// One conversation per topic (`TranscriptStore` keyed per agent and topic), kept while
@@ -44,6 +48,9 @@ final class TopicsModel: ObservableObject {
     static let backstopSeconds: UInt64 = 60
     /// The host caps a message at 32 KiB (`invalid_params` beyond it), as `agent.prompt`.
     static let maxMessageBytes = 32 * 1024
+    /// Gaps between discovery attempts while the agent's topics list fails, in seconds. The
+    /// last one repeats.
+    static let discoveryDelays: [UInt64] = [2, 4, 8, 15, 30, 60]
 
     init(target: String) {
         self.target = target
@@ -59,6 +66,23 @@ final class TopicsModel: ObservableObject {
         let model = ChatModel(target: target, topic: topicID)
         chats[topicID] = model
         return model
+    }
+
+    func sendNote(for topicID: String) -> String? { sendNotes[topicID] }
+
+    /// Learns whether the agent offers topics, retrying while the list fails for a reason
+    /// that may pass (`topics_unreachable`, a timeout, a dropped connection) until it answers
+    /// or says it has none (herdrup#758). The page runs it again on its own refresh triggers
+    /// (foreground, reconnect, a status change), so a "no" is asked again then too.
+    func discover(client: HerdrClient) async {
+        var attempt = 0
+        while !offered, !Task.isCancelled {
+            await refresh(client: client)
+            if offered || refused { return }
+            let delays = Self.discoveryDelays
+            try? await Task.sleep(nanoseconds: delays[min(attempt, delays.count - 1)] * 1_000_000_000)
+            attempt += 1
+        }
     }
 
     /// Brings the list up to date. Concurrent calls coalesce into one more round.
@@ -81,6 +105,7 @@ final class TopicsModel: ObservableObject {
             let ordered = list.ordered
             if ordered != topics { topics = ordered }
             if !offered { offered = true }
+            refused = false
             if problem != nil { problem = nil }
         } catch is CancellationError {
             return
@@ -89,11 +114,14 @@ final class TopicsModel: ObservableObject {
             case .unsupported, .notAdvertised, .agentNotFound:
                 // Not an agent with topics (any more): the page goes back to Chat and Terminal.
                 offered = false
+                refused = true
                 problem = nil
             default:
+                refused = false
                 problem = Self.describe(error)
             }
         } catch {
+            refused = false
             problem = Self.describe(error)
         }
         if !loaded { loaded = true }
@@ -183,9 +211,9 @@ final class TopicsModel: ObservableObject {
     /// Draws a message to one topic in its chat at once, as a Chat send does (the caller
     /// animates it); `deliver` then sends it. Nil when it is too long to send.
     func stage(topicID: String, text: String, author: TranscriptAuthor) -> String? {
-        sendNote = nil
+        sendNotes[topicID] = nil
         guard text.utf8.count <= Self.maxMessageBytes else {
-            sendNote = Self.tooLong
+            sendNotes[topicID] = Self.tooLong
             return nil
         }
         return chatModel(for: topicID).stageOutgoing(text: text, author: author)
@@ -200,7 +228,7 @@ final class TopicsModel: ObservableObject {
         do {
             let mode = try await client.agentTopicsSend(target: target, topicID: topicID, message: text)
             chat.updateOutgoing(id, state: .submitted)
-            if mode == .queued { sendNote = "Queued: the topic reads it when its current turn ends." }
+            if mode == .queued { sendNotes[topicID] = "Queued: the topic reads it when its current turn ends." }
         } catch let error as AgentTopicsError {
             switch error {
             case .timeout, .other:
@@ -209,13 +237,13 @@ final class TopicsModel: ObservableObject {
             default:
                 chat.updateOutgoing(id, state: .notDelivered(Self.describe(error)))
             }
-            sendNote = Self.describe(error)
+            sendNotes[topicID] = Self.describe(error)
         } catch is CancellationError {
             chat.updateOutgoing(id, state: .unconfirmed)
             return
         } catch {
             chat.updateOutgoing(id, state: .unconfirmed)
-            sendNote = "Couldn't confirm delivery. Check the topic before sending again."
+            sendNotes[topicID] = "Couldn't confirm delivery. Check the topic before sending again."
         }
         Task { await chat.refresh(client: client) }
         await refresh(client: client)
@@ -535,7 +563,6 @@ private struct TopicsList: View {
     private func row(_ topic: AgentTopic) -> some View {
         let selected = highlightsSelection && model.selectedTopicID == topic.id
         return Button {
-            model.sendNote = nil
             model.selectedTopicID = topic.id
         } label: {
             VStack(alignment: .leading, spacing: 4) {
@@ -703,7 +730,8 @@ private struct TopicChat: View {
                      ground: Palette.groundMachine, onOpenTerminal: onOpenTerminal)
                 .equatable()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            if let note = actionNote ?? model.sendNote {
+            // This topic's own note only: a late receipt for another topic stays with that one.
+            if let note = actionNote ?? model.sendNote(for: topic.id) {
                 Text(note).font(Typography.app(12)).foregroundStyle(Palette.textDim)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 16).padding(.vertical, 4)
@@ -724,7 +752,6 @@ private struct TopicChat: View {
             if showsBack {
                 PaneHeaderBackButton(identifier: "topic-back") {
                     focused = false
-                    model.sendNote = nil
                     model.selectedTopicID = nil
                 }
             }
