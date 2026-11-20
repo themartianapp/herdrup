@@ -404,9 +404,11 @@ carry it.
 **CORS.** Only `https://guest.herdrup.app`, always with `Access-Control-Allow-Credentials: true`
 and `Vary: Origin`, and never `*`.
 
-- It covers only the endpoints the web guest calls: refresh, signout, `/v1/account`, the device
-  endpoints, `/v1/statements` and `/v1/sync`. Their error answers carry it too, so the page can
-  read a 401.
+- It covers only the endpoints the web guest calls: `/v1/health` (the page reads its features to
+  decide whether to offer sign-in), refresh, signout, `/v1/account`, the device endpoints,
+  `/v1/statements` and `/v1/sync`. Their error answers carry it too, so the page can read a 401.
+  Health gets the same headers as the rest, `Allow-Credentials: true` included: one rule for the
+  one origin, and health reads no cookie either way.
 - Preflights: from the web guest, for a method the route takes, `204` with
   `Allow-Methods` (the route's), `Allow-Headers: authorization, content-type` and `Max-Age: 600`.
   Anything else gets `403` with no CORS headers.
@@ -1003,7 +1005,11 @@ The names are a stable contract:
 
 Each flag is a boolean fact about the configuration: health never returns a var's or secret's
 value. Health takes no rate limit and touches no D1 row. Parsing the key happens once per isolate
-(cached).
+(cached). The web guest reads it cross-origin, so it carries CORS for `https://guest.herdrup.app`
+(§2.6).
+
+`VERSION` lives in `src/version.ts`, not in the entry module: `wrangler dev` refuses an entry
+module that exports anything but its handler.
 
 ---
 

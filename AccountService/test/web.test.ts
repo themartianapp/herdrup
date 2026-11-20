@@ -620,6 +620,31 @@ describe("CORS", () => {
     }
   });
 
+  it("lets the web guest read /v1/health, and no other origin", async () => {
+    const health = (origin?: string, method = "GET", extra: Record<string, string> = {}) =>
+      SELF.fetch(`${ORIGIN}/v1/health`, { method, headers: { ...(origin === undefined ? {} : { Origin: origin }), ...extra } });
+    const forGuest = await health(GUEST);
+    expect(forGuest.status).toBe(200);
+    expect(forGuest.headers.get("Access-Control-Allow-Origin")).toBe(GUEST);
+    expect(forGuest.headers.get("Access-Control-Allow-Credentials")).toBe("true");
+    expect(forGuest.headers.get("Vary")).toBe("Origin");
+    expect((await forGuest.json<{ features: string[] }>()).features).toContain("native_sign_in");
+    for (const origin of ["https://evil.example", "https://herdrup.app", "http://guest.herdrup.app", "null", undefined]) {
+      const other = await health(origin);
+      expect(other.status, origin).toBe(200);
+      expect(other.headers.get("Access-Control-Allow-Origin"), origin).toBeNull();
+      expect(other.headers.get("Access-Control-Allow-Credentials"), origin).toBeNull();
+    }
+    // A preflight (for a GET with a non-simple header) from the guest only.
+    const preflight = (origin: string, method: string) => health(origin, "OPTIONS", { "Access-Control-Request-Method": method });
+    const allowed = await preflight(GUEST, "GET");
+    expect(allowed.status).toBe(204);
+    expect(allowed.headers.get("Access-Control-Allow-Origin")).toBe(GUEST);
+    expect(allowed.headers.get("Access-Control-Allow-Methods")).toBe("GET");
+    expect((await preflight("https://evil.example", "GET")).status).toBe(403);
+    expect((await preflight(GUEST, "POST")).status).toBe(403);
+  });
+
   it("lets only guest.herdrup.app read answers, errors included, and never says *", async () => {
     const forGuest = await fromGuest("/v1/account", { method: "GET" });
     expect(forGuest.status).toBe(401);
