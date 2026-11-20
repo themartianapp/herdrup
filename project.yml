@@ -185,8 +185,8 @@ targets:
           - CFBundleURLName: com.jerryfane.herdr.google
             CFBundleURLSchemes:
               - com.googleusercontent.apps.552913387875-ujv6unveo5qtmmbnapogekc5jl8h6olk
-        # The Google iOS client (#698 §10 item 6; the same value as AccountService/wrangler.toml
-        # GOOGLE_IOS_CLIENT_ID). A public client: it has no secret.
+        # The Google iOS client (#698 §10 item 6; the same value as the account Worker's
+        # GOOGLE_IOS_CLIENT_ID var). A public client: it has no secret.
         HerdrGoogleIOSClientID: 552913387875-ujv6unveo5qtmmbnapogekc5jl8h6olk.apps.googleusercontent.com
         # The Keychain access group the HerdrUp account's refresh token lives in (#698 §2.5),
         # the one App/Herdr.entitlements lists. Empty prefix on an unsigned simulator build.
