@@ -30,7 +30,8 @@ cd "$(dirname "$0")/../.." || exit 1
 APP="$MACSERVE_APP_DIR/Herdr.app"
 OUT=$(mkdir -p "$MACSERVE_OUTPUT" && cd "$MACSERVE_OUTPUT" && pwd)
 UDID=$MACSERVE_SIMULATOR_ID
-TIMEOUT_BIN=$(command -v timeout || command -v gtimeout || echo Tools/ci/timeout.py)
+# shellcheck source=Tools/ci/timeout-bin.sh
+. Tools/ci/timeout-bin.sh
 ROUNDS=${ROUNDS:-30}
 EVERY=${EVERY:-5}
 GROWTH=${GROWTH:-4}

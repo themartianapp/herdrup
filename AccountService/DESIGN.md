@@ -102,8 +102,8 @@ AccountService/
   per account, and the guest relay uses none.
 - `[vars]`, all public: `APPLE_APP_CLIENT_ID = "com.jerryfane.herdr"`,
   `APPLE_WEB_CLIENT_ID` (the Services ID), `APPLE_TEAM_ID = "FXQ5Z9HHY6"`, `APPLE_KEY_ID`,
-  `GOOGLE_IOS_CLIENT_ID`, `GOOGLE_WEB_CLIENT_ID`, `STATEMENT_KID`, `STATEMENT_PREVIOUS_JWK`
-  (empty or one public JWK), `STATEMENT_REVOKED_KIDS` (comma list, §3.4),
+  `GOOGLE_IOS_CLIENT_ID`, `GOOGLE_WEB_CLIENT_ID`, `STATEMENT_KID_A`, `STATEMENT_KID_B`,
+  `STATEMENT_ACTIVE` (`A` or `B`), `STATEMENT_REVOKED_KIDS` (comma list, §3.4),
   `WEB_ORIGIN = "https://guest.herdrup.app"`.
 
 ### 1.3 D1 schema (0001)
@@ -116,7 +116,7 @@ AccountService/
 | `sessions` | `id`, `account_id`, `device_id` (nullable until enrolment), `access_hash`, `access_exp_ms`, `refresh_hash`, `refresh_exp_ms`, `platform`, `created_ms` | Token hashes are SHA-256 of 32 random bytes; one row is one session family (§2.5) |
 | `spent_refresh_tokens` | `(session_id, token_hash)`, `exp_ms` | Every refresh token the session rotated away, until that token's own expiry; reuse of any of them revokes the session (§2.5) |
 | `used_nonces` | `nonce_hash`, `exp_ms` | Single use of sign-in nonces |
-| `enrol_challenges` | `id`, `account_id`, `server_pkcs8`, `salt`, `exp_ms` | 60 s; deleted when used |
+| `enrol_challenges` | `id`, `account_id`, `session_id`, `server_pkcs8`, `salt`, `exp_ms` | 60 s; bound to the session that asked; deleted when used |
 | `web_flows` | `state_hash`, `provider`, `nonce`, `pkce_verifier`, `client` (app\|web), `handoff_challenge`, `exp_ms` | 10 min |
 | `handoffs` | `code_hash`, `account_id`, `handoff_challenge`, `platform`, `display_hint`, `exp_ms` | 2 min, single use |
 | `sync_items` | `(account_id, collection, item_id)`, `rev`, `updated_ms`, `deleted`, `body` (JSON) | Index `(account_id, rev)` |
@@ -336,12 +336,23 @@ An X25519 key can't sign, so possession is proved with a key agreement:
    On the web, `deriveBits` with the non-extractable key does the same; on iOS,
    `Curve25519.KeyAgreement.PrivateKey.sharedSecretFromKeyAgreement`.
 3. `POST /v1/devices {challenge_id, device_pub: D, mac, name, platform}`. The Worker deletes the
-   challenge, computes `X25519(e, D)`, checks the MAC in constant time, and inserts the device.
-   - The session gets `device_id`.
-   - If `D` already belongs to this account, the call is idempotent.
+   challenge (it must belong to the calling session and be unexpired), computes `X25519(e, D)`,
+   checks the MAC in constant time, and inserts the device.
+   - The session gets `device_id`, **once**: a session that already has a device can't enrol
+     another key (`409 session_has_device`), so a stolen access token can't bind the thief's
+     key. Enrolling the session's own key again is idempotent.
+   - If `D` already belongs to this account (a new sign-in on the same install), the session
+     is bound to that existing device (200).
    - If `D` belongs to another account: `409 device_in_other_account`. The app offers to sign out
      of that account first; a key belongs to one account at a time.
-   - At most 20 devices per account (`403 too_many_devices`).
+   - At most 20 devices per account (`403 too_many_devices`), checked in the inserting
+     statement itself so two enrolments can't both pass the count.
+   - Insert and bind are one D1 batch (a transaction), and the insert also requires the
+     session to still exist without a device. Nothing is undone afterwards: once committed,
+     the device may already belong to another session of the account (a new sign-in on the
+     same install adopts it), so a compensating delete could sign that session out. A session
+     that signed out meanwhile gets `401 invalid_token`; the device stays (#752 review).
+   - Removing a device (`DELETE /v1/devices/<id>`) deletes the sessions bound to it.
 
 This uses the WebCrypto `X25519` that workerd has supported since 2023, and the same algorithm in
 all three clients. A shared test vector file covers it (§9).
@@ -370,19 +381,22 @@ payload {"v":1,
 - **Issue:** `POST /v1/statements {hosts: [host_id ≤ 50]}` (authenticated, the session must have
   a `device_id`) returns `{statements: [{host, jws}], exp}`. The `dev` is always the session's
   own device, so a stolen access token mints statements that are useless without the device key.
-  Each issue reads the device row; the device is removed → `403 device_removed`.
+  Each issue reads the device row; the device is removed → its sessions are already gone
+  (`401`), and a session whose device row is missing gets `403 device_removed`.
 - **Algorithm:** Ed25519 via `crypto.subtle.sign("Ed25519", …)`. The key is a PKCS8 Worker secret
-  `STATEMENT_SIGNING_KEY`. The statement is ~420 bytes and fits easily in a Noise message-1
-  payload (herdr `MAX_PLAINTEXT` ≈ 64 KB).
+  in one of two slots, `STATEMENT_KEY_A` / `STATEMENT_KEY_B`, each with its kid
+  (`STATEMENT_KID_A` / `STATEMENT_KID_B`); `STATEMENT_ACTIVE` names the slot that signs. The
+  statement is ~420 bytes and fits easily in a Noise message-1 payload (herdr `MAX_PLAINTEXT` ≈ 64 KB).
 - **Clients cache** each host's statement and ask again when less than 2 minutes remain, or
   before a connect.
 
 ### 3.4 Publishing keys, rotation, revocation
 
 - `GET /.well-known/jwks.json` returns
-  `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"…","kid":"2026-11a","use":"sig","alg":"EdDSA"}, …]}`,
-  with `Cache-Control: public, max-age=3600`. It lists the current key and, during a rotation,
-  the previous one (`STATEMENT_PREVIOUS_JWK`).
+  `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"…","kid":"2026-11a","use":"sig","alg":"EdDSA"}, …], "revoked_kids":[…]}`,
+  with `Cache-Control: public, max-age=3600`. It lists every slot that has a key and a kid not
+  in `STATEMENT_REVOKED_KIDS`, the active one first, so during a rotation both keys are
+  published. `test/vectors/statement-v1.json` holds golden statements for herdr's tests.
 - **Hosts** (herdr):
   - fetch it on first need: an account-bound share exists, or a hello carries a statement;
   - cache it on disk at `<config>/guest/account_keys.json` with `fetched_ms`;
@@ -394,14 +408,18 @@ payload {"v":1,
   - **refuse NEW account devices** (a statement for a key not yet on the share) whenever the
     JWKS couldn't be refreshed in the last hour. Adding a device needs keys at most 1 hour old;
     the refusal is `account_keys_stale`, and the client retries later.
-- **Planned rotation:**
-  1. Add the new public key to the JWKS as previous+next for at least 2 hours, so the hosts'
-     1-hour cache has picked it up.
-  2. Switch `STATEMENT_KID` and the secret.
-  3. Keep the old public key for 1 hour (more than the 10-minute statement life), then drop it.
+- **Planned rotation** (two slots, so no key ever leaves Cloudflare; README "Rotate the statement key"):
+  1. Put the new key and its kid in the idle slot: it is published at once, but doesn't sign.
+     Wait at least 2 hours, so the hosts' 1-hour cache has picked it up.
+  2. Switch `STATEMENT_ACTIVE` to that slot.
+  3. Keep the old key published for 1 hour (more than the 10-minute statement life), then
+     delete its secret.
 - **Emergency rotation (compromise):**
-  1. Generate a new key and switch `STATEMENT_KID` and the secret to it at once.
-  2. Drop the old public key from `keys`, and add its kid to a top-level `"revoked_kids"` list
+  1. Generate a new key in the idle slot and switch `STATEMENT_ACTIVE` to it at once.
+  2. Delete the old key's secret and add its kid to `STATEMENT_REVOKED_KIDS`, which the JWKS
+     lists as a top-level `"revoked_kids"`, e.g. `{"keys":[…], "revoked_kids":["2026-11a"]}`.
+     A revoked kid is never published or used to sign, even if its slot is still active. The
+     list is kept for at least 30 days.
      in the same JWKS, e.g. `{"keys":[…], "revoked_kids":["2026-11a"]}`. The list is kept for
      at least 30 days.
   3. A host that sees a kid in `revoked_kids` deletes that key from its disk cache and never
@@ -421,7 +439,7 @@ payload {"v":1,
 
 ### 3.5 Trust the hosts give the service (stated plainly)
 
-Whoever controls `STATEMENT_SIGNING_KEY` and `ACCOUNT_HMAC_KEY` can enrol a device into **any
+Whoever controls the statement signing keys and `ACCOUNT_HMAC_KEY` can enrol a device into **any
 account-bound share**. Plain invites are not affected. To bound this:
 
 1. Account binding is per share, chosen by the guest (2A). The host owner can turn it off
@@ -691,7 +709,7 @@ Logging copies the relay's rule:
 | # | Repo | PR | Tests |
 |---|---|---|---|
 | 1 | herdrup | **Worker skeleton + native auth** (built 19 Nov). `AccountService/`, migration 0001, `/v1/health`, nonce, Apple/Google ID-token sign-in, sessions (refresh, rotation, reuse revokes the family, sign-out), `/v1/account`, rate limits, logging rules, hourly cleanup, README with deploy/rollback like GuestRelay's, CI job "Account service (Linux)". | `@cloudflare/vitest-plugin` in workerd with a local D1; test-generated RSA keys served by a fetch spy at the real JWKS URLs; per-key counter rate limits (no clock windows). Cases: good tokens (both Apple audiences, both Google clients); wrong `iss`/`aud`/`azp`; expired / future / too-old `iat`; `alg: none`/HS256/`crit`; unknown `kid`; bad signature; nonce mismatch, forgery, expiry, reuse; refresh rotation, reuse revokes, racing refreshes; per-IP and per-account limits; no stored sub/email/token; logs hold only endpoint and outcome; JWKS cache timing with an explicit clock. |
-| 2 | herdrup | **Devices + statements.** Challenge/enrol, device list/rename/remove, `/v1/statements`, `/.well-known/jwks.json`, rotation vars. | X25519 PoP vectors in `AccountService/test/vectors/enrol-v1.json`, shared with the iOS, Go and TS clients; low-order point rejected; 409 for another account; device cap; removal stops statements; pairwise `sub` stable per host, different across hosts; golden `statement-v1.json` that herdr's tests reuse; JWKS during rotation. |
+| 2 | herdrup | **Devices + statements** (built 20 Nov). Challenge/enrol, device list/rename/remove, `/v1/statements`, `/.well-known/jwks.json`, two-slot rotation vars, migration `0002_devices.sql`, `STATEMENT_LIMIT` and `ENROL_LIMIT`. | X25519 PoP vectors in `AccountService/test/vectors/enrol-v1.json` (made with Node's crypto, RFC 7748 key pairs), shared with the iOS, Go and TS clients; low-order points rejected; 409 for another account; one device per session; device cap; removal stops statements; pairwise `sub` stable per host, different across hosts and accounts; golden `statement-v1.json` (RFC 8032 test key) that herdr's tests reuse; JWKS during rotation and after a revocation. |
 | 3 | herdrup | **Sync.** `GET`/`POST /v1/sync`, schemas per collection, caps, tombstones, `reset_required`. | Ordering and last-writer-wins; per-key settings don't clobber; `base_rev` conflict; unknown field → 400; caps → 413/403; tombstone pruning; full-reset path. |
 | 4 | herdrup | **Deletion + Apple revoke + notifications.** `/v1/account/delete`, client secret signed in the Worker from `APPLE_SIWA_P8`, `/v1/apple/notifications`. | Table sweep: no row with the `account_id` remains in any table; client-secret JWT claims and ES256 signature checked against a generated P-256 key; revoke called with the client_id matching the token `aud`; revoke failure still deletes and returns `manual_revoke: true`; notification JWS verify (bad sig, wrong `aud`); `consent-revoked` deletes. |
 | 5 | herdrup + herdrup-desktop | **Web sign-in flow + sign-in UI (1B) + sync client (#699).** Worker: `/v1/auth/web/start`, the Apple `form_post` and Google callbacks, handoff with PKCE, the web refresh cookie and CORS for `guest.herdrup.app` (moved here from PR1, next to their only clients). Apps: HerdrKit `AccountClient`, `AccountSession` (Keychain), `DeviceEnroller`, `StatementCache`, `SyncEngine` (Linux-testable, protocols like `GuestKeyStore`); onboarding 1B with Apple + Google; account screen (devices, sign-out, delete); desktop `internal/account` + `herdrup://account#`; web guest sign-in. | Worker: web `state` reuse, handoff without/with wrong verifier, CORS only for `guest.herdrup.app`, cookie flags. HerdrKit unit tests with URLProtocol stubs (single-flight refresh, 401 → re-auth, PoP vector); sync merge tests; encoder test that payloads hold no secret patterns; UI test for 1B with a mock server; Go tests for the handoff and Secrets fallback; web guest vitest for the cookie flow. |
@@ -785,13 +803,14 @@ Nothing here is done by an agent; no secrets have been created.
     ```
     Same value in both places, never printed. Losing it orphans every account and changes every
     pairwise id.
-11. **[later: PR2] Statement signing key:** generated straight into the Worker. No copy is
-    needed: if it is lost, rotate.
+11. **[later: PR2] Statement signing key:** generated straight into the Worker, slot A. No copy
+    is needed: if it is lost, rotate.
     ```sh
-    openssl genpkey -algorithm ed25519 -outform DER | base64 | tr -d '\n' | npx wrangler secret put STATEMENT_SIGNING_KEY
+    openssl genpkey -algorithm ed25519 -outform DER | base64 | tr -d '\n' | npx wrangler secret put STATEMENT_KEY_A
     ```
-    The public JWK for `jwks.json` is derived by the Worker at startup. Set the
-    `STATEMENT_KID` var, e.g. `2026-11a`.
+    The public JWK for `jwks.json` is derived by the Worker from the key. `wrangler.toml` already
+    sets `STATEMENT_ACTIVE = "A"` and `STATEMENT_KID_A = "2026-11a"`. Also apply migration
+    `0002_devices.sql` before deploying PR2.
 12. **[later: PR4]** Nothing beyond step 3: the Worker signs the Apple client secrets itself
     from `APPLE_SIWA_P8`.
 13. **[before PR5 ships] Plan:** confirm Workers Free is acceptable, or move to Workers Paid when
@@ -810,7 +829,7 @@ Nothing here is done by an agent; no secrets have been created.
 | Google web client secret | **Yes** | Worker secret `GOOGLE_WEB_CLIENT_SECRET`, pasted by the owner at the first deploy |
 | D1 `database_id` | No | `wrangler.toml` |
 | `ACCOUNT_HMAC_KEY` | **Yes** | keyring `HERDRUP_ACCOUNTS_HMAC_KEY` + Worker secret |
-| `STATEMENT_SIGNING_KEY` | **Yes** | Worker secret only |
+| `STATEMENT_KEY_A`, `STATEMENT_KEY_B` | **Yes** | Worker secrets only (two rotation slots) |
 | Google review test account | **Yes** | keyring, App Store Connect review notes |
 
 ---

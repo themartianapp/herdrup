@@ -1,29 +1,49 @@
-// herdrup-accounts: HerdrUp's optional accounts (herdrup#698, epic #696). This first step
-// signs people in with Apple or Google and keeps their sessions. Devices, statements for
-// hosts, sync and account deletion follow in later steps.
-// Log lines carry only endpoint and outcome (src/http.ts): never tokens, nonces, provider
-// user ids or their hashes, emails, account or session ids, IPs, bodies or URLs.
+// herdrup-accounts: HerdrUp's optional accounts (herdrup#698, epic #696). Sign-in with Apple or
+// Google and sessions (step 1); devices, bound by proof of possession of their guest key, and
+// the short-lived statements hosts check (step 2). Sync and account deletion follow.
+// Log lines carry only endpoint and outcome (src/http.ts): never tokens, nonces, provider user
+// ids or their hashes, emails, account, session or device ids, device keys, host ids, IPs,
+// bodies or URLs.
 import { handleAccount, handleNonce, handleRefresh, handleSignIn, handleSignOut } from "./auth";
 import { cleanup } from "./cleanup";
+import { handleChallenge, handleDevice, handleEnrol, handleListDevices } from "./devices";
 import type { Env } from "./env";
 import { errorResponse, json, log, type Endpoint } from "./http";
+import { handleJwks, handleStatements } from "./statements";
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 
-const ROUTES: Record<string, { method: string; endpoint: Exclude<Endpoint, "cron"> }> = {
-  "/v1/health": { method: "GET", endpoint: "/v1/health" },
-  "/v1/auth/nonce": { method: "POST", endpoint: "/v1/auth/nonce" },
-  "/v1/auth/apple": { method: "POST", endpoint: "/v1/auth/apple" },
-  "/v1/auth/google": { method: "POST", endpoint: "/v1/auth/google" },
-  "/v1/auth/refresh": { method: "POST", endpoint: "/v1/auth/refresh" },
-  "/v1/auth/signout": { method: "POST", endpoint: "/v1/auth/signout" },
-  "/v1/account": { method: "GET", endpoint: "/v1/account" },
+type RoutedEndpoint = Exclude<Endpoint, "cron">;
+
+interface Route {
+  methods: string[];
+  endpoint: RoutedEndpoint;
+}
+
+const ROUTES: Record<string, Route> = {
+  "/v1/health": { methods: ["GET"], endpoint: "/v1/health" },
+  "/v1/auth/nonce": { methods: ["POST"], endpoint: "/v1/auth/nonce" },
+  "/v1/auth/apple": { methods: ["POST"], endpoint: "/v1/auth/apple" },
+  "/v1/auth/google": { methods: ["POST"], endpoint: "/v1/auth/google" },
+  "/v1/auth/refresh": { methods: ["POST"], endpoint: "/v1/auth/refresh" },
+  "/v1/auth/signout": { methods: ["POST"], endpoint: "/v1/auth/signout" },
+  "/v1/account": { methods: ["GET"], endpoint: "/v1/account" },
+  "/v1/devices/challenge": { methods: ["POST"], endpoint: "/v1/devices/challenge" },
+  "/v1/devices": { methods: ["GET", "POST"], endpoint: "/v1/devices" },
+  "/v1/statements": { methods: ["POST"], endpoint: "/v1/statements" },
+  "/.well-known/jwks.json": { methods: ["GET"], endpoint: "/.well-known/jwks.json" },
 };
 
+// A device id is 16 random bytes in base64url.
+const DEVICE_PATH = /^\/v1\/devices\/([A-Za-z0-9_-]{22})$/;
+const DEVICE_ROUTE: Route = { methods: ["PATCH", "DELETE"], endpoint: "/v1/devices/:id" };
+
 export async function handleRequest(request: Request, env: Env): Promise<Response> {
-  const route = ROUTES[new URL(request.url).pathname];
+  const { pathname } = new URL(request.url);
+  const deviceId = DEVICE_PATH.exec(pathname)?.[1];
+  const route = deviceId === undefined ? ROUTES[pathname] : DEVICE_ROUTE;
   if (route === undefined) return errorResponse(404, "not_found");
-  if (request.method !== route.method) return errorResponse(405, "method_not_allowed", { Allow: route.method });
+  if (!route.methods.includes(request.method)) return errorResponse(405, "method_not_allowed", { Allow: route.methods.join(", ") });
   const now = Date.now();
   try {
     switch (route.endpoint) {
@@ -41,6 +61,16 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         return await handleSignOut(request, env, now);
       case "/v1/account":
         return await handleAccount(request, env, now);
+      case "/v1/devices/challenge":
+        return await handleChallenge(request, env, now);
+      case "/v1/devices":
+        return request.method === "GET" ? await handleListDevices(request, env, now) : await handleEnrol(request, env, now);
+      case "/v1/devices/:id":
+        return await handleDevice(request, env, deviceId ?? "", now);
+      case "/v1/statements":
+        return await handleStatements(request, env, now);
+      case "/.well-known/jwks.json":
+        return await handleJwks(env);
     }
   } catch {
     // The error itself is deliberately not logged: it may echo request content.

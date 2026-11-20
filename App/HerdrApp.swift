@@ -466,6 +466,12 @@ struct RootView: View {
                 TerminalHomeView(client: HerdrClient(transport: NeedsYouMockTransport()), onDisconnect: {},
                                  onTrustHostKey: { _ in false })
             }
+        case .cachedHome:
+            // Slow-network fix 4: a cold start whose agent.list is slow. The cache holds the
+            // last launch's roster, so the rows and the "Updating" mark show at once and the
+            // fresh roster replaces them when the mock answers.
+            TerminalHomeView(client: CachedHomeMock.client(), onDisconnect: {},
+                             onTrustHostKey: { _ in false })
         case .folders:
             let _ = AgentFoldersMockTransport.prepared
             TerminalHomeView(client: HerdrClient(transport: AgentFoldersMockTransport()), onDisconnect: {},
@@ -700,7 +706,7 @@ struct RootView: View {
         var creds = picked
         if creds.session == nil { creds.session = SessionChoice.remembered(for: creds) }
         let newTransport = CitadelTransport(credentials: creds, hostKeyPolicy: pins)
-        let newClient = HerdrClient(transport: newTransport)
+        let newClient = HerdrClient(transport: newTransport, contentCache: AppContentCache.scope(for: creds))
         sessionCache = SessionSwitchCache()   // another machine's sessions must not seed this one
         credentials = creds
         transport = newTransport
@@ -741,6 +747,10 @@ struct RootView: View {
             try? await Task.sleep(nanoseconds: 10_000_000_000)
             revealHome(generation: generation)
         }
+        // Slow-network fix 4: with this machine's last agent list on disk there is nothing
+        // to wait for. The Agents screen slides in at once, painted from it, and the fetch
+        // above refreshes it behind the "Updating" mark.
+        if newClient.contentCache?.hasAgents() == true { revealHome(generation: generation) }
         registerPush(with: newClient, credentials: creds)   // re-send a cached token to the freshly-connected server
         registerActivityPush(with: newClient)   // and any existing Live Activity token (reclaimed activity)
         // Request the notification permission PROMPT here — push can now actually deliver: the build
@@ -805,7 +815,7 @@ struct RootView: View {
         // offers a fresh open on the new connection instead of a ring that only fails.
         gramDownloads.cancelAll()
         let newTransport = CitadelTransport(credentials: creds, hostKeyPolicy: pins)
-        let newClient = HerdrClient(transport: newTransport)
+        let newClient = HerdrClient(transport: newTransport, contentCache: AppContentCache.scope(for: creds))
         transport = newTransport
         client = newClient
         session += 1
@@ -830,7 +840,7 @@ struct RootView: View {
         // session's screens still send can reach the same pane id in this one. The
         // old transport is not closed: it shares the connection.
         let scoped = current.forSession(next)
-        let newClient = HerdrClient(transport: scoped)
+        let newClient = HerdrClient(transport: scoped, contentCache: AppContentCache.scope(for: creds))
         transport = scoped
         client = newClient
         session += 1
@@ -1961,6 +1971,15 @@ struct TerminalHomeView: View {
     private var accounts: [CredentialAccount] { displayedRoster.accounts }
     @State private var error: String?
     @State private var loading = true
+    /// The roster on screen is the one `AppContentCache` kept from the last launch, and no
+    /// `agent.list` has answered yet. Shows the "Updating" mark until the first load lands
+    /// or fails; `rosterValidated` is what says whether anything has connected.
+    @State private var showingCachedRoster = false
+    /// An `agent.list` has succeeded on this connection. Until then the rows on screen (last
+    /// launch's, or another session's) were never confirmed, so every failure is the connect
+    /// failing, not a background refresh, and republishes its error and guidance: a Retry
+    /// that fails differently (daemon down, then herdr too old) must say so.
+    @State private var rosterValidated = false
     @State private var rejectedFingerprint: String?
     @State private var trustFailed = false
     /// Set when the connect failed because herdr is not installed on the host
@@ -3346,7 +3365,10 @@ struct TerminalHomeView: View {
         .task(id: hostKey) {
             if !hostKey.isEmpty, session == nil { terminalsStore.migrateLegacyIfNeeded(host: hostKey) }
         }
-        .onAppear { seedFromSessionCache() }
+        .onAppear {
+            seedFromSessionCache()
+            seedFromContentCache()
+        }
         .task { await watchSessions() }
         // First launch: show the gestures tutorial once — but NOT over a pending push
         // deep-link (openGramIfPending / applyDeepLink would dismiss it to show Gram or
@@ -3753,6 +3775,15 @@ struct TerminalHomeView: View {
         }
     }
 
+    /// A cold start (slow-network fix 4): the agents this machine's session listed last
+    /// time, from disk, while the first load is out. Only onto an empty screen; the first
+    /// load replaces it like any reload, rows matched by id, so nothing jumps.
+    private func seedFromContentCache() {
+        guard agents.isEmpty, let kept = client.contentCache?.agents(), !kept.agents.isEmpty else { return }
+        receiveRoster(agents: kept.agents, accounts: [])
+        showingCachedRoster = true
+    }
+
     /// The agent search: a plain text field with Clear once there is text. No mic: the
     /// owner found dictating a name to filter the list useless.
     private var searchField: some View {
@@ -3854,6 +3885,9 @@ struct TerminalHomeView: View {
                                   initialReply: "", siblings: orderedSiblings))
                 }
             )
+        }
+        .overlay(alignment: .top) {
+            CachedContentBadge.shown(showingCachedRoster, identifier: "agents-updating")
         }
         // The one-time GitHub star bar, floating over the bottom of the roster: just above
         // the tab bar on iPhone, above the sidebar's section bar on iPad. It covers the list
@@ -4961,6 +4995,8 @@ struct TerminalHomeView: View {
             let latestAccounts = rosterRefreshState().latest.accounts
             receiveRoster(agents: fetched, accounts: latestAccounts)
             sessionCache?.store(fetched, session: session)
+            if showingCachedRoster { showingCachedRoster = false }   // fresh rows replaced the kept ones
+            if !rosterValidated { rosterValidated = true }
 
             clearSuccessfulLoadState()
             // Prune keep-mounted panes whose agent is gone (Stopped / vanished) so no dead
@@ -5071,8 +5107,11 @@ struct TerminalHomeView: View {
             // A BACKGROUND refresh failure keeps the stale-but-good list rather than blowing it
             // away into the error screen. Surface the error only when there is nothing to show —
             // EXCEPT a host-key rejection, which always surfaces (a mid-session key change must
-            // never be hidden behind a cached list).
-            if agents.isEmpty || rejected != nil {
+            // never be hidden behind a cached list), and any failure before the first success
+            // on this connection (`rosterValidated`): the rows are last launch's (or another
+            // session's), so this is the connect failing (auth, no herdr, daemon down), not a
+            // refresh, and its guidance must show, the newest failure's on every Retry.
+            if agents.isEmpty || rejected != nil || !rosterValidated {
                 self.error = "\(error)"
                 rejectedFingerprint = rejected
                 // Only when this is the surfaced error do we drive the install-guidance
@@ -5081,6 +5120,8 @@ struct TerminalHomeView: View {
                 herdrIncompatibleBuild = incompatibleBuild
                 unavailableDaemonHost = daemonHost
             }
+            // The error replaces the "Updating…" mark, which would otherwise stay for good.
+            if showingCachedRoster { showingCachedRoster = false }
             // DROP a pending deep-link this failed load couldn't service, rather than leave it armed:
             // a push targets a just-now event, so firing it after some much-later successful load would
             // yank the reader into a stale pane (an agent that may have finished long ago). If it was
@@ -6205,10 +6246,17 @@ struct TerminalPaneContent: View {
             await deliverPrefillIfNeeded()
         }
         .task(id: paneID) {
+            // A chat page kept from the last launch says this server serves transcripts: the
+            // Chat opens on it while the capability answer is out (slow-network fix 4). That
+            // answer still decides; a failed one leaves the kept page up rather than hiding it.
+            if client.contentCache?.hasTranscript(target: paneID) == true { transcriptCapable = true }
             // Usually no request: the home screen already learned the capabilities.
-            let capabilities = try? await client.knownCapabilities()
-            transcriptCapable = capabilities?.agentTranscript ?? false
-            topicsCapable = capabilities?.agentTopics ?? false
+            // A failed answer leaves both as they are (a kept chat page stays up).
+            do {
+                let capabilities = try await client.knownCapabilities()
+                transcriptCapable = capabilities?.agentTranscript ?? false
+                topicsCapable = capabilities?.agentTopics ?? false
+            } catch {}
             capabilitiesResolved = true
         }
         // Whether this omp agent offers topics: asked once it is known to be an omp agent on a
@@ -10158,6 +10206,7 @@ enum ScreenshotMock {
     case chatView, guestChat
     // The Agents home with a long roster and `HERDR_MOCK_WAITING` agents asking (#551).
     case needsYou
+    case cachedHome
     // The Agents home with two agent folders and a star, over a daemon that keeps them in
     // memory (#552); `HERDR_MOCK_GROUPS=off` is a server without folders.
     case folders
@@ -10183,6 +10232,7 @@ enum ScreenshotMock {
         case "archivedclose": return .archivedClose
         case "sessions": return .sessions
         case "needsyou": return .needsYou
+        case "cachedhome": return .cachedHome
         case "folders": return .folders
         case "serverupdate": return .serverUpdate
         case "desktopref": return .desktopReference

@@ -29,9 +29,10 @@ below because the wrong turns are more instructive than the answer.
 > `gram.get_file`, `gram.get_file_chunk`; `RequestChannel.bulkMethods`). The bridge
 > writes each reply whole, so on one channel a 0.9 MB transcript page held
 > `agent.list` up for seconds on a slow link. The bulk channel opens on the first
-> big request. A probe after idle or the return to the foreground no longer closes a
-> channel that is still receiving bytes: any inbound byte within the probe budget
-> counts as alive.
+> big request. Both request channels run on the shared SSH connection and count
+> among its 6 held channels. A probe after idle or the return to the foreground no
+> longer closes a channel that is still receiving bytes: any inbound byte within the
+> probe budget counts as alive.
 
 ## The design
 

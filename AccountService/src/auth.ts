@@ -132,17 +132,29 @@ export async function handleRefresh(request: Request, env: Env, nowMs: number): 
   return result.ok ? json(200, result.tokens) : errorResponse(401, result.error);
 }
 
-/** The caller's session after ACCOUNT_LIMIT, or the error to answer with. */
-async function openAccountRequest(request: Request, env: Env, endpoint: Endpoint, nowMs: number): Promise<Principal | Response> {
-  if (env.ACCOUNT_LIMIT === undefined) {
+/**
+ * The caller's session after ACCOUNT_LIMIT and, when given, a second per-account limit
+ * (`extraLimit`), or the error to answer with. Both are checked before the body is read.
+ */
+export async function openAccountRequest(
+  request: Request,
+  env: Env,
+  endpoint: Endpoint,
+  nowMs: number,
+  extraLimit?: "STATEMENT_LIMIT" | "ENROL_LIMIT",
+): Promise<Principal | Response> {
+  const extra = extraLimit === undefined ? null : env[extraLimit];
+  if (env.ACCOUNT_LIMIT === undefined || extra === undefined) {
     log({ endpoint, outcome: "not_configured" });
     return errorResponse(500, "not_configured");
   }
   const auth = await authenticate(env.DB, request.headers.get("Authorization"), nowMs);
   if (!auth.ok) return errorResponse(401, auth.error, { "WWW-Authenticate": "Bearer" });
-  if (!(await env.ACCOUNT_LIMIT.limit({ key: auth.principal.accountId })).success) {
-    log({ endpoint, outcome: "rate_limited" });
-    return errorResponse(429, "rate_limited");
+  for (const limiter of extra === null ? [env.ACCOUNT_LIMIT] : [env.ACCOUNT_LIMIT, extra]) {
+    if (!(await limiter.limit({ key: auth.principal.accountId })).success) {
+      log({ endpoint, outcome: "rate_limited" });
+      return errorResponse(429, "rate_limited");
+    }
   }
   return auth.principal;
 }
