@@ -14,6 +14,7 @@ export type Endpoint =
   | "/v1/devices"
   | "/v1/devices/:id"
   | "/v1/statements"
+  | "/v1/sync"
   | "/.well-known/jwks.json"
   | "cron";
 
