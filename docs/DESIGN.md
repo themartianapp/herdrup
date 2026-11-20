@@ -303,6 +303,8 @@ or automation time-out ("Failed to get screenshot: Timed out", "Failed to get li
 applications: Accessibility error kAXErrorIPCTimeout") it stops the run with
 `::error::simulator <udid> stopped answering accessibility (3 timeouts in a row): <tests>`.
 The round gets no retry or recovery, and later rounds on that device fail without running.
+A watcher that fails (ax-watch.py or the console filter exits non-zero) fails its round too:
+an unwatched run never passes on xcodebuild's status alone.
 Debug resize receipts are per pane, so a background terminal's fixed grid
 cannot overwrite the foreground terminal's keyboard-resize result.
 The built-version check (in `ipad-script`) selects `Herdr.app`, not the separate UI test runner bundle.

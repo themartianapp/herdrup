@@ -361,8 +361,8 @@ class AccessibilityStopTests(unittest.TestCase):
     within seconds with the simulator's error, and the device counts as dead; two, then a
     passing case, do not stop it."""
 
-    FUNCTIONS = ("beautify", "bounded", "stop_recording", "watched_test_run", "accessibility_stopped",
-                 "simulator_is_dead", "first_run", "run_suite")
+    FUNCTIONS = ("beautify", "bounded", "stop_recording", "watched_test_run", "watcher_stopped",
+                 "accessibility_stopped", "simulator_is_dead", "first_run", "run_suite")
     UDID = "33432473-1D2A-4A03-A3ED-298625C7EA3E"
 
     @classmethod
@@ -384,9 +384,11 @@ class AccessibilityStopTests(unittest.TestCase):
         lines.append("Test Case '-[%s]' %s (%s seconds)." % (name, "failed" if failure else "passed", seconds))
         return lines
 
-    def round(self, lines, tail, timeout_bin):
+    def round(self, lines, tail, timeout_bin, ax_watch=None, filter_exit=None):
         """Runs run_suite with a fake xcodebuild printing LINES (0.1 s apart), then TAIL
-        (shell); returns (status, output, seconds, the xcodebuild pid file's process alive)."""
+        (shell); AX_WATCH is AX_WATCH when given, and the console filter (beautify) exits
+        FILTER_EXIT when given. Returns (status, output, seconds, the xcodebuild pid file's
+        process alive)."""
         work = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, work)
         (work / "bin").mkdir()
@@ -402,7 +404,7 @@ cd "$WORK" || exit 99
 export PATH="$WORK/bin:$PATH"
 SIM_TMP="$WORK/sim"; mkdir -p "$SIM_TMP"
 XCRESULT_TESTS="$HERE/xcresult-tests.py"
-AX_WATCH="$HERE/ax-watch.py"
+AX_WATCH="${FAKE_AX_WATCH:-$HERE/ax-watch.py}"
 APP_UNDER_TEST=app
 recorder=
 dead_simulators=" "
@@ -413,6 +415,7 @@ failed_tests() { echo "-only-testing:HerdrUITests/DesktopReferenceShots/testFold
 infra_rerun() { return 2; }
 retry_failed_tests() { echo "retry_failed_tests called"; return 1; }
 %s
+if [ -n "${FAKE_FILTER_EXIT:-}" ]; then beautify() { cat >/dev/null; return "$FAKE_FILTER_EXIT"; }; fi
 run_suite iPadDesktopReference-DesktopReferenceShots "$UDID" 15m -only-testing:HerdrUITests/DesktopReferenceShots
 status=$?
 echo "round status $status result $last_round_result"
@@ -421,6 +424,10 @@ echo "next round status $?"
 exit "$status"
 """ % self.functions
         env = dict(os.environ, WORK=str(work), HERE=str(HERE), UDID=self.UDID, TIMEOUT_BIN=timeout_bin)
+        if ax_watch is not None:
+            env["FAKE_AX_WATCH"] = ax_watch
+        if filter_exit is not None:
+            env["FAKE_FILTER_EXIT"] = str(filter_exit)
         start = time.monotonic()
         result = subprocess.run(["bash", "-c", 'TIMEOUT_BIN="$TIMEOUT_BIN"\n' + harness], env=env,
                                 capture_output=True, text=True, timeout=120)
@@ -479,6 +486,31 @@ exit "$status"
         self.assertEqual(code, 1, out)
         self.assertNotIn("stopped answering accessibility", out)
         self.assertIn("retry_failed_tests called", out)
+
+    def test_a_failed_watcher_fails_a_passing_round(self):
+        # Review of #748, P2-a: an unavailable watcher, or a console filter that fails, means
+        # nothing watched the run; the round must not pass on the command's status alone.
+        lines = self.case("testAvatars") + self.case("testEmpty")
+        timeout_bin = str(HERE / "timeout.py")
+        for name, kwargs, exit_status in (
+                ("missing AX_WATCH", {"ax_watch": str(HERE / "no-such-ax-watch.py")}, 2),
+                ("console filter exits 7", {"filter_exit": 7}, 7)):
+            with self.subTest(name):
+                code, out, _, _ = self.round(lines, "exit 0", timeout_bin, **kwargs)
+                self.assertEqual(code, 1, out)
+                self.assertIn("::error::accessibility watcher failed (exit %d)" % exit_status, out)
+                self.assertIn("round status 1 result failed", out)
+                self.assertIn("::error::iPadDesktopReference-DesktopReferenceShots failed: "
+                              "accessibility watcher failed (exit %d)" % exit_status, out)
+                self.assertNotIn("retry_failed_tests called", out)
+
+    def test_a_healthy_watcher_and_a_passing_command_pass(self):
+        lines = self.case("testAvatars") + self.case("testEmpty")
+        code, out, _, _ = self.round(lines, "exit 0", str(HERE / "timeout.py"))
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("accessibility watcher failed", out)
+        self.assertIn("round status 0 result passed", out)
+        self.assertIn("testEmpty]' passed", out)
 
 
 class SimStateTests(unittest.TestCase):

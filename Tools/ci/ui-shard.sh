@@ -438,20 +438,40 @@ dead_simulators=" "
 # BUDGET, with SIGINT when it runs out and KILL 60 s later, its output in LOG and on the
 # console. Returns COMMAND's status (124 when it ran out). When ax-watch.py stopped it,
 # ${LOG%.log}-accessibility-stop.txt lists the timed-out cases (accessibility_stopped).
+# THE WATCHER FAILS CLOSED (review of #748, P2-a): when the watcher pipeline (ax-watch.py,
+# then the console filter) exits non-zero, nothing watched the run, so a passing COMMAND
+# does not pass: watcher_failed holds the reason, the round fails with it (watcher_stopped)
+# and the status is 1; a failing COMMAND keeps its own status. ax-watch.py exits 0 after the
+# deliberate stop too, which has its own verdict.
+watcher_failed=
 watched_test_run() {
-  local log="$1" budget="$2" stop="${1%.log}-accessibility-stop.txt" runner watcher status=0
+  local log="$1" budget="$2" stop="${1%.log}-accessibility-stop.txt" runner watcher status=0 watch_status=0
   shift 2
+  watcher_failed=
   rm -f "$stop" "$stop.done"
   : >"$log" || return 1
   "$TIMEOUT_BIN" --signal=INT --kill-after=60s "$budget" "$@" >>"$log" 2>&1 &
   runner=$!
-  python3 "$AX_WATCH" "$log" "$runner" "$stop" | beautify &
+  # A subshell, so `wait` returns the whole pipeline's status (pipefail): `wait` on a
+  # background pipeline's $! gets only its last command's, the console filter's.
+  ( python3 "$AX_WATCH" "$log" "$runner" "$stop" | beautify ) &
   watcher=$!
   wait "$runner" || status=$?
   : >"$stop.done"
-  wait "$watcher" || true
+  wait "$watcher" || watch_status=$?
   rm -f "$stop.done"
+  if [ "$watch_status" -ne 0 ]; then
+    watcher_failed="accessibility watcher failed (exit $watch_status)"
+    echo "::error::$watcher_failed; the run in $log was not watched"
+    [ "$status" -ne 0 ] || status=1
+  fi
   return "$status"
+}
+# watcher_stopped LABEL: succeeds, with the round's error, when the last watched_test_run's
+# watcher pipeline failed; the round then fails with no retry, rerun or recovery.
+watcher_stopped() {
+  [ -n "$watcher_failed" ] || return 1
+  echo "::error::$1 failed: $watcher_failed"
 }
 # accessibility_stopped LABEL UDID LOG: succeeds, with the round's error, when ax-watch.py
 # stopped LOG's run; UDID then counts as dead for the rest of the job.
@@ -511,7 +531,7 @@ run_suite() {
   # Boot outside the test deadline. Booting during the build was measured to slow both.
   prepare_round "$label" "$udid" "$APP_UNDER_TEST" "$setup" || return 1
   first_run "$label" "$udid" "$budget" "$@" || status=$?
-  if accessibility_stopped "$label" "$udid" "TestReceipts/$label-first.log"; then
+  if accessibility_stopped "$label" "$udid" "TestReceipts/$label-first.log" || watcher_stopped "$label"; then
     last_round_result=failed
     stop_recording
     return 1
@@ -532,7 +552,7 @@ run_suite() {
     status=0
     reprepare_round "$label" "$udid" "$APP_UNDER_TEST" "$setup" || return 1
     first_run "$label" "$udid" "$budget" "$@" || status=$?
-    if accessibility_stopped "$label" "$udid" "TestReceipts/$label-first.log"; then
+    if accessibility_stopped "$label" "$udid" "TestReceipts/$label-first.log" || watcher_stopped "$label"; then
       last_round_result=failed
       stop_recording
       return 1
@@ -611,6 +631,8 @@ retry_failed_tests() {
   bundle_id=$(bundle_identifier "$app" 2>>"$verdicts") || bundle_id=""
   if accessibility_stopped "$label" "$udid" "TestReceipts/$label-retry.log"; then
     verdict="the simulator stopped answering accessibility during the retry"
+  elif [ -n "$watcher_failed" ]; then
+    verdict="the retry's $watcher_failed"
   elif ! bounded 300 xcrun xcresulttool get test-results tests --path "TestReceipts/$label-first.xcresult" \
       >"$first_tests" 2>>"$verdicts"; then
     verdict="cannot read the first run's result bundle"
@@ -697,6 +719,7 @@ infra_rerun() {
       -resultBundlePath "TestReceipts/$label-infra-rerun.xcresult" \
       $failed || status=$?
   accessibility_stopped "$label" "$udid" "TestReceipts/$label-infra-rerun.log" && return 1
+  watcher_stopped "$label" && return 1
   if [ "$status" -eq 0 ]; then
     echo "$label: the rerun of its infrastructure failures passed"
     return 0

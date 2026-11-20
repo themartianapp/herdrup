@@ -25,7 +25,6 @@ import sys
 import time
 
 AX_LIMIT = 3
-STARTED = re.compile(r"^Test Case '-\[(?P<name>[^\]]+)\]' started\.")
 FINISHED = re.compile(r"^Test Case '-\[(?P<name>[^\]]+)\]' (?P<result>passed|failed|skipped) \(")
 ISSUE = re.compile(r": error: -\[(?P<name>[^\]]+)\] : (?P<message>.*)")
 # The messages XCTest's automation prints when the simulator's accessibility does not answer.

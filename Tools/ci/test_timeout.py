@@ -7,6 +7,7 @@ not end at its budget (review of #663, F1: 124 after 2.022 s for a 0.1 s budget,
 GNU timeout took 0.104 s)."""
 import os
 import pathlib
+import signal
 import subprocess
 import sys
 import tempfile
@@ -79,6 +80,31 @@ class TimeoutTests(unittest.TestCase):
             self.fail("the INT did not end the timed command")
         self.assertIn("got-int", out)
         self.assertIn("status 3", out)
+
+    def test_a_signal_during_the_grace_after_a_time_out_keeps_the_kill(self):
+        # Review of #748, P2-b: the budget ran out, the command ignores TERM and INT, and an
+        # INT reaches timeout.py during the kill-after grace (the accessibility watcher
+        # stopping a round that is already timing out). The KILL must still come.
+        process = subprocess.Popen(
+            [sys.executable, str(TIMEOUT), "--kill-after=1s", "0.2s", "bash", "-c",
+             'trap "" INT TERM; echo $$; while :; do sleep 0.05; done'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        pid = int(process.stdout.readline())
+        time.sleep(0.5)  # past the 0.2 s budget, inside the 1 s grace
+        process.send_signal(signal.SIGINT)
+        try:
+            _, err = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            os.kill(pid, signal.SIGKILL)
+            process.kill()
+            process.communicate()
+            self.fail("timeout.py did not end after its KILL deadline")
+        alive = not gone(pid)
+        if alive:
+            os.kill(pid, signal.SIGKILL)
+        self.assertEqual(process.returncode, 124, err)
+        self.assertFalse(alive, "the command survived the KILL deadline")
+        self.assertNotIn("Traceback", err)
 
 
 if __name__ == "__main__":

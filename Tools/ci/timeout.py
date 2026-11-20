@@ -23,7 +23,14 @@ command, in a session of its own, would run on. The group then gets the same gra
 KILL as after a time-out, and the exit status is the command's own. The handlers are
 installed before the command starts, so a timeout.py started in the background of a
 script (where INT is ignored) still takes INT, and the command starts with INT at its
-default instead of inheriting the ignore.
+default instead of inheriting the ignore. A signal that arrives before the command has
+started is passed on as soon as it has.
+
+THE HANDLER ONLY FORWARDS AND RECORDS; it never raises. The wait polls for the command,
+the deadline and a received signal, so a signal that arrives during the grace after a
+time-out (the watcher stopping a round that is already timing out) cannot skip the KILL
+(review of #748, P2-b: the first version raised out of that grace and left the command
+running).
 """
 import os
 import signal
@@ -32,10 +39,7 @@ import sys
 import time
 
 FORWARDED = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
-
-
-class Forwarded(Exception):
-    """Raised once, by the first forwarded signal, to end the wait for the command."""
+POLL = 0.05
 
 
 def seconds(text: str) -> float:
@@ -87,17 +91,16 @@ def main(argv: list) -> int:
         print("usage: timeout.py [--signal=NAME] [--kill-after=DURATION] DURATION COMMAND...", file=sys.stderr)
         return 125
     budget = seconds(argv[0])
-    child = None
-    received = []
+    started = []  # the command, once Popen returned
+    received = []  # every forwarded signal, in order
+    pending = []  # signals received before the command started
 
     def forward(signum, _frame):
-        if child is None:
-            # Before the command started: nothing to forward to, so stop here.
-            sys.exit(128 + signum)
-        signal_group(child.pid, signum)
-        if not received:
-            received.append(signum)
-            raise Forwarded()
+        received.append(signum)
+        if started:
+            signal_group(started[0].pid, signum)
+        else:
+            pending.append(signum)
 
     for forwarded in FORWARDED:
         signal.signal(forwarded, forward)
@@ -107,15 +110,27 @@ def main(argv: list) -> int:
     except OSError as error:
         print(f"timeout.py: {error}", file=sys.stderr)
         return 127
-    try:
-        status = child.wait(timeout=budget)
-    except subprocess.TimeoutExpired:
-        signal_group(child.pid, sig)
-        finish(child, kill_after)
-        return 124
-    except Forwarded:
-        finish(child, kill_after)
-        status = child.returncode
+    started.append(child)
+    for signum in pending:
+        signal_group(child.pid, signum)
+    deadline = time.monotonic() + budget
+    while True:
+        status = child.poll()
+        if status is not None:
+            break
+        if received:
+            finish(child, kill_after)
+            status = child.returncode
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            signal_group(child.pid, sig)
+            finish(child, kill_after)
+            return 124
+        try:
+            child.wait(timeout=min(remaining, POLL))
+        except subprocess.TimeoutExpired:
+            pass
     return 128 - status if status < 0 else status
 
 
