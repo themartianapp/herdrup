@@ -117,6 +117,8 @@ struct RootView: View {
     @ObservedObject private var invites = GuestInviteRouter.shared
     /// Pairing a machine (#126): the scanner, or the confirmation for a pasted or linked code.
     @ObservedObject private var pairing = PairingRouter.shared
+    /// The HerdrUp account (#698): its notices show over whatever is on screen.
+    @ObservedObject private var herdrupAccount = HerdrUpAccount.shared
     @State private var openGuest: GuestAccess?
     /// A guest's Settings › Connect your own machine closed the share: the machine list
     /// shows with its owner setup open.
@@ -170,6 +172,10 @@ struct RootView: View {
         .uiTestMotion()
         .preferredColorScheme(.dark)
         .environment(\.gramDownloads, gramDownloads)
+        // The HerdrUp account (#698): confirm the session, sync, and show what it has to say
+        // wherever the person is (the account page shows its own).
+        .task { HerdrUpAccount.shared.start() }
+        .accountNoticeAlert(herdrupAccount, root: true)
         .fullScreenCover(item: $invites.pending) { pending in
             inviteAccept(pending.invite)
         }
@@ -232,7 +238,10 @@ struct RootView: View {
         // The anonymous daily usage ping: on launch and on every return to the foreground,
         // connected or not; `UsagePing` sends at most one a UTC day (see `UsagePingLaunch`).
         .onChange(of: scenePhase, initial: true) { _, phase in
-            if phase == .active { UsagePingLaunch.foregrounded() }
+            if phase == .active {
+                UsagePingLaunch.foregrounded()
+                HerdrUpAccount.shared.foregrounded()
+            }
         }
     }
 
@@ -279,9 +288,13 @@ struct RootView: View {
             .onChange(of: mute.mutedPanes) { _, _ in registerPush() }
             .transition(reduceMotion ? .opacity : .push(from: .trailing))
         } else {
-            ConnectView(onConnect: { connect($0) }, onOpenShared: { openGuest = $0 },
-                        connecting: client == nil ? nil : credentials,
-                        ownerSetupRequested: $ownerSetupRequested)
+            // First launch on a device with nothing set up: sign in (1B) first, or set up
+            // without an account, which is this list exactly as before.
+            AccountOnboardingGate {
+                ConnectView(onConnect: { connect($0) }, onOpenShared: { openGuest = $0 },
+                            connecting: client == nil ? nil : credentials,
+                            ownerSetupRequested: $ownerSetupRequested)
+            }
             .transition(reduceMotion ? .opacity : .push(from: .trailing))
         }
     }
@@ -436,6 +449,8 @@ struct RootView: View {
         switch mode {
         case .resize, .control:
             TerminalInteractionRoot(control: mode == .control)
+        case .account:
+            AccountMockRoot()
         case .onboarding:
             ConnectView { _ in }
         case .pairingGuidance:
@@ -7591,6 +7606,8 @@ enum SettingsSection: Hashable, CaseIterable {
     case machines, accounts, notifications, sharedAccess, textSize, typingLatency, support
     /// The guest variant's share card opens this page in place of Machines.
     case sharedWithYou
+    /// The HerdrUp account (#698): sign-in, this device and the others, sign-out, deletion.
+    case herdrupAccount
 
     var label: String {
         switch self {
@@ -7602,6 +7619,7 @@ enum SettingsSection: Hashable, CaseIterable {
         case .typingLatency: return "Typing latency"
         case .support:       return "Support the project"
         case .sharedWithYou: return "Shared with you"
+        case .herdrupAccount: return "HerdrUp account"
         }
     }
 
@@ -7616,6 +7634,7 @@ enum SettingsSection: Hashable, CaseIterable {
         case .typingLatency: return "gauge.with.needle"
         case .support:       return "heart"
         case .sharedWithYou: return "person.crop.circle"
+        case .herdrupAccount: return "person.crop.circle.badge.checkmark"
         }
     }
 }
@@ -7809,6 +7828,8 @@ struct SettingsView: View {
     /// The tip jar (StoreKit 2). Renders nothing until products load, so the section
     /// is invisible before the App Store Connect products exist.
     @ObservedObject private var tipStore = TipStore.shared
+    /// The HerdrUp account (#698), for its row and page.
+    @ObservedObject private var herdrupAccount = HerdrUpAccount.shared
     /// Opens the Privacy/Terms/GitHub links in the system browser. Overridable in
     /// previews/UI-tests so automated runs never actually leave the app.
     @Environment(\.openURL) private var openURL
@@ -8021,6 +8042,7 @@ struct SettingsView: View {
                 suggestionsGroup
                 herdGroup
             }
+            herdrupAccountGroup
             preferencesGroup
             helpGroup
             aboutGroup
@@ -8058,6 +8080,20 @@ struct SettingsView: View {
                     SharedWithYouContent(share: guest)
                 }
             }
+        case .herdrupAccount:
+            detailScaffold(title: "HerdrUp account", subtitle: herdrupAccount.signedIn ? herdrupAccount.identityLine : "",
+                           showBack: showBack) {
+                HerdrUpAccountContent(account: herdrupAccount)
+            }
+        }
+    }
+
+    /// The HerdrUp account's row (#698): who is signed in, or an offer to sign in. Its own
+    /// group under the machine card, for owners and guests alike: both can sync.
+    private var herdrupAccountGroup: some View {
+        rootGroup("ACCOUNT") {
+            pageRow(.herdrupAccount, value: herdrupAccount.signedIn ? "Signed in" : "Sign in")
+                .accessibilityIdentifier("settings-herdrup-account")
         }
     }
 
@@ -10222,6 +10258,9 @@ enum ScreenshotMock {
     // Herdrup Desktop's pixel-parity references (herdrup-desktop#16): the Agents home over
     // the desktop's fake herdr agent.list, held still (DesktopReferenceMock).
     case desktopReference
+    // The HerdrUp account (#698): the first-launch sign-in (1B) in front of the machine list,
+    // and Settings › HerdrUp account, over `MockAccountService` (`HERDR_MOCK_ACCOUNT_*`).
+    case account
 
     static var mode: ScreenshotMock? {
         let env = ProcessInfo.processInfo.environment["HERDR_SCREENSHOT_MOCK"]?.lowercased()
@@ -10305,6 +10344,7 @@ enum ScreenshotMock {
         // paged transcript (`ChatMockTransport`). `guestchat`: the guest's view-only pane of a
         // shared omp agent on a host that serves guests its transcript.
         case "chatview": return .chatView
+        case "account": return .account
         case "guestchat": return .guestChat
         default: return .list
         }

@@ -12,5 +12,9 @@
 	<array><string>group.com.jerryfane.herdr</string></array>
 	<key>keychain-access-groups</key>
 	<array><string>$(AppIdentifierPrefix)com.jerryfane.herdr</string></array>
+	<!-- HerdrUp account sign-in (#698 §2.1): native Sign in with Apple. The App ID has the
+	     capability; Automatic signing puts it in the profile. -->
+	<key>com.apple.developer.applesignin</key>
+	<array><string>Default</string></array>
 </dict>
 </plist>
