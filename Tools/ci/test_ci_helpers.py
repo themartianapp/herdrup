@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Fixture tests for Tools/ci/sim-state.py and Tools/ci/xcresult-tests.py. Linux, seconds:
-Tools/ci/check.sh runs them in CI's Linux job, before any simulator shard spends an hour."""
+"""Fixture tests for Tools/ci/sim-state.py, Tools/ci/xcresult-tests.py, Tools/ci/ax-watch.py and
+ui-shard.sh's retry and accessibility stop. Linux, seconds: Tools/ci/check.sh runs them in
+CI's Linux job, before any simulator shard spends an hour."""
 import json
 import os
 import pathlib
@@ -10,6 +11,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -19,6 +21,22 @@ def run(script, args, stdin=""):
     result = subprocess.run([sys.executable, str(HERE / script), *args], input=stdin,
                             capture_output=True, text=True)
     return result.returncode, result.stdout, result.stderr
+
+
+def gone(pid):
+    """True when no process (or only a zombie) has pid."""
+    try:
+        with open("/proc/%d/stat" % pid) as stat:
+            return stat.read().rpartition(")")[2].split()[0] == "Z"
+    except FileNotFoundError:
+        return True
+
+
+def pick_timeout_bin(path=None):
+    """The TIMEOUT_BIN that Tools/ci/timeout-bin.sh sets, with PATH (default: this one)."""
+    env = dict(os.environ) if path is None else dict(os.environ, PATH=path)
+    return subprocess.run(["bash", "-c", '. "$1"; printf %s "$TIMEOUT_BIN"', "_", str(HERE / "timeout-bin.sh")],
+                          env=env, capture_output=True, text=True, check=True).stdout
 
 
 def bundle(cases):
@@ -226,7 +244,8 @@ class RetryGateTests(unittest.TestCase):
     xcodebuild and the bundle identifier stubbed: only a retry every gate checked as clean
     passes the round; a stub that fails or returns nothing usable keeps the failure."""
 
-    FUNCTIONS = ("beautify", "retry_failed_tests", "no_app_crash_in")
+    FUNCTIONS = ("beautify", "bounded", "watched_test_run", "accessibility_stopped",
+                 "retry_failed_tests", "no_app_crash_in")
     SELECTOR = "-only-testing:HerdrUITests/A/testOne"
     issues_bundle = XcresultTests.issues_bundle
 
@@ -256,9 +275,11 @@ class RetryGateTests(unittest.TestCase):
 cd "$WORK" || exit 99
 SIM_TMP="$WORK/sim"; mkdir -p "$SIM_TMP"
 XCRESULT_TESTS="${FAKE_XCRESULT_TESTS:-$HERE/xcresult-tests.py}"
+AX_WATCH="$HERE/ax-watch.py"
+dead_simulators=" "
 PROJECT=(-project Herdr.xcodeproj -scheme Herdr)
 TIMEOUT_BIN=fake_timeout
-fake_timeout() { shift 2; "$@"; }
+fake_timeout() { while [ "${1#--}" != "$1" ]; do shift; done; shift; "$@"; }
 xcodebuild() { return "${FAKE_XCODEBUILD:-0}"; }
 bundle_identifier() { echo com.jerryfane.herdr; }
 xcrun() {
@@ -328,6 +349,220 @@ retry_failed_tests L udid "%s" app
                 self.assertEqual(code, 1, out)
                 self.assertIsNone(flakes, out)
                 self.assertIn("first run failed and %s; the failure stands" % verdict, out)
+
+
+# herdrup #674 ipad-script job j_1b3bd71b, as xcodebuild printed its failing cases.
+AX_FAILURES = (
+    "Failed to get screenshot: Timed out while requesting screenshot.",
+    "Failed to get list of active applications: Accessibility error kAXErrorIPCTimeout from "
+    "AXUIElementCopyMultipleAttributeValues for 1102",
+    "Failed to get list of active applications: Accessibility error kAXErrorIPCTimeout from "
+    "AXUIElementCopyMultipleAttributeValues for 1102",
+)
+
+
+class AccessibilityStopTests(unittest.TestCase):
+    """ui-shard.sh's run_suite with the production first_run, watched_test_run and
+    ax-watch.py, a real timeout (timeout.py, as on macserve, and GNU timeout where installed),
+    and a fake xcodebuild on PATH: three accessibility time-outs in a row stop the round
+    within seconds with the simulator's error, and the device counts as dead; two, then a
+    passing case, do not stop it."""
+
+    FUNCTIONS = ("beautify", "bounded", "stop_recording", "watched_test_run", "watcher_stopped",
+                 "accessibility_stopped", "simulator_is_dead", "first_run", "run_suite")
+    UDID = "33432473-1D2A-4A03-A3ED-298625C7EA3E"
+
+    @classmethod
+    def setUpClass(cls):
+        source = (HERE / "ui-shard.sh").read_text()
+        bodies = []
+        for name in cls.FUNCTIONS:
+            match = re.search(r"^%s\(\) \{\n.*?^\}\n" % name, source, re.M | re.S)
+            assert match, "ui-shard.sh has no function %s" % name
+            bodies.append(match.group(0))
+        cls.functions = "".join(bodies)
+
+    @staticmethod
+    def case(method, failure=None, seconds="0.05"):
+        name = "HerdrUITests.DesktopReferenceShots %s" % method
+        lines = ["Test Case '-[%s]' started." % name]
+        if failure:
+            lines.append("HerdrUITests/DesktopReferenceCaptureCase.swift:59: error: -[%s] : %s" % (name, failure))
+        lines.append("Test Case '-[%s]' %s (%s seconds)." % (name, "failed" if failure else "passed", seconds))
+        return lines
+
+    def round(self, lines, tail, timeout_bin, ax_watch=None, filter_exit=None):
+        """Runs run_suite with a fake xcodebuild printing LINES (0.1 s apart), then TAIL
+        (shell); AX_WATCH is AX_WATCH when given, and the console filter (beautify) exits
+        FILTER_EXIT when given. Returns (status, output, seconds, the xcodebuild pid file's
+        process alive)."""
+        work = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, work)
+        (work / "bin").mkdir()
+        (work / "TestReceipts").mkdir()
+        (work / "lines.txt").write_text("\n".join(lines) + "\n")
+        fake = work / "bin" / "xcodebuild"
+        fake.write_text('#!/bin/bash\necho $$ >"$WORK/xcodebuild.pid"\n'
+                        'while IFS= read -r line; do echo "$line"; sleep 0.1; done <"$WORK/lines.txt"\n'
+                        + tail + "\n")
+        fake.chmod(0o755)
+        harness = """set -uo pipefail
+cd "$WORK" || exit 99
+export PATH="$WORK/bin:$PATH"
+SIM_TMP="$WORK/sim"; mkdir -p "$SIM_TMP"
+XCRESULT_TESTS="$HERE/xcresult-tests.py"
+AX_WATCH="${FAKE_AX_WATCH:-$HERE/ax-watch.py}"
+APP_UNDER_TEST=app
+recorder=
+dead_simulators=" "
+PROJECT=(-project Herdr.xcodeproj -scheme Herdr)
+prepare_round() { simulator_is_dead "$2" "$1" && return 1; return 0; }
+ran_no_test_case() { return 1; }
+failed_tests() { echo "-only-testing:HerdrUITests/DesktopReferenceShots/testFolders"; }
+infra_rerun() { return 2; }
+retry_failed_tests() { echo "retry_failed_tests called"; return 1; }
+%s
+if [ -n "${FAKE_FILTER_EXIT:-}" ]; then beautify() { cat >/dev/null; return "$FAKE_FILTER_EXIT"; }; fi
+run_suite iPadDesktopReference-DesktopReferenceShots "$UDID" 15m -only-testing:HerdrUITests/DesktopReferenceShots
+status=$?
+echo "round status $status result $last_round_result"
+run_suite iPadDesktopReference-DesktopGramReferenceShots "$UDID" 20m -only-testing:HerdrUITests/DesktopGramReferenceShots
+echo "next round status $?"
+exit "$status"
+""" % self.functions
+        env = dict(os.environ, WORK=str(work), HERE=str(HERE), UDID=self.UDID, TIMEOUT_BIN=timeout_bin)
+        if ax_watch is not None:
+            env["FAKE_AX_WATCH"] = ax_watch
+        if filter_exit is not None:
+            env["FAKE_FILTER_EXIT"] = str(filter_exit)
+        start = time.monotonic()
+        result = subprocess.run(["bash", "-c", 'TIMEOUT_BIN="$TIMEOUT_BIN"\n' + harness], env=env,
+                                capture_output=True, text=True, timeout=120)
+        elapsed = time.monotonic() - start
+        pid = int((work / "xcodebuild.pid").read_text())
+        return result.returncode, result.stdout + result.stderr, elapsed, not gone(pid)
+
+    def timeouts(self):
+        """timeout.py, and the one Tools/ci/timeout-bin.sh picks on this host when it is
+        another: GNU timeout where installed (on ubuntu-latest, uutils' /usr/bin/timeout is
+        refused and timeout.py picked, so it runs once)."""
+        picked = pick_timeout_bin()
+        yield str(HERE / "timeout.py")
+        if picked != str(HERE / "timeout.py"):
+            yield picked
+
+    def test_three_accessibility_timeouts_in_a_row_stop_the_round(self):
+        lines = self.case("testAvatars") + [
+            line for method, failure in zip(("testFederated", "testFolders", "testIdleExpanded"), AX_FAILURES)
+            for line in self.case(method, failure, "150.043")]
+        for timeout_bin in self.timeouts():
+            with self.subTest(timeout_bin):
+                # The fake then hangs as xcodebuild did, until its 15m budget.
+                code, out, elapsed, alive = self.round(lines, "sleep 900", timeout_bin)
+                self.assertEqual(code, 1, out)
+                self.assertLess(elapsed, 30, out)
+                self.assertFalse(alive, "the stopped xcodebuild is still running")
+                self.assertIn("::error::simulator %s stopped answering accessibility (3 timeouts in a row): "
+                              "DesktopReferenceShots/testFederated DesktopReferenceShots/testFolders "
+                              "DesktopReferenceShots/testIdleExpanded" % self.UDID, out)
+                self.assertIn("round status 1 result failed", out)
+                self.assertNotIn("retry_failed_tests called", out)
+                self.assertNotIn("exceeded its", out)
+                # The next round on the same device fails at once.
+                self.assertIn("::error::iPadDesktopReference-DesktopGramReferenceShots not run: simulator %s "
+                              "stopped answering accessibility earlier in this job" % self.UDID, out)
+                self.assertIn("next round status 1", out)
+
+    def test_two_timeouts_then_a_pass_are_not_stopped(self):
+        lines = [line for method, failure in zip(("testFederated", "testFolders"), AX_FAILURES)
+                 for line in self.case(method, failure, "150.043")]
+        lines += self.case("testIdleExpanded") + self.case("testLoading", AX_FAILURES[1])
+        lines += self.case("testNeedsYouPill", AX_FAILURES[2])
+        for timeout_bin in self.timeouts():
+            with self.subTest(timeout_bin):
+                code, out, elapsed, alive = self.round(lines, "exit 0", timeout_bin)
+                self.assertEqual(code, 0, out)
+                self.assertNotIn("stopped answering accessibility", out)
+                self.assertIn("round status 0 result passed", out)
+                self.assertIn("next round status 0", out)
+                # The console still shows every line of the run.
+                self.assertIn("testNeedsYouPill]' failed", out)
+
+    def test_other_failures_in_between_reset_the_count(self):
+        lines = self.case("testFederated", AX_FAILURES[0]) + self.case("testFolders", AX_FAILURES[1])
+        lines += self.case("testIdleExpanded", "XCTAssertTrue failed")
+        lines += self.case("testLoading", AX_FAILURES[1]) + self.case("testNeedsYouPill", AX_FAILURES[2])
+        code, out, _, _ = self.round(lines, "exit 65", str(HERE / "timeout.py"))
+        self.assertEqual(code, 1, out)
+        self.assertNotIn("stopped answering accessibility", out)
+        self.assertIn("retry_failed_tests called", out)
+
+    def test_a_failed_watcher_fails_a_passing_round(self):
+        # Review of #748, P2-a: an unavailable watcher, or a console filter that fails, means
+        # nothing watched the run; the round must not pass on the command's status alone.
+        lines = self.case("testAvatars") + self.case("testEmpty")
+        timeout_bin = str(HERE / "timeout.py")
+        for name, kwargs, exit_status in (
+                ("missing AX_WATCH", {"ax_watch": str(HERE / "no-such-ax-watch.py")}, 2),
+                ("console filter exits 7", {"filter_exit": 7}, 7)):
+            with self.subTest(name):
+                code, out, _, _ = self.round(lines, "exit 0", timeout_bin, **kwargs)
+                self.assertEqual(code, 1, out)
+                self.assertIn("::error::accessibility watcher failed (exit %d)" % exit_status, out)
+                self.assertIn("round status 1 result failed", out)
+                self.assertIn("::error::iPadDesktopReference-DesktopReferenceShots failed: "
+                              "accessibility watcher failed (exit %d)" % exit_status, out)
+                self.assertNotIn("retry_failed_tests called", out)
+
+    def test_a_healthy_watcher_and_a_passing_command_pass(self):
+        lines = self.case("testAvatars") + self.case("testEmpty")
+        code, out, _, _ = self.round(lines, "exit 0", str(HERE / "timeout.py"))
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("accessibility watcher failed", out)
+        self.assertIn("round status 0 result passed", out)
+        self.assertIn("testEmpty]' passed", out)
+
+
+class TimeoutBinTests(unittest.TestCase):
+    """Tools/ci/timeout-bin.sh: GNU coreutils' timeout or timeout.py, never another one.
+    #748's CI on ubuntu-latest (Ubuntu 26.04) ran uutils' /usr/bin/timeout 0.10.0: started
+    from the round's background job, its command ignored the SIGINT it passed on, so a round
+    stopped by the accessibility watcher ran on until the 60 s KILL (61.3 s, not ~1.5 s)."""
+
+    def path_with(self, **versions):
+        """A PATH of fake timeout binaries printing VERSION (name -> first --version line),
+        plus the system's bash essentials."""
+        bin_dir = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+        for name, version in versions.items():
+            fake = bin_dir / name
+            fake.write_text("#!/bin/sh\necho '%s'\n" % version)
+            fake.chmod(0o755)
+        return "%s:%s" % (bin_dir, os.environ["PATH"]), bin_dir
+
+    def test_gnu_timeout_is_used(self):
+        path, bin_dir = self.path_with(timeout="timeout (GNU coreutils) 9.7")
+        self.assertEqual(pick_timeout_bin(path), str(bin_dir / "timeout"))
+
+    def test_homebrew_gtimeout_is_used_after_a_refused_timeout(self):
+        path, bin_dir = self.path_with(timeout="timeout (uutils coreutils) 0.10.0",
+                                       gtimeout="timeout (GNU coreutils) 9.8")
+        self.assertEqual(pick_timeout_bin(path), str(bin_dir / "gtimeout"))
+
+    def test_any_other_timeout_falls_back_to_timeout_py(self):
+        for version in ("timeout (uutils coreutils) 0.10.0", "busybox timeout", ""):
+            with self.subTest(version):
+                path, _ = self.path_with(timeout=version)
+                if shutil.which("gtimeout"):
+                    self.skipTest("a real gtimeout on PATH would be picked")
+                self.assertEqual(pick_timeout_bin(path), str(HERE / "timeout.py"))
+
+    def test_uutils_timeout_is_refused_where_installed(self):
+        # The runner's own /usr/bin/timeout, when it is uutils' (ubuntu-latest).
+        system = shutil.which("timeout")
+        version = subprocess.run([system, "--version"], capture_output=True, text=True).stdout if system else ""
+        if "uutils" not in version:
+            self.skipTest("no uutils timeout on this host")
+        self.assertNotEqual(pick_timeout_bin(), system)
 
 
 class SimStateTests(unittest.TestCase):

@@ -7,8 +7,10 @@ not end at its budget (review of #663, F1: 124 after 2.022 s for a 0.1 s budget,
 GNU timeout took 0.104 s)."""
 import os
 import pathlib
+import signal
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 
@@ -59,6 +61,90 @@ class TimeoutTests(unittest.TestCase):
 
     def test_the_command_status_passes_through(self):
         self.assertEqual(subprocess.run([sys.executable, str(TIMEOUT), "5", "sh", "-c", "exit 7"]).returncode, 7)
+
+    def test_an_int_sent_to_a_backgrounded_timeout_reaches_the_command(self):
+        # As ui-shard.sh's accessibility watcher stops a round: timeout.py started with `&`
+        # (INT ignored, as in any script's background job) gets SIGINT and passes it on.
+        ready = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory())) / "ready"
+        script = ('"$PY" "$TIMEOUT" --signal=INT --kill-after=5s 60s bash -c '
+                  '\'trap "echo got-int; exit 3" INT; : >"$READY"; for _ in $(seq 200); do sleep 0.05; done\' & '
+                  'pid=$!; while [ ! -e "$READY" ]; do sleep 0.02; done; kill -INT "$pid"; '
+                  'wait "$pid"; echo "status $?"')
+        process = subprocess.Popen(["bash", "-c", script], stdout=subprocess.PIPE, text=True,
+                                   env=dict(os.environ, PY=sys.executable, TIMEOUT=str(TIMEOUT), READY=str(ready)))
+        try:
+            out, _ = process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            self.fail("the INT did not end the timed command")
+        self.assertIn("got-int", out)
+        self.assertIn("status 3", out)
+
+    def test_a_signal_during_the_grace_after_a_time_out_keeps_the_kill(self):
+        # Review of #748, P2-b: the budget ran out, the command ignores TERM and INT, and an
+        # INT reaches timeout.py during the kill-after grace (the accessibility watcher
+        # stopping a round that is already timing out). The KILL must still come.
+        process = subprocess.Popen(
+            [sys.executable, str(TIMEOUT), "--kill-after=1s", "0.2s", "bash", "-c",
+             'trap "" INT TERM; echo $$; while :; do sleep 0.05; done'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        pid = int(process.stdout.readline())
+        time.sleep(0.5)  # past the 0.2 s budget, inside the 1 s grace
+        process.send_signal(signal.SIGINT)
+        try:
+            _, err = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            os.kill(pid, signal.SIGKILL)
+            process.kill()
+            process.communicate()
+            self.fail("timeout.py did not end after its KILL deadline")
+        alive = not gone(pid)
+        if alive:
+            os.kill(pid, signal.SIGKILL)
+        self.assertEqual(process.returncode, 124, err)
+        self.assertFalse(alive, "the command survived the KILL deadline")
+        self.assertNotIn("Traceback", err)
+
+    def test_a_signal_that_ends_the_command_still_kills_the_rest_of_its_group(self):
+        # Re-review of #748: a TERM forwarded to the group ends the command at once (a
+        # Python parent with the default TERM action), while its descendant ignores TERM.
+        # The wrapper must still give the group its grace and KILL it, not return the
+        # command's 143 and leave the descendant running.
+        work = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+        ready = work / "descendant.pid"
+        parent = ("import subprocess, sys\n"
+                  "subprocess.Popen(['bash', '-c', 'trap \"\" TERM; echo $$ >\"$READY.tmp\"; "
+                  "mv \"$READY.tmp\" \"$READY\"; while :; do sleep 0.05; done'])\n"
+                  "subprocess.run(['sleep', '60'])\n")
+        # stderr to a file, not a pipe: a surviving descendant would hold a pipe open.
+        errors = work / "stderr.txt"
+        with errors.open("w") as stderr:
+            process = subprocess.Popen(
+                [sys.executable, str(TIMEOUT), "--kill-after=0.2s", "60s", sys.executable, "-c", parent],
+                stdout=subprocess.DEVNULL, stderr=stderr, env=dict(os.environ, READY=str(ready)))
+        end = time.monotonic() + 10
+        while not ready.exists() and time.monotonic() < end:
+            time.sleep(0.02)
+        self.assertTrue(ready.exists(), "the descendant did not start")
+        pid = int(ready.read_text())
+        start = time.monotonic()
+        process.send_signal(signal.SIGTERM)
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            os.kill(pid, signal.SIGKILL)
+            process.kill()
+            process.wait()
+            self.fail("timeout.py did not end after its KILL deadline")
+        elapsed = time.monotonic() - start
+        err = errors.read_text()
+        alive = not gone(pid)
+        if alive:
+            os.kill(pid, signal.SIGKILL)
+        self.assertEqual(process.returncode, 143, err)
+        self.assertFalse(alive, "the descendant survived the KILL deadline (wrapper returned after %.3f s)" % elapsed)
+        self.assertGreaterEqual(elapsed, 0.2, "the wrapper returned before the kill-after grace")
 
 
 if __name__ == "__main__":

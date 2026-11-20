@@ -27,7 +27,8 @@ cd "$(dirname "$0")/../.." || exit 1
 APP="$MACSERVE_APP_DIR/Herdr.app"
 OUT=$(mkdir -p "$MACSERVE_OUTPUT" && cd "$MACSERVE_OUTPUT" && pwd)
 UDID=$MACSERVE_SIMULATOR_ID
-TIMEOUT_BIN=$(command -v timeout || command -v gtimeout || echo Tools/ci/timeout.py)
+# shellcheck source=Tools/ci/timeout-bin.sh
+. Tools/ci/timeout-bin.sh
 PORT=$((20000 + RANDOM % 20000))
 DOWN_PORT=$((PORT + 1))
 SETTLE=${SETTLE:-20}

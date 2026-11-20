@@ -263,7 +263,8 @@ tier, which still gates the merge.
 **Running a shard on any Mac.** [`Tools/ci/ui-shard.sh`](../Tools/ci/ui-shard.sh) runs the
 same shards round by round, with measured per-round budgets, an infrastructure-only rerun,
 one retry of a failed round's failed tests, and receipts in `TestReceipts/` (it needs no
-Homebrew: `xcbeautify` and GNU `timeout` are used when present):
+Homebrew: `xcbeautify` and GNU `timeout` are used when present; any other `timeout`, such as
+uutils', is refused for `Tools/ci/timeout.py` by `Tools/ci/timeout-bin.sh`):
 
 ```bash
 xcodegen generate
@@ -307,6 +308,19 @@ readiness checks allow five minutes. Both force termination after another 15 sec
 retain a boot log. Before reusing readiness, `ui-shard.sh` checks the device's current state:
 a device that shut down is booted again, and a still-booted device skips `bootstatus`.
 Missing or unavailable devices and failed readiness or install steps fail the round.
+Every `xcodebuild`, `simctl` and `xcresulttool` call in `ui-shard.sh` and
+`macserve-ipad-script.sh` runs under a time bound, and the macserve script shards bound
+`ui-shard.sh` as a whole at 80 minutes, so a hang still leaves time to export the receipts
+before macserve's two-hour cap. Herdrup #674's `ipad-script` job hung in the unbounded
+`simctl ui … appearance dark` of a desktop reference round's setup until that cap.
+A simulator whose accessibility stops answering fails its round at once: `Tools/ci/ax-watch.py`
+follows each XCUITest run's log, and after three test cases in a row fail on an accessibility
+or automation time-out ("Failed to get screenshot: Timed out", "Failed to get list of active
+applications: Accessibility error kAXErrorIPCTimeout") it stops the run with
+`::error::simulator <udid> stopped answering accessibility (3 timeouts in a row): <tests>`.
+The round gets no retry or recovery, and later rounds on that device fail without running.
+A watcher that fails (ax-watch.py or the console filter exits non-zero) fails its round too:
+an unwatched run never passes on xcodebuild's status alone.
 Debug resize receipts are per pane, so a background terminal's fixed grid
 cannot overwrite the foreground terminal's keyboard-resize result.
 The built-version check (in `ipad-script`) selects `Herdr.app`, not the separate UI test runner bundle.
