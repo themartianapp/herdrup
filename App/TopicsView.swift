@@ -81,50 +81,29 @@ final class TopicsModel: ObservableObject {
     /// without topics turned on), a timeout or a dropped connection ask again after 60 s,
     /// doubling to a 10 minute cap. The page restarts this when the agent's status or session
     /// changes and when a guest's share comes back, which starts the schedule over; for the
-    /// owner (`eventsPaneID`) an `agent.topics.changed` for the pane does too, at once.
+    /// owner (`eventsPaneID`) an `agent.topics.changed` for the pane does too, at once, even
+    /// while a list is still on its way (`TopicsDiscoveryLoop.wake`, herdrup#767).
     func discover(client: HerdrClient, eventsPaneID: String? = nil) async {
         guard !offered, !refused else { return }
+        let loop = TopicsDiscoveryLoop(schedule: Self.discoverySchedule) { [weak self] in
+            await self?.listForDiscovery(client: client)
+        }
         await withTaskGroup(of: Void.self) { group in
             if let eventsPaneID {
-                group.addTask { await self.wakeDiscoveryOnTopicChanges(client: client, paneID: eventsPaneID) }
+                group.addTask { await self.wakeDiscoveryOnTopicChanges(client: client, paneID: eventsPaneID, loop: loop) }
             }
-            group.addTask { await self.discoveryLoop(client: client) }
+            group.addTask { await loop.run() }
             // The loop ends the discovery; the event watcher goes with it.
             await group.next()
             group.cancelAll()
         }
     }
 
-    /// Set by an `agent.topics.changed` while discovery waits: the wait ends and the schedule
-    /// starts over.
-    private var discoveryWoken = false
-    private var discoveryWait: Task<Void, Never>?
-
-    private func discoveryLoop(client: HerdrClient) async {
-        var backoff = TopicsDiscoveryBackoff(schedule: Self.discoverySchedule)
-        while !Task.isCancelled {
-            discoveryWoken = false
-            let error = await listForDiscovery(client: client)
-            if Task.isCancelled { return }
-            switch backoff.decide(after: error) {
-            case .offered, .stop:
-                return
-            case .retry(let seconds):
-                let wait = Task<Void, Never> { try? await Task.sleep(nanoseconds: seconds * 1_000_000_000) }
-                discoveryWait = wait
-                await withTaskCancellationHandler { await wait.value } onCancel: { wait.cancel() }
-                discoveryWait = nil
-                if discoveryWoken { backoff.reset() }
-            }
-        }
-    }
-
-    private func wakeDiscoveryOnTopicChanges(client: HerdrClient, paneID: String) async {
+    private func wakeDiscoveryOnTopicChanges(client: HerdrClient, paneID: String, loop: TopicsDiscoveryLoop) async {
         do {
             for try await line in client.subscribeTopicChanges() {
                 guard case .changed(let change) = line, change.paneID == paneID else { continue }
-                discoveryWoken = true
-                discoveryWait?.cancel()
+                loop.wake()
             }
         } catch {}
         // Refused or dropped: the schedule alone keeps asking. Stay until discovery ends.
@@ -781,26 +760,46 @@ private struct TopicChat: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            ChatView(client: client, model: chat, viewer: viewer, eventsPaneID: eventsPaneID,
-                     isActive: isActive, live: live, agentStatus: topic.state.rawValue,
-                     ground: Palette.groundMachine, onOpenTerminal: onOpenTerminal)
-                .equatable()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // This topic's own note only: a late receipt for another topic stays with that one.
-            if let note = actionNote ?? model.sendNote(for: topic.id) {
-                Text(note).font(Typography.app(12)).foregroundStyle(Palette.textDim)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16).padding(.vertical, 4)
-                    .accessibilityIdentifier("topic-send-note")
+            // The server lists topics but cannot page a topic's conversation (`agent_topics`
+            // without `agent_transcript_topic`, or it refused the transcript): say so, and offer
+            // no composer that could not show what it sent (herdrup#766).
+            if chat.unsupported {
+                unavailable
+            } else {
+                ChatView(client: client, model: chat, viewer: viewer, eventsPaneID: eventsPaneID,
+                         isActive: isActive, live: live, agentStatus: topic.state.rawValue,
+                         ground: Palette.groundMachine, onOpenTerminal: onOpenTerminal)
+                    .equatable()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // This topic's own note only: a late receipt for another topic stays with that one.
+                if let note = actionNote ?? model.sendNote(for: topic.id) {
+                    Text(note).font(Typography.app(12)).foregroundStyle(Palette.textDim)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16).padding(.vertical, 4)
+                        .accessibilityIdentifier("topic-send-note")
+                }
+                composer
+                    .padding(.horizontal, 12).padding(.top, 4).padding(.bottom, 8)
+                    .conversationColumn()
             }
-            composer
-                .padding(.horizontal, 12).padding(.top, 4).padding(.bottom, 8)
-                .conversationColumn()
         }
         .background(Palette.groundMachine)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("topic-chat")
         .chatSheets(client: client, model: chat, viewer: viewer, presents: isActive, onOpenTerminal: onOpenTerminal)
+    }
+
+    private var unavailable: some View {
+        VStack(spacing: 8) {
+            Text("This server can't show topic conversations")
+                .font(Typography.app(15, .semibold)).foregroundStyle(Palette.text)
+                .accessibilityIdentifier("topic-chat-unavailable")
+            Text("Update herdr on this machine to read and send to topics here. The Terminal still shows the agent.")
+                .font(Typography.app(13)).foregroundStyle(Palette.textDim)
+        }
+        .multilineTextAlignment(.center)
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var header: some View {

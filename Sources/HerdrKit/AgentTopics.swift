@@ -325,6 +325,67 @@ public struct TopicsDiscoveryBackoff: Sendable, Equatable {
     public mutating func reset() { attempt = 0 }
 }
 
+/// Runs discovery on `TopicsDiscoveryBackoff`'s schedule: one attempt, then the wait its
+/// answer calls for, until the agent offers topics or refuses for good.
+///
+/// `wake()` (an `agent.topics.changed` for the agent) restarts the schedule and asks again
+/// at once: it ends a wait in progress, and one that arrives while an attempt is still in
+/// flight is kept and consumed before the next wait is installed, so it is never lost to a
+/// full backoff sleep (herdrup#767). `attempt` returns nil when the agent answered with a list.
+/// `sleep` is injectable so tests run the schedule without a clock.
+@MainActor
+public final class TopicsDiscoveryLoop {
+    public typealias Attempt = @MainActor () async -> (any Error)?
+    public typealias Sleep = @Sendable (_ seconds: UInt64) async -> Void
+
+    private let schedule: [UInt64]
+    private let attempt: Attempt
+    private let sleep: Sleep
+    /// A wake arrived since the current attempt started.
+    private var woken = false
+    private var wait: Task<Void, Never>?
+
+    public init(schedule: [UInt64] = TopicsDiscoveryBackoff.delays,
+                attempt: @escaping Attempt,
+                sleep: @escaping Sleep = { seconds in try? await Task.sleep(nanoseconds: seconds * 1_000_000_000) }) {
+        self.schedule = schedule
+        self.attempt = attempt
+        self.sleep = sleep
+    }
+
+    /// Until the agent offers topics or refuses for good, or the task is cancelled.
+    public func run() async {
+        var backoff = TopicsDiscoveryBackoff(schedule: schedule)
+        while !Task.isCancelled {
+            woken = false
+            let error = await attempt()
+            if Task.isCancelled { return }
+            switch backoff.decide(after: error) {
+            case .offered, .stop:
+                return
+            case .retry(let seconds):
+                // A wake during the attempt: start over and ask again now, no wait.
+                if woken {
+                    backoff.reset()
+                    continue
+                }
+                let sleep = self.sleep
+                let pending = Task<Void, Never> { await sleep(seconds) }
+                wait = pending
+                await withTaskCancellationHandler { await pending.value } onCancel: { pending.cancel() }
+                wait = nil
+                if woken { backoff.reset() }
+            }
+        }
+    }
+
+    /// The agent changed: ask again now, from the start of the schedule.
+    public func wake() {
+        woken = true
+        wait?.cancel()
+    }
+}
+
 extension AgentTopicsError {
     /// The agent will not offer topics for the rest of this page's life: `topics_unsupported`,
     /// a server without `agent_topics`, or the agent is gone. Anything else may pass.
