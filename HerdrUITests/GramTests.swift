@@ -321,6 +321,7 @@ final class GramTests: XCTestCase {
         XCTAssertTrue(paged, "reaching the top should load the older page (12 + 24 messages); feed says \(messages.value ?? "nil")")
 
         let previousTop = label("Picked up the deploy ticket.")
+        waitForPlaceRestored(app, at: "g9")
         XCTAssertTrue(previousTop.exists(within: 3) && previousTop.isHittable,
                       "the message that was on top should stay on screen after the older page lands")
 
@@ -404,6 +405,7 @@ final class GramTests: XCTestCase {
         XCTAssertTrue(paged, "after a tab round trip, reaching the top should still load the older page; feed says \(messages.value ?? "nil")")
         let previousTop = app.staticTexts.matching(
             NSPredicate(format: "label BEGINSWITH %@", "Picked up the deploy ticket.")).firstMatch
+        waitForPlaceRestored(app, at: "g9")
         XCTAssertTrue(previousTop.exists(within: 3) && previousTop.isHittable,
                       "the message that was on top should stay on screen after the older page lands")
         // Kept: let a chained fetch, if any, land: the count must stay at exactly one page.
@@ -1132,6 +1134,26 @@ final class GramTests: XCTestCase {
     private func waitForCount(_ messages: XCUIElement, _ count: Int, timeout: TimeInterval) -> Bool {
         let loaded = NSPredicate(format: "value == %@", "\(count) messages")
         return waitForPredicate(loaded, object: messages, timeout: timeout)
+    }
+
+    /// Waits until the feed has finished putting the reader's place back after an older page
+    /// landed above it, and FAILS unless that restore landed on `messageID` (#705).
+    ///
+    /// The loaded count (`waitForCount`) changes in the same update that draws the new rows,
+    /// at the old scroll offset, so for that moment the previously-top message sits a page
+    /// lower, off screen. The feed then scrolls it back over several layout passes (up to ten
+    /// 60 ms tries, then 100 ms, longer on a loaded runner). A test that read the row the
+    /// moment the count changed raced that restore. The feed's own receipt
+    /// (`gram-feed-anchor`: "restoring <id>", then "settled <id>" or "unsettled <id>") says
+    /// when it is over, and whether the restore itself missed.
+    private func waitForPlaceRestored(_ app: XCUIApplication, at messageID: String,
+                                      file: StaticString = #filePath, line: UInt = #line) {
+        let receipt = pollLabel(app, "gram-feed-anchor", "the feed should finish restoring the reader's place",
+                                timeout: 15, file: file, line: line) {
+            $0.hasSuffix(" \(messageID)") && !$0.hasPrefix("restoring")
+        }
+        XCTAssertEqual(receipt, "settled \(messageID)",
+                       "the feed's place restore should land on the previously-top message", file: file, line: line)
     }
 
     /// Polls rather than using XCTest's asynchronous waiter, which can time out during a slow

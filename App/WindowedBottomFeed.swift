@@ -241,6 +241,11 @@ where Item.ID == String {
             .background { if newestRequest != nil { ScrollsToTopOff() } }
         }
         .accessibilityIdentifier(feedID)
+        #if DEBUG
+        .overlay(alignment: .topLeading) {
+            FeedAnchorProbe(visibility: visibility, id: "\(feedID)-anchor")
+        }
+        #endif
         // A re-tap of the selected tab: to the newest message, as opening does (the same
         // bounded jump, since rows above may still be settling their heights).
         .onChange(of: newestRequest) { _, _ in
@@ -348,6 +353,9 @@ where Item.ID == String {
             guard let id else { return }
             anchorID = nil
             visibility.anchoring = true
+            #if DEBUG
+            visibility.anchorReceipt = "restoring \(id)"
+            #endif
             Task { @MainActor in
                 // The inserted rows may still be settling their heights, so one
                 // jump can land short (on iPhone the feed stayed at the top of the new page,
@@ -367,6 +375,9 @@ where Item.ID == String {
                 // feed fits, so the row cannot be scrolled up to the top).
                 let settled = visibility.rowsAtTop.contains(id)
                     || (visibility.rows.contains(id) && visibility.atBottom)
+                #if DEBUG
+                visibility.anchorReceipt = "\(settled ? "settled" : "unsettled") \(id)"
+                #endif
                 if !visibility.sentinelOnScreen {
                     visibility.pageArmed = true
                 } else if settled, chainsAfterAnchor() {
@@ -437,6 +448,13 @@ final class FeedVisibility {
     /// The inbox's running older-messages fetch (the sentinel's, or the no-matches button's),
     /// so a new or cleared search cancels it.
     var olderFetch: Task<Void, Never>?
+    #if DEBUG
+    /// For the UI tests, the last place-restore after older rows landed: "restoring <id>"
+    /// while it converges, then "settled <id>" or "unsettled <id>" (the `<feedID>-anchor`
+    /// probe). Reading the restored row the moment the page's count changed raced the
+    /// restore, which jumps back over several layout passes (#705).
+    var anchorReceipt = ""
+    #endif
 }
 
 extension View {
@@ -518,6 +536,34 @@ struct FeedBottom: Equatable {
     let onScreen: Bool
     let viewportHeight: CGFloat
 }
+
+#if DEBUG
+/// For the UI tests, in the screenshot mock only: `FeedVisibility.anchorReceipt` as the label
+/// of `<feedID>-anchor`. Its own view and state, polled like GramView's other probes, so a
+/// receipt change re-renders this probe alone and never the feed's rows.
+private struct FeedAnchorProbe: View {
+    let visibility: FeedVisibility
+    let id: String
+    @State private var receipt = ""
+
+    var body: some View {
+        if ScreenshotMock.mode != nil {
+            Color.clear
+                .frame(width: 1, height: 1)
+                .allowsHitTesting(false)
+                .accessibilityElement()
+                .accessibilityIdentifier(id)
+                .accessibilityLabel(receipt.isEmpty ? "none" : receipt)
+                .task {
+                    while !Task.isCancelled {
+                        if visibility.anchorReceipt != receipt { receipt = visibility.anchorReceipt }
+                        try? await Task.sleep(nanoseconds: 100_000_000)
+                    }
+                }
+        }
+    }
+}
+#endif
 
 /// Turns off `scrollsToTop` on the UIScrollView a SwiftUI ScrollView is drawn with, from a
 /// probe in its content: the probe finds its nearest UIScrollView ancestor once it is in a
