@@ -1,6 +1,6 @@
 # The Linux checks: HerdrKit and vendored SwiftTerm tests, the symbol-font and design-token
-# checks, the CI tooling checks and the guest relay Worker. PR/manual only: no signing
-# secrets or release uploads.
+# checks, the CI tooling checks, the guest relay Worker and the account service Worker.
+# PR/manual only: no signing secrets or release uploads.
 #
 # THE SIMULATOR UI MATRIX DOES NOT RUN HERE. It runs on macserve, the owner's Mac build
 # service: .macserve.json defines its shards (ui_test), and macserve posts one
@@ -152,6 +152,33 @@ jobs:
     defaults:
       run:
         working-directory: GuestRelay
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Typecheck
+        run: npm run typecheck
+
+  # The account service Worker (AccountService, herdrup#698): its tests in workerd against a
+  # local D1 database, with generated Apple and Google keys (nothing reaches the network),
+  # and its typecheck.
+  account-service:
+    name: Account service (Linux)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: AccountService
     steps:
       - name: Checkout
         uses: actions/checkout@v4

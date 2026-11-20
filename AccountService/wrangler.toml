@@ -1,0 +1,75 @@
+name = "herdrup-accounts"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+# One origin only. accounts.herdrup.app is attached on deploy; the herdrup.app zone must be on
+# the deploying account. No workers.dev URL: the apps (and later the web guest's cookie) know
+# one origin.
+workers_dev = false
+routes = [
+  { pattern = "accounts.herdrup.app", custom_domain = true },
+]
+# Never push request logs anywhere: see [observability] below.
+logpush = false
+
+# ID tokens, refresh tokens and nonces travel in request bodies, and later the web sign-in's
+# code and state in URLs, so nothing may record requests. Workers Logs (whose invocation logs
+# hold the URL of every request), traces and Logpush (logpush = false above) stay off,
+# whatever the account default. Stated rather than omitted: wrangler leaves the remote
+# setting alone when [observability] is missing.
+[observability]
+enabled = false
+
+[observability.logs]
+enabled = false
+invocation_logs = false
+
+[observability.traces]
+enabled = false
+
+# Accounts, their sign-in identities, sessions and spent sign-in nonces (migrations/).
+[[d1_databases]]
+binding = "DB"
+database_name = "herdrup-accounts"
+# Created by the owner on 2026-11-19 in the EU jurisdiction (a database can't change
+# jurisdiction afterwards). The id is not a secret. Apply the migrations before the first
+# deploy:
+#   npx wrangler d1 migrations apply herdrup-accounts --remote
+database_id = "b045413f-9d97-4568-a2aa-3fb7ab87ba28"
+migrations_dir = "migrations"
+
+# Keyed by CF-Connecting-IP and checked before the body is read: the nonce, both sign-ins
+# and refresh share it.
+[[ratelimits]]
+name = "AUTH_IP_LIMIT"
+namespace_id = "6981"
+simple = { limit = 20, period = 60 }
+
+# Keyed by account id, after the access token is checked: every authenticated call.
+[[ratelimits]]
+name = "ACCOUNT_LIMIT"
+namespace_id = "6982"
+simple = { limit = 120, period = 60 }
+
+# Hourly cleanup (src/cleanup.ts): spent nonces and sessions past their expiry, and accounts
+# not seen for 24 months.
+[triggers]
+crons = ["17 * * * *"]
+
+# Public identifiers only. The ID tokens' audiences: Sign in with Apple's App ID (native) and
+# Services ID (web, used from a later step); the Google iOS client (bundle com.jerryfane.herdr,
+# team FXQ5Z9HHY6) and web client (redirect .../v1/auth/web/google/callback), both in the
+# Google Cloud project themartianapp. An empty Google id leaves Google sign-in answering
+# 500 not_configured.
+[vars]
+APPLE_APP_CLIENT_ID = "com.jerryfane.herdr"
+APPLE_WEB_CLIENT_ID = "com.jerryfane.herdr.signin"
+GOOGLE_IOS_CLIENT_ID = "552913387875-ujv6unveo5qtmmbnapogekc5jl8h6olk.apps.googleusercontent.com"
+GOOGLE_WEB_CLIENT_ID = "552913387875-0te8j0cm9tmt5ifai9m8nlc1igdhi844.apps.googleusercontent.com"
+
+# Secrets (wrangler secret put), never in this file:
+#   ACCOUNT_HMAC_KEY   32 random bytes, standard base64. Keys the sign-in nonces and the stored
+#                      hash of each provider's user id. Losing it orphans every account, so the
+#                      owner keeps a copy in the keyring (README "Deploy").
+#   GOOGLE_WEB_CLIENT_SECRET  the Google web client's secret; the owner pastes it at the first
+#                      deploy. Nothing in this step reads it: the web sign-in flow (step 5) is
+#                      its first user.
