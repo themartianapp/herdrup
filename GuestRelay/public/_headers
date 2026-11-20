@@ -7,7 +7,7 @@
   Cache-Control: no-store
 
 /web/*
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self'; connect-src 'self' wss://guest.herdrup.app wss://guest.herdrup.themartian.app; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self'; connect-src 'self' wss://guest.herdrup.app wss://guest.herdrup.themartian.app https://accounts.herdrup.app; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'
 
 /web/
   Cache-Control: no-store
