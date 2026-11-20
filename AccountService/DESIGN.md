@@ -347,6 +347,11 @@ An X25519 key can't sign, so possession is proved with a key agreement:
      of that account first; a key belongs to one account at a time.
    - At most 20 devices per account (`403 too_many_devices`), checked in the inserting
      statement itself so two enrolments can't both pass the count.
+   - Insert and bind are one D1 batch (a transaction), and the insert also requires the
+     session to still exist without a device. Nothing is undone afterwards: once committed,
+     the device may already belong to another session of the account (a new sign-in on the
+     same install adopts it), so a compensating delete could sign that session out. A session
+     that signed out meanwhile gets `401 invalid_token`; the device stays (#752 review).
    - Removing a device (`DELETE /v1/devices/<id>`) deletes the sessions bound to it.
 
 This uses the WebCrypto `X25519` that workerd has supported since 2023, and the same algorithm in

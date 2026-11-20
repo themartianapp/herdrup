@@ -238,6 +238,85 @@ describe("enrol", () => {
     expect(list.devices).toHaveLength(1);
   });
 
+  /**
+   * Runs `body` with env.DB's next batch() call paused, `when` it runs, until `hook` has
+   * finished: the enrolment's transaction, interleaved with other requests at a chosen point.
+   * Later batches run untouched.
+   */
+  async function withBatchHook<T>(when: "before" | "after", hook: () => Promise<void>, body: () => Promise<T>): Promise<T> {
+    const real = env.DB;
+    let fired = false;
+    const pause = async () => {
+      if (fired) return;
+      fired = true;
+      await hook();
+    };
+    env.DB = new Proxy(real, {
+      get(target, property) {
+        if (property === "batch") {
+          return async (statements: D1PreparedStatement[]) => {
+            if (when === "before") await pause();
+            const results = await target.batch(statements);
+            if (when === "after") await pause();
+            return results;
+          };
+        }
+        const value: unknown = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    try {
+      return await body();
+    } finally {
+      env.DB = real;
+    }
+  }
+
+  it("never deletes a device another session adopted while this enrolment was finishing", async () => {
+    const first = await newSession();
+    const second = await newSession(first.accountId);
+    const device = await newDeviceKey();
+    let signout: Response | undefined;
+    let adopted: Response | undefined;
+    // A's transaction inserts the device and binds session A. Before A reads the outcome,
+    // session A signs out and session B enrols the same key, adopting A's device.
+    const late = await withBatchHook(
+      "after",
+      async () => {
+        signout = await call("POST", "/v1/auth/signout", first);
+        adopted = await enrol(second, device);
+      },
+      () => enrol(first, device),
+    );
+    expect(signout?.status).toBe(204);
+    expect(adopted?.status).toBe(200);
+    // Session B and the device it adopted survive A's late finish.
+    expect((await call("GET", "/v1/account", second)).status).toBe(200);
+    const list = await (await call("GET", "/v1/devices", second)).json<{ devices: DeviceJson[] }>();
+    expect(list.devices.map((row) => [row.device_pub, row.current])).toEqual([[device.pub, true]]);
+    expect((await call("POST", "/v1/statements", second, { hosts: [newHostId()] })).status).toBe(200);
+    // A's own session is gone, so A gets what any signed-out request gets.
+    expect(await rejection(late)).toEqual({ status: 401, error: "invalid_token" });
+  });
+
+  it("adds no device when another enrolment bound the session first, with another key", async () => {
+    const session = await newSession();
+    const winner = await newDeviceKey();
+    const loser = await newDeviceKey();
+    let first: Response | undefined;
+    const late = await withBatchHook(
+      "before",
+      async () => {
+        first = await enrol(session, winner);
+      },
+      () => enrol(session, loser),
+    );
+    expect(first?.status).toBe(201);
+    expect(await rejection(late)).toEqual({ status: 409, error: "session_has_device" });
+    const list = await (await call("GET", "/v1/devices", session)).json<{ devices: DeviceJson[] }>();
+    expect(list.devices.map((row) => row.device_pub)).toEqual([winner.pub]);
+  });
+
   it(`caps an account at ${MAX_DEVICES} devices`, async () => {
     const session = await newSession();
     const now = Date.now();

@@ -156,32 +156,36 @@ export async function handleEnrol(request: Request, env: Env, nowMs: number): Pr
     return json(200, { device: deviceJson(bound, principal) });
   }
 
-  // Insert unless the key is taken or the account is at its cap (one statement, so two
-  // enrolments can't both pass the count), then bind the session to the account's device for
-  // this key, if any.
+  // One D1 batch, which is a transaction: insert the device only while this session still
+  // exists without a device, the key is free and the account is under its cap (all in the
+  // inserting statement, so two enrolments can't both pass the count); then bind the session
+  // to the account's device for this key, if any. Nothing is ever undone afterwards: once
+  // committed, the device may already belong to another session of the account (a new
+  // sign-in on the same install adopts it), so the outcome is only read back.
   const deviceId = randomB64url(16);
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO devices (id, account_id, device_pub, name, platform, created_ms)
-       SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE (SELECT COUNT(*) FROM devices WHERE account_id = ?2) < ?7
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6
+        WHERE (SELECT COUNT(*) FROM devices WHERE account_id = ?2) < ?7
+          AND EXISTS (SELECT 1 FROM sessions WHERE id = ?8 AND device_id IS NULL)
        ON CONFLICT (device_pub) DO NOTHING`,
-    ).bind(deviceId, principal.accountId, devicePub, name, platform, nowMs, MAX_DEVICES),
+    ).bind(deviceId, principal.accountId, devicePub, name, platform, nowMs, MAX_DEVICES, principal.sessionId),
     env.DB.prepare(
       `UPDATE sessions SET device_id = (SELECT id FROM devices WHERE device_pub = ?1 AND account_id = ?2)
         WHERE id = ?3 AND device_id IS NULL`,
     ).bind(devicePub, principal.accountId, principal.sessionId),
   ]);
-  const row = await env.DB.prepare("SELECT * FROM devices WHERE device_pub = ?").bind(devicePub).first<DeviceRow>();
-  if (row === null) return errorResponse(403, "too_many_devices");
-  if (row.account_id !== principal.accountId) return errorResponse(409, "device_in_other_account");
   const session = await env.DB.prepare("SELECT device_id FROM sessions WHERE id = ?")
     .bind(principal.sessionId)
     .first<{ device_id: string | null }>();
-  if (session?.device_id !== row.id) {
-    // Another enrolment bound this session first, with another key.
-    if (row.id === deviceId) await env.DB.prepare("DELETE FROM devices WHERE id = ?").bind(deviceId).run();
-    return errorResponse(409, "session_has_device");
-  }
+  // Signed out (or the session's device removed) meanwhile: as for any request without a session.
+  if (session === null) return errorResponse(401, "invalid_token", { "WWW-Authenticate": "Bearer" });
+  const row = await env.DB.prepare("SELECT * FROM devices WHERE device_pub = ?").bind(devicePub).first<DeviceRow>();
+  if (row !== null && row.account_id !== principal.accountId) return errorResponse(409, "device_in_other_account");
+  // Another enrolment bound this session first, with another key; this one inserted nothing.
+  if (session.device_id !== null && session.device_id !== row?.id) return errorResponse(409, "session_has_device");
+  if (row === null || session.device_id === null) return errorResponse(403, "too_many_devices");
   return json(row.id === deviceId ? 201 : 200, { device: deviceJson(row, { ...principal, deviceId: row.id }) });
 }
 
