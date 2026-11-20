@@ -94,14 +94,17 @@ STATEMENT_ACTIVE = "A"
 STATEMENT_KID_A = "2026-11a"
 STATEMENT_KID_B = ""
 STATEMENT_REVOKED_KIDS = ""
+# The web guest (DESIGN.md §2.5, §2.6): the only origin CORS allows, with credentials, and
+# where the web sign-in flow returns to (/web/?account=1).
+WEB_ORIGIN = "https://guest.herdrup.app"
 
 # Secrets (wrangler secret put), never in this file:
 #   ACCOUNT_HMAC_KEY   32 random bytes, standard base64. Keys the sign-in nonces and the stored
 #                      hash of each provider's user id. Losing it orphans every account, so the
 #                      owner keeps a copy in the keyring (README "Deploy").
 #   GOOGLE_WEB_CLIENT_SECRET  the Google web client's secret; the owner pastes it at the first
-#                      deploy. Nothing in this step reads it: the web sign-in flow (step 5) is
-#                      its first user.
+#                      deploy. The web sign-in flow's code exchange (src/web.ts) uses it; while
+#                      it is unset, the Google web flow answers 503 and Apple's still works.
 #   STATEMENT_KEY_A, STATEMENT_KEY_B  Ed25519 private keys that sign statements, PKCS8 DER in
 #                      standard base64, generated straight into the Worker (README "Deploy").
 #                      No copy is kept: a lost key is rotated, never restored.

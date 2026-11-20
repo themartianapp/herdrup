@@ -17,5 +17,7 @@ declare namespace Cloudflare {
     STATEMENT_KID_B: string;
     STATEMENT_ACTIVE: string;
     STATEMENT_REVOKED_KIDS: string;
+    GOOGLE_WEB_CLIENT_SECRET?: string;
+    WEB_ORIGIN: string;
   }
 }

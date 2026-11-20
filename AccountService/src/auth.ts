@@ -3,8 +3,11 @@
 //   POST /v1/auth/nonce                 → {nonce, expires_unix}
 //   POST /v1/auth/apple | /v1/auth/google {id_token, nonce, platform}
 //                                       → {account_id, created, access_token, …, display_hint?}
-//   POST /v1/auth/refresh               {refresh_token} → a new token pair
-//   POST /v1/auth/signout               Bearer access token → 204
+//   POST /v1/auth/refresh               {refresh_token} → a new token pair; from the web guest
+//                                       (Origin WEB_ORIGIN), the __Host-hu_refresh cookie instead
+//                                       → {account_id, access_token, access_expires_in} + cookie
+//   POST /v1/auth/signout               Bearer access token → 204; from the web guest, the
+//                                       cookie's session instead, and the cookie is cleared
 //   GET  /v1/account                    Bearer access token → {account_id, created_ms}
 //
 // The app passes the nonce to Apple (ASAuthorizationAppleIDRequest.nonce) or Google (the
@@ -14,15 +17,16 @@
 import { randomB64url, sameString } from "./bytes";
 import type { Env } from "./env";
 import { errorResponse, json, log, readJsonObject, type Endpoint } from "./http";
-import { APPLE_ISSUER, APPLE_JWKS, GOOGLE_ISSUERS, GOOGLE_JWKS, verifyIdToken, type ProviderConfig } from "./idtoken";
+import { APPLE_ISSUER, APPLE_JWKS, GOOGLE_ISSUERS, GOOGLE_JWKS, verifyIdToken, type ProviderConfig, type VerifiedIdToken } from "./idtoken";
 import { serviceKeys, subjectHash, type Provider, type ServiceKeys } from "./keys";
 import { issueNonce, openNonce, spendNonce } from "./nonce";
-import { authenticate, dayOf, openSession, PLATFORMS, refreshSession, type Platform, type Principal } from "./sessions";
+import { authenticate, dayOf, endSessionByRefreshToken, openSession, PLATFORMS, refreshSession, type Platform, type Principal } from "./sessions";
+import { clearRefreshCookie, fromWebGuest, readCookie, REFRESH_COOKIE, refreshCookie } from "./browser";
 
 /** Largest sign-in or refresh body: an ID token is ~1 KB, and verifyIdToken refuses past 4 KB. */
 export const MAX_AUTH_BODY_BYTES = 8192;
 
-function providerConfig(env: Env, provider: Provider): ProviderConfig | null {
+export function providerConfig(env: Env, provider: Provider): ProviderConfig | null {
   const audiences = (
     provider === "apple" ? [env.APPLE_APP_CLIENT_ID, env.APPLE_WEB_CLIENT_ID] : [env.GOOGLE_IOS_CLIENT_ID, env.GOOGLE_WEB_CLIENT_ID]
   ).filter((id): id is string => typeof id === "string" && id.length > 0);
@@ -33,7 +37,7 @@ function providerConfig(env: Env, provider: Provider): ProviderConfig | null {
 }
 
 /** The per-IP budget, the derived keys, or the error to answer with. */
-async function openAuthRequest(request: Request, env: Env, endpoint: Endpoint): Promise<ServiceKeys | Response> {
+export async function openAuthRequest(request: Request, env: Env, endpoint: Endpoint): Promise<ServiceKeys | Response> {
   const keys = serviceKeys(env.ACCOUNT_HMAC_KEY);
   if (env.AUTH_IP_LIMIT === undefined || keys === null) {
     log({ endpoint, outcome: "not_configured" });
@@ -70,6 +74,31 @@ export async function handleSignIn(request: Request, env: Env, provider: Provide
     return errorResponse(400, "bad_request");
   }
 
+  const proof = await proveIdentity(env.DB, keys, config, endpoint, idToken, nonce, nowMs);
+  if (proof instanceof Response) return proof;
+  const { accountId, created } = await findOrCreateAccount(env.DB, provider, proof.subjectHash, nowMs);
+  const tokens = await openSession(env.DB, accountId, platform as Platform, nowMs);
+  return json(200, {
+    ...tokens,
+    created,
+    ...(proof.token.email === undefined ? {} : { display_hint: proof.token.email }),
+  });
+}
+
+/**
+ * A fresh sign-in with the provider: `nonce` is one this Worker issued and hasn't expired, the
+ * ID token verifies and carries it, and the nonce is then spent. Sign-in and account deletion
+ * (src/deletion.ts) both take one. The verified token and its identity hash, or the error.
+ */
+export async function proveIdentity(
+  db: D1Database,
+  keys: ServiceKeys,
+  config: ProviderConfig,
+  endpoint: Endpoint,
+  idToken: string,
+  nonce: string,
+  nowMs: number,
+): Promise<{ token: VerifiedIdToken; subjectHash: string } | Response> {
   const nonceExpiresMs = await openNonce(keys.nonce, nonce, nowMs);
   if (nonceExpiresMs === null) return errorResponse(401, "nonce_invalid");
   const verified = await verifyIdToken(idToken, config, nowMs);
@@ -81,15 +110,8 @@ export async function handleSignIn(request: Request, env: Env, provider: Provide
     return json(401, { error: "token_invalid", reason: verified.reason });
   }
   if (!sameString(verified.token.nonce, nonce)) return json(401, { error: "token_invalid", reason: "nonce_mismatch" });
-  if (!(await spendNonce(env.DB, nonce, nonceExpiresMs))) return errorResponse(401, "nonce_used");
-
-  const { accountId, created } = await findOrCreateAccount(env.DB, provider, await subjectHash(keys.subject, provider, verified.token.sub), nowMs);
-  const tokens = await openSession(env.DB, accountId, platform as Platform, nowMs);
-  return json(200, {
-    ...tokens,
-    created,
-    ...(verified.token.email === undefined ? {} : { display_hint: verified.token.email }),
-  });
+  if (!(await spendNonce(db, nonce, nonceExpiresMs))) return errorResponse(401, "nonce_used");
+  return { token: verified.token, subjectHash: await subjectHash(keys.subject, config.provider, verified.token.sub) };
 }
 
 /**
@@ -125,6 +147,16 @@ export async function findOrCreateAccount(
 export async function handleRefresh(request: Request, env: Env, nowMs: number): Promise<Response> {
   const keys = await openAuthRequest(request, env, "/v1/auth/refresh");
   if (keys instanceof Response) return keys;
+  if (fromWebGuest(request, env)) {
+    // The web guest's refresh token never reaches its page: it lives in the HttpOnly cookie,
+    // which rotates with it. A refused token clears the cookie.
+    const cookie = readCookie(request, REFRESH_COOKIE);
+    if (cookie === null) return errorResponse(401, "invalid_token");
+    const result = await refreshSession(env.DB, cookie, nowMs);
+    if (!result.ok) return errorResponse(401, result.error, { "Set-Cookie": clearRefreshCookie() });
+    const { account_id, access_token, access_expires_in, refresh_token } = result.tokens;
+    return json(200, { account_id, access_token, access_expires_in }, { "Set-Cookie": refreshCookie(refresh_token) });
+  }
   const body = await readJsonObject(request, MAX_AUTH_BODY_BYTES);
   if (body instanceof Response) return body;
   if (typeof body.refresh_token !== "string") return errorResponse(400, "bad_request");
@@ -160,6 +192,15 @@ export async function openAccountRequest(
 }
 
 export async function handleSignOut(request: Request, env: Env, nowMs: number): Promise<Response> {
+  if (fromWebGuest(request, env)) {
+    // The web guest signs out by its cookie, so it can even after its access token expired.
+    // Always 204 with the cookie cleared: a stale or missing cookie has no session to end.
+    const keys = await openAuthRequest(request, env, "/v1/auth/signout");
+    if (keys instanceof Response) return keys;
+    const cookie = readCookie(request, REFRESH_COOKIE);
+    if (cookie !== null) await endSessionByRefreshToken(env.DB, cookie);
+    return new Response(null, { status: 204, headers: { "cache-control": "no-store", "Set-Cookie": clearRefreshCookie() } });
+  }
   const principal = await openAccountRequest(request, env, "/v1/auth/signout", nowMs);
   if (principal instanceof Response) return principal;
   await env.DB.prepare("DELETE FROM sessions WHERE id = ?").bind(principal.sessionId).run();

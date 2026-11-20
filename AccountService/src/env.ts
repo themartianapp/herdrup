@@ -21,4 +21,8 @@ export interface Env {
   STATEMENT_ACTIVE?: string;
   /** Comma-separated kids that are never used or published again, and are listed as revoked. */
   STATEMENT_REVOKED_KIDS?: string;
+  /** The Google web client's secret (wrangler secret), for the web flow's code exchange. Unset: the Google web flow answers 503. */
+  GOOGLE_WEB_CLIENT_SECRET?: string;
+  /** The web guest's origin (var): the only CORS origin, and where the web flow returns to. */
+  WEB_ORIGIN?: string;
 }

@@ -18,8 +18,11 @@ own deploys, so a bug or rollback here can't drop a guest session.
 | `POST /v1/auth/nonce` | | `{nonce, expires_unix}`: valid 10 minutes, spent by one sign-in |
 | `POST /v1/auth/apple` | `{id_token, nonce, platform}` | `{account_id, created, access_token, access_expires_in, refresh_token, refresh_expires_in}` |
 | `POST /v1/auth/google` | same | same, plus `display_hint` (the Google email, for the device to show) |
-| `POST /v1/auth/refresh` | `{refresh_token}` | a new token pair |
-| `POST /v1/auth/signout` | `Authorization: Bearer <access>` | 204 |
+| `POST /v1/auth/refresh` | `{refresh_token}`; from the web guest, its cookie | a new token pair; the web guest gets `{account_id, access_token, access_expires_in}` and the rotated cookie |
+| `POST /v1/auth/signout` | `Authorization: Bearer <access>`; from the web guest, its cookie | 204 (the web guest's cookie is cleared) |
+| `GET /v1/auth/web/start` | `?provider=apple\|google&client=app&platform=…&handoff_challenge=…`, or `&client=web` | 303 to Apple or Google |
+| `POST /v1/auth/web/apple/callback`, `GET /v1/auth/web/google/callback` | from the provider | 303 to `herdrup://account#code=…` or `https://guest.herdrup.app/web/?account=1` (`…#error=` / `?account_error=` on failure) |
+| `POST /v1/auth/handoff` | `{code, handoff_verifier}` | the same as a native sign-in |
 | `GET /v1/account` | `Authorization: Bearer <access>` | `{account_id, created_ms}` |
 | `POST /v1/devices/challenge` | bearer | `{challenge_id, server_pub, salt, account_id, expires_in}`: 60 s, one use |
 | `POST /v1/devices` | bearer; `{challenge_id, device_pub, mac, name, platform}` | 201 `{device}` (200 when the key is already the account's) |
@@ -53,6 +56,31 @@ these. When two refreshes race with the same token the first wins and the second
 spent. Presenting any refresh token the session ever rotated away is treated as theft: the
 whole session ends, for every holder. Clients must refresh one at a time. The design behind
 this Worker and the steps after it is in [DESIGN.md](DESIGN.md).
+
+**Web sign-in** (herdrup-desktop and the web guest; DESIGN.md §2.3, §2.6). The client opens
+`/v1/auth/web/start` in a browser. The Worker keeps the flow (state, nonce, Google's PKCE
+verifier, the app's handoff challenge) for 10 minutes and binds it to that browser with the
+`__Host-hu_flow` cookie. It then sends the browser to Apple (Services ID, `form_post`, no scope)
+or Google (web client, `openid email`, PKCE).
+
+The callback takes the flow, so each state works once, and checks the browser. It then verifies
+the ID token, which must carry the flow's nonce and name the web client. Google's code is
+exchanged with `GOOGLE_WEB_CLIENT_SECRET`, and only the `id_token` is read: the access token is
+dropped unread. Then:
+
+- **App** (`client=app`): the browser goes to `herdrup://account#code=<code>`. The app redeems
+  the code once, within 2 minutes, with `POST /v1/auth/handoff` and the verifier behind its
+  challenge. A grabbed URL is useless without the verifier.
+- **Web guest** (`client=web`): the callback sets `__Host-hu_refresh`
+  (`HttpOnly; Secure; SameSite=Strict; Path=/`, 90 days) and returns to
+  `https://guest.herdrup.app/web/?account=1`. From then on the page refreshes and signs out with
+  that cookie; the refresh token itself never reaches the page. The cookie counts only on
+  requests with `Origin: https://guest.herdrup.app`.
+
+CORS allows exactly that origin, with credentials, on the endpoints the page calls: refresh,
+signout, account, devices, statements, sync. It never allows `*`. Without
+`GOOGLE_WEB_CLIENT_SECRET`, the Google web flow answers `503 provider_not_configured`, and
+Apple's still works.
 
 **Devices.** A device is one install's guest key: the X25519 key it already proves to hosts in
 every Noise IK handshake. Only its public half is sent, and the device proves it holds the
@@ -114,7 +142,12 @@ travel in.
 - **Sync:** the allowlisted fields of each synced item (DESIGN.md §5), its revision and the time
   the server stored it, plus tombstones of deleted items for 90 days. Item bodies are never logged.
 - **Email:** Apple is asked for nothing. Google's email is read from the ID token and handed back
-  once as `display_hint`, then dropped.
+  once as `display_hint`, then dropped. In the desktop's web sign-in it waits up to 2 minutes
+  for the handoff, sealed under a key only the `herdrup://` code opens, so D1 never holds it
+  readably.
+- **Web sign-in:** each flow keeps hashes of its state and browser cookie, its nonce and
+  Google's PKCE verifier for 10 minutes, and each handoff a code hash for 2 minutes. Both go at
+  first use or expiry (hourly cron). Google's access token is never stored.
 - **Logs:** a log line is `{endpoint, outcome}`, written only for `not_configured`,
   `rate_limited`, `keys_unavailable` and `internal_error`. Never tokens, nonces, provider ids or
   their hashes, emails, account, session or device ids, device keys, host ids, IPs, bodies or
@@ -147,11 +180,12 @@ sync pushes; ID tokens at 4 KB; 50 hosts per statement call.
 | `GOOGLE_IOS_CLIENT_ID` | var | `552913387875-ujv6unveo5qtmmbnapogekc5jl8h6olk.apps.googleusercontent.com` (Google Cloud project `themartianapp`; bundle `com.jerryfane.herdr`, team `FXQ5Z9HHY6`) |
 | `GOOGLE_WEB_CLIENT_ID` | var | `552913387875-0te8j0cm9tmt5ifai9m8nlc1igdhi844.apps.googleusercontent.com` (same project; redirect `https://accounts.herdrup.app/v1/auth/web/google/callback`) |
 | `ACCOUNT_HMAC_KEY` | secret | 32 random bytes, standard base64 |
-| `GOOGLE_WEB_CLIENT_SECRET` | secret | the web client's secret, pasted by the owner; first read by the web sign-in flow (a later step) |
+| `GOOGLE_WEB_CLIENT_SECRET` | secret | the web client's secret, pasted by the owner. The Google web sign-in's code exchange needs it; while unset that flow answers 503 and Apple's still works |
 | `STATEMENT_KEY_A`, `STATEMENT_KEY_B` | secret | Ed25519 statement signing keys, PKCS8 DER in standard base64; two slots for rotation |
 | `STATEMENT_KID_A`, `STATEMENT_KID_B` | var | each slot's kid (`[A-Za-z0-9._-]{1,32}`); `STATEMENT_KID_A = "2026-11a"` |
 | `STATEMENT_ACTIVE` | var | `A` or `B`: the slot that signs |
 | `STATEMENT_REVOKED_KIDS` | var | comma-separated kids never used or published again (after a compromise) |
+| `WEB_ORIGIN` | var | `https://guest.herdrup.app`: the only CORS origin, and where the web guest's sign-in returns |
 
 `ACCOUNT_HMAC_KEY` keys the nonces, the identity hashes and the per-host account ids. **Losing
 it orphans every account** (no sign-in finds its account again, and every host sees new ids),
@@ -192,6 +226,16 @@ For step 2 on a Worker that already runs step 1: apply the migrations (`0002_dev
 
 For step 3: apply the migrations (`0003_sync.sql`), then deploy. It adds the `SYNC_WRITE_LIMIT`
 binding (namespace `6984`) and needs no secret.
+
+For step 5's Worker part:
+
+1. Apply the migrations (`0004_web_flows.sql`).
+2. Check that `GOOGLE_WEB_CLIENT_SECRET` is set (`npx wrangler secret list`); it was pasted at
+   the first deploy.
+3. Deploy.
+4. Check that the Services ID's return URL is `https://accounts.herdrup.app/v1/auth/web/apple/callback`
+   and the Google web client's redirect is `https://accounts.herdrup.app/v1/auth/web/google/callback`
+   (DESIGN.md §10).
 
 ### Rotate the statement key
 

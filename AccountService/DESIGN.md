@@ -117,8 +117,8 @@ AccountService/
 | `spent_refresh_tokens` | `(session_id, token_hash)`, `exp_ms` | Every refresh token the session rotated away, until that token's own expiry; reuse of any of them revokes the session (§2.5) |
 | `used_nonces` | `nonce_hash`, `exp_ms` | Single use of sign-in nonces |
 | `enrol_challenges` | `id`, `account_id`, `session_id`, `server_pkcs8`, `salt`, `exp_ms` | 60 s; bound to the session that asked; deleted when used |
-| `web_flows` | `state_hash`, `provider`, `nonce`, `pkce_verifier`, `client` (app\|web), `handoff_challenge`, `exp_ms` | 10 min |
-| `handoffs` | `code_hash`, `account_id`, `handoff_challenge`, `platform`, `display_hint`, `exp_ms` | 2 min, single use |
+| `web_flows` | `state_hash`, `provider`, `client` (app\|web), `platform`, `browser_hash`, `nonce`, `pkce_verifier`, `handoff_challenge`, `exp_ms` | 10 min; taken by its callback (migration 0004, §2.6) |
+| `handoffs` | `code_hash`, `account_id`, `handoff_challenge`, `platform`, `created`, `display_hint` (sealed), `exp_ms` | 2 min, single use (§2.6) |
 | `sync_items` | `(account_id, collection, item_id)`, `rev`, `updated_ms`, `deleted`, `body` (JSON) | Unique index `(account_id, rev)` |
 | `sync_usage` | `(account_id, collection)`, `items` | Live items per collection, against its cap (§5.5) |
 
@@ -215,6 +215,7 @@ Scopes:
 
 The desktop already handles `herdrup://pair#` and `herdrup://guest-invite#` links
 (app/desk_pairing.go, docs/DESIGN.md §pairing), so `herdrup://account#` is one more route there.
+§2.6 has the details step 5 settled.
 
 ### 2.4 Verifying ID tokens in the Worker
 
@@ -304,6 +305,97 @@ A dump of D1 can't be joined against Google user ids. Apple's server notificatio
     site, so web sign-in is offered only on `guest.herdrup.app`. The access token stays in memory.
 - **Apple credential state:** at launch the iOS app calls `getCredentialState(forUserID:)` and
   observes `credentialRevokedNotification`. When the state is revoked, it signs out locally.
+
+### 2.6 Decided in step 5, the Worker part (20 Nov)
+
+PR 5's Worker half (`src/web.ts`, `src/browser.ts`, `migrations/0004_web_flows.sql`) settles these.
+
+**Start.** `GET /v1/auth/web/start` takes exactly these parameters, and anything else is
+`400 bad_request`:
+
+- `provider=apple|google`;
+- `client=app` with `platform` (any §2.5 platform but `web`) and `handoff_challenge`, the
+  43-character b64url SHA-256 of the app's verifier;
+- or `client=web` with nothing else, because the web guest's session lands in its cookie.
+
+It answers `303` to the provider. `AUTH_IP_LIMIT` covers start, both callbacks and the handoff.
+
+- The Google web flow needs `GOOGLE_WEB_CLIENT_SECRET`. Without it, start answers
+  `503 provider_not_configured` and logs `not_configured`. Apple's web flow needs no secret and
+  is unaffected.
+- `client=web` also needs `WEB_ORIGIN` (`https://guest.herdrup.app`, a var).
+
+**The flow is bound to its browser.** Start sets `__Host-hu_flow` (32 random bytes;
+`Secure; HttpOnly; SameSite=None; Path=/; Max-Age=600`) and stores its hash in
+`web_flows.browser_hash`. The callback must present it.
+
+- This stops a login-CSRF: a page can't make the victim's browser finish the attacker's flow,
+  which would sign the web guest into the attacker's account and sync the victim's share list
+  there.
+- The cookie has to be `SameSite=None` because Apple's callback is a cross-site `form_post`. It
+  is a top-level navigation, so third-party-cookie blocking doesn't apply.
+
+**A state works once.** The callback takes the row with `DELETE … RETURNING`, so a second
+callback with the same state is refused. A state of the other provider is refused too.
+
+- An unknown, reused or malformed state gets a plain `400 state_invalid`, because nothing tells
+  us which client to return to.
+- Once the flow is found, every failure returns the browser to its client with an error code:
+  `herdrup://account#error=<code>`, or `https://guest.herdrup.app/web/?account_error=<code>`.
+- The codes are `flow_expired`, `browser_mismatch`, `cancelled`, `provider_error`,
+  `exchange_failed`, `provider_not_configured`, `token_invalid`, `nonce_invalid` and `nonce_used`.
+
+**ID tokens.** The flow's nonce is a normal sign-in nonce (§2.2), stored in the row and spent at
+the callback (`proveIdentity`, the same check as a native sign-in).
+
+- The audience must be the provider's **web** client only: the Services ID, or the Google web
+  client. A token minted for a native client is refused here.
+- Google's code is exchanged with the client secret and the PKCE verifier (5 s timeout). Only
+  `id_token` is read from the answer. The access token is never read, stored, logged or passed on.
+
+**Handoff.** The code is 32 random bytes, and `handoffs` keeps its SHA-256.
+
+- `POST /v1/auth/handoff` checks the body first. A missing or malformed code or verifier
+  (RFC 7636: 43–128 characters) is `400` and doesn't spend the code.
+- Otherwise the attempt spends the code whatever the verifier: `401 invalid_verifier`, then
+  `invalid_code`. So a grabbed code can't be tried twice. A code past its 2 minutes is
+  `401 code_expired`.
+- The session opens only at redemption, with the start's `platform`. The answer is the same as a
+  native sign-in's: tokens, `created`, and `display_hint` for Google.
+- **The display hint is never stored readably.** Google's email waits in `handoffs.display_hint`
+  sealed with AES-GCM, under a key derived by HKDF from the code. Only the `herdrup://` URL
+  carries the code, so D1 and its Time Travel copies never hold the email (§2.1, §11).
+- The web guest gets no display hint.
+
+**The web guest's cookie.** After a `client=web` sign-in, the callback sets `__Host-hu_refresh`:
+`Max-Age=7776000` (90 days, renewed with every rotation), `Path=/; Secure; HttpOnly;
+SameSite=Strict`. It then redirects to `https://guest.herdrup.app/web/?account=1`. Setting it on a
+cross-site top-level navigation is allowed; the guest page's own fetches are same-site, so they
+carry it.
+
+- `POST /v1/auth/refresh` from `Origin: https://guest.herdrup.app` uses the cookie, ignores the
+  body, and answers `{account_id, access_token, access_expires_in}` with the rotated cookie. The
+  refresh token never reaches the page.
+- A refused cookie (expired, unknown, or reused, which revokes the session as in §2.5) is cleared.
+- `POST /v1/auth/signout` from that origin ends the cookie's session, even with an expired access
+  token, and clears the cookie. It always answers `204`.
+- From any other origin, these endpoints ignore the cookie and work as for the apps. Other
+  herdrup.app origins are the same site, so they would carry the cookie: the Origin check keeps
+  them out.
+
+**CORS.** Only `https://guest.herdrup.app`, always with `Access-Control-Allow-Credentials: true`
+and `Vary: Origin`, and never `*`.
+
+- It covers only the endpoints the web guest calls: refresh, signout, `/v1/account`, the device
+  endpoints, `/v1/statements` and `/v1/sync`. Their error answers carry it too, so the page can
+  read a 401.
+- Preflights: from the web guest, for a method the route takes, `204` with
+  `Allow-Methods` (the route's), `Allow-Headers: authorization, content-type` and `Max-Age: 600`.
+  Anything else gets `403` with no CORS headers.
+- Every other endpoint has no CORS, so a preflight gets `405`.
+
+**Account deletion on the web guest** isn't offered. It needs a fresh ID token and nonce
+(§6.1), which the cookie flow never gives the page, so the apps delete.
 
 ---
 
@@ -809,7 +901,7 @@ Logging copies the relay's rule:
 | 2 | herdrup | **Devices + statements** (built 20 Nov). Challenge/enrol, device list/rename/remove, `/v1/statements`, `/.well-known/jwks.json`, two-slot rotation vars, migration `0002_devices.sql`, `STATEMENT_LIMIT` and `ENROL_LIMIT`. | X25519 PoP vectors in `AccountService/test/vectors/enrol-v1.json` (made with Node's crypto, RFC 7748 key pairs), shared with the iOS, Go and TS clients; low-order points rejected; 409 for another account; one device per session; device cap; removal stops statements; pairwise `sub` stable per host, different across hosts and accounts; golden `statement-v1.json` (RFC 8032 test key) that herdr's tests reuse; JWKS during rotation and after a revocation. |
 | 3 | herdrup | **Sync** (built 20 Nov). `GET`/`POST /v1/sync`, schemas per collection, caps, tombstones, `reset_required`, migration `0003_sync.sql`, `SYNC_WRITE_LIMIT`; open points settled in §5.5. | Ordering and last-writer-wins; per-key settings don't clobber; `base_rev` conflict; unknown field → 400; caps → 413/403; tombstone pruning; full-reset path. |
 | 4 | herdrup | **Deletion + Apple revoke + notifications.** `/v1/account/delete`, client secret signed in the Worker from `APPLE_SIWA_P8`, `/v1/apple/notifications`. | Table sweep: no row with the `account_id` remains in any table; client-secret JWT claims and ES256 signature checked against a generated P-256 key; revoke called with the client_id matching the token `aud`; revoke failure still deletes and returns `manual_revoke: true`; notification JWS verify (bad sig, wrong `aud`); `consent-revoked` deletes. |
-| 5 | herdrup + herdrup-desktop | **Web sign-in flow + sign-in UI (1B) + sync client (#699).** Worker: `/v1/auth/web/start`, the Apple `form_post` and Google callbacks, handoff with PKCE, the web refresh cookie and CORS for `guest.herdrup.app` (moved here from PR1, next to their only clients). Apps: HerdrKit `AccountClient`, `AccountSession` (Keychain), `DeviceEnroller`, `StatementCache`, `SyncEngine` (Linux-testable, protocols like `GuestKeyStore`); onboarding 1B with Apple + Google; account screen (devices, sign-out, delete); desktop `internal/account` + `herdrup://account#`; web guest sign-in. | Worker: web `state` reuse, handoff without/with wrong verifier, CORS only for `guest.herdrup.app`, cookie flags. HerdrKit unit tests with URLProtocol stubs (single-flight refresh, 401 → re-auth, PoP vector); sync merge tests; encoder test that payloads hold no secret patterns; UI test for 1B with a mock server; Go tests for the handoff and Secrets fallback; web guest vitest for the cookie flow. |
+| 5 | herdrup + herdrup-desktop | **Web sign-in flow + sign-in UI (1B) + sync client (#699).** Worker (built 20 Nov; open points settled in §2.6): `/v1/auth/web/start`, the Apple `form_post` and Google callbacks, handoff with PKCE, the web refresh cookie and CORS for `guest.herdrup.app` (moved here from PR1, next to their only clients), migration `0004_web_flows.sql`. Apps: HerdrKit `AccountClient`, `AccountSession` (Keychain), `DeviceEnroller`, `StatementCache`, `SyncEngine` (Linux-testable, protocols like `GuestKeyStore`); onboarding 1B with Apple + Google; account screen (devices, sign-out, delete); desktop `internal/account` + `herdrup://account#`; web guest sign-in. | Worker: web `state` reuse, handoff without/with wrong verifier, CORS only for `guest.herdrup.app`, cookie flags. HerdrKit unit tests with URLProtocol stubs (single-flight refresh, 401 → re-auth, PoP vector); sync merge tests; encoder test that payloads hold no secret patterns; UI test for 1B with a mock server; Go tests for the handoff and Secrets fallback; web guest vitest for the cookie flow. |
 | 6 | jerryfane/herdr (#440) | **Account-bound shares on the host.** Statement verify (ring Ed25519), JWKS cache, `GuestRecord.account`/`devices`, hello `account`, in-band refresh, `guest.revoke {person}`, `guest.remove_device`, `acct:1` in invites, config switch. | Golden statements from PR 2; expired / wrong `aud` / wrong `dev` / unknown `kid` → refetch / stale-JWKS grace; plain shares unchanged (old `guests.json` loads); account-bound device without statement refused; new device added + audit; removed device refused with a valid statement; revoke by person closes live sessions; session closed at the statement deadline. |
 | 7 | herdrup + herdrup-desktop | **2A + 4B (#700).** Invite screen with "Add to my account" / "Only this device" (only for `acct:1`), share list from `shares` sync, owner page per person (devices, shares, revoke once, remove device). Relay CSP `connect-src`. | UI tests for 2A both paths and for old invites (plain Accept); 4B grouping by `person`; revoke-once calls `guest.revoke {person}`; GuestRelay `npm test` covers the `_headers` CSP. |
 | 8 | herdrup-web + App Store Connect | **Policy + labels + review notes (#701).** | Site build; a reviewer reads the policy diff against §7. |

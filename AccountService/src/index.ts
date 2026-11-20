@@ -12,6 +12,8 @@ import type { Env } from "./env";
 import { errorResponse, json, log, type Endpoint } from "./http";
 import { handleJwks, handleStatements } from "./statements";
 import { handlePull, handlePush } from "./sync";
+import { corsHeaders, preflight } from "./browser";
+import { handleAppleCallback, handleGoogleCallback, handleHandoff, handleWebStart } from "./web";
 
 export const VERSION = "0.3.0";
 
@@ -27,6 +29,10 @@ const ROUTES: Record<string, Route> = {
   "/v1/auth/nonce": { methods: ["POST"], endpoint: "/v1/auth/nonce" },
   "/v1/auth/apple": { methods: ["POST"], endpoint: "/v1/auth/apple" },
   "/v1/auth/google": { methods: ["POST"], endpoint: "/v1/auth/google" },
+  "/v1/auth/web/start": { methods: ["GET"], endpoint: "/v1/auth/web/start" },
+  "/v1/auth/web/apple/callback": { methods: ["POST"], endpoint: "/v1/auth/web/apple/callback" },
+  "/v1/auth/web/google/callback": { methods: ["GET"], endpoint: "/v1/auth/web/google/callback" },
+  "/v1/auth/handoff": { methods: ["POST"], endpoint: "/v1/auth/handoff" },
   "/v1/auth/refresh": { methods: ["POST"], endpoint: "/v1/auth/refresh" },
   "/v1/auth/signout": { methods: ["POST"], endpoint: "/v1/auth/signout" },
   "/v1/account": { methods: ["GET"], endpoint: "/v1/account" },
@@ -40,6 +46,29 @@ const ROUTES: Record<string, Route> = {
 // A device id is 16 random bytes in base64url.
 const DEVICE_PATH = /^\/v1\/devices\/([A-Za-z0-9_-]{22})$/;
 const DEVICE_ROUTE: Route = { methods: ["PATCH", "DELETE"], endpoint: "/v1/devices/:id" };
+
+/** The endpoints the web guest's page calls: CORS for WEB_ORIGIN only (src/browser.ts). */
+const WEB_GUEST_ENDPOINTS: ReadonlySet<RoutedEndpoint> = new Set([
+  "/v1/auth/refresh",
+  "/v1/auth/signout",
+  "/v1/account",
+  "/v1/devices/challenge",
+  "/v1/devices",
+  "/v1/devices/:id",
+  "/v1/statements",
+  "/v1/sync",
+]);
+
+/** handleRequest, with CORS preflights and headers on the web guest's endpoints. */
+async function serve(request: Request, env: Env): Promise<Response> {
+  const { pathname } = new URL(request.url);
+  const route = DEVICE_PATH.test(pathname) ? DEVICE_ROUTE : ROUTES[pathname];
+  if (route === undefined || !WEB_GUEST_ENDPOINTS.has(route.endpoint)) return handleRequest(request, env);
+  if (request.method === "OPTIONS") return preflight(request, env, route.methods);
+  const response = await handleRequest(request, env);
+  for (const [name, value] of Object.entries(corsHeaders(request, env))) response.headers.set(name, value);
+  return response;
+}
 
 export async function handleRequest(request: Request, env: Env): Promise<Response> {
   const { pathname } = new URL(request.url);
@@ -58,6 +87,14 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         return await handleSignIn(request, env, "apple", now);
       case "/v1/auth/google":
         return await handleSignIn(request, env, "google", now);
+      case "/v1/auth/web/start":
+        return await handleWebStart(request, env, now);
+      case "/v1/auth/web/apple/callback":
+        return await handleAppleCallback(request, env, now);
+      case "/v1/auth/web/google/callback":
+        return await handleGoogleCallback(request, env, now);
+      case "/v1/auth/handoff":
+        return await handleHandoff(request, env, now);
       case "/v1/auth/refresh":
         return await handleRefresh(request, env, now);
       case "/v1/auth/signout":
@@ -86,7 +123,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
 export default {
   fetch(request: Request, env: Env): Promise<Response> {
-    return handleRequest(request, env);
+    return serve(request, env);
   },
   async scheduled(controller: ScheduledController, env: Env): Promise<void> {
     try {
