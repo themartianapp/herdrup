@@ -6,15 +6,16 @@ macserve's UI-test template runs exactly the -only-testing selectors a ui_test s
 a new test class that no shard names would run nowhere. Every class with test methods in
 HerdrUITests and HerdrFontTests must therefore appear as a whole class in an iPhone shard
 (iphone-terminal or iphone-app, exactly one of them), or, for an iPad-only class, as a whole
-class in the ipad shard, or be one of the classes the `ipad-script` script shard runs
+class in the ipad shard, or be one of the classes the `desktop-refs` script shard runs
 (Herdrup Desktop's references, ui-shard.sh DESKTOP_REFERENCE_CLASSES). Every selector must
-name an existing class or method.
+name an existing class or method, and every script shard's `run` an executable file.
 
 The `smoke` shard is the fast tier's: a few dozen tests run on every push, while the full
 shards above still run before merge. It may overlap them, but only as a subset: each smoke
 selector's class runs whole in an iPhone shard, so the full tier never misses what smoke runs.
 Smoke does not count as a class's home. macserve refuses a shard with more than 32 selectors."""
 import json
+import os
 import pathlib
 import re
 import unittest
@@ -44,6 +45,7 @@ class MacserveShardTests(unittest.TestCase):
     def setUpClass(cls):
         config = json.loads((ROOT / ".macserve.json").read_text())
         cls.ui = config["ui_test"]["shards"]
+        cls.script = config["script"]["shards"]
         cls.classes = {**test_classes("HerdrUITests"), **test_classes("HerdrFontTests")}
         cls.ui_shard = (ROOT / "Tools/ci/ui-shard.sh").read_text()
         references = re.search(r"^DESKTOP_REFERENCE_CLASSES=\(([^)]*)\)", cls.ui_shard, re.M)
@@ -63,7 +65,7 @@ class MacserveShardTests(unittest.TestCase):
         for key in sorted(self.classes):
             homes = [shard for shard in IPHONE_SHARDS if key in whole[shard]]
             if key in self.script_classes:
-                self.assertEqual(homes, [], "%s runs in ipad-script; no iPhone shard needs it" % key)
+                self.assertEqual(homes, [], "%s runs in desktop-refs; no iPhone shard needs it" % key)
                 continue
             self.assertLessEqual(len(homes), 1, "%s is in more than one iPhone shard: %s" % (key, homes))
             self.assertTrue(homes or key in whole["ipad"],
@@ -82,6 +84,13 @@ class MacserveShardTests(unittest.TestCase):
     def test_every_shard_fits_macserve(self):
         for shard, selectors in self.ui.items():
             self.assertLessEqual(len(selectors), MAX_SELECTORS, "%s has more than %d selectors" % (shard, MAX_SELECTORS))
+
+    def test_every_script_shard_runs_an_executable_file(self):
+        for shard, spec in self.script.items():
+            run = ROOT / spec["run"]
+            self.assertTrue(run.is_file() and os.access(run, os.X_OK), "%s: %s is no executable file" % (shard, run))
+        for shard in ("ipad-script", "desktop-refs"):
+            self.assertRegex(self.ui_shard, r"(?m)^  %s\)$" % re.escape(shard), "ui-shard.sh has no %s case" % shard)
 
 
 if __name__ == "__main__":

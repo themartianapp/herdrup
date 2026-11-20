@@ -10,7 +10,9 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import { browserLink, installTarget, invitePayload, isRelay, openShortInvite, shortInvite } from "../public/static/invite.js";
 
 // Everything here runs against the real Worker and Durable Object in workerd. Each test
-// uses its own host_id and client IPs, so storage and rate-limit state never collide.
+// uses its own host_id and client IPs, so storage never collides. The rate-limit bindings
+// are per-key counters with wrangler.toml's limits that start at zero in each test and never
+// reset on the clock (test/setup.ts).
 
 const ORIGIN = "https://guest.herdrup.themartian.app";
 const OPEN = 0x01;
@@ -694,6 +696,18 @@ describe("limits", () => {
 });
 
 describe("short invites", () => {
+  // Expiries are judged against a clock pinned when each test starts: the Worker and both
+  // Durable Objects run in this isolate and read the same faked Date, so an expiry never
+  // races the wall clock, and a test passes one by moving the clock instead of waiting.
+  // Only Date is faked; the pin is the real time, so a real alarm is never already due.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("stores a blob, serves it to anyone uncached, and deletes it for its host", async () => {
     const host = await enrolledHost();
     const id = newInviteId();
@@ -816,11 +830,10 @@ describe("short invites", () => {
   it("treats a blob past its expiry as gone, and its alarm deletes it at expiry", async () => {
     const host = await enrolledHost();
     const lapsed = newInviteId();
-    expect((await putInvite(host, lapsed)).status).toBe(201);
-    // As if the expiry passed before the alarm ran.
-    await runInDurableObject(inviteStub(lapsed), async (_, state) => {
-      await state.storage.put("expires", nowUnix() - 1);
-    });
+    const lapsedExpiry = nowUnix() + 3600;
+    expect((await putInvite(host, lapsed, { expires: String(lapsedExpiry) })).status).toBe(201);
+    // The expiry passes before the alarm runs.
+    vi.setSystemTime((lapsedExpiry + 1) * 1000);
     await expectError(await SELF.fetch(`${ORIGIN}/v1/invite/${lapsed}`), 404, "not_found");
     expect(await runInDurableObject(inviteStub(lapsed), (_, state) => state.storage.list())).toEqual(new Map());
 
@@ -928,7 +941,6 @@ describe("usage ping", () => {
     expect(writes).not.toHaveBeenCalled();
   });
 
-  // About 110 requests, which can pass the default 5 s timeout while the whole suite runs.
   it("limits pings to 60 per minute per IP, apart from the host and guest connect limits", async () => {
     const ip = freshIp();
     const statuses = await Promise.all(Array.from({ length: 60 }, async () => (await ping(validPing(), ip)).status));
@@ -941,16 +953,14 @@ describe("usage ping", () => {
     await expectRefusal(await guestRequest(hostId, ip), 4503, "host_offline");
     await expectError(await hostRequest(hostId, "Bearer short", true, ip), 401, "unauthorized");
 
-    // And spent connect budgets leave this IP's pings alone. Spend them one at a time, as
-    // the connect-limit tests do: fired concurrently, the limiter could still let the 31st
-    // guest connect through ("expected 503 to be 429" on CI runs 41775711449, 41777510910).
+    // And spent connect budgets leave this IP's pings alone.
     const busy = freshIp();
     for (let i = 0; i < 30; i++) await guestRequest(hostId, busy);
     for (let i = 0; i < 10; i++) await hostRequest(hostId, "Bearer short", true, busy);
     await expectRefusal(await guestRequest(hostId, busy), 4429, "rate_limited");
     await expectError(await hostRequest(hostId, "Bearer short", true, busy), 429, "rate_limited");
     expect((await ping(validPing(), busy)).status).toBe(204);
-  }, 20_000);
+  });
 });
 
 describe("landing page script", () => {

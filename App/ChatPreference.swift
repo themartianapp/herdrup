@@ -2,9 +2,10 @@ import HerdrKit
 import SwiftUI
 
 /// How an omp agent's page opens: its Topics, the Chat view (the default) or the terminal.
-/// Settings holds the default; the page's switch overrides it per agent for the rest of the
-/// session. Topics exists only where the server serves the agent's topics (`agent_topics`);
-/// elsewhere a Topics default opens the Chat view, so agents without topics look as before.
+/// Settings holds the default, for the owner's pages and a guest's shared panes alike; the
+/// page's switch overrides it per agent for the rest of the session. Topics exists only where
+/// the server serves the agent's topics (`agent_topics`); elsewhere a Topics default opens the
+/// Chat view, so agents without topics look as before.
 enum ChatPreference {
     static let key = "chat.ompOpensIn"
     static let topics = "topics"
@@ -21,13 +22,21 @@ enum ChatPreference {
     /// Settings default, as the owner asked ("remembers the last choice for the session").
     @MainActor private static var sessionChoice: [String: Mode] = [:]
 
-    @MainActor static func mode(paneID: String) -> Mode {
-        if let chosen = sessionChoice[paneID] { return chosen }
+    /// Settings' "omp agents open in": Chat when unset or unknown.
+    static var settingMode: Mode {
         switch UserDefaults.standard.string(forKey: key) ?? defaultValue {
         case terminal: return .terminal
         case topics: return .topics
         default: return .chat
         }
+    }
+
+    /// Whether Settings' "omp agents open in" says Chat (or Topics, which opens Chat where the
+    /// agent has no topics): anything but Terminal, unset included.
+    static var opensInChat: Bool { settingMode != .terminal }
+
+    @MainActor static func mode(paneID: String) -> Mode {
+        sessionChoice[paneID] ?? settingMode
     }
 
     @MainActor static func remember(paneID: String, mode: Mode) {
@@ -49,13 +58,6 @@ enum ChatPreference {
         guard let kind = agentKind?.lowercased() else { return false }
         return kind == "omp" || kind.hasPrefix("omp ") || kind.hasPrefix("omp-")
     }
-}
-
-enum ChatPaneLayout {
-    /// The owner page's key row height, last measured on any pane (the keycaps are the same
-    /// everywhere). A page that opens in Chat has never shown its own row; this sizes the
-    /// terminal under the chat as if it had. The default is the row at 100 % text.
-    @MainActor static var lastKeyRowHeight: CGFloat = 52
 }
 
 /// The owner page's `Chat | Terminal` switch, `Topics | Chat | Terminal` for an omp agent with

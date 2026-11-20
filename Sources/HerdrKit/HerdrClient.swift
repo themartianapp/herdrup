@@ -88,7 +88,60 @@ public actor HerdrClient {
     /// `agent.list` with the answering daemon's own capabilities, so a caller that
     /// polls the list learns about `events_v2` (or a daemon upgrade) without an
     /// extra `ping`.
-    public func agentListing() async throws -> AgentListing {
+    ///
+    /// One request can serve several callers: the connect pre-warm, the home's first
+    /// load and the page's status resolve used to send three ~55 KB lists in a row on
+    /// a cold start, each queued behind the others on a slow link.
+    ///
+    /// - Parameter sentAfter: accept a list whose request was sent at or after this
+    ///   instant: one in flight is joined, a finished one reused. The default, the call
+    ///   itself, always asks anew, so a caller that just changed something (or learned
+    ///   of a change) never gets an answer older than that. A caller that only needs a
+    ///   recent list passes an earlier instant. Never earlier than the last change
+    ///   reported to `noteAgentListChanged()`: a list sent before a live event cannot
+    ///   undo the newer row the event put on screen.
+    public func agentListing(sentAfter: ContinuousClock.Instant = .now) async throws -> AgentListing {
+        let floor = max(sentAfter, listChange.latest ?? sentAfter)
+        if let last = lastListing, last.sentAt >= floor { return last.listing }
+        if let flight = listingFlight, flight.sentAt >= floor {
+            return try await flight.task.value
+        }
+        listingSequence &+= 1
+        let token = listingSequence
+        let sentAt = ContinuousClock.now
+        // Unstructured, so a waiter's cancellation does not fail the others' answer.
+        let task = Task { () async throws -> AgentListing in
+            defer { if self.listingFlight?.token == token { self.listingFlight = nil } }
+            let listing = try await self.fetchAgentListing()
+            if self.lastListing.map({ $0.sentAt <= sentAt }) ?? true {
+                self.lastListing = (sentAt, listing)
+            }
+            return listing
+        }
+        listingFlight = ListingFlight(token: token, sentAt: sentAt, task: task)
+        return try await task.value
+    }
+
+    private struct ListingFlight {
+        let token: UInt64
+        let sentAt: ContinuousClock.Instant
+        let task: Task<AgentListing, Error>
+    }
+    private var listingFlight: ListingFlight?
+    private var listingSequence: UInt64 = 0
+    private var lastListing: (sentAt: ContinuousClock.Instant, listing: AgentListing)?
+    private let listChange = ListChangeMark()
+
+    /// A live event (a status change, a turn, a pane's lifecycle) said the daemon's
+    /// agent list changed at `instant`. From then on `agentListing` neither reuses nor
+    /// joins a request sent before it, so a page that opens with the event's newer row
+    /// (blocked on a menu, say) never re-resolves to the older one (still working).
+    /// Synchronous, so the mark is set before anything that reacts to the event runs.
+    public nonisolated func noteAgentListChanged(at instant: ContinuousClock.Instant = .now) {
+        listChange.advance(to: instant)
+    }
+
+    private func fetchAgentListing() async throws -> AgentListing {
         let result = try await call("agent.list", EmptyParams(), as: AgentListResult.self)
         return AgentListing(agents: result.agents, originCapabilities: result.originCapabilities,
                             originMachineID: result.originMachineID)
@@ -144,9 +197,37 @@ public actor HerdrClient {
 
     /// Feature flags from the daemon's `ping` result. `nil` capabilities means an
     /// older daemon; callers treat every new feature as unsupported in that case.
+    /// Never answers from the cache: it joins a `ping` still in flight (its answer comes
+    /// after this call) or sends one. The answer refreshes the cache
+    /// `knownCapabilities` reads.
     public func serverCapabilities() async throws -> ServerCapabilities? {
-        try await call("ping", EmptyParams(), as: PingResult.self).capabilities
+        try await capabilityPing()
     }
+
+    /// The capabilities this client already learned (the home screen pings once per
+    /// connection), or the `ping` that is learning them. For gates a screen waits on:
+    /// opening an agent's page no longer pays a round trip before Chat can show, nor
+    /// sends a second ping while the home screen's is still on its way.
+    public func knownCapabilities() async throws -> ServerCapabilities? {
+        if case .probed(let capabilities) = capabilityCache { return capabilities }
+        return try await capabilityPing()
+    }
+
+    /// The one `ping` in flight for `serverCapabilities` and `knownCapabilities`,
+    /// started when there is none. Unstructured, so one waiter's cancellation does not
+    /// fail the others' answer.
+    private func capabilityPing() async throws -> ServerCapabilities? {
+        if let capabilityFlight { return try await capabilityFlight.value }
+        let task = Task { () async throws -> ServerCapabilities? in
+            defer { self.capabilityFlight = nil }
+            let capabilities = try await self.call("ping", EmptyParams(), as: PingResult.self).capabilities
+            self.capabilityCache = .probed(capabilities)
+            return capabilities
+        }
+        capabilityFlight = task
+        return try await task.value
+    }
+    private var capabilityFlight: Task<ServerCapabilities?, Error>?
 
     /// The server's version string and capabilities from one `ping`, uncached: an update
     /// replaces the server under the same client. The answer also replaces the cached
@@ -160,18 +241,13 @@ public actor HerdrClient {
     /// Whether the daemon advertises `flag`, from the per-client `capabilityCache`.
     /// False when the probe fails, which leaves the cache `unknown` for the next call.
     ///
-    /// The probe is NOT written with `try?`: `serverCapabilities()` both throws AND
+    /// The probe is NOT written with `try?`: `knownCapabilities()` both throws AND
     /// returns an Optional, so `try?` flattens "the ping failed" into the same nil as
     /// "the daemon sent no capabilities", and would cache a transient error as the
     /// unsupported answer — the outcome the `unknown` state exists to prevent.
     private func supports(_ flag: KeyPath<ServerCapabilities, Bool>) async -> Bool {
-        if case .probed(let capabilities) = capabilityCache {
-            return capabilities?[keyPath: flag] == true
-        }
         do {
-            let probed = try await serverCapabilities()
-            capabilityCache = .probed(probed)
-            return probed?[keyPath: flag] == true
+            return try await knownCapabilities()?[keyPath: flag] == true
         } catch {
             return false
         }
@@ -633,7 +709,12 @@ public actor HerdrClient {
             // gram-list answer at all (it decoded only because every field is
             // optional), which is exactly the case that used to surface as a
             // DecodingError before conditional fetch made `messages` optional.
-            guard try await gramList().messages != nil else { return .indeterminate }
+            //
+            // `limit: 1`: the answer only has to be a list, and a paging daemon then sends
+            // one message instead of the whole store (~900 KB at ~870 messages) on every
+            // home open. A daemon predating paging ignores the field and sends the full
+            // list exactly as before.
+            guard try await gramList(limit: 1).messages != nil else { return .indeterminate }
             return .isFork
         } catch let error as APIError {
             if error.code == "gram_unavailable" {
@@ -1690,9 +1771,11 @@ public actor HerdrClient {
     /// on this path). The UI polls THIS to learn when a just-spawned agent can
     /// receive its pre-filled task — then delivers it as a prompt, never as rawKeys
     /// send_text into a not-ready agent. Absent pane, or an agent with no composer,
-    /// is NOT promptable (false).
-    public func isPromptable(pane: String) async throws -> Bool {
-        guard let info = try await agentList().first(where: { $0.paneID == pane }) else { return false }
+    /// is NOT promptable (false). `listSentAfter` is `agentListing(sentAfter:)`'s: a
+    /// poller that just resolved the page passes a recent instant and shares that list.
+    public func isPromptable(pane: String, listSentAfter: ContinuousClock.Instant = .now) async throws -> Bool {
+        guard let info = try await agentListing(sentAfter: listSentAfter).agents.first(where: { $0.paneID == pane })
+        else { return false }
         return InputRouter().isPromptable(for: info)
     }
 
@@ -2162,4 +2245,17 @@ public let appArchiveReason = "user action"
 /// Decodes any JSON value, for calls whose result body the client ignores.
 struct JSONNull: Decodable {
     init(from decoder: Decoder) throws { _ = decoder }
+}
+
+/// The latest instant a live event reported an agent-list change. Lock-guarded so the
+/// actor-isolated `HerdrClient` can take the mark synchronously from the event path.
+private final class ListChangeMark: @unchecked Sendable {
+    private let lock = NSLock()
+    private var instant: ContinuousClock.Instant?
+
+    var latest: ContinuousClock.Instant? { lock.withLock { instant } }
+
+    func advance(to next: ContinuousClock.Instant) {
+        lock.withLock { if instant.map({ $0 < next }) ?? true { instant = next } }
+    }
 }

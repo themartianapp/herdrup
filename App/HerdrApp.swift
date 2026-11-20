@@ -1694,6 +1694,8 @@ private final class AgentRosterLiveEventsBuffer {
     /// One coalesced event-driven reload at a time; `reloadAgain` queues exactly one more.
     var reloadTask: Task<Void, Never>?
     var reloadAgain = false
+    /// A load of this home has started. Only the first may take the connect pre-warm's list.
+    var loadStarted = false
 
     deinit { reloadTask?.cancel() }
 }
@@ -3302,13 +3304,22 @@ struct TerminalHomeView: View {
         // restarts on tab change and idles on Gram: exactly one poller is live.
         .task(id: selectedTab) {
             guard selectedTab != .gram else { return }
+            // The digest of the last answer. Reset on every restart of this task, so the
+            // first poll after a tab change always carries a count.
+            var digest: String?
             while !Task.isCancelled {
-                // Unconditional on purpose: `unread_only` is a small answer already,
-                // and this poller keeps no list to compare a digest against. The count is
-                // the daemon's `unread_count` when it sends one: a paging daemon answers
-                // with one page, which would undercount (`unreadBadgeCount`).
-                if let count = try? await client.gramList(unreadOnly: true).unreadBadgeCount {
-                    gramUnread.count = count
+                // `limit: 1` plus the digest: the badge needs only the count. A paging
+                // daemon reports `unread_count` over the whole store with one message, and
+                // "unchanged" (a few hundred bytes) while it stays the same, instead of
+                // every unread message (180 KB at ~870 messages) every 15 s on the pipe
+                // the agent list shares. A daemon without paging ignores both fields and
+                // answers with every unread message, which is the count
+                // (`unreadBadgeCount`), as before.
+                if let answer = try? await client.gramList(unreadOnly: true, ifUnchangedDigest: digest, limit: 1) {
+                    if let count = answer.unreadBadgeCount {
+                        gramUnread.count = count
+                        digest = answer.digest
+                    }
                 }
                 try? await Task.sleep(nanoseconds: 15_000_000_000)
             }
@@ -4912,8 +4923,27 @@ struct TerminalHomeView: View {
         defer {
             if rosterLoadGate.accepts(loadToken), loading { loading = false }
         }
+        // accounts.list and the once-per-home ping leave WITH agent.list, not after it:
+        // one round trip for the three instead of three in a row (~1 s on 3G). Their
+        // answers are still applied after the list's, as before. Unstructured, so a
+        // failed list returns at once instead of waiting for them.
+        let client = client
+        let accountsFetch = Task { try? await client.accountsList() }
+        let capabilitiesFetch: Task<Result<ServerCapabilities?, Error>, Never>? =
+            checkedSessionTransferCapability ? nil : Task {
+                do { return .success(try await client.serverCapabilities()) } catch { return .failure(error) }
+            }
+        // The first load of this home takes the connect pre-warm's `agent.list` (in
+        // flight, or answered within the 10 s reveal cap) instead of fetching it again:
+        // no status stream is open yet and no live update recorded, so there is nothing
+        // that list could predate. Every later load asks for a list sent after it
+        // started: polls want fresh data, the stream's start and its lifecycle events
+        // reload to learn what changed since, and the ledger replays from this start.
+        let firstLoad = !liveEvents.loadStarted
+        liveEvents.loadStarted = true
+        let sentAfter = firstLoad ? startedAt - .seconds(10) : startedAt
         do {
-            let listing = try await client.agentListing()
+            let listing = try await client.agentListing(sentAfter: sentAfter)
             guard rosterLoadGate.accepts(loadToken) else { return }
             if let origin = listing.originCapabilities {
                 setLiveEventsSupported(origin.eventsV2)
@@ -4946,7 +4976,7 @@ struct TerminalHomeView: View {
             // daemon without accounts.list, keeps the freshest successful value. The
             // post-await generation check prevents a stalled older load from replacing
             // either the visible or pending snapshot after a newer load completes.
-            if let fetchedAccounts = try? await client.accountsList() {
+            if let fetchedAccounts = await accountsFetch.value {
                 guard rosterLoadGate.accepts(loadToken) else { return }
                 // Replayed again: live updates may have landed during this await.
                 receiveRoster(agents: liveEvents.ledger.replay(onto: listing.agents, after: liveMark),
@@ -4959,9 +4989,9 @@ struct TerminalHomeView: View {
             // transfer API, and `events_v2` on a daemon whose agent.list predates
             // `origin_capabilities`. Missing capabilities on an older daemon are a
             // successful negative result; a transport error is retried on the next load.
-            if !checkedSessionTransferCapability {
+            if let capabilitiesFetch, !checkedSessionTransferCapability {
                 do {
-                    let capabilities = try await client.serverCapabilities()
+                    let capabilities = try await capabilitiesFetch.value.get()
                     guard rosterLoadGate.accepts(loadToken) else { return }
                     if listing.originCapabilities == nil {
                         setLiveEventsSupported(capabilities?.eventsV2 == true)
@@ -5128,7 +5158,11 @@ struct TerminalHomeView: View {
             liveEvents.ledger.record(update, receivedAt: now)
         }
         let latest = rosterRefreshState().latest
-        switch latest.agents.effect(of: line, receivedAt: now) {
+        let effect = latest.agents.effect(of: line, receivedAt: now)
+        // The list changed after any `agent.list` already sent: a page opened from the
+        // patched row must not re-resolve to the client's older cached list.
+        if line.liveUpdate != nil || effect != .ignore { client.noteAgentListChanged() }
+        switch effect {
         case .patch(let patched):
             receiveRoster(agents: patched, accounts: latest.accounts)
         case .reload:
@@ -5667,13 +5701,13 @@ struct TerminalPaneContent: View {
     @StateObject private var topicsModel: TopicsModel
     /// The switch position: Settings' default, or this agent's last choice this session.
     @State private var mode: ChatPreference.Mode
-    /// The machine answers `agent.transcript` (ping `agent_transcript`). Probed per pane.
+    /// The machine answers `agent.transcript` (ping `agent_transcript`), from the client's
+    /// capabilities (learned once per connection by the home screen).
     @State private var transcriptCapable = false
-    /// The machine serves omp agents' topics (ping `agent_topics`). Probed per pane.
+    /// The machine serves omp agents' topics (ping `agent_topics`), from the same capabilities.
     @State private var topicsCapable = false
-    /// The key row's height when it last showed: in Chat the terminal underneath keeps the
-    /// height it has in Terminal view, so switching never resizes the PTY.
-    @State private var keyRowHeight: CGFloat = ChatPaneLayout.lastKeyRowHeight
+    /// `transcriptCapable` has its answer (or the capability check failed).
+    @State private var capabilitiesResolved = false
     /// Per-agent push mute, toggled from the header's ⋯ menu (keyed by this pane's
     /// public id — the same id the push payload carries).
     @ObservedObject private var mute = MuteStore.shared
@@ -5853,8 +5887,16 @@ struct TerminalPaneContent: View {
     }
     private var showingChat: Bool { shownMode == .chat }
     private var showingTopics: Bool { shownMode == .topics }
-    /// Chat or Topics covers the terminal, which stays mounted underneath.
+    /// Chat or Topics covers the page instead of the terminal.
     private var coversTerminal: Bool { shownMode != .terminal }
+    /// The terminal is mounted only when it is what the page shows. Not under Chat or Topics,
+    /// and not while an omp page that opens in Chat (or Topics) still waits for the capability
+    /// answer, or it would start a backfill, a stream and a size claim it drops a moment later.
+    private var mountsTerminal: Bool {
+        if coversTerminal { return false }
+        let mayOpenCovered = mode != .terminal && ChatPreference.isOmp(agent?.agent)
+        return capabilitiesResolved || !mayOpenCovered
+    }
 
     private func setMode(_ value: ChatPreference.Mode) {
         if findOpen { toggleFind() }
@@ -5950,136 +5992,133 @@ struct TerminalPaneContent: View {
                 // byte firehose (#40), full-bleed as the machine ground. A terminal
                 // tap enables direct PTY input; the reply bar remains the deliberate
                 // prompt path for agent messages.
-                LiveTerminalView(client: client, paneID: paneID,
-                                 onNavigate: onNavigate, isForeground: isForeground,
-                                 // Chat covers the terminal: its UIKit views leave
-                                 // accessibility too (see `accessibilityCovered`).
-                                 accessibilityCovered: coversTerminal,
-                                 // Releases the width claim while the scene is in the
-                                 // background; cleared with the remount decision below.
-                                 sceneBackgrounded: wasBackgrounded,
-                                 // The find and reply fields own their own responders.
-                                 // Terminal focus is never inferred from device idiom.
-                                 wantsTerminalKeyFocus: isForeground && !replyFocused && !findFocused
-                                     && !coversTerminal
-                                     && terminalInputFocused,
-                                 // Set by the collapse chevron so the resign in updateUIView can
-                                 // tell a deliberate dismissal from an incidental body pass.
-                                 collapseToken: terminalCollapseToken,
-                                 onTerminalFocusRequest: {
-                                     replyFocused = false
-                                     terminalInputFocused = true
-                                 },
-                                 jumpToTailToken: jumpToTailToken,
-                                 onTailStateChange: { terminalAtTail = $0 },
-                                 onHistoryPagingChange: { terminalHistoryPaging = $0 },
-                                 loadEarlierHistoryToken: loadEarlierHistoryToken,
-                                 // The host's current belief, so a `streamGen` remount seeds a
-                                 // fresh Coordinator instead of replaying the last jump.
-                                 isAtTail: terminalAtTail,
-                                 fontSize: CGFloat(terminalFontSize),
-                                 predictiveEcho: predictiveEcho,
-                                 // Read on foreground to tell a suspended stream from a
-                                 // still-running one; see the scenePhase handler below.
-                                 liveness: terminalLiveness,
-                                 controlArmed: $ctrlArmed,
-                                 userInputToken: userInputToken,
-                                 findRequest: coversTerminal ? nil : findRequest,
-                                 onFindResult: { index, total in
-                                     if !coversTerminal { findMatches = (index, total, false) }
-                                 },
-                                 // A file dropped anywhere on the terminal joins the reply,
-                                 // exactly as one dropped on the composer bar does (#575).
-                                 // Off in Chat, where the terminal is hidden under it.
-                                 fileDrop: coversTerminal ? nil : TerminalFileDrop(
-                                     onTargetChange: { terminalDropTargeted = $0 },
-                                     onDrop: { acceptDroppedFiles($0) }))
-                    // Reconnect on refresh: a new id re-creates the view → fresh stream/connection.
-                    .id(streamGen)
-                    .accessibilityIdentifier("terminal-surface")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { terminalHeight = $0 }
-                    // A small horizontal inset so the grid gets a clean, symmetric
-                    // margin instead of the last column hugging the right edge.
-                    .padding(.horizontal, 8)
-                    // The composer's drop highlight, around the whole terminal while a
-                    // file drag hovers it. An overlay that never hit-tests, so the drop
-                    // still lands on the terminal surface underneath.
-                    .overlay {
-                        if terminalDropTargeted && !coversTerminal {
-                            RoundedRectangle(cornerRadius: 12)
-                                .strokeBorder(Palette.brand, lineWidth: 2)
-                                .allowsHitTesting(false)
-                                .accessibilityIdentifier("terminal-drop-highlight")
-                        }
-                    }
-                    // NOTE: do NOT attach a SwiftUI .onTapGesture here. A tap gesture on
-                    // this UIViewRepresentable competes with the wrapped UIScrollView's
-                    // native pan and starves terminal scroll drags. LiveTerminalView's
-                    // UIKit recognizer owns the explicit direct-input tap instead.
-                    // A visible, one-finger replacement for the double tap that used to
-                    // jump to the tail (given back to SwiftTerm, which needs it for word
-                    // select). An OVERLAY, not a gesture, for the reason stated above:
-                    // only the button itself hit-tests, taps elsewhere reach the terminal.
-                    .overlay(alignment: .bottom) {
-                        ZStack {
-                            // Not under Chat: there it is invisible, and on iOS 27 still an
-                            // accessibility element over the chat.
-                            if !terminalAtTail && !coversTerminal {
-                                JumpToLatestButton(label: "Jump to latest output", identifier: "terminal-jump-latest",
-                                                   regularGlass: true) { jumpToTailToken += 1 }
-                                    .padding(.bottom, 16)
+                Group {
+                    if mountsTerminal {
+                        LiveTerminalView(client: client, paneID: paneID,
+                                         onNavigate: onNavigate, isForeground: isForeground,
+                                         // Releases the width claim while the scene is in the
+                                         // background; cleared with the remount decision below.
+                                         sceneBackgrounded: wasBackgrounded,
+                                         // The find and reply fields own their own responders.
+                                         // Terminal focus is never inferred from device idiom.
+                                         wantsTerminalKeyFocus: isForeground && !replyFocused && !findFocused
+                                             && terminalInputFocused,
+                                         // Set by the collapse chevron so the resign in updateUIView can
+                                         // tell a deliberate dismissal from an incidental body pass.
+                                         collapseToken: terminalCollapseToken,
+                                         onTerminalFocusRequest: {
+                                             replyFocused = false
+                                             terminalInputFocused = true
+                                         },
+                                         jumpToTailToken: jumpToTailToken,
+                                         onTailStateChange: { terminalAtTail = $0 },
+                                         onHistoryPagingChange: { terminalHistoryPaging = $0 },
+                                         loadEarlierHistoryToken: loadEarlierHistoryToken,
+                                         // The host's current belief, so a `streamGen` remount seeds a
+                                         // fresh Coordinator instead of replaying the last jump.
+                                         isAtTail: terminalAtTail,
+                                         fontSize: CGFloat(terminalFontSize),
+                                         predictiveEcho: predictiveEcho,
+                                         // Read on foreground to tell a suspended stream from a
+                                         // still-running one; see the scenePhase handler below.
+                                         liveness: terminalLiveness,
+                                         controlArmed: $ctrlArmed,
+                                         userInputToken: userInputToken,
+                                         findRequest: findRequest,
+                                         onFindResult: { index, total in findMatches = (index, total, false) },
+                                         // A file dropped anywhere on the terminal joins the reply,
+                                         // exactly as one dropped on the composer bar does (#575).
+                                         fileDrop: TerminalFileDrop(
+                                             onTargetChange: { terminalDropTargeted = $0 },
+                                             onDrop: { acceptDroppedFiles($0) }))
+                            // Reconnect on refresh: a new id re-creates the view → fresh stream/connection.
+                            .id(streamGen)
+                            .accessibilityIdentifier("terminal-surface")
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { terminalHeight = $0 }
+                            // A small horizontal inset so the grid gets a clean, symmetric
+                            // margin instead of the last column hugging the right edge.
+                            .padding(.horizontal, 8)
+                            // The composer's drop highlight, around the whole terminal while a
+                            // file drag hovers it. An overlay that never hit-tests, so the drop
+                            // still lands on the terminal surface underneath.
+                            .overlay {
+                                if terminalDropTargeted {
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .strokeBorder(Palette.brand, lineWidth: 2)
+                                        .allowsHitTesting(false)
+                                        .accessibilityIdentifier("terminal-drop-highlight")
+                                }
                             }
-                        }
-                        .animation(.easeInOut(duration: 0.15), value: terminalAtTail)
+                            // NOTE: do NOT attach a SwiftUI .onTapGesture here. A tap gesture on
+                            // this UIViewRepresentable competes with the wrapped UIScrollView's
+                            // native pan and starves terminal scroll drags. LiveTerminalView's
+                            // UIKit recognizer owns the explicit direct-input tap instead.
+                            // A visible, one-finger replacement for the double tap that used to
+                            // jump to the tail (given back to SwiftTerm, which needs it for word
+                            // select). An OVERLAY, not a gesture, for the reason stated above:
+                            // only the button itself hit-tests, taps elsewhere reach the terminal.
+                            .overlay(alignment: .bottom) {
+                                ZStack {
+                                    if !terminalAtTail {
+                                        JumpToLatestButton(label: "Jump to latest output", identifier: "terminal-jump-latest",
+                                                           regularGlass: true) { jumpToTailToken += 1 }
+                                            .padding(.bottom, 16)
+                                    }
+                                }
+                                .animation(.easeInOut(duration: 0.15), value: terminalAtTail)
+                            }
+                            // An overlay for the same reason: only the offer capsule hit-tests, and
+                            // the loading one lets touches through to the terminal.
+                            .overlay(alignment: .top) {
+                                ZStack {
+                                    TerminalHistoryCapsule(state: terminalHistoryPaging) { loadEarlierHistoryToken += 1 }
+                                }
+                                .animation(.easeInOut(duration: 0.15), value: terminalHistoryPaging)
+                            }
+                    } else {
+                        // Chat, Topics, or an omp page still learning whether it can show them:
+                        // no terminal underneath. Its backfill, stream and size claim used to load
+                        // ahead of the transcript on the same link (Chat's first page on 3G:
+                        // 2.95 s with the terminal under it, 1.67 s without). Switching to the
+                        // terminal mounts it then.
+                        Color.clear
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { terminalHeight = $0 }
                     }
-                    // An overlay for the same reason: only the offer capsule hit-tests, and
-                    // the loading one lets touches through to the terminal.
-                    .overlay(alignment: .top) {
-                        ZStack {
-                            TerminalHistoryCapsule(state: terminalHistoryPaging) { loadEarlierHistoryToken += 1 }
-                        }
-                        .animation(.easeInOut(duration: 0.15), value: terminalHistoryPaging)
+                }
+                .overlay {
+                    // Only the front pane's chat is mounted, and none in the background
+                    // (`ScenePhase.mountsChat`): a kept-alive pane keeps its ChatModel, so
+                    // fronting it again draws its newest window at once, but not hours of
+                    // drawn rows that every relayout (a rotation, the background
+                    // snapshots) would have to lay out again.
+                    if showingChat, isForeground, scenePhase.mountsChat {
+                        ChatView(client: client, model: chatModel, viewer: .owner, eventsPaneID: paneID,
+                                 isActive: isForeground, live: true, agentStatus: agent?.agentStatus,
+                                 ground: Palette.groundMachine,
+                                 onOpenTerminal: { setMode(.terminal) },
+                                 findRequest: findRequest,
+                                 onFindResult: { index, total, capped in findMatches = (index, total, capped) })
+                        // A composer keystroke redraws this page; the chat skips it
+                        // (`ChatView ==`), so typing never re-evaluates the transcript.
+                        .equatable()
                     }
-                    // In Chat (and Topics) the terminal stays mounted under it (its stream stays
-                    // warm for the switch back) at the height it has with the key row showing,
-                    // so the switch never resizes the PTY.
-                    .padding(.bottom, coversTerminal ? keyRowHeight : 0)
-                    .opacity(coversTerminal ? 0 : 1)
-                    .allowsHitTesting(!coversTerminal)
-                    .accessibilityHidden(coversTerminal)
-                    .overlay {
-                        // Only the front pane's chat is mounted, and none in the background
-                        // (`ScenePhase.mountsChat`): a kept-alive pane keeps its ChatModel, so
-                        // fronting it again draws its newest window at once, but not hours of
-                        // drawn rows that every relayout (a rotation, the background
-                        // snapshots) would have to lay out again.
-                        if showingChat, isForeground, scenePhase.mountsChat {
-                            ChatView(client: client, model: chatModel, viewer: .owner, eventsPaneID: paneID,
-                                     isActive: isForeground, live: true, agentStatus: agent?.agentStatus,
-                                     ground: Palette.groundMachine,
-                                     onOpenTerminal: { setMode(.terminal) },
-                                     findRequest: findRequest,
-                                     onFindResult: { index, total, capped in findMatches = (index, total, capped) })
-                            // A composer keystroke redraws this page; the chat skips it
-                            // (`ChatView ==`), so typing never re-evaluates the transcript.
-                            .equatable()
-                        }
+                }
+                // Topics brings its own composer (a topic's chat sends to that topic only),
+                // so it covers the page's composer slot too: drawn down over the bottom block,
+                // whose composer is not drawn under Topics (see below).
+                .overlay(alignment: .top) {
+                    if showingTopics, isForeground, scenePhase.mountsChat {
+                        TopicsPane(client: client, model: topicsModel, viewer: .owner, eventsPaneID: paneID,
+                                   isActive: isForeground, live: true,
+                                   inboxPreview: agent?.activityText,
+                                   onOpenInbox: { setMode(.chat) },
+                                   onOpenTerminal: { setMode(.terminal) })
+                            .padding(.bottom, -(bottomChromeHeight + ComposerStyle.restingHeight
+                                + Self.replyBarTopPadding + Self.replyBarBottomPadding))
                     }
-                    // Topics brings its own composer (a topic's chat sends to that topic only),
-                    // so it covers the page's composer too: drawn down over the bottom block,
-                    // which keeps its height (so the terminal keeps its size) but hides.
-                    .overlay(alignment: .top) {
-                        if showingTopics, isForeground, scenePhase.mountsChat {
-                            TopicsPane(client: client, model: topicsModel, viewer: .owner, eventsPaneID: paneID,
-                                       isActive: isForeground, live: true,
-                                       inboxPreview: agent?.activityText,
-                                       onOpenInbox: { setMode(.chat) },
-                                       onOpenTerminal: { setMode(.terminal) })
-                                .padding(.bottom, -(bottomChromeHeight + ComposerStyle.restingHeight
-                                    + Self.replyBarTopPadding + Self.replyBarBottomPadding))
-                        }
-                    }
+                }
                 // THE COMPOSER FLOATS OVER THE TERMINAL. Only its resting row (plus the
                 // note and the quick keys above it) takes layout height. Every extra line,
                 // the toolbar, attachments, the drag handle and the editor draw upward
@@ -6106,12 +6145,8 @@ struct TerminalPaneContent: View {
                                         .accessibilityIdentifier("terminal-action-note")
                                 }
                                 // Chat hides the key row: the composer is its only input.
-                                if !coversTerminal {
+                                if !showingChat {
                                     controlBar
-                                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                                            keyRowHeight = height
-                                            ChatPaneLayout.lastKeyRowHeight = height
-                                        }
                                 }
                             }
                             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { bottomChromeHeight = $0 }
@@ -6163,13 +6198,18 @@ struct TerminalPaneContent: View {
         // Runs ONCE per slot lifetime now (the pane stays mounted, so paneID never changes):
         // the one-shot prefill delivery + first status resolve.
         .task(id: paneID) {
-            await refresh()
+            // The page opens with the agent the home list already holds, so the first
+            // resolve takes a list sent in the last few seconds (the home's, or one in
+            // flight) instead of fetching the whole list again.
+            await refresh(listSentAfter: .now - .seconds(5))
             await deliverPrefillIfNeeded()
         }
         .task(id: paneID) {
-            let capabilities = try? await client.serverCapabilities()
+            // Usually no request: the home screen already learned the capabilities.
+            let capabilities = try? await client.knownCapabilities()
             transcriptCapable = capabilities?.agentTranscript ?? false
             topicsCapable = capabilities?.agentTopics ?? false
+            capabilitiesResolved = true
         }
         // Whether this omp agent offers topics: asked once it is known to be an omp agent on a
         // machine with `agent_topics`, and again each time the pane comes to the front until
@@ -7374,8 +7414,11 @@ struct TerminalPaneContent: View {
     /// the raw byte stream, so refreshing here is only about the agent: re-resolve
     /// it so the status badge and input mode track the live pane. (There is no
     /// snapshot read anymore — the stream is the source of truth for output.)
-    private func refresh() async {
-        await reresolveAgent()
+    ///
+    /// `listSentAfter` defaults to now: after a send or a return to the front the page
+    /// needs a list taken from here on.
+    private func refresh(listSentAfter: ContinuousClock.Instant = .now) async {
+        await reresolveAgent(listSentAfter: listSentAfter)
     }
 
     /// Re-resolves this pane's agent so the status badge and input mode track the
@@ -7385,8 +7428,9 @@ struct TerminalPaneContent: View {
     /// agent when the live entry is the same agent but has transiently LOST its
     /// composer (a server hiccup / restart) — flipping intent → rawKeys there would
     /// re-expose the raw-send path for a pane that was promptable a tick ago.
-    private func reresolveAgent() async {
-        guard let live = try? await client.agentList().first(where: { $0.paneID == paneID }) else { return }
+    private func reresolveAgent(listSentAfter: ContinuousClock.Instant) async {
+        guard let live = try? await client.agentListing(sentAfter: listSentAfter).agents
+            .first(where: { $0.paneID == paneID }) else { return }
         // Hold the prior agent ONLY when the SAME NAMED agent transiently loses its
         // composer (a server hiccup) — flipping intent → rawKeys there would
         // re-expose the raw-send path for a pane promptable a tick ago. Identity is
@@ -7410,7 +7454,9 @@ struct TerminalPaneContent: View {
     /// it delivered.
     @discardableResult
     private func deliverPrefillOnce() async -> Bool {
-        let ready = (try? await client.isPromptable(pane: paneID)) == true
+        // A list sent within the last second is current enough: on the page's first tick
+        // that is the one its status resolve just fetched, not a second ~55 KB list.
+        let ready = (try? await client.isPromptable(pane: paneID, listSentAfter: .now - .seconds(1))) == true
         switch router.prefillDelivery(pendingPrefill: pendingPrefill, isPromptable: ready) {
         case .prompt:
             do {
@@ -7965,6 +8011,15 @@ struct SettingsView: View {
     private func textSizeDetail(showBack: Bool) -> some View {
         detailScaffold(title: "Text size", subtitle: "", showBack: showBack) {
             appearanceControls
+            #if DEBUG
+            // The owner's `terminal.fontSize` under a guest's page, which must not move (#735).
+            if guest != nil {
+                Color.clear.frame(width: 1, height: 1)
+                    .accessibilityElement()
+                    .accessibilityIdentifier("settings-owner-terminal-font")
+                    .accessibilityLabel(String(format: "%g", terminalFontSize))
+            }
+            #endif
         }
     }
 
@@ -8359,7 +8414,7 @@ struct SettingsView: View {
     /// pickers and script in previews an inline switch, each with its footer as the subtitle.
     private var preferencesGroup: some View {
         rootGroup("PREFERENCES") {
-            pageRow(.textSize, value: "\(Int((uiFontScale * 100).rounded()))% · \(String(format: "%g", terminalFontSize)) pt")
+            pageRow(.textSize, value: "\(Int((uiFontScale * 100).rounded()))% · \(String(format: "%g", settingsTerminalFontSize.wrappedValue)) pt")
             glyphDivider
             glyphRow("Instant typing", systemImage: "keyboard",
                      subtitle: "Shows what you type at once and checks it against the server.") {
@@ -9431,6 +9486,13 @@ struct SettingsView: View {
     /// and ⌘± drive. Writing it here live-updates any open terminal (LiveTerminalView
     /// applies the new size in place via its own `@AppStorage` observer).
     @AppStorage("terminal.fontSize") private var terminalFontSize: Double = 12.5
+    /// A guest's own terminal text size, the one their shared panes show (`GuestPaneView`).
+    @AppStorage(GuestTerminalSize.storageKey) private var guestTerminalFontSize = GuestTerminalSize.defaultPoints
+    /// What Settings' Terminal text shows and steps: in guest mode the guest's own size, so
+    /// it changes the shared pane and never the owner's `terminal.fontSize` (#735).
+    private var settingsTerminalFontSize: Binding<Double> {
+        guest != nil ? $guestTerminalFontSize : $terminalFontSize
+    }
     /// Whether a RECEIVED html/svg preview may run script. OFF by default — see
     /// `previewsRow` and `HtmlWebView`.
     @AppStorage(WebViewPolicy.javaScriptDefaultsKey) private var previewJavaScript = false
@@ -9472,28 +9534,33 @@ struct SettingsView: View {
             preview: { Text("The quick brown fox").font(Typography.app(15)) },
             canDecrease: uiFontScale > 0.9, onDecrease: { stepFontScale(-0.1) },
             canReset: uiFontScale != 1.0, onReset: { uiFontScale = 1.0 },
-            canIncrease: uiFontScale < 1.4, onIncrease: { stepFontScale(0.1) }
+            canIncrease: uiFontScale < 1.4, onIncrease: { stepFontScale(0.1) },
+            identifier: "settings-app-font"
         )
-        // Terminal font (terminal.fontSize), 9–24 pt.
+        // Terminal font (`settingsTerminalFontSize`: the owner's or a guest's own), 9–24 pt.
+        let terminalFont = settingsTerminalFontSize
         textSizeControl(
             caption: "Terminal text — agent output",
-            value: "\(String(format: "%g", terminalFontSize)) pt",
+            value: "\(String(format: "%g", terminalFont.wrappedValue)) pt",
             preview: { Text("~ $ herdr").font(Typography.machine(15)) },
-            canDecrease: terminalFontSize > 9, onDecrease: { stepTerminalFont(-1) },
-            canReset: terminalFontSize != 12.5, onReset: { terminalFontSize = 12.5 },
-            canIncrease: terminalFontSize < 24, onIncrease: { stepTerminalFont(1) }
+            canDecrease: terminalFont.wrappedValue > 9, onDecrease: { stepTerminalFont(-1) },
+            canReset: terminalFont.wrappedValue != 12.5, onReset: { terminalFont.wrappedValue = 12.5 },
+            canIncrease: terminalFont.wrappedValue < 24, onIncrease: { stepTerminalFont(1) },
+            identifier: "settings-terminal-font"
         )
     }
 
     /// One labelled text-size control: a caption, a preview + current value, and the
     /// A−/Reset/A+ button row — the card style the appearance section has always used.
+    /// `identifier` names the value (`-value`) and the buttons (`-decrease`, `-reset`, `-increase`).
     private func textSizeControl<P: View>(
         caption: String,
         value: String,
         @ViewBuilder preview: () -> P,
         canDecrease: Bool, onDecrease: @escaping () -> Void,
         canReset: Bool, onReset: @escaping () -> Void,
-        canIncrease: Bool, onIncrease: @escaping () -> Void
+        canIncrease: Bool, onIncrease: @escaping () -> Void,
+        identifier: String
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(caption)
@@ -9504,13 +9571,17 @@ struct SettingsView: View {
                     Spacer(minLength: 8)
                     Text(value)
                         .font(Typography.machine(13, .bold)).foregroundStyle(Palette.textDim)
+                        .accessibilityIdentifier("\(identifier)-value")
                 }
                 .padding(.horizontal, 18).padding(.vertical, 14)
                 rowDivider
                 HStack(spacing: 10) {
                     textSizeButton("A\u{2212}", enabled: canDecrease, onDecrease)
+                        .accessibilityIdentifier("\(identifier)-decrease")
                     textSizeButton("Reset", enabled: canReset, onReset)
+                        .accessibilityIdentifier("\(identifier)-reset")
                     textSizeButton("A+", enabled: canIncrease, onIncrease)
+                        .accessibilityIdentifier("\(identifier)-increase")
                 }
                 .padding(.horizontal, 18).padding(.vertical, 12)
             }
@@ -9528,7 +9599,8 @@ struct SettingsView: View {
     /// Step the terminal font by `delta` points, clamped to [9, 24] — matches the
     /// per-agent ⋯ menu and ⌘± controls.
     private func stepTerminalFont(_ delta: Double) {
-        terminalFontSize = min(24, max(9, terminalFontSize + delta))
+        let font = settingsTerminalFontSize
+        font.wrappedValue = min(24, max(9, font.wrappedValue + delta))
     }
 
     /// #357: A− / Reset / A+ as three equal round buttons, 38 pt tall, `surfaceRaised`;

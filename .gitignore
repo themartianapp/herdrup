@@ -34,3 +34,8 @@ PushRelay/.dev.vars
 GuestRelay/node_modules/
 GuestRelay/.wrangler/
 GuestRelay/.dev.vars
+
+# AccountService (Cloudflare Worker): dependencies, wrangler state, local secrets.
+AccountService/node_modules/
+AccountService/.wrangler/
+AccountService/.dev.vars

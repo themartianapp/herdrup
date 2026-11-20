@@ -42,13 +42,16 @@ struct GuestPaneView: View {
     @StateObject private var chatModel: ChatModel
     /// The host serves `agent.transcript` to guests (its pong's `agent_transcript`).
     @State private var transcriptCapable = false
+    /// The Chat tab's first appearance in this mount has set the tab from Settings' "omp
+    /// agents open in"; after that the guest's own pick stands.
+    @State private var chatDefaulted = false
     /// The shared agent's Topics, as the owner sees them (owner decision 2026-11-19): only the
     /// host's `agent_topics` gates them. A guest has no event stream; the list polls.
     @StateObject private var topicsModel: TopicsModel
     /// The host serves omp agents' topics (its pong's `agent_topics`).
     @State private var topicsCapable = false
-    /// The Chat tab has been made the default once; after that the guest's own pick stands.
-    @State private var chatDefaulted = false
+    /// The Topics tab's first appearance in this mount has applied Settings' Topics default.
+    @State private var topicsDefaulted = false
 
     /// Whether the shared agent can be reached right now.
     private enum Availability: Equatable {
@@ -213,7 +216,8 @@ struct GuestPaneView: View {
             guard let current = features.current else { return }
             await guestPush.connected(access, client: client, features: current)
         }
-        // The Chat tab exists only where the host serves guests `agent.transcript`.
+        // The Chat tab exists only where the host serves guests `agent.transcript`, the Topics
+        // tab only where it serves `agent_topics`.
         .task(id: access.id) {
             let capabilities = try? await client.serverCapabilities()
             transcriptCapable = capabilities?.agentTranscript ?? false
@@ -225,17 +229,25 @@ struct GuestPaneView: View {
             guard topicsCapable, ChatPreference.isOmp(agent?.agent), !topicsModel.offered else { return }
             await topicsModel.refresh(client: client)
         }
-        // A shared omp agent opens in Chat, once; afterwards the guest's own pick stands.
+        // A shared omp agent opens where Settings' "omp agents open in" says (#735), once per
+        // mount, as the owner's page opens from it; afterwards the guest's own pick stands.
         .onChange(of: showsChat, initial: true) { _, available in
             if available, !chatDefaulted {
                 chatDefaulted = true
-                if tab == .terminal { tab = .chat }
+                tab = ChatPreference.opensInChat ? .chat : .terminal
             } else if !available, tab == .chat {
                 tab = .terminal
             }
         }
+        // Settings' "omp agents open in" Topics opens the Topics tab once it exists, once per
+        // mount, like Chat above; without topics that setting opens Chat.
         .onChange(of: showsTopics) { _, available in
-            if !available, tab == .topics { tab = showsChat ? .chat : .terminal }
+            if available, !topicsDefaulted {
+                topicsDefaulted = true
+                if ChatPreference.settingMode == .topics { tab = .topics }
+            } else if !available, tab == .topics {
+                tab = showsChat ? .chat : .terminal
+            }
         }
         .onChange(of: tab) { _, _ in
             if findOpen { toggleFind() }

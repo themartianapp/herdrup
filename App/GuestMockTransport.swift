@@ -63,10 +63,16 @@ struct GuestMockTransport: HerdrTransport {
     /// The APNs token the mock push system hands out once "permission" is granted.
     static let deviceToken = "mock-apns-token-guest"
 
-    /// Each launch starts from the guest's default text size, so one test's A+ can't leak
-    /// into the next. Once per process: the view that builds this transport re-renders.
-    private static let freshGuestSettings: Void =
+    /// Each launch starts from the default text sizes, the guest's and the owner's kept under
+    /// the share (`HERDR_MOCK_OWNER_SESSION`), and from the "omp agents open in" named by
+    /// `HERDR_MOCK_CHAT_OPENS_IN` (`chat` unless set), so one test's A+ or Terminal can't
+    /// leak into the next. Once per process: the view that builds this transport re-renders.
+    private static let freshGuestSettings: Void = {
         UserDefaults.standard.removeObject(forKey: GuestTerminalSize.storageKey)
+        UserDefaults.standard.removeObject(forKey: "terminal.fontSize")
+        UserDefaults.standard.set(ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_OPENS_IN"] ?? ChatPreference.chat,
+                                  forKey: ChatPreference.key)
+    }()
 
     static let access = GuestAccess(
         guestID: "g-7f2c",

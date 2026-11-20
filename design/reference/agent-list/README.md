@@ -34,12 +34,12 @@ These are pixel-exact screenshots of herdrup's Agents home on iPad, in landscape
    ONLY_SUITE=DesktopReferenceShots ONLY_DEVICE=ipad Tools/ci/ui-shard.sh focused
    ```
 
-   With `ONLY_DEVICE=ipad`, the focused shard runs the agent-list, Gram and Settings reference classes on both reference iPads (`desktop_reference_round` in `Tools/ci/ui-shard.sh`). Each class keeps its own bounded round and class-presence check. A pull request's macserve `ipad-script` shard produces the same pictures on both iPads.
+   With `ONLY_DEVICE=ipad`, the focused shard runs the agent-list, Gram and Settings reference classes on both reference iPads (`desktop_reference_round` in `Tools/ci/ui-shard.sh`). Each class keeps its own bounded round and class-presence check. A pull request's macserve `desktop-refs` shard produces the same pictures on both iPads.
 
    When only Gram/Settings capture actions change, `ONLY_SUITE=DesktopGramAndSettingsReferences` captures those two classes on both devices without repeating accepted agent-list captures. Preserve each image's actual source head and run; every image in a delivered set must still use the same runtime and capture conditions. Settings uses the synthetic connected host `reference-hub`, not a live connection.
 
    Bare `DesktopGramReferenceShots` and `DesktopSettingsReferenceShots` selectors capture only that class with the same clean install, status-bar override and execution check. Either class also accepts a method selector, for example `ONLY_SUITE=DesktopGramReferenceShots/testGramSavedReference`. With `ONLY_DEVICE=ipad`, both pinned devices run; receipt names replace the method selector's slash with a hyphen. Reference selectors reject iPhone rather than producing skipped captures.
-   Use `ONLY_DEVICE=ipad-pro-13` to replace only a failed 13-inch capture while retaining an already accepted 11-inch image. The default `ipad` still runs both; neither mode retries a failed round or hides its result.
+   Use `ONLY_DEVICE=ipad-pro-13` to replace only a failed 13-inch capture while retaining an already accepted 11-inch image. The default `ipad` still runs both. In either mode a failed test gets the one retry every round gets: the round passes only if the retry passes, `TestReceipts/FLAKES.txt` then lists the test, and its pictures are in that round's `-retry` result bundle, not `-first`.
 
 2. Export the attachments:
 
@@ -49,7 +49,7 @@ These are pixel-exact screenshots of herdrup's Agents home on iPad, in landscape
    done
    ```
 
-   PNGs and their `.json` conditions are then in `TestReceipts/iPadDesktopReference-<class>-first-attachments/` and `TestReceipts/iPad11DesktopReference-<class>-first-attachments/` (a macserve `ipad-script` job's `output.tar.gz` holds the same `TestReceipts/`, with the result bundles to export). Each folder's `manifest.json` (written by `xcresulttool`) maps an exported file to its attachment name, `ref-<device>-<state>.png` or `.json`. The status-bar override is in `TestReceipts/iPad*DesktopReference-status-bar.txt`.
+   PNGs and their `.json` conditions are then in `TestReceipts/iPadDesktopReference-<class>-first-attachments/` and `TestReceipts/iPad11DesktopReference-<class>-first-attachments/`, or `-retry-attachments/` for a test `FLAKES.txt` lists (a macserve `desktop-refs` job's `output.tar.gz` holds the same `TestReceipts/`, with the result bundles to export). Each folder's `manifest.json` (written by `xcresulttool`) maps an exported file to its attachment name, `ref-<device>-<state>.png` or `.json`. The status-bar override is in `TestReceipts/iPad*DesktopReference-status-bar.txt`.
 
 3. Copy each `ref-*.png` to its reference set under its attachment name. Lossless recompression is optional; verify identical decoded pixels if used. Rebuild `manifest.json` from the `.json` conditions, status-bar receipts and each PNG's SHA-256, and set each image's `herdrupCommit` and `ciRun` to the source that actually produced it. Look at every picture before committing the complete set.
 
