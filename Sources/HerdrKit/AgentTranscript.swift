@@ -11,7 +11,9 @@ import Foundation
 
 /// Params of `agent.transcript`. `before` and `after` are mutually exclusive (the server
 /// refuses both); neither asks for the newest page. `subagent` pages that subagent's own
-/// conversation (owner only) instead of the agent's.
+/// conversation (owner only) instead of the agent's. `topic` pages that topic's conversation
+/// instead (servers advertising `agent_topics` only). Nil values are left out of the request,
+/// so a server that predates topics never sees the key.
 public struct AgentTranscriptParams: Encodable, Sendable, Equatable {
     public let target: String
     public let before: String?
@@ -22,20 +24,22 @@ public struct AgentTranscriptParams: Encodable, Sendable, Equatable {
     /// session is held, so herdr re-sends changed origin marks for scrolled-in history too
     /// (herdr #430). Older servers ignore it.
     public let heldFrom: String?
+    public let topic: String?
 
     enum CodingKeys: String, CodingKey {
-        case target, before, after, limit, subagent
+        case target, before, after, limit, subagent, topic
         case heldFrom = "held_from"
     }
 
     public init(target: String, before: String? = nil, after: String? = nil, limit: UInt32? = nil,
-                subagent: String? = nil, heldFrom: String? = nil) {
+                subagent: String? = nil, heldFrom: String? = nil, topic: String? = nil) {
         self.target = target
         self.before = before
         self.after = after
         self.limit = limit
         self.subagent = subagent
         self.heldFrom = heldFrom
+        self.topic = topic
     }
 }
 
@@ -778,6 +782,8 @@ public enum AgentTranscriptError: Error, Equatable, Sendable {
     case cursorExpired
     /// `subagent` names no subagent conversation of this agent (or the reader is a guest).
     case subagentNotFound
+    /// `topic` names no topic of this agent (`topic_not_found`).
+    case topicNotFound
 }
 
 /// Result of `agent.answer`. `sentUnconfirmed`: the keys reached omp's question UI but

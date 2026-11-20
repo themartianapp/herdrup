@@ -595,11 +595,15 @@ struct ChatMockTransport: HerdrTransport {
         case "ping":
             // A host that keeps turn origins whenever the conversation carries them.
             let turnOrigin = ChatMockConversation.origins == nil ? "" : #","turn_origin":true"#
-            return #"{"id":"\#(id)","result":{"type":"pong","version":"0.9.4","protocol":22,"capabilities":{"agent_transcript":true,"agent_answer":true,"agent_avatar":true\#(turnOrigin)\#(ChatMockAskForm.capability)}}}"#
+            return #"{"id":"\#(id)","result":{"type":"pong","version":"0.9.4","protocol":22,"capabilities":{"agent_transcript":true,"agent_answer":true,"agent_avatar":true\#(turnOrigin)\#(ChatMockAskForm.capability)\#(TopicsMock.capability)}}}"#
         case "agent.list":
             return AgentAvatarMockServer.overlay(#"{"id":"\#(id)","result":{"type":"agent_list","agents":[\#(Self.agentsJSON)]}}"#)
         case "agent.transcript":
             let target = params["target"] as? String
+            // `HERDR_MOCK_TOPICS`: herdr-app's topics, each its own conversation.
+            if let topic = params["topic"] as? String, target == Self.paneID || target == "herdr-app" {
+                return TopicsMock.owner.transcript(id: id, topic: topic)
+            }
             // Under `HERDR_MOCK_CHAT_GROWTH` llm-opt (w9:p3) serves the same conversation, so the
             // stress run keeps two chats open at once.
             let served = target == Self.paneID || target == "herdr-app"
@@ -621,6 +625,10 @@ struct ChatMockTransport: HerdrTransport {
         case "agent.prompt":
             return ChatMockConversation.owner.prompt(id: id, params: params)
         default:
+            if let method = request["method"] as? String,
+               let reply = TopicsMock.owner.reply(method: method, id: id, params: params) {
+                return reply
+            }
             return try await base.roundTrip(requestLine)
         }
     }

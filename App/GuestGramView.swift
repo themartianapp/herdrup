@@ -3,8 +3,9 @@ import SwiftUI
 import UIKit
 
 /// The tabs of a guest's agent screen: Chat only for an omp agent on a host that serves
-/// guests its transcript (#482). Gram is the guest shell's own tab (#697).
-enum GuestPaneTab: Hashable { case chat, terminal }
+/// guests its transcript (#482), Topics only where that agent offers topics (`agent_topics`).
+/// Gram is the guest shell's own tab (#697).
+enum GuestPaneTab: Hashable { case topics, chat, terminal }
 
 /// The guest shell's Gram tab (herdrup#697, design 3B): an inbox list with an "All agents"
 /// row, the combined feed of every shared agent, above one row per shared agent, grouped
