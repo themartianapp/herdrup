@@ -239,8 +239,8 @@ struct GuestMockTransport: HerdrTransport {
             }
             return ChatMockConversation.guest.transcript(id: id, params: params)
         case _ where method.hasPrefix("agent.topics."):
-            return TopicsMock.guest.reply(method: method, id: id, params: params)
-                ?? Self.errorLine(id: id, code: "guest_forbidden", message: "guests can't call \(method)")
+            let reply = await TopicsMock.guest.reply(method: method, id: id, params: params)
+            return reply ?? Self.errorLine(id: id, code: "guest_forbidden", message: "guests can't call \(method)")
         case "agent.list":
             return #"{"id":"\#(id)","result":{"type":"agent_list","agents":[\#(listedAgentsJSON)]}}"#
         case "agent.get":

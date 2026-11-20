@@ -21,13 +21,17 @@ final class TopicsModel: ObservableObject {
     @Published private(set) var loaded = false
     /// The agent answered `agent.topics.list` this session: the page offers Topics.
     @Published private(set) var offered = false
+    /// The agent will not offer topics for this page's life (`topics_unsupported`, no
+    /// `agent_topics`, the agent is gone): discovery stopped for good.
+    private(set) var refused = false
     /// Why the newest list call failed. The last list stays on screen (`topics_unreachable`
     /// keeps it, as herdr's API asks).
     @Published private(set) var problem: String?
     /// The open topic: its chat on a phone, the selected row and its chat on iPad.
     @Published var selectedTopicID: String?
-    /// The newest send's note under the open topic's composer (queued, refused).
-    @Published var sendNote: String?
+    /// Each topic's newest send note (queued, refused), shown under that topic's composer
+    /// only: a receipt that lands after the reader moved to another topic stays with its own.
+    @Published private(set) var sendNotes: [String: String] = [:]
 
     let target: String
     /// One conversation per topic (`TranscriptStore` keyed per agent and topic), kept while
@@ -44,6 +48,15 @@ final class TopicsModel: ObservableObject {
     static let backstopSeconds: UInt64 = 60
     /// The host caps a message at 32 KiB (`invalid_params` beyond it), as `agent.prompt`.
     static let maxMessageBytes = 32 * 1024
+    /// Discovery's retry schedule (`TopicsDiscoveryBackoff.delays`). DEBUG: the UI tests'
+    /// `HERDR_MOCK_TOPICS_DISCOVERY_SECONDS` shortens it, so a retry lands inside a test.
+    static var discoverySchedule: [UInt64] {
+        #if DEBUG
+        if let seconds = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_DISCOVERY_SECONDS"]
+            .flatMap(UInt64.init) { return [seconds] }
+        #endif
+        return TopicsDiscoveryBackoff.delays
+    }
 
     init(target: String) {
         self.target = target
@@ -61,6 +74,70 @@ final class TopicsModel: ObservableObject {
         return model
     }
 
+    func sendNote(for topicID: String) -> String? { sendNotes[topicID] }
+
+    /// Learns whether the agent offers topics (herdrup#758), on `TopicsDiscoveryBackoff`'s
+    /// schedule: `topics_unsupported` stops for good; `topics_unreachable` (every omp agent
+    /// without topics turned on), a timeout or a dropped connection ask again after 60 s,
+    /// doubling to a 10 minute cap. The page restarts this when the agent's status or session
+    /// changes and when a guest's share comes back, which starts the schedule over; for the
+    /// owner (`eventsPaneID`) an `agent.topics.changed` for the pane does too, at once.
+    func discover(client: HerdrClient, eventsPaneID: String? = nil) async {
+        guard !offered, !refused else { return }
+        await withTaskGroup(of: Void.self) { group in
+            if let eventsPaneID {
+                group.addTask { await self.wakeDiscoveryOnTopicChanges(client: client, paneID: eventsPaneID) }
+            }
+            group.addTask { await self.discoveryLoop(client: client) }
+            // The loop ends the discovery; the event watcher goes with it.
+            await group.next()
+            group.cancelAll()
+        }
+    }
+
+    /// Set by an `agent.topics.changed` while discovery waits: the wait ends and the schedule
+    /// starts over.
+    private var discoveryWoken = false
+    private var discoveryWait: Task<Void, Never>?
+
+    private func discoveryLoop(client: HerdrClient) async {
+        var backoff = TopicsDiscoveryBackoff(schedule: Self.discoverySchedule)
+        while !Task.isCancelled {
+            discoveryWoken = false
+            let error = await listForDiscovery(client: client)
+            if Task.isCancelled { return }
+            switch backoff.decide(after: error) {
+            case .offered, .stop:
+                return
+            case .retry(let seconds):
+                let wait = Task<Void, Never> { try? await Task.sleep(nanoseconds: seconds * 1_000_000_000) }
+                discoveryWait = wait
+                await withTaskCancellationHandler { await wait.value } onCancel: { wait.cancel() }
+                discoveryWait = nil
+                if discoveryWoken { backoff.reset() }
+            }
+        }
+    }
+
+    private func wakeDiscoveryOnTopicChanges(client: HerdrClient, paneID: String) async {
+        do {
+            for try await line in client.subscribeTopicChanges() {
+                guard case .changed(let change) = line, change.paneID == paneID else { continue }
+                discoveryWoken = true
+                discoveryWait?.cancel()
+            }
+        } catch {}
+        // Refused or dropped: the schedule alone keeps asking. Stay until discovery ends.
+        while !Task.isCancelled { try? await Task.sleep(nanoseconds: 3_600_000_000_000) }
+    }
+
+    /// One list for discovery: nil when the agent answered, else why not.
+    private func listForDiscovery(client: HerdrClient) async -> Error? {
+        await refresh(client: client)
+        if offered { return nil }
+        return lastListError ?? AgentTopicsError.unreachable
+    }
+
     /// Brings the list up to date. Concurrent calls coalesce into one more round.
     func refresh(client: HerdrClient) async {
         if refreshing {
@@ -75,25 +152,32 @@ final class TopicsModel: ObservableObject {
         } while refreshAgain
     }
 
+    /// Why the newest list call failed, for discovery; nil after one succeeds.
+    private var lastListError: Error?
+
     private func refreshOnce(client: HerdrClient) async {
         do {
             let list = try await client.agentTopicsList(target: target)
             let ordered = list.ordered
             if ordered != topics { topics = ordered }
             if !offered { offered = true }
+            refused = false
+            lastListError = nil
             if problem != nil { problem = nil }
         } catch is CancellationError {
             return
         } catch let error as AgentTopicsError {
-            switch error {
-            case .unsupported, .notAdvertised, .agentNotFound:
+            lastListError = error
+            if error.isPermanent {
                 // Not an agent with topics (any more): the page goes back to Chat and Terminal.
                 offered = false
+                refused = true
                 problem = nil
-            default:
+            } else {
                 problem = Self.describe(error)
             }
         } catch {
+            lastListError = error
             problem = Self.describe(error)
         }
         if !loaded { loaded = true }
@@ -183,9 +267,9 @@ final class TopicsModel: ObservableObject {
     /// Draws a message to one topic in its chat at once, as a Chat send does (the caller
     /// animates it); `deliver` then sends it. Nil when it is too long to send.
     func stage(topicID: String, text: String, author: TranscriptAuthor) -> String? {
-        sendNote = nil
+        sendNotes[topicID] = nil
         guard text.utf8.count <= Self.maxMessageBytes else {
-            sendNote = Self.tooLong
+            sendNotes[topicID] = Self.tooLong
             return nil
         }
         return chatModel(for: topicID).stageOutgoing(text: text, author: author)
@@ -200,7 +284,7 @@ final class TopicsModel: ObservableObject {
         do {
             let mode = try await client.agentTopicsSend(target: target, topicID: topicID, message: text)
             chat.updateOutgoing(id, state: .submitted)
-            if mode == .queued { sendNote = "Queued: the topic reads it when its current turn ends." }
+            if mode == .queued { sendNotes[topicID] = "Queued: the topic reads it when its current turn ends." }
         } catch let error as AgentTopicsError {
             switch error {
             case .timeout, .other:
@@ -209,13 +293,13 @@ final class TopicsModel: ObservableObject {
             default:
                 chat.updateOutgoing(id, state: .notDelivered(Self.describe(error)))
             }
-            sendNote = Self.describe(error)
+            sendNotes[topicID] = Self.describe(error)
         } catch is CancellationError {
             chat.updateOutgoing(id, state: .unconfirmed)
             return
         } catch {
             chat.updateOutgoing(id, state: .unconfirmed)
-            sendNote = "Couldn't confirm delivery. Check the topic before sending again."
+            sendNotes[topicID] = "Couldn't confirm delivery. Check the topic before sending again."
         }
         Task { await chat.refresh(client: client) }
         await refresh(client: client)
@@ -535,7 +619,6 @@ private struct TopicsList: View {
     private func row(_ topic: AgentTopic) -> some View {
         let selected = highlightsSelection && model.selectedTopicID == topic.id
         return Button {
-            model.sendNote = nil
             model.selectedTopicID = topic.id
         } label: {
             VStack(alignment: .leading, spacing: 4) {
@@ -703,7 +786,8 @@ private struct TopicChat: View {
                      ground: Palette.groundMachine, onOpenTerminal: onOpenTerminal)
                 .equatable()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            if let note = actionNote ?? model.sendNote {
+            // This topic's own note only: a late receipt for another topic stays with that one.
+            if let note = actionNote ?? model.sendNote(for: topic.id) {
                 Text(note).font(Typography.app(12)).foregroundStyle(Palette.textDim)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 16).padding(.vertical, 4)
@@ -724,7 +808,6 @@ private struct TopicChat: View {
             if showsBack {
                 PaneHeaderBackButton(identifier: "topic-back") {
                     focused = false
-                    model.sendNote = nil
                     model.selectedTopicID = nil
                 }
             }

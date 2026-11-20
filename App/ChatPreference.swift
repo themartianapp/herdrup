@@ -61,20 +61,25 @@ enum ChatPreference {
 }
 
 /// The owner page's `Chat | Terminal` switch, `Topics | Chat | Terminal` for an omp agent with
-/// topics: a small centred capsule under the header (13 pt semibold segments, 26 tall, in a
-/// 1 pt hairline capsule), as in the mockup.
+/// topics, `Topics | Terminal` for one whose own transcript is refused: a small centred
+/// capsule under the header (13 pt semibold segments, 26 tall, in a 1 pt hairline capsule), as
+/// in the mockup.
 struct ChatTerminalSwitch: View {
-    /// The mode the page shows (already resolved: never Topics without `showsTopics`).
+    /// The mode the page shows (already resolved: never a mode the switch does not offer).
     @Binding var mode: ChatPreference.Mode
     /// The agent has topics: the switch offers Topics first.
     var showsTopics = false
+    /// The agent's own conversation (the Inbox) can be shown: the switch offers Chat.
+    var showsChat = true
 
     var body: some View {
         HStack(spacing: 0) {
             if showsTopics {
                 segment("Topics", selected: mode == .topics, id: "chat-switch-topics") { mode = .topics }
             }
-            segment("Chat", selected: mode == .chat, id: "chat-switch-chat") { mode = .chat }
+            if showsChat {
+                segment("Chat", selected: mode == .chat, id: "chat-switch-chat") { mode = .chat }
+            }
             segment("Terminal", selected: mode == .terminal, id: "chat-switch-terminal") { mode = .terminal }
         }
         .padding(3)

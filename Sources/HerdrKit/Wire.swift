@@ -1191,10 +1191,13 @@ public struct ServerCapabilities: Decodable, Equatable, Sendable {
     /// herdr parses omp's HTML-form `ask` (omp ≥ 18.18.3) into `form`, reports its answer, and
     /// answers it with `agent.answer_form`. False: a form shows read-only with "Answer in Terminal".
     public let askForm: Bool
-    /// `agent.topics.*`, the `agent.topics.changed` event and `topic` on `agent.transcript`:
-    /// an omp agent's topics (jerryfane/herdr#475). False: no Topics view, and no request
-    /// sends `topic` (an older server would ignore it and page the agent's own conversation).
+    /// `agent.topics.*` and the `agent.topics.changed` event: an omp agent's topics
+    /// (jerryfane/herdr#475). False: no Topics view.
     public let agentTopics: Bool
+    /// `agent.transcript` honours `topic` (herdr's `agent_transcript_topic`). A server without
+    /// it ignores the param and would answer with the agent's own conversation, so no request
+    /// sends `topic` unless this is true (herdrup#757).
+    public let agentTranscriptTopic: Bool
 
     enum CodingKeys: String, CodingKey {
         case liveHandoff = "live_handoff"
@@ -1214,6 +1217,7 @@ public struct ServerCapabilities: Decodable, Equatable, Sendable {
         case turnOrigin = "turn_origin"
         case askForm = "ask_form"
         case agentTopics = "agent_topics"
+        case agentTranscriptTopic = "agent_transcript_topic"
     }
 
     public init(from decoder: Decoder) throws {
@@ -1238,6 +1242,7 @@ public struct ServerCapabilities: Decodable, Equatable, Sendable {
         turnOrigin = try c.decodeIfPresent(Bool.self, forKey: .turnOrigin) ?? false
         askForm = try c.decodeIfPresent(Bool.self, forKey: .askForm) ?? false
         agentTopics = try c.decodeIfPresent(Bool.self, forKey: .agentTopics) ?? false
+        agentTranscriptTopic = try c.decodeIfPresent(Bool.self, forKey: .agentTranscriptTopic) ?? false
     }
 }
 
