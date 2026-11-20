@@ -135,6 +135,8 @@ export async function refreshSession(db: D1Database, refreshToken: string, nowMs
 export interface Principal {
   accountId: string;
   sessionId: string;
+  /** The device this session enrolled (src/devices.ts), or null before enrolment. */
+  deviceId: string | null;
 }
 
 export type AuthResult = { ok: true; principal: Principal } | { ok: false; error: "invalid_token" | "token_expired" };
@@ -145,10 +147,10 @@ export async function authenticate(db: D1Database, authorization: string | null,
   if (match === null) return { ok: false, error: "invalid_token" };
   const [, sessionId, secret] = match;
   const row = await db
-    .prepare("SELECT account_id, access_hash, access_exp_ms FROM sessions WHERE id = ?")
+    .prepare("SELECT account_id, device_id, access_hash, access_exp_ms FROM sessions WHERE id = ?")
     .bind(sessionId)
-    .first<{ account_id: string; access_hash: string; access_exp_ms: number }>();
+    .first<{ account_id: string; device_id: string | null; access_hash: string; access_exp_ms: number }>();
   if (row === null || !sameString(await sha256Hex(secret), row.access_hash)) return { ok: false, error: "invalid_token" };
   if (row.access_exp_ms <= nowMs) return { ok: false, error: "token_expired" };
-  return { ok: true, principal: { accountId: row.account_id, sessionId } };
+  return { ok: true, principal: { accountId: row.account_id, sessionId, deviceId: row.device_id } };
 }

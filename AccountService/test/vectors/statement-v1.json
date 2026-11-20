@@ -1,0 +1,112 @@
+{
+  "version": 1,
+  "description": "Golden device statements (AccountService/src/statements.ts, DESIGN.md §3.3-3.4) for hosts (herdr) to verify. A statement is a compact JWS, alg EdDSA (Ed25519), typ herdrup-device+jwt, verified with the JWKS key named by kid. A host accepts it when the signature verifies, iss is https://accounts.herdrup.app, aud is its own host id, dev is the device key the Noise IK handshake proved, and now is within [iat - 60 s, exp + 60 s]. sub is the account's pairwise id for that host: the first 22 base64url characters of HMAC-SHA256(K, account_id + \"|\" + host_id), with K = HKDF-SHA256(ikm = ACCOUNT_HMAC_KEY, salt = empty, info = \"herdrup-accounts pairwise v1\", 32 bytes). The keys here are test keys: signing_key_seed is the RFC 8032 §7.1 TEST 1 secret key, account_hmac_key is the test suite's.",
+  "issuer": "https://accounts.herdrup.app",
+  "signing_key_seed": "nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A",
+  "account_hmac_key": "dGVzdC1hY2NvdW50LWhtYWMta2V5LTAxMjM0NTY3ODk=",
+  "jwks": {
+    "keys": [
+      {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+        "kid": "test-2026-11a",
+        "use": "sig",
+        "alg": "EdDSA"
+      }
+    ],
+    "revoked_kids": []
+  },
+  "account_id": "acct_Example-012345678",
+  "issued": {
+    "host_id": "HostIdExample-01234567",
+    "dev": "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",
+    "iat": 1795000000,
+    "sub": "ut4sUm55ivxmkHTrpvWg9p",
+    "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6ImhlcmRydXAtZGV2aWNlK2p3dCIsImtpZCI6InRlc3QtMjAyNi0xMWEifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2FjY291bnRzLmhlcmRydXAuYXBwIiwiYXVkIjoiSG9zdElkRXhhbXBsZS0wMTIzNDU2NyIsInN1YiI6InV0NHNVbTU1aXZ4bWtIVHJwdldnOXAiLCJkZXYiOiJoU0R3Q1lrd3AxUjBpMzNjdEQ3M1dnMl9PZzBtT0JyMDY2U3BqcXFiVG1vIiwiaWF0IjoxNzk1MDAwMDAwLCJleHAiOjE3OTUwMDA2MDB9.-7xBNlWlpj2aRMUMn5d2bUk7gpUOs_Pmeg-TPOOGUrsycpYXpeeOXKlCeNcEx3FAiB4EipWNn4J0KvBqE8VSBw"
+  },
+  "other_host_sub": "A7S1Z3BxgJTvfW9VQmt1Rz",
+  "cases": [
+    {
+      "name": "valid",
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6ImhlcmRydXAtZGV2aWNlK2p3dCIsImtpZCI6InRlc3QtMjAyNi0xMWEifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2FjY291bnRzLmhlcmRydXAuYXBwIiwiYXVkIjoiSG9zdElkRXhhbXBsZS0wMTIzNDU2NyIsInN1YiI6InV0NHNVbTU1aXZ4bWtIVHJwdldnOXAiLCJkZXYiOiJoU0R3Q1lrd3AxUjBpMzNjdEQ3M1dnMl9PZzBtT0JyMDY2U3BqcXFiVG1vIiwiaWF0IjoxNzk1MDAwMDAwLCJleHAiOjE3OTUwMDA2MDB9.-7xBNlWlpj2aRMUMn5d2bUk7gpUOs_Pmeg-TPOOGUrsycpYXpeeOXKlCeNcEx3FAiB4EipWNn4J0KvBqE8VSBw",
+      "host_id": "HostIdExample-01234567",
+      "noise_device_pub": "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",
+      "now": 1795000001,
+      "expect": "valid",
+      "claims": {
+        "v": 1,
+        "iss": "https://accounts.herdrup.app",
+        "aud": "HostIdExample-01234567",
+        "sub": "ut4sUm55ivxmkHTrpvWg9p",
+        "dev": "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",
+        "iat": 1795000000,
+        "exp": 1795000600
+      }
+    },
+    {
+      "name": "valid at the late edge",
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6ImhlcmRydXAtZGV2aWNlK2p3dCIsImtpZCI6InRlc3QtMjAyNi0xMWEifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2FjY291bnRzLmhlcmRydXAuYXBwIiwiYXVkIjoiSG9zdElkRXhhbXBsZS0wMTIzNDU2NyIsInN1YiI6InV0NHNVbTU1aXZ4bWtIVHJwdldnOXAiLCJkZXYiOiJoU0R3Q1lrd3AxUjBpMzNjdEQ3M1dnMl9PZzBtT0JyMDY2U3BqcXFiVG1vIiwiaWF0IjoxNzk1MDAwMDAwLCJleHAiOjE3OTUwMDA2MDB9.-7xBNlWlpj2aRMUMn5d2bUk7gpUOs_Pmeg-TPOOGUrsycpYXpeeOXKlCeNcEx3FAiB4EipWNn4J0KvBqE8VSBw",
+      "host_id": "HostIdExample-01234567",
+      "noise_device_pub": "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",
+      "now": 1795000660,
+      "expect": "valid"
+    },
+    {
+      "name": "expired",
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6ImhlcmRydXAtZGV2aWNlK2p3dCIsImtpZCI6InRlc3QtMjAyNi0xMWEifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2FjY291bnRzLmhlcmRydXAuYXBwIiwiYXVkIjoiSG9zdElkRXhhbXBsZS0wMTIzNDU2NyIsInN1YiI6InV0NHNVbTU1aXZ4bWtIVHJwdldnOXAiLCJkZXYiOiJoU0R3Q1lrd3AxUjBpMzNjdEQ3M1dnMl9PZzBtT0JyMDY2U3BqcXFiVG1vIiwiaWF0IjoxNzk1MDAwMDAwLCJleHAiOjE3OTUwMDA2MDB9.-7xBNlWlpj2aRMUMn5d2bUk7gpUOs_Pmeg-TPOOGUrsycpYXpeeOXKlCeNcEx3FAiB4EipWNn4J0KvBqE8VSBw",
+      "host_id": "HostIdExample-01234567",
+      "noise_device_pub": "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",
+      "now": 1795000661,
+      "expect": "expired"
+    },
+    {
+      "name": "issued in the future",
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6ImhlcmRydXAtZGV2aWNlK2p3dCIsImtpZCI6InRlc3QtMjAyNi0xMWEifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2FjY291bnRzLmhlcmRydXAuYXBwIiwiYXVkIjoiSG9zdElkRXhhbXBsZS0wMTIzNDU2NyIsInN1YiI6InV0NHNVbTU1aXZ4bWtIVHJwdldnOXAiLCJkZXYiOiJoU0R3Q1lrd3AxUjBpMzNjdEQ3M1dnMl9PZzBtT0JyMDY2U3BqcXFiVG1vIiwiaWF0IjoxNzk1MDAwMDAwLCJleHAiOjE3OTUwMDA2MDB9.-7xBNlWlpj2aRMUMn5d2bUk7gpUOs_Pmeg-TPOOGUrsycpYXpeeOXKlCeNcEx3FAiB4EipWNn4J0KvBqE8VSBw",
+      "host_id": "HostIdExample-01234567",
+      "noise_device_pub": "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",
+      "now": 1794999939,
+      "expect": "not_yet_valid"
+    },
+    {
+      "name": "another host's statement",
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6ImhlcmRydXAtZGV2aWNlK2p3dCIsImtpZCI6InRlc3QtMjAyNi0xMWEifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2FjY291bnRzLmhlcmRydXAuYXBwIiwiYXVkIjoiSG9zdElkRXhhbXBsZS0wMTIzNDU2NyIsInN1YiI6InV0NHNVbTU1aXZ4bWtIVHJwdldnOXAiLCJkZXYiOiJoU0R3Q1lrd3AxUjBpMzNjdEQ3M1dnMl9PZzBtT0JyMDY2U3BqcXFiVG1vIiwiaWF0IjoxNzk1MDAwMDAwLCJleHAiOjE3OTUwMDA2MDB9.-7xBNlWlpj2aRMUMn5d2bUk7gpUOs_Pmeg-TPOOGUrsycpYXpeeOXKlCeNcEx3FAiB4EipWNn4J0KvBqE8VSBw",
+      "host_id": "OtherHostExample-01234",
+      "noise_device_pub": "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",
+      "now": 1795000001,
+      "expect": "wrong_audience"
+    },
+    {
+      "name": "another device",
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6ImhlcmRydXAtZGV2aWNlK2p3dCIsImtpZCI6InRlc3QtMjAyNi0xMWEifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2FjY291bnRzLmhlcmRydXAuYXBwIiwiYXVkIjoiSG9zdElkRXhhbXBsZS0wMTIzNDU2NyIsInN1YiI6InV0NHNVbTU1aXZ4bWtIVHJwdldnOXAiLCJkZXYiOiJoU0R3Q1lrd3AxUjBpMzNjdEQ3M1dnMl9PZzBtT0JyMDY2U3BqcXFiVG1vIiwiaWF0IjoxNzk1MDAwMDAwLCJleHAiOjE3OTUwMDA2MDB9.-7xBNlWlpj2aRMUMn5d2bUk7gpUOs_Pmeg-TPOOGUrsycpYXpeeOXKlCeNcEx3FAiB4EipWNn4J0KvBqE8VSBw",
+      "host_id": "HostIdExample-01234567",
+      "noise_device_pub": "3p7bfXt9wbTTW2HC7OQ1Nz-DQ8hbeGdNrfx-FG-IK08",
+      "now": 1795000001,
+      "expect": "wrong_device"
+    },
+    {
+      "name": "payload changed after signing",
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6ImhlcmRydXAtZGV2aWNlK2p3dCIsImtpZCI6InRlc3QtMjAyNi0xMWEifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2FjY291bnRzLmhlcmRydXAuYXBwIiwiYXVkIjoiSG9zdElkRXhhbXBsZS0wMTIzNDU2NyIsInN1YiI6Ii02MHltb3lhVktaaEd1SHcwU0M5TzIiLCJkZXYiOiJoU0R3Q1lrd3AxUjBpMzNjdEQ3M1dnMl9PZzBtT0JyMDY2U3BqcXFiVG1vIiwiaWF0IjoxNzk1MDAwMDAwLCJleHAiOjE3OTUwMDA2MDB9.-7xBNlWlpj2aRMUMn5d2bUk7gpUOs_Pmeg-TPOOGUrsycpYXpeeOXKlCeNcEx3FAiB4EipWNn4J0KvBqE8VSBw",
+      "host_id": "HostIdExample-01234567",
+      "noise_device_pub": "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",
+      "now": 1795000001,
+      "expect": "bad_signature"
+    },
+    {
+      "name": "signed by a key the JWKS doesn't list",
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6ImhlcmRydXAtZGV2aWNlK2p3dCIsImtpZCI6InRlc3QtMjAyNi0xMXoifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2FjY291bnRzLmhlcmRydXAuYXBwIiwiYXVkIjoiSG9zdElkRXhhbXBsZS0wMTIzNDU2NyIsInN1YiI6InV0NHNVbTU1aXZ4bWtIVHJwdldnOXAiLCJkZXYiOiJoU0R3Q1lrd3AxUjBpMzNjdEQ3M1dnMl9PZzBtT0JyMDY2U3BqcXFiVG1vIiwiaWF0IjoxNzk1MDAwMDAwLCJleHAiOjE3OTUwMDA2MDB9.rUvVAwt7D2-8e0hMf0_zjJqWi1MMOd8B3O-_bEDhefwAwYwwzFATCoIQ6JCQpichqHOynoA0yuAy3nLT6OdyCg",
+      "host_id": "HostIdExample-01234567",
+      "noise_device_pub": "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",
+      "now": 1795000001,
+      "expect": "unknown_kid"
+    },
+    {
+      "name": "another key under the listed kid",
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6ImhlcmRydXAtZGV2aWNlK2p3dCIsImtpZCI6InRlc3QtMjAyNi0xMWEifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2FjY291bnRzLmhlcmRydXAuYXBwIiwiYXVkIjoiSG9zdElkRXhhbXBsZS0wMTIzNDU2NyIsInN1YiI6InV0NHNVbTU1aXZ4bWtIVHJwdldnOXAiLCJkZXYiOiJoU0R3Q1lrd3AxUjBpMzNjdEQ3M1dnMl9PZzBtT0JyMDY2U3BqcXFiVG1vIiwiaWF0IjoxNzk1MDAwMDAwLCJleHAiOjE3OTUwMDA2MDB9.4XU3MpE4NGyAVwFQ4jnqECjEyOZSm9lzrnr4QYjKpaCYcjMH6tYsYuJGkPqsVC1aGtjhbWM0CBexzmX-wR7kCA",
+      "host_id": "HostIdExample-01234567",
+      "noise_device_pub": "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",
+      "now": 1795000001,
+      "expect": "bad_signature"
+    }
+  ]
+}

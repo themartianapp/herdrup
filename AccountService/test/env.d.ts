@@ -3,10 +3,18 @@ declare namespace Cloudflare {
     DB: D1Database;
     AUTH_IP_LIMIT: RateLimit;
     ACCOUNT_LIMIT: RateLimit;
+    STATEMENT_LIMIT: RateLimit;
+    ENROL_LIMIT: RateLimit;
     ACCOUNT_HMAC_KEY: string;
     APPLE_APP_CLIENT_ID: string;
     APPLE_WEB_CLIENT_ID: string;
     GOOGLE_IOS_CLIENT_ID: string;
     GOOGLE_WEB_CLIENT_ID: string;
+    STATEMENT_KEY_A?: string;
+    STATEMENT_KEY_B?: string;
+    STATEMENT_KID_A: string;
+    STATEMENT_KID_B: string;
+    STATEMENT_ACTIVE: string;
+    STATEMENT_REVOKED_KIDS: string;
   }
 }

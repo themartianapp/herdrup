@@ -50,8 +50,21 @@ name = "ACCOUNT_LIMIT"
 namespace_id = "6982"
 simple = { limit = 120, period = 60 }
 
-# Hourly cleanup (src/cleanup.ts): spent nonces and sessions past their expiry, and accounts
-# not seen for 24 months.
+# Keyed by account id, on top of ACCOUNT_LIMIT: statement batches (a live share asks about
+# every 8 minutes) ...
+[[ratelimits]]
+name = "STATEMENT_LIMIT"
+namespace_id = "6983"
+simple = { limit = 30, period = 60 }
+
+# ... and device challenges and enrolments.
+[[ratelimits]]
+name = "ENROL_LIMIT"
+namespace_id = "6985"
+simple = { limit = 10, period = 60 }
+
+# Hourly cleanup (src/cleanup.ts): spent nonces and refresh tokens, enrolment challenges and
+# sessions past their expiry, and accounts not seen for 24 months.
 [triggers]
 crons = ["17 * * * *"]
 
@@ -65,6 +78,15 @@ APPLE_APP_CLIENT_ID = "com.jerryfane.herdr"
 APPLE_WEB_CLIENT_ID = "com.jerryfane.herdr.signin"
 GOOGLE_IOS_CLIENT_ID = "552913387875-ujv6unveo5qtmmbnapogekc5jl8h6olk.apps.googleusercontent.com"
 GOOGLE_WEB_CLIENT_ID = "552913387875-0te8j0cm9tmt5ifai9m8nlc1igdhi844.apps.googleusercontent.com"
+# Statement signing (src/signing.ts): two key slots, so a key rotates without leaving
+# Cloudflare. A slot is published in /.well-known/jwks.json once it has both its key (secret
+# STATEMENT_KEY_A / STATEMENT_KEY_B) and its kid; STATEMENT_ACTIVE names the slot that signs.
+# STATEMENT_REVOKED_KIDS lists kids never used or published again (after a compromise).
+# README "Rotate the statement key" has the steps.
+STATEMENT_ACTIVE = "A"
+STATEMENT_KID_A = "2026-11a"
+STATEMENT_KID_B = ""
+STATEMENT_REVOKED_KIDS = ""
 
 # Secrets (wrangler secret put), never in this file:
 #   ACCOUNT_HMAC_KEY   32 random bytes, standard base64. Keys the sign-in nonces and the stored
@@ -73,3 +95,6 @@ GOOGLE_WEB_CLIENT_ID = "552913387875-0te8j0cm9tmt5ifai9m8nlc1igdhi844.apps.googl
 #   GOOGLE_WEB_CLIENT_SECRET  the Google web client's secret; the owner pastes it at the first
 #                      deploy. Nothing in this step reads it: the web sign-in flow (step 5) is
 #                      its first user.
+#   STATEMENT_KEY_A, STATEMENT_KEY_B  Ed25519 private keys that sign statements, PKCS8 DER in
+#                      standard base64, generated straight into the Worker (README "Deploy").
+#                      No copy is kept: a lost key is rotated, never restored.

@@ -4,8 +4,9 @@
 epic #696), on `accounts.herdrup.app` with a D1 database. Signing in is optional: signed out,
 HerdrUp works exactly as before, and plain guest invites never touch this Worker.
 
-This first step signs people in with Apple or Google and keeps their sessions. Later steps add
-devices and the statements hosts check, sync of non-secret settings, and account deletion.
+It signs people in with Apple or Google and keeps their sessions (step 1), and binds each
+device's guest key to the account and signs the short-lived statements hosts check (step 2).
+Later steps add sync of non-secret settings and account deletion.
 It is a separate Worker from `herdrup-guest`: it holds personal data, its own secrets and its
 own deploys, so a bug or rollback here can't drop a guest session.
 
@@ -20,6 +21,13 @@ own deploys, so a bug or rollback here can't drop a guest session.
 | `POST /v1/auth/refresh` | `{refresh_token}` | a new token pair |
 | `POST /v1/auth/signout` | `Authorization: Bearer <access>` | 204 |
 | `GET /v1/account` | `Authorization: Bearer <access>` | `{account_id, created_ms}` |
+| `POST /v1/devices/challenge` | bearer | `{challenge_id, server_pub, salt, account_id, expires_in}`: 60 s, one use |
+| `POST /v1/devices` | bearer; `{challenge_id, device_pub, mac, name, platform}` | 201 `{device}` (200 when the key is already the account's) |
+| `GET /v1/devices` | bearer | `{devices: [{id, name, platform, device_pub, created_ms, current}]}` |
+| `PATCH /v1/devices/<id>` | bearer; `{name}` | `{device}` |
+| `DELETE /v1/devices/<id>` | bearer | 204; that device's sessions end |
+| `POST /v1/statements` | bearer; `{hosts: [host_id, … ≤ 50]}` | `{statements: [{host, jws}], exp}` |
+| `GET /.well-known/jwks.json` | | `{keys, revoked_kids}`, `Cache-Control: public, max-age=3600` |
 
 `platform` is one of `ios`, `ipados`, `macos`, `windows`, `linux`, `web`. Errors are
 `{"error": "<code>"}`; a refused ID token adds `reason` (`wrong_audience`, `expired`, …).
@@ -44,22 +52,48 @@ spent. Presenting any refresh token the session ever rotated away is treated as 
 whole session ends, for every holder. Clients must refresh one at a time. The design behind
 this Worker and the steps after it is in [DESIGN.md](DESIGN.md).
 
+**Devices.** A device is one install's guest key: the X25519 key it already proves to hosts in
+every Noise IK handshake. Only its public half is sent, and the device proves it holds the
+private half against a fresh challenge key E and salt:
+
+```
+k   = X25519(d, E)                                   refuse an all-zero k (low-order key)
+mk  = HKDF-SHA256(ikm = k, salt, info = "herdrup account enrol v1", 32 bytes)
+mac = HMAC-SHA256(mk, "herdrup-enrol-v1|" + account_id + "|" + device_pub + "|" + challenge_id)
+```
+
+All values are unpadded base64url. `test/vectors/enrol-v1.json` pins this for the app, desktop
+and web clients. A session enrols one device, once, so a stolen access token can't bind the
+thief's key; a key belongs to one account at a time (`409 device_in_other_account`); an account
+has at most 20 devices (`403 too_many_devices`). Removing a device ends the sessions bound to it.
+
+**Statements.** A statement says "device key D belongs to account X" to one host, for 10
+minutes: a compact JWS with header `{"alg":"EdDSA","typ":"herdrup-device+jwt","kid"}` and
+payload `{v:1, iss:"https://accounts.herdrup.app", aud:<host_id>, sub, dev:<device_pub>, iat, exp}`.
+`sub` is the account's id for that host alone (the first 22 base64url characters of an HMAC of
+account id and host id), so hosts can't tell they share a guest; host ids are never stored.
+`dev` is always the session's own device. Hosts verify the signature against
+`/.well-known/jwks.json`, check `aud` against their own host id, `dev` against the Noise key and
+the times with 60 s skew. `test/vectors/statement-v1.json` holds golden statements for herdr's
+tests. A removed device gets no new statements, so its access ends within 10 minutes.
+
 ## Privacy
 
 - **Stored:** an account id (16 random bytes) with its creation time and last-seen day; for each
   sign-in identity, `HMAC-SHA256(key, "<provider>|<sub>")`, never the provider's user id itself;
   each session's SHA-256 token hashes, platform and times, and the SHA-256 of each refresh token
-  it rotated away until that token's own expiry; the SHA-256 of spent nonces until they expire.
   **Never stored:** names, emails, ID tokens, tokens in the clear.
+- **Devices:** each device's id, public key, name, platform, creation time and the day of its
+  last statement. Host ids and statements are never stored.
 - **Email:** Apple is asked for nothing. Google's email is read from the ID token and handed back
   once as `display_hint`, then dropped.
 - **Logs:** a log line is `{endpoint, outcome}`, written only for `not_configured`,
   `rate_limited`, `keys_unavailable` and `internal_error`. Never tokens, nonces, provider ids or
-  their hashes, emails, account or session ids, IPs, bodies or URLs. `wrangler.toml` turns off
-  Workers Logs (including invocation logs), traces and Logpush.
-- **Retention:** spent nonces and spent refresh tokens go at their own expiry, sessions when
-  their refresh token expires, and accounts not seen for 24 months, with their identities and
-  sessions (hourly cron).
+  their hashes, emails, account, session or device ids, device keys, host ids, IPs, bodies or
+  URLs. `wrangler.toml` turns off Workers Logs (including invocation logs), traces and Logpush.
+- **Retention:** spent nonces, spent refresh tokens and enrolment challenges go at their own
+  expiry, sessions when their refresh token expires, and accounts not seen for 24 months, with
+  their identities, sessions and devices (hourly cron).
   D1 Time Travel keeps point-in-time history for 7 days on Workers Free (30 on Paid).
 
 ## Limits
@@ -67,9 +101,12 @@ this Worker and the steps after it is in [DESIGN.md](DESIGN.md).
 | Binding | Key | Limit | Covers |
 |---|---|---|---|
 | `AUTH_IP_LIMIT` | `CF-Connecting-IP` | 20 / 60 s | nonce, sign-in, refresh; checked before the body is read |
-| `ACCOUNT_LIMIT` | account id | 120 / 60 s | sign-out, `/v1/account` |
+| `ACCOUNT_LIMIT` | account id | 120 / 60 s | every authenticated call |
+| `STATEMENT_LIMIT` | account id | 30 / 60 s | `/v1/statements`, on top of `ACCOUNT_LIMIT` |
+| `ENROL_LIMIT` | account id | 10 / 60 s | device challenge and enrolment, on top of `ACCOUNT_LIMIT` |
 
-Bodies are capped at 8 KB and ID tokens at 4 KB.
+Bodies are capped at 8 KB for sign-in, 2 KB for devices and 4 KB for statements; ID tokens at
+4 KB; 50 hosts per statement call.
 
 ## Configuration
 
@@ -82,10 +119,18 @@ Bodies are capped at 8 KB and ID tokens at 4 KB.
 | `GOOGLE_WEB_CLIENT_ID` | var | `552913387875-0te8j0cm9tmt5ifai9m8nlc1igdhi844.apps.googleusercontent.com` (same project; redirect `https://accounts.herdrup.app/v1/auth/web/google/callback`) |
 | `ACCOUNT_HMAC_KEY` | secret | 32 random bytes, standard base64 |
 | `GOOGLE_WEB_CLIENT_SECRET` | secret | the web client's secret, pasted by the owner; first read by the web sign-in flow (a later step) |
+| `STATEMENT_KEY_A`, `STATEMENT_KEY_B` | secret | Ed25519 statement signing keys, PKCS8 DER in standard base64; two slots for rotation |
+| `STATEMENT_KID_A`, `STATEMENT_KID_B` | var | each slot's kid (`[A-Za-z0-9._-]{1,32}`); `STATEMENT_KID_A = "2026-11a"` |
+| `STATEMENT_ACTIVE` | var | `A` or `B`: the slot that signs |
+| `STATEMENT_REVOKED_KIDS` | var | comma-separated kids never used or published again (after a compromise) |
 
-`ACCOUNT_HMAC_KEY` keys the nonces and the identity hashes. **Losing it orphans every account**
-(no sign-in finds its account again), so keep a copy outside Cloudflare. Never rotate it in
-place.
+`ACCOUNT_HMAC_KEY` keys the nonces, the identity hashes and the per-host account ids. **Losing
+it orphans every account** (no sign-in finds its account again, and every host sees new ids),
+so keep a copy outside Cloudflare. Never rotate it in place.
+
+A statement key slot is published in the JWKS once it has both its key and its kid, unless the
+kid is revoked. The statement keys are generated straight into the Worker and never copied: a
+lost key is rotated, never restored.
 
 ## Develop and deploy
 
@@ -105,12 +150,34 @@ Before the first deploy, once:
 npx wrangler d1 migrations apply herdrup-accounts --remote
 openssl rand -base64 32 | tr -d '\n' | npx wrangler secret put ACCOUNT_HMAC_KEY   # and keep a copy (above)
 npx wrangler secret put GOOGLE_WEB_CLIENT_SECRET                                  # paste it when asked
+openssl genpkey -algorithm ed25519 -outform DER | base64 | tr -d '\n' | npx wrangler secret put STATEMENT_KEY_A
 ```
 
 Then `npx wrangler deploy`. The deploy
 attaches `accounts.herdrup.app` (`custom_domain = true`); the `herdrup.app` zone must be on the
 deploying account. Later migrations go through `wrangler d1 migrations apply … --remote` before
 the deploy that needs them.
+
+For step 2 on a Worker that already runs step 1: apply the migrations (`0002_devices.sql`), put
+`STATEMENT_KEY_A` as above, then deploy.
+
+### Rotate the statement key
+
+Hosts cache the JWKS for an hour and statements live 10 minutes. With slot A active:
+
+1. **Publish the next key** in the idle slot: set `STATEMENT_KID_B` (e.g. `2027-05a`) in
+   `wrangler.toml`, deploy, then
+   `openssl genpkey -algorithm ed25519 -outform DER | base64 | tr -d '\n' | npx wrangler secret put STATEMENT_KEY_B`.
+   Both keys are published; A still signs.
+2. **After at least 2 hours**, set `STATEMENT_ACTIVE = "B"` and deploy. B signs; A stays
+   published, so statements it signed still verify.
+3. **After at least 1 more hour**, `npx wrangler secret delete STATEMENT_KEY_A` and clear
+   `STATEMENT_KID_A`. The next rotation goes back the other way.
+
+**After a compromise** (or a suspected one), do steps 1 and 2 at once, delete the old key, and
+add its kid to `STATEMENT_REVOKED_KIDS`; keep it listed for at least 30 days. Hosts drop a
+revoked kid as soon as they see the list, and a host that can't refresh the JWKS for an hour
+accepts no new devices (DESIGN.md §3.4).
 
 ## Rollback
 

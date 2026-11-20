@@ -6,6 +6,7 @@
     "lib": ["ES2024"],
     "types": ["@cloudflare/workers-types", "@cloudflare/vitest-plugin/types"],
     "strict": true,
+    "resolveJsonModule": true,
     "noEmit": true,
     "skipLibCheck": true
   },
