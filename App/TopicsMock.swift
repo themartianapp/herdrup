@@ -26,9 +26,16 @@ final class TopicsMock: @unchecked Sendable {
                                   readerAuthor: ["author": "guest",
                                                  "author_name": GuestMockTransport.access.guestName])
 
+    /// `HERDR_MOCK_TOPICS_NO_TRANSCRIPT_TOPIC=1`: a server that lists topics but does not
+    /// advertise `agent_transcript_topic`, so the app must not ask for a topic's transcript.
+    private static let transcriptTopic = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_NO_TRANSCRIPT_TOPIC"] == nil
+
     /// The pong's capabilities, after the other capabilities: topics, and `topic` honoured on
-    /// `agent.transcript`.
-    static var capability: String { enabled ? #","agent_topics":true,"agent_transcript_topic":true"# : "" }
+    /// `agent.transcript` unless `HERDR_MOCK_TOPICS_NO_TRANSCRIPT_TOPIC`.
+    static var capability: String {
+        guard enabled else { return "" }
+        return transcriptTopic ? #","agent_topics":true,"agent_transcript_topic":true"# : #","agent_topics":true"#
+    }
 
     /// Who wrote a message: the owner (the written history), the one reading this mock (the
     /// owner, or the guest under its name), or the topic itself.

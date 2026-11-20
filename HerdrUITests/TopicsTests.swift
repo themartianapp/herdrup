@@ -334,4 +334,25 @@ final class TopicsTests: XCTestCase {
         XCTAssertTrue(note.exists(within: 6), "the note waits under Diokan")
         XCTAssertTrue(note.label.hasPrefix("Queued"), note.label)
     }
+
+    // MARK: Post-merge review of #761
+
+    /// #766: a server that lists topics (`agent_topics`) but does not page a topic's
+    /// conversation (no `agent_transcript_topic`): opening a topic says so, with no composer.
+    func testTopicWithoutTranscriptSupportShowsTheUnavailableState() {
+        let app = launch("chatview", ["HERDR_MOCK_TOPICS_NO_TRANSCRIPT_TOPIC": "1"])
+        openHerdrApp(app)
+        _ = openTopics(app)
+        let diokan = row("t-diokan", in: app)
+        XCTAssertTrue(diokan.exists(within: 8), "the topics still list")
+        diokan.tap()
+        XCTAssertTrue(topicChatOpen("Diokan term sheet", in: app))
+        XCTAssertTrue(app.staticTexts["topic-chat-unavailable"].exists(within: 10),
+                      "the topic says the server can't show its conversation")
+        XCTAssertFalse(app.textViews["topic-composer-input"].exists, "no composer that could not show what it sent")
+        XCTAssertFalse(app.buttons["topic-send-button"].exists)
+        XCTAssertFalse(app.staticTexts["Draft the term sheet comparison for Diokan."].exists,
+                       "and no conversation drawn from the Inbox instead")
+        attach(app, "topics-transcript-unavailable")
+    }
 }

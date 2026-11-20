@@ -111,6 +111,82 @@ final class AgentTopicsTests: XCTestCase {
         XCTAssertEqual(backoff.decide(after: AgentTopicsError.unreachable), .retry(afterSeconds: 60))
     }
 
+    /// Records the waits the loop asks for and returns at once: the schedule runs without a clock.
+    private final class FakeSleeps: @unchecked Sendable {
+        private let lock = NSLock()
+        private var recorded: [UInt64] = []
+        var waits: [UInt64] { lock.withLock { recorded } }
+        func sleep(_ seconds: UInt64) { lock.withLock { recorded.append(seconds) } }
+    }
+
+    /// Without a wake, a failed list waits the schedule's first delay before asking again.
+    @MainActor
+    func testDiscoveryLoopWaitsAfterAFailedList() async {
+        let sleeps = FakeSleeps()
+        var answers: [(any Error)?] = [AgentTopicsError.unreachable, nil]
+        var attempts = 0
+        let loop = TopicsDiscoveryLoop(attempt: {
+            attempts += 1
+            return answers.removeFirst()
+        }, sleep: { sleeps.sleep($0) })
+        await loop.run()
+        XCTAssertEqual(attempts, 2)
+        XCTAssertEqual(sleeps.waits, [60])
+    }
+
+    /// herdrup#767: an `agent.topics.changed` that lands while a list is still in flight, and
+    /// that list then fails, makes the next attempt run at once, with no backoff wait.
+    @MainActor
+    func testWakeDuringAnInFlightListRetriesAtOnce() async {
+        let sleeps = FakeSleeps()
+        var attempts = 0
+        var loop: TopicsDiscoveryLoop!
+        loop = TopicsDiscoveryLoop(attempt: {
+            attempts += 1
+            if attempts == 1 {
+                loop.wake()   // the event arrives while this list is on its way
+                return AgentTopicsError.unreachable
+            }
+            return nil
+        }, sleep: { sleeps.sleep($0) })
+        await loop.run()
+        XCTAssertEqual(attempts, 2, "the next attempt ran")
+        XCTAssertEqual(sleeps.waits, [], "without waiting out the backoff")
+    }
+
+    /// After a wake, the schedule starts over: the next failure waits the first delay again.
+    @MainActor
+    func testWakeRestartsTheSchedule() async {
+        let sleeps = FakeSleeps()
+        var attempts = 0
+        var loop: TopicsDiscoveryLoop!
+        loop = TopicsDiscoveryLoop(attempt: {
+            attempts += 1
+            switch attempts {
+            case 3: loop.wake(); return AgentTopicsError.unreachable
+            case 5: return nil
+            default: return AgentTopicsError.unreachable
+            }
+        }, sleep: { sleeps.sleep($0) })
+        await loop.run()
+        XCTAssertEqual(attempts, 5)
+        XCTAssertEqual(sleeps.waits, [60, 120, 60], "the wake skips its wait and restarts at 60 s")
+    }
+
+    /// A permanent refusal ends the loop without waiting.
+    @MainActor
+    func testDiscoveryLoopStopsOnTopicsUnsupported() async {
+        let sleeps = FakeSleeps()
+        var attempts = 0
+        let loop = TopicsDiscoveryLoop(attempt: {
+            attempts += 1
+            return AgentTopicsError.unsupported
+        }, sleep: { sleeps.sleep($0) })
+        await loop.run()
+        XCTAssertEqual(attempts, 1)
+        XCTAssertEqual(sleeps.waits, [])
+    }
+
     // MARK: Decoding
 
     func testListDecodesEveryFieldInSchemaSpelling() throws {
