@@ -106,6 +106,46 @@ class TimeoutTests(unittest.TestCase):
         self.assertFalse(alive, "the command survived the KILL deadline")
         self.assertNotIn("Traceback", err)
 
+    def test_a_signal_that_ends_the_command_still_kills_the_rest_of_its_group(self):
+        # Re-review of #748: a TERM forwarded to the group ends the command at once (a
+        # Python parent with the default TERM action), while its descendant ignores TERM.
+        # The wrapper must still give the group its grace and KILL it, not return the
+        # command's 143 and leave the descendant running.
+        work = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+        ready = work / "descendant.pid"
+        parent = ("import subprocess, sys\n"
+                  "subprocess.Popen(['bash', '-c', 'trap \"\" TERM; echo $$ >\"$READY.tmp\"; "
+                  "mv \"$READY.tmp\" \"$READY\"; while :; do sleep 0.05; done'])\n"
+                  "subprocess.run(['sleep', '60'])\n")
+        # stderr to a file, not a pipe: a surviving descendant would hold a pipe open.
+        errors = work / "stderr.txt"
+        with errors.open("w") as stderr:
+            process = subprocess.Popen(
+                [sys.executable, str(TIMEOUT), "--kill-after=0.2s", "60s", sys.executable, "-c", parent],
+                stdout=subprocess.DEVNULL, stderr=stderr, env=dict(os.environ, READY=str(ready)))
+        end = time.monotonic() + 10
+        while not ready.exists() and time.monotonic() < end:
+            time.sleep(0.02)
+        self.assertTrue(ready.exists(), "the descendant did not start")
+        pid = int(ready.read_text())
+        start = time.monotonic()
+        process.send_signal(signal.SIGTERM)
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            os.kill(pid, signal.SIGKILL)
+            process.kill()
+            process.wait()
+            self.fail("timeout.py did not end after its KILL deadline")
+        elapsed = time.monotonic() - start
+        err = errors.read_text()
+        alive = not gone(pid)
+        if alive:
+            os.kill(pid, signal.SIGKILL)
+        self.assertEqual(process.returncode, 143, err)
+        self.assertFalse(alive, "the descendant survived the KILL deadline (wrapper returned after %.3f s)" % elapsed)
+        self.assertGreaterEqual(elapsed, 0.2, "the wrapper returned before the kill-after grace")
+
 
 if __name__ == "__main__":
     unittest.main()

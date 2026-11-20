@@ -30,7 +30,12 @@ THE HANDLER ONLY FORWARDS AND RECORDS; it never raises. The wait polls for the c
 the deadline and a received signal, so a signal that arrives during the grace after a
 time-out (the watcher stopping a round that is already timing out) cannot skip the KILL
 (review of #748, P2-b: the first version raised out of that grace and left the command
-running).
+running). A GROUP CLEANUP, ONCE STARTED, ALWAYS ENDS: after a forwarded signal the
+wrapper runs the grace and the KILL for the whole group even when the signal already
+ended the command itself, so a descendant that ignored it is still killed (re-review of
+#748: the command died at once, the loop returned its status, and the descendant ran on).
+Before deciding, the wrapper blocks the forwarded signals, so none can start a cleanup it
+would not finish.
 """
 import os
 import signal
@@ -114,13 +119,8 @@ def main(argv: list) -> int:
     for signum in pending:
         signal_group(child.pid, signum)
     deadline = time.monotonic() + budget
-    while True:
-        status = child.poll()
-        if status is not None:
-            break
-        if received:
-            finish(child, kill_after)
-            status = child.returncode
+    while not received:
+        if child.poll() is not None:
             break
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -131,6 +131,12 @@ def main(argv: list) -> int:
             child.wait(timeout=min(remaining, POLL))
         except subprocess.TimeoutExpired:
             pass
+    # From here no signal may start a group cleanup that the return below would skip.
+    signal.pthread_sigmask(signal.SIG_BLOCK, FORWARDED)
+    if received:
+        # Forwarded to the group: the grace and the KILL, even if the command is gone.
+        finish(child, kill_after)
+    status = child.wait()
     return 128 - status if status < 0 else status
 
 
