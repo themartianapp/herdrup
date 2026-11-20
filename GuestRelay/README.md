@@ -342,7 +342,7 @@ no-store`; `/web/assets/*`, whose names carry a content hash, are cached for a y
 `frame-ancestors`, which only a header can set.
 
 ```
-default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self'; connect-src 'self' wss://guest.herdrup.app wss://guest.herdrup.themartian.app; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'
+default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self'; connect-src 'self' wss://guest.herdrup.app wss://guest.herdrup.themartian.app https://accounts.herdrup.app; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'
 ```
 
 `'unsafe-inline'` is for styles only, as the owner approved; the build has no inline
