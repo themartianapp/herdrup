@@ -30,7 +30,7 @@ struct AccountNotice: Identifiable, Equatable {
 /// Google, this install's guest key enrolled as a device, machine and prompt sync, sign-out and
 /// deletion. Built on HerdrKit's `AccountSession`, `DeviceEnroller`, `StatementCache` and
 /// `SyncEngine`; the app's own copies (`SavedHostsStore`, `SavedPromptsStore`) stay the source of
-/// what the app shows, and `AccountSyncRun` keeps them and the account in step.
+/// what the app shows, and HerdrKit's `AccountLocalSync` keeps them and the account in step.
 @MainActor
 final class HerdrUpAccount: ObservableObject {
     static let shared = HerdrUpAccount()
@@ -77,21 +77,30 @@ final class HerdrUpAccount: ObservableObject {
     let sync: SyncEngine
     private let providers: AccountProviderSignIn
     private let defaults: UserDefaults
-    private var syncTask: Task<Void, Never>?
+    /// One sync at a time; one asked for during a sync runs once more after it (#776 F2).
+    private var syncLoop: AccountSyncLoop!
+    /// The next sync's failure is shown even when the service is unreachable (the first sync
+    /// after sign-in, or one the person asked for).
+    private var reportNextSyncFailure = false
     private var lastAutoSync = Date.distantPast
     private var started = false
     private var cancellables: Set<AnyCancellable> = []
     /// True while a sync applies the account's copy to the local stores, so those changes
     /// don't count as local edits to push.
     private var applying = false
+    /// The file the sync state lives in, so a sign-out that couldn't delete it can retry.
+    private let syncStore: SyncStateStore
 
     private static let profileKey = "account.profile.v1"
     private static let onboardingKey = "account.onboarding.done"
+    /// A sign-out whose synced copy couldn't be deleted: retried at launch and before the next
+    /// sign-in.
+    private static let cleanupKey = "account.sync.cleanupPending"
 
     private init() {
         let client: AccountClient
         let tokens: AccountTokenStore
-        let syncStore: SyncStateStore
+        var syncStore: SyncStateStore
         #if DEBUG
         if ScreenshotMock.mode != nil {
             let mock = MockAccountService.shared
@@ -118,11 +127,25 @@ final class HerdrUpAccount: ObservableObject {
             Task { @MainActor in HerdrUpAccount.shared.sessionEnded(reason) }
         }
         statements = StatementCache(session: session)
-        sync = Self.engine(session: session, store: syncStore)
         let profile = defaults.data(forKey: Self.profileKey).flatMap { try? JSONDecoder().decode(AccountProfile.self, from: $0) }
+        // No session, or a sign-out that didn't finish: the synced copy belongs to no one, so
+        // it is deleted before anything loads it. If that fails, this launch keeps sync state
+        // in memory and the delete is tried again.
+        if profile == nil || defaults.bool(forKey: Self.cleanupKey) {
+            do {
+                try syncStore.deleteSyncState()
+                defaults.removeObject(forKey: Self.cleanupKey)
+            } catch {
+                defaults.set(true, forKey: Self.cleanupKey)
+                syncStore = InMemorySyncStateStore()
+            }
+        }
+        self.syncStore = syncStore
+        sync = Self.engine(session: session, store: syncStore)
         self.profile = profile
         signedIn = profile != nil
         onboardingDone = defaults.bool(forKey: Self.onboardingKey)
+        syncLoop = AccountSyncLoop { [weak self] in await self?.runSync() }
     }
 
     /// The sync engine over `store`. An unreadable state file is deleted, and the next sync
@@ -176,7 +199,7 @@ final class HerdrUpAccount: ObservableObject {
     func foregrounded() {
         guard signedIn, Date().timeIntervalSince(lastAutoSync) > 60 else { return }
         lastAutoSync = Date()
-        syncNow()
+        localEditSync()
     }
 
     func loadHealth() async {
@@ -224,6 +247,13 @@ final class HerdrUpAccount: ObservableObject {
     /// adopt matching machines, push the rest; DESIGN §5.5).
     func signIn(_ provider: AccountProvider) async {
         guard busy == nil, !signedIn else { return }
+        // A sign-out that couldn't delete the last account's synced copy finishes first, so
+        // that copy can never be pushed into this account.
+        guard finishPendingCleanup() else {
+            notice = AccountNotice(title: "Couldn't sign in",
+                                   message: "The last sign-out couldn't delete its synced copy on this \(Self.deviceKind). Restart herdrup and try again.")
+            return
+        }
         busy = .signingIn(provider)
         defer { if busy == .signingIn(provider) { busy = nil } }
         do {
@@ -242,7 +272,9 @@ final class HerdrUpAccount: ObservableObject {
         }
         await enrolThisDevice()
         busy = .syncing
-        await startSync(first: true).value
+        reportNextSyncFailure = true
+        syncLoop.request()
+        await syncLoop.waitUntilIdle()
         await refreshDevices()
         setOnboardingDone()
         busy = nil
@@ -371,11 +403,18 @@ final class HerdrUpAccount: ObservableObject {
     }
 
     private func clearAfterSignOut() async {
-        syncTask?.cancel()
-        syncTask = nil
+        syncLoop.cancel()
         await statements.clear()
-        try? await sync.clear()
-        AccountSyncRun.forgetLocalState(defaults)
+        do {
+            try await sync.clear()
+        } catch {
+            // The synced copy is still on disk: the sign-out isn't finished. It is deleted at
+            // the next launch (before anything loads it) or the next sign-in, whichever is first.
+            defaults.set(true, forKey: Self.cleanupKey)
+            notice = AccountNotice(title: "Sign-out didn't finish",
+                                   message: "Your machines and prompts stay on this \(Self.deviceKind), but the account's synced copy couldn't be deleted. herdrup tries again when it next opens.")
+        }
+        SavedStoresAccountLocal.forget(defaults)
         forgetProfile()
         signedIn = false
         displayHint = nil
@@ -405,34 +444,47 @@ final class HerdrUpAccount: ObservableObject {
 
     // MARK: Sync (DESIGN §5)
 
-    /// Syncs now unless a sync is running.
+    /// Syncs now. A sync asked for while one runs makes it run once more when it ends, so an
+    /// edit made meanwhile is pushed (#776 F2).
     func syncNow() {
         guard signedIn else { return }
-        startSync(first: false)
+        reportNextSyncFailure = true
+        syncLoop.request()
     }
 
-    /// One sync at a time: a sync asked for while one runs shares it.
-    @discardableResult
-    private func startSync(first: Bool) -> Task<Void, Never> {
-        if let syncTask { return syncTask }
-        let task = Task {
-            syncing = true
-            await runSync(first: first)
-            syncing = false
-            syncTask = nil
+    /// A local edit: sync, quietly when the service can't be reached.
+    private func localEditSync() {
+        guard signedIn else { return }
+        syncLoop.request()
+    }
+
+    /// Deletes a synced copy a sign-out left behind. True when there is none (any more).
+    private func finishPendingCleanup() -> Bool {
+        guard defaults.bool(forKey: Self.cleanupKey) else { return true }
+        do {
+            try syncStore.deleteSyncState()
+            defaults.removeObject(forKey: Self.cleanupKey)
+            return true
+        } catch {
+            return false
         }
-        syncTask = task
-        return task
     }
 
-    private func runSync(first: Bool) async {
-        let run = AccountSyncRun(engine: sync, hosts: .shared, prompts: .shared, defaults: defaults) { [weak self] active in
+    private func runSync() async {
+        let report = reportNextSyncFailure
+        reportNextSyncFailure = false
+        syncing = true
+        defer { syncing = false }
+        let local = SavedStoresAccountLocal(hosts: .shared, prompts: .shared, defaults: defaults)
+        let run = AccountLocalSync(engine: sync, store: local) { [weak self] active in
             self?.applying = active
         }
         do {
             let summary = try await run.run()
             lastSync = summary
-            syncedCounts = (await sync.items(in: .hosts).count, await sync.items(in: .prompts).count)
+            let hosts = await sync.items(in: .hosts).count
+            let prompts = await sync.items(in: .prompts).count
+            syncedCounts = (hosts, prompts)
             lastAutoSync = Date()
             if let message = summary.problems {
                 notice = AccountNotice(title: "Some things didn't sync", message: message)
@@ -443,7 +495,7 @@ final class HerdrUpAccount: ObservableObject {
             return
         } catch {
             // A background sync that can't reach the service tries again later, quietly.
-            if first || (error as? AccountError) != .unreachable {
+            if report || (error as? AccountError) != .unreachable {
                 notice = AccountNotice(title: "Couldn't sync", message: Self.describe(error))
             }
         }
@@ -451,13 +503,14 @@ final class HerdrUpAccount: ObservableObject {
 
     /// A machine or prompt added, edited or removed here reaches the account a few seconds later.
     private func observeLocalEdits() {
-        let hosts = SavedHostsStore.shared.$hosts.map { _ in () }
-        let prompts = SavedPromptsStore.shared.$prompts.map { _ in () }
+        // Each store's current value is published at once on subscribing: drop each one's own
+        // first value, not the first two of the merged stream (#776 F3).
+        let hosts = SavedHostsStore.shared.$hosts.dropFirst().map { _ in () }
+        let prompts = SavedPromptsStore.shared.$prompts.dropFirst().map { _ in () }
         hosts.merge(with: prompts)
-            .dropFirst(2)
             .filter { [weak self] in self?.applying == false && self?.signedIn == true }
             .debounce(for: .seconds(3), scheduler: RunLoop.main)
-            .sink { [weak self] in self?.syncNow() }
+            .sink { [weak self] in self?.localEditSync() }
             .store(in: &cancellables)
     }
 

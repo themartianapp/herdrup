@@ -348,8 +348,12 @@ struct HerdrUpAccountContent: View {
         row(device.name, systemImage: Self.icon(for: device.platform),
             subtitle: device.current ? "This \(HerdrUpAccount.deviceKind)" : Self.platformName(device.platform)) {
             Menu {
-                Button { newName = device.name; renaming = device } label: { Label("Rename", systemImage: "pencil") }
-                Button(role: .destructive) { removing = device } label: { Label("Remove", systemImage: "trash") }
+                Button { afterMenuCloses { newName = device.name; renaming = device } } label: {
+                    Label("Rename", systemImage: "pencil")
+                }
+                Button(role: .destructive) { afterMenuCloses { removing = device } } label: {
+                    Label("Remove", systemImage: "trash")
+                }
             } label: {
                 Image(systemName: "ellipsis.circle").font(.system(size: 20)).foregroundStyle(Palette.textDim)
                     .frame(width: 44, height: 44)
@@ -359,6 +363,15 @@ struct HerdrUpAccountContent: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("account-device-\(device.current ? "current" : device.id)")
+    }
+
+    /// Runs `present` once the menu's popover (iPad, Mac) has gone: an alert asked for while
+    /// it is still dismissing is dropped there.
+    private func afterMenuCloses(_ present: @escaping @MainActor () -> Void) {
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(350))
+            present()
+        }
     }
 
     private func syncedCount(_ collection: SyncCollection) -> Int {

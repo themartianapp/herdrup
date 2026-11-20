@@ -210,6 +210,13 @@ final class SavedHostsStore: ObservableObject {
 
     // MARK: HerdrUp account sync (App/AccountSync.swift)
 
+    /// Whether this phone's Keychain holds machine `id`'s secret of `kind`. The account sync
+    /// keeps a machine on the kind whose secret is here, so it never looks in an empty store.
+    func hasSecret(id: UUID, kind: SavedAuthKind) -> Bool {
+        let store = kind == .password ? passwordKeychain : keychain
+        return store.load(account: id.uuidString)?.isEmpty == false
+    }
+
     /// Puts a machine from the HerdrUp account in the list, or updates it in place by id. Only
     /// the synced fields change: a secret never syncs (DESIGN #698 §5.4), so a new machine has
     /// none here and its row asks for one, as for any host whose secret is not on this phone.

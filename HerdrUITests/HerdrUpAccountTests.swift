@@ -124,14 +124,16 @@ final class HerdrUpAccountTests: XCTestCase {
         let menu = app.buttons["account-device-menu-dev_mock_other_macbook"]
         XCTAssertTrue(menu.waitForHittable(timeout: 5))
         menu.tap()
-        app.buttons["Rename"].tap()
-        let field = app.textFields["account-rename-field"]
+        let rename = app.buttons["Rename"].firstMatch
+        XCTAssertTrue(rename.waitForHittable(timeout: 3), "the device menu offers Rename")
+        rename.tap()
+        let alert = app.alerts["Rename device"]
+        XCTAssertTrue(alert.exists(within: 5), "Rename opens its alert (after the menu has closed, on iPad too)")
+        let field = alert.textFields.firstMatch
         XCTAssertTrue(field.exists(within: 3))
         field.tap()
-        field.press(forDuration: 1.0)
-        if app.menuItems["Select All"].exists(within: 2) { app.menuItems["Select All"].tap() }
-        field.typeText("Studio Laptop")
-        app.alerts.buttons["Rename"].tap()
+        field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 30) + "Studio Laptop")
+        alert.buttons["Rename"].tap()
         XCTAssertTrue(app.staticTexts["Studio Laptop"].exists(within: 8), "the rename reaches the account and the list")
     }
 
@@ -143,7 +145,7 @@ final class HerdrUpAccountTests: XCTestCase {
         let signOut = app.buttons["account-sign-out"]
         XCTAssertTrue(signOut.waitForHittable(timeout: 8))
         signOut.tap()
-        let confirm = app.buttons["account-confirm-sign-out"]
+        let confirm = app.buttons["account-confirm-sign-out"].firstMatch
         XCTAssertTrue(confirm.exists(within: 3))
         confirm.tap()
         XCTAssertTrue(app.descendants(matching: .any)["account-signed-out"].exists(within: 8), "the page turns signed out")
@@ -181,7 +183,7 @@ final class HerdrUpAccountTests: XCTestCase {
         let apple = appleButton(app)
         XCTAssertTrue(apple.waitForHittable(timeout: 10))
         apple.tap()
-        let signOut = app.alerts.buttons["account-notice-sign-out"]
+        let signOut = app.alerts.buttons["account-notice-sign-out"].firstMatch
         XCTAssertTrue(signOut.exists(within: 15), "device_in_other_account offers to sign out of this account")
         attach(app, "account-device-in-other-account")
         signOut.tap()
@@ -273,7 +275,7 @@ final class HerdrUpAccountTests: XCTestCase {
         }
         XCTAssertTrue(reached)
         delete.tap()
-        let confirm = app.buttons["account-confirm-delete"]
+        let confirm = app.buttons["account-confirm-delete"].firstMatch
         XCTAssertTrue(confirm.exists(within: 3), "deletion asks first, and says machines and prompts stay")
         confirm.tap()
     }

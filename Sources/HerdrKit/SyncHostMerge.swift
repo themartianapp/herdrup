@@ -112,4 +112,18 @@ public enum SyncHostMerge {
         plan.added = remote.map(\.id).filter { kept.contains($0) && claimedBy[$0] == nil }
         return plan
     }
+
+    /// Which auth kind a local machine keeps when the account's copy is applied (DESIGN #698
+    /// §5.4: the secret never syncs, so only the stores here know where it is). The kind whose
+    /// store holds this machine's secret wins: a kind is never retargeted onto an empty store,
+    /// which would hide a secret that is still on the device. `pushBack`: the account names a
+    /// kind whose store is empty here while the local kind's isn't, so the local kind stays and
+    /// is pushed as the newer value. A machine with no secret here at all takes the account's.
+    public static func authKind(account: SyncHost.AuthKind?, local: SyncHost.AuthKind,
+                                hasSecret: (SyncHost.AuthKind) -> Bool) -> (kind: SyncHost.AuthKind, pushBack: Bool) {
+        let remote = account ?? .key
+        if remote == local || hasSecret(remote) { return (remote, false) }
+        if hasSecret(local) { return (local, true) }
+        return (remote, false)
+    }
 }

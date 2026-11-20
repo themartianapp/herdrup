@@ -137,9 +137,9 @@ private final class GoogleSignIn: NSObject, ASWebAuthenticationPresentationConte
         }
         let scheme = Self.callbackScheme(for: clientID)
         let redirect = scheme + ":/oauth2redirect"
-        let verifier = Self.randomB64URL(32)
+        let verifier = try Self.randomB64URL(32)
         let challenge = Base64URL.encode(Data(SHA256.hash(data: Data(verifier.utf8))))
-        let state = Self.randomB64URL(16)
+        let state = try Self.randomB64URL(16)
         var components = URLComponents(string: "https://accounts.google.com/o/oauth2/v2/auth")!
         components.queryItems = [
             URLQueryItem(name: "client_id", value: clientID),
@@ -215,9 +215,13 @@ private final class GoogleSignIn: NSObject, ASWebAuthenticationPresentationConte
         anchor
     }
 
-    private static func randomB64URL(_ count: Int) -> String {
+    /// `count` random bytes, unpadded base64url. Fails the sign-in rather than ever sending a
+    /// zeroed PKCE verifier or state.
+    private static func randomB64URL(_ count: Int) throws -> String {
         var bytes = [UInt8](repeating: 0, count: count)
-        _ = SecRandomCopyBytes(kSecRandomDefault, count, &bytes)
+        guard SecRandomCopyBytes(kSecRandomDefault, count, &bytes) == errSecSuccess else {
+            throw ProviderSignInError.failed("This device couldn't make a secure random value for the sign-in. Try again.")
+        }
         return Base64URL.encode(Data(bytes))
     }
 }
