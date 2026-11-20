@@ -41,7 +41,8 @@ struct GuestPaneView: View {
     @StateObject private var chatModel: ChatModel
     /// The host serves `agent.transcript` to guests (its pong's `agent_transcript`).
     @State private var transcriptCapable = false
-    /// The Chat tab has been made the default once; after that the guest's own pick stands.
+    /// The Chat tab's first appearance in this mount has set the tab from Settings' "omp
+    /// agents open in"; after that the guest's own pick stands.
     @State private var chatDefaulted = false
 
     /// Whether the shared agent can be reached right now.
@@ -188,11 +189,12 @@ struct GuestPaneView: View {
         .task(id: access.id) {
             transcriptCapable = (try? await client.serverCapabilities())?.agentTranscript ?? false
         }
-        // A shared omp agent opens in Chat, once; afterwards the guest's own pick stands.
+        // A shared omp agent opens where Settings' "omp agents open in" says (#735), once per
+        // mount, as the owner's page opens from it; afterwards the guest's own pick stands.
         .onChange(of: showsChat, initial: true) { _, available in
             if available, !chatDefaulted {
                 chatDefaulted = true
-                if tab == .terminal { tab = .chat }
+                tab = ChatPreference.opensInChat ? .chat : .terminal
             } else if !available, tab == .chat {
                 tab = .terminal
             }

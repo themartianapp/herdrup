@@ -7946,6 +7946,15 @@ struct SettingsView: View {
     private func textSizeDetail(showBack: Bool) -> some View {
         detailScaffold(title: "Text size", subtitle: "", showBack: showBack) {
             appearanceControls
+            #if DEBUG
+            // The owner's `terminal.fontSize` under a guest's page, which must not move (#735).
+            if guest != nil {
+                Color.clear.frame(width: 1, height: 1)
+                    .accessibilityElement()
+                    .accessibilityIdentifier("settings-owner-terminal-font")
+                    .accessibilityLabel(String(format: "%g", terminalFontSize))
+            }
+            #endif
         }
     }
 
@@ -8340,7 +8349,7 @@ struct SettingsView: View {
     /// pickers and script in previews an inline switch, each with its footer as the subtitle.
     private var preferencesGroup: some View {
         rootGroup("PREFERENCES") {
-            pageRow(.textSize, value: "\(Int((uiFontScale * 100).rounded()))% · \(String(format: "%g", terminalFontSize)) pt")
+            pageRow(.textSize, value: "\(Int((uiFontScale * 100).rounded()))% · \(String(format: "%g", settingsTerminalFontSize.wrappedValue)) pt")
             glyphDivider
             glyphRow("Instant typing", systemImage: "keyboard",
                      subtitle: "Shows what you type at once and checks it against the server.") {
@@ -9403,6 +9412,13 @@ struct SettingsView: View {
     /// and ⌘± drive. Writing it here live-updates any open terminal (LiveTerminalView
     /// applies the new size in place via its own `@AppStorage` observer).
     @AppStorage("terminal.fontSize") private var terminalFontSize: Double = 12.5
+    /// A guest's own terminal text size, the one their shared panes show (`GuestPaneView`).
+    @AppStorage(GuestTerminalSize.storageKey) private var guestTerminalFontSize = GuestTerminalSize.defaultPoints
+    /// What Settings' Terminal text shows and steps: in guest mode the guest's own size, so
+    /// it changes the shared pane and never the owner's `terminal.fontSize` (#735).
+    private var settingsTerminalFontSize: Binding<Double> {
+        guest != nil ? $guestTerminalFontSize : $terminalFontSize
+    }
     /// Whether a RECEIVED html/svg preview may run script. OFF by default — see
     /// `previewsRow` and `HtmlWebView`.
     @AppStorage(WebViewPolicy.javaScriptDefaultsKey) private var previewJavaScript = false
@@ -9444,28 +9460,33 @@ struct SettingsView: View {
             preview: { Text("The quick brown fox").font(Typography.app(15)) },
             canDecrease: uiFontScale > 0.9, onDecrease: { stepFontScale(-0.1) },
             canReset: uiFontScale != 1.0, onReset: { uiFontScale = 1.0 },
-            canIncrease: uiFontScale < 1.4, onIncrease: { stepFontScale(0.1) }
+            canIncrease: uiFontScale < 1.4, onIncrease: { stepFontScale(0.1) },
+            identifier: "settings-app-font"
         )
-        // Terminal font (terminal.fontSize), 9–24 pt.
+        // Terminal font (`settingsTerminalFontSize`: the owner's or a guest's own), 9–24 pt.
+        let terminalFont = settingsTerminalFontSize
         textSizeControl(
             caption: "Terminal text — agent output",
-            value: "\(String(format: "%g", terminalFontSize)) pt",
+            value: "\(String(format: "%g", terminalFont.wrappedValue)) pt",
             preview: { Text("~ $ herdr").font(Typography.machine(15)) },
-            canDecrease: terminalFontSize > 9, onDecrease: { stepTerminalFont(-1) },
-            canReset: terminalFontSize != 12.5, onReset: { terminalFontSize = 12.5 },
-            canIncrease: terminalFontSize < 24, onIncrease: { stepTerminalFont(1) }
+            canDecrease: terminalFont.wrappedValue > 9, onDecrease: { stepTerminalFont(-1) },
+            canReset: terminalFont.wrappedValue != 12.5, onReset: { terminalFont.wrappedValue = 12.5 },
+            canIncrease: terminalFont.wrappedValue < 24, onIncrease: { stepTerminalFont(1) },
+            identifier: "settings-terminal-font"
         )
     }
 
     /// One labelled text-size control: a caption, a preview + current value, and the
     /// A−/Reset/A+ button row — the card style the appearance section has always used.
+    /// `identifier` names the value (`-value`) and the buttons (`-decrease`, `-reset`, `-increase`).
     private func textSizeControl<P: View>(
         caption: String,
         value: String,
         @ViewBuilder preview: () -> P,
         canDecrease: Bool, onDecrease: @escaping () -> Void,
         canReset: Bool, onReset: @escaping () -> Void,
-        canIncrease: Bool, onIncrease: @escaping () -> Void
+        canIncrease: Bool, onIncrease: @escaping () -> Void,
+        identifier: String
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(caption)
@@ -9476,13 +9497,17 @@ struct SettingsView: View {
                     Spacer(minLength: 8)
                     Text(value)
                         .font(Typography.machine(13, .bold)).foregroundStyle(Palette.textDim)
+                        .accessibilityIdentifier("\(identifier)-value")
                 }
                 .padding(.horizontal, 18).padding(.vertical, 14)
                 rowDivider
                 HStack(spacing: 10) {
                     textSizeButton("A\u{2212}", enabled: canDecrease, onDecrease)
+                        .accessibilityIdentifier("\(identifier)-decrease")
                     textSizeButton("Reset", enabled: canReset, onReset)
+                        .accessibilityIdentifier("\(identifier)-reset")
                     textSizeButton("A+", enabled: canIncrease, onIncrease)
+                        .accessibilityIdentifier("\(identifier)-increase")
                 }
                 .padding(.horizontal, 18).padding(.vertical, 12)
             }
@@ -9500,7 +9525,8 @@ struct SettingsView: View {
     /// Step the terminal font by `delta` points, clamped to [9, 24] — matches the
     /// per-agent ⋯ menu and ⌘± controls.
     private func stepTerminalFont(_ delta: Double) {
-        terminalFontSize = min(24, max(9, terminalFontSize + delta))
+        let font = settingsTerminalFontSize
+        font.wrappedValue = min(24, max(9, font.wrappedValue + delta))
     }
 
     /// #357: A− / Reset / A+ as three equal round buttons, 38 pt tall, `surfaceRaised`;

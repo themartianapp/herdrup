@@ -2,7 +2,8 @@ import HerdrKit
 import SwiftUI
 
 /// How an omp agent's page opens: the Chat view (the default) or the terminal. Settings
-/// holds the default; the page's switch overrides it per agent for the rest of the session.
+/// holds the default, for the owner's pages and a guest's shared panes alike; the page's
+/// switch overrides it per agent for the rest of the session.
 enum ChatPreference {
     static let key = "chat.ompOpensIn"
     static let chat = "chat"
@@ -13,9 +14,13 @@ enum ChatPreference {
     /// Settings default, as the owner asked ("remembers the last choice for the session").
     @MainActor private static var sessionChoice: [String: Bool] = [:]
 
+    /// Whether Settings' "omp agents open in" says Chat: anything but Terminal, unset included.
+    static var opensInChat: Bool {
+        (UserDefaults.standard.string(forKey: key) ?? defaultValue) != terminal
+    }
+
     @MainActor static func showsChat(paneID: String) -> Bool {
-        if let chosen = sessionChoice[paneID] { return chosen }
-        return (UserDefaults.standard.string(forKey: key) ?? defaultValue) != terminal
+        sessionChoice[paneID] ?? opensInChat
     }
 
     @MainActor static func remember(paneID: String, showsChat: Bool) {
