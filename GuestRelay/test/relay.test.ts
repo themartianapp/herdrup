@@ -8,6 +8,7 @@ import {
 } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { browserLink, installTarget, invitePayload, isRelay, openShortInvite, shortInvite } from "../public/static/invite.js";
+import { InviteBlob } from "../src/invite";
 
 // Everything here runs against the real Worker and Durable Object in workerd. Each test
 // uses its own host_id and client IPs, so storage never collides. The rate-limit bindings
@@ -859,6 +860,81 @@ describe("short invites", () => {
       await expectError(await putInvite(host, id, { body }), 409, "exists");
     }
     expect(new Uint8Array(await (await SELF.fetch(`${ORIGIN}/v1/invite/${id}`)).arrayBuffer())).toEqual(blob);
+  });
+
+  describe("a retry whose blob lapses on the way to the invite (#772)", () => {
+    const indexed = (hostId: string) =>
+      runInDurableObject(stub(hostId), (_, state) =>
+        state.storage.sql.exec<{ id: string; expires_unix: number }>("SELECT id, expires_unix FROM invite").toArray(),
+      );
+
+    /**
+     * Makes the next `InviteBlob.store` run at `atUnix`: the host passed its prune before
+     * the first blob's expiry, and the call reaches the invite after it. `meanwhile` runs
+     * while the host waits on that call.
+     */
+    function crossExpiry(atUnix: number, meanwhile: () => Promise<void> = async () => {}): void {
+      const store = InviteBlob.prototype.store;
+      vi.spyOn(InviteBlob.prototype, "store").mockImplementationOnce(async function (this: InviteBlob, ...args) {
+        vi.setSystemTime(atUnix * 1000);
+        await meanwhile();
+        return store.apply(this, args);
+      });
+    }
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("indexes the new blob at its own expiry, so the cap still counts it", async () => {
+      const host = await enrolledHost();
+      const id = newInviteId();
+      const blob = crypto.getRandomValues(new Uint8Array(100));
+      const first = nowUnix() + 60;
+      expect((await putInvite(host, id, { body: blob, expires: String(first) })).status).toBe(201);
+
+      const retry = first + 3600;
+      crossExpiry(first + 1);
+      expect((await putInvite(host, id, { body: blob, expires: String(retry) })).status).toBe(201);
+      expect(await runInDurableObject(inviteStub(id), (_, state) => state.storage.get<number>("expires"))).toBe(retry);
+      expect(await indexed(host.hostId)).toEqual([{ id, expires_unix: retry }]);
+      expect(new Uint8Array(await (await SELF.fetch(`${ORIGIN}/v1/invite/${id}`)).arrayBuffer())).toEqual(blob);
+
+      // With 199 more, the live blob is the 200th: the next PUT's prune keeps it.
+      await runInDurableObject(stub(host.hostId), (_, state) => {
+        for (let i = 0; i < 199; i++) state.storage.sql.exec("INSERT INTO invite (id, expires_unix) VALUES (?, ?)", `filler${i}`, nowUnix() + 7200);
+      });
+      await expectError(await putInvite(host, newInviteId()), 429, "too_many_invites");
+      expect(await indexed(host.hostId)).toHaveLength(200);
+    });
+
+    it("keeps the slot through a concurrent PUT's prune while the call is under way", async () => {
+      const host = await enrolledHost();
+      const id = newInviteId();
+      const blob = crypto.getRandomValues(new Uint8Array(100));
+      const first = nowUnix() + 60;
+      expect((await putInvite(host, id, { body: blob, expires: String(first) })).status).toBe(201);
+      await runInDurableObject(stub(host.hostId), (_, state) => {
+        for (let i = 0; i < 198; i++) state.storage.sql.exec("INSERT INTO invite (id, expires_unix) VALUES (?, ?)", `filler${i}`, nowUnix() + 7200);
+      });
+
+      // Another invite lands while the retry's call is past the first expiry: its prune
+      // must not free the retry's slot, so it is the 200th.
+      const other = newInviteId();
+      const retry = first + 3600;
+      let otherStatus = 0;
+      crossExpiry(first + 1, async () => {
+        otherStatus = (await putInvite(host, other)).status;
+      });
+      expect((await putInvite(host, id, { body: blob, expires: String(retry) })).status).toBe(201);
+      expect(otherStatus).toBe(201);
+      expect(await runInDurableObject(inviteStub(id), (_, state) => state.storage.get<number>("expires"))).toBe(retry);
+      const rows = await indexed(host.hostId);
+      expect(rows).toHaveLength(200);
+      expect(rows.find((row) => row.id === id)?.expires_unix).toBe(retry);
+      expect(rows.some((row) => row.id === other)).toBe(true);
+      await expectError(await putInvite(host, newInviteId()), 429, "too_many_invites");
+    });
   });
 
   it("caps a blob at 2048 bytes and refuses one too short to hold nonce and tag", async () => {

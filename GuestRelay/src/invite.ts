@@ -111,16 +111,19 @@ interface StoredInvite {
  */
 export class InviteBlob extends DurableObject<Env> {
   /**
-   * Stores the blob unless a live one already holds this id. The same host storing the
-   * same bytes again, as a daemon retrying a slow PUT does, succeeds and changes nothing:
-   * the stored expiry stands. Any other host, or other bytes, is refused.
+   * Stores the blob unless a live one already holds this id, and returns the expiry of the
+   * blob now held, or null when refused. The same host storing the same bytes again, as a
+   * daemon retrying a slow PUT does, succeeds and changes nothing: the stored expiry stands
+   * and is returned. A blob past its expiry is gone, so a retry that arrives after it
+   * stores the blob anew under the retry's own expiry. Any other host, or other bytes, is
+   * refused.
    */
-  async store(hostId: string, expiresUnix: number, blob: ArrayBuffer): Promise<boolean> {
+  async store(hostId: string, expiresUnix: number, blob: ArrayBuffer): Promise<number | null> {
     const live = await this.current();
-    if (live !== null) return live.host === hostId && sameBytes(live.blob, blob);
+    if (live !== null) return live.host === hostId && sameBytes(live.blob, blob) ? live.expires : null;
     await this.ctx.storage.put<StoredInvite[keyof StoredInvite]>({ blob, host: hostId, expires: expiresUnix });
     await this.ctx.storage.setAlarm(expiresUnix * 1000);
-    return true;
+    return expiresUnix;
   }
 
   async read(): Promise<ArrayBuffer | null> {
