@@ -5,8 +5,9 @@ epic #696), on `accounts.herdrup.app` with a D1 database. Signing in is optional
 HerdrUp works exactly as before, and plain guest invites never touch this Worker.
 
 It signs people in with Apple or Google and keeps their sessions (step 1), binds each device's
-guest key to the account and signs the short-lived statements hosts check (step 2), and syncs
-non-secret settings between the account's devices (step 3). Account deletion comes next.
+guest key to the account and signs the short-lived statements hosts check (step 2), syncs
+non-secret settings between the account's devices (step 3), and deletes accounts, revoking
+Sign in with Apple and following Apple's server-to-server notifications (step 4).
 It is a separate Worker from `herdrup-guest`: it holds personal data, its own secrets and its
 own deploys, so a bug or rollback here can't drop a guest session.
 
@@ -21,6 +22,8 @@ own deploys, so a bug or rollback here can't drop a guest session.
 | `POST /v1/auth/refresh` | `{refresh_token}` | a new token pair |
 | `POST /v1/auth/signout` | `Authorization: Bearer <access>` | 204 |
 | `GET /v1/account` | `Authorization: Bearer <access>` | `{account_id, created_ms}` |
+| `POST /v1/account/delete` | bearer; `{provider, id_token, nonce, authorization_code?}` from a fresh sign-in | `{deleted: true, manual_revoke}` |
+| `POST /v1/apple/notifications` | `{payload: <Apple's JWS>}` | 204 |
 | `POST /v1/devices/challenge` | bearer | `{challenge_id, server_pub, salt, account_id, expires_in}`: 60 s, one use |
 | `POST /v1/devices` | bearer; `{challenge_id, device_pub, mac, name, platform}` | 201 `{device}` (200 when the key is already the account's) |
 | `GET /v1/devices` | bearer | `{devices: [{id, name, platform, device_pub, created_ms, current}]}` |
@@ -103,6 +106,23 @@ travel in.
   2,000 live items, 1 MB of bodies, and 200 hosts, 500 prompts, 300 settings, 1,000 agent
   prefs and 500 shares (`403 quota`). A push that would pass a cap rolls back whole.
 
+**Deletion.** The app confirms with a fresh sign-in, with the same provider and a fresh nonce.
+The ID token must belong to the session's own account (`403 wrong_account`). Then every row of
+the account goes in one D1 batch: sync items, devices, sessions and their spent refresh tokens,
+challenges, identities and the account. Every token of the account fails from then on, and no
+statement is issued again.
+
+For Apple, the sign-in's `authorization_code` is then exchanged and its refresh token revoked at
+`appleid.apple.com`, with the ID token's `aud` as `client_id` and a 5-minute ES256 client secret
+the Worker signs from `APPLE_SIWA_P8`. Nothing is undone when Apple doesn't confirm.
+`manual_revoke: true` says the revoke didn't happen (no code, no key, or Apple refused), and the
+app shows Settings → Apple Account → Sign in with Apple → HerdrUp → Stop using.
+
+Apple's `consent-revoked` and `account-deleted` notifications delete the account the same way,
+after their JWS checks out (Apple's keys, `iss`, `aud` = one of our Apple client ids). An event
+from before the identity signed in deletes nothing. `test/deletion.test.ts` checks that deletion
+covers every table the migrations create.
+
 ## Privacy
 
 - **Stored:** an account id (16 random bytes) with its creation time and last-seen day; for each
@@ -122,6 +142,8 @@ travel in.
 - **Retention:** spent nonces, spent refresh tokens and enrolment challenges go at their own
   expiry, sessions when their refresh token expires, sync tombstones after 90 days, and accounts
   not seen for 24 months, with their identities, sessions, devices and sync items (hourly cron).
+  Deleting the account (in the app, or Apple's revoke notification) removes all of it at once;
+  Apple's tokens are never stored.
   D1 Time Travel keeps point-in-time history for 7 days on Workers Free (30 on Paid).
 
 ## Limits
@@ -133,9 +155,10 @@ travel in.
 | `STATEMENT_LIMIT` | account id | 30 / 60 s | `/v1/statements`, on top of `ACCOUNT_LIMIT` |
 | `ENROL_LIMIT` | account id | 10 / 60 s | device challenge and enrolment, on top of `ACCOUNT_LIMIT` |
 | `SYNC_WRITE_LIMIT` | account id | 30 / 60 s | `POST /v1/sync`, on top of `ACCOUNT_LIMIT` |
+| `DELETE_IP_LIMIT` | `CF-Connecting-IP` | 5 / 60 s | account deletion and Apple notifications; checked before any other work |
 
-Bodies are capped at 8 KB for sign-in, 2 KB for devices, 4 KB for statements and 256 KB for
-sync pushes; ID tokens at 4 KB; 50 hosts per statement call.
+Bodies are capped at 8 KB for sign-in, deletion and Apple notifications, 2 KB for devices, 4 KB
+for statements and 256 KB for sync pushes; ID tokens at 4 KB; 50 hosts per statement call.
 
 ## Configuration
 
@@ -144,6 +167,9 @@ sync pushes; ID tokens at 4 KB; 50 hosts per statement call.
 | `DB` | D1 | `herdrup-accounts`, EU jurisdiction, id in `wrangler.toml` |
 | `APPLE_APP_CLIENT_ID` | var | `com.jerryfane.herdr` |
 | `APPLE_WEB_CLIENT_ID` | var | `com.jerryfane.herdr.signin` (the Services ID) |
+| `APPLE_TEAM_ID` | var | `FXQ5Z9HHY6` |
+| `APPLE_KEY_ID` | var | the Sign in with Apple key's Key ID (10 characters), filled in by the owner |
+| `APPLE_SIWA_P8` | secret | the Sign in with Apple key: the `.p8` file as downloaded. Signs the client secrets for Apple's revoke; without it (or its Key ID) deletion still deletes and answers `manual_revoke: true` |
 | `GOOGLE_IOS_CLIENT_ID` | var | `552913387875-ujv6unveo5qtmmbnapogekc5jl8h6olk.apps.googleusercontent.com` (Google Cloud project `themartianapp`; bundle `com.jerryfane.herdr`, team `FXQ5Z9HHY6`) |
 | `GOOGLE_WEB_CLIENT_ID` | var | `552913387875-0te8j0cm9tmt5ifai9m8nlc1igdhi844.apps.googleusercontent.com` (same project; redirect `https://accounts.herdrup.app/v1/auth/web/google/callback`) |
 | `ACCOUNT_HMAC_KEY` | secret | 32 random bytes, standard base64 |
@@ -192,6 +218,18 @@ For step 2 on a Worker that already runs step 1: apply the migrations (`0002_dev
 
 For step 3: apply the migrations (`0003_sync.sql`), then deploy. It adds the `SYNC_WRITE_LIMIT`
 binding (namespace `6984`) and needs no secret.
+
+For step 4 (no migration):
+
+1. Set `APPLE_KEY_ID` in `wrangler.toml`.
+2. Put the key straight from the downloaded file:
+   `npx wrangler secret put APPLE_SIWA_P8 < AuthKey_<KeyID>.p8`.
+3. Deploy. This adds the `DELETE_IP_LIMIT` binding (namespace `6986`).
+4. Register `https://accounts.herdrup.app/v1/apple/notifications` as the server-to-server
+   notification endpoint of `com.jerryfane.herdr` (DESIGN.md §10).
+
+If the key is ever exposed, revoke it in Apple Developer → Keys, make a new one, and put the
+new `.p8` and Key ID.
 
 ### Rotate the statement key
 

@@ -10,6 +10,8 @@ export type Endpoint =
   | "/v1/auth/refresh"
   | "/v1/auth/signout"
   | "/v1/account"
+  | "/v1/account/delete"
+  | "/v1/apple/notifications"
   | "/v1/devices/challenge"
   | "/v1/devices"
   | "/v1/devices/:id"

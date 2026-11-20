@@ -1,10 +1,12 @@
 // herdrup-accounts: HerdrUp's optional accounts (herdrup#698, epic #696). Sign-in with Apple or
 // Google and sessions (step 1); devices, bound by proof of possession of their guest key, and
-// the short-lived statements hosts check (step 2); sync of non-secret settings (step 3).
-// Account deletion follows.
+// the short-lived statements hosts check (step 2); sync of non-secret settings (step 3);
+// account deletion, with Apple's revoke and server-to-server notifications (step 4).
 // Log lines carry only endpoint and outcome (src/http.ts): never tokens, nonces, provider user
 // ids or their hashes, emails, account, session or device ids, device keys, host ids, IPs,
 // bodies or URLs.
+import { handleAccountDelete } from "./deletion";
+import { handleAppleNotification } from "./apple_notify";
 import { handleAccount, handleNonce, handleRefresh, handleSignIn, handleSignOut } from "./auth";
 import { cleanup } from "./cleanup";
 import { handleChallenge, handleDevice, handleEnrol, handleListDevices } from "./devices";
@@ -13,7 +15,7 @@ import { errorResponse, json, log, type Endpoint } from "./http";
 import { handleJwks, handleStatements } from "./statements";
 import { handlePull, handlePush } from "./sync";
 
-export const VERSION = "0.3.0";
+export const VERSION = "0.4.0";
 
 type RoutedEndpoint = Exclude<Endpoint, "cron">;
 
@@ -30,6 +32,8 @@ const ROUTES: Record<string, Route> = {
   "/v1/auth/refresh": { methods: ["POST"], endpoint: "/v1/auth/refresh" },
   "/v1/auth/signout": { methods: ["POST"], endpoint: "/v1/auth/signout" },
   "/v1/account": { methods: ["GET"], endpoint: "/v1/account" },
+  "/v1/account/delete": { methods: ["POST"], endpoint: "/v1/account/delete" },
+  "/v1/apple/notifications": { methods: ["POST"], endpoint: "/v1/apple/notifications" },
   "/v1/devices/challenge": { methods: ["POST"], endpoint: "/v1/devices/challenge" },
   "/v1/devices": { methods: ["GET", "POST"], endpoint: "/v1/devices" },
   "/v1/statements": { methods: ["POST"], endpoint: "/v1/statements" },
@@ -64,6 +68,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         return await handleSignOut(request, env, now);
       case "/v1/account":
         return await handleAccount(request, env, now);
+      case "/v1/account/delete":
+        return await handleAccountDelete(request, env, now);
+      case "/v1/apple/notifications":
+        return await handleAppleNotification(request, env, now);
       case "/v1/devices/challenge":
         return await handleChallenge(request, env, now);
       case "/v1/devices":

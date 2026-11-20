@@ -69,6 +69,13 @@ name = "SYNC_WRITE_LIMIT"
 namespace_id = "6984"
 simple = { limit = 30, period = 60 }
 
+# Keyed by CF-Connecting-IP and checked before any other work: account deletion and Apple's
+# server-to-server notifications.
+[[ratelimits]]
+name = "DELETE_IP_LIMIT"
+namespace_id = "6986"
+simple = { limit = 5, period = 60 }
+
 # Hourly cleanup (src/cleanup.ts): spent nonces and refresh tokens, enrolment challenges and
 # sessions past their expiry, sync tombstones older than 90 days, and accounts not seen for 24
 # months.
@@ -83,6 +90,11 @@ crons = ["17 * * * *"]
 [vars]
 APPLE_APP_CLIENT_ID = "com.jerryfane.herdr"
 APPLE_WEB_CLIENT_ID = "com.jerryfane.herdr.signin"
+# The Apple client secrets (src/apple.ts) are signed with the Sign in with Apple key: its Key
+# ID here, filled in by the owner, and the .p8 itself as the secret APPLE_SIWA_P8. While
+# either is missing, deletion still deletes and answers manual_revoke: true.
+APPLE_TEAM_ID = "FXQ5Z9HHY6"
+APPLE_KEY_ID = ""
 GOOGLE_IOS_CLIENT_ID = "552913387875-ujv6unveo5qtmmbnapogekc5jl8h6olk.apps.googleusercontent.com"
 GOOGLE_WEB_CLIENT_ID = "552913387875-0te8j0cm9tmt5ifai9m8nlc1igdhi844.apps.googleusercontent.com"
 # Statement signing (src/signing.ts): two key slots, so a key rotates without leaving
@@ -105,3 +117,5 @@ STATEMENT_REVOKED_KIDS = ""
 #   STATEMENT_KEY_A, STATEMENT_KEY_B  Ed25519 private keys that sign statements, PKCS8 DER in
 #                      standard base64, generated straight into the Worker (README "Deploy").
 #                      No copy is kept: a lost key is rotated, never restored.
+#   APPLE_SIWA_P8      the Sign in with Apple key, the .p8 file as downloaded, pasted once:
+#                      npx wrangler secret put APPLE_SIWA_P8 < AuthKey_<KeyID>.p8 (README "Deploy").
