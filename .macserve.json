@@ -7,6 +7,7 @@
  }},
  "script":{"shards":{
   "ipad-script":{"run":"Tools/ci/macserve-ipad-script.sh"},
+  "desktop-refs":{"run":"Tools/ci/macserve-desktop-refs.sh"},
   "duo-screenshots":{"run":"Tools/ci/duo-screenshots.sh"},
   "duo-column":{"run":"Tools/ci/duo-column.sh"},
   "crash-reports":{"run":"Tools/ci/crash-reports.sh"},

@@ -21,12 +21,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # WHETHER THIS PR NEEDS THE SIMULATOR MATRIX. A PR that changes only docs, or only the
-  # MARKETING_VERSION / CURRENT_PROJECT_VERSION values in project.yml, cannot change what
-  # the device shards test (#645 was a 4-line version bump). Tools/ci/ci_scope.py reads the
-  # diff hunks and says `ui=true` for anything else, including itself and this file, and
-  # for a range it cannot resolve. The matrix itself runs on macserve, which does not read
-  # this yet; the job records the decision on every PR so the skip stays available to it.
+  # WHETHER THIS PR NEEDS THE SIMULATOR MATRIX. A PR that changes only docs, only the
+  # MARKETING_VERSION / CURRENT_PROJECT_VERSION values in project.yml, or only what the app
+  # build never reads (GuestRelay/, AccountService/, Tools/crash/, .github/workflows/) cannot
+  # change what the device shards test (#645 was a 4-line version bump). Tools/ci/ci_scope.py
+  # reads the diff hunks and says `ui=true` for anything else: itself, any line of this job
+  # or of this file outside its other jobs, and a range it cannot resolve. The matrix itself
+  # runs on macserve, which does not read this yet; the job records the decision on every PR
+  # so the skip stays available to it.
   scope:
     name: Scope
     runs-on: ubuntu-latest
