@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 extension XCUIApplication {
     /// The app under test, with animations off (`HERDR_NO_ANIMATIONS`, App/UITestMotion.swift):
@@ -14,11 +15,16 @@ extension XCUIApplication {
 
     /// A new app launched into the `HERDR_SCREENSHOT_MOCK` fixture `mock`, with
     /// `environment` added to its launch environment (a key there wins over the mock).
+    /// On iPad, a window an earlier test or job left behind is returned to full screen
+    /// first (FullScreen.swift): one frame read when it is already full screen.
     static func launched(mock: String, environment: [String: String] = [:]) -> XCUIApplication {
         let app = XCUIApplication.forUITest()
         app.launchEnvironment["HERDR_SCREENSHOT_MOCK"] = mock
         app.launchEnvironment.merge(environment) { _, new in new }
         app.launch()
+        if UIDevice.current.userInterfaceIdiom == .pad, app.windows.firstMatch.exists(within: 10), !app.isFullScreen {
+            app.restoreFullScreen()
+        }
         return app
     }
 

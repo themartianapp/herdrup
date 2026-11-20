@@ -626,7 +626,7 @@ struct ChatMockTransport: HerdrTransport {
             return ChatMockConversation.owner.prompt(id: id, params: params)
         default:
             if let method = request["method"] as? String,
-               let reply = TopicsMock.owner.reply(method: method, id: id, params: params) {
+               let reply = await TopicsMock.owner.reply(method: method, id: id, params: params) {
                 return reply
             }
             return try await base.roundTrip(requestLine)

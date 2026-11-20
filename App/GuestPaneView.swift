@@ -52,6 +52,9 @@ struct GuestPaneView: View {
     @State private var topicsCapable = false
     /// The Topics tab's first appearance in this mount has applied Settings' Topics default.
     @State private var topicsDefaulted = false
+    /// The guest picked a tab themselves this mount: a default that arrives later (Chat or
+    /// Topics found after a slow capability or discovery answer) never overrides it (#759).
+    @State private var tabChosen = false
 
     /// Whether the shared agent can be reached right now.
     private enum Availability: Equatable {
@@ -223,28 +226,34 @@ struct GuestPaneView: View {
             transcriptCapable = capabilities?.agentTranscript ?? false
             topicsCapable = capabilities?.agentTopics ?? false
         }
-        // Whether the shared omp agent offers topics: asked once known, until it answers (the
-        // Topics tab then polls the list every 15 s while it shows).
-        .task(id: [topicsCapable ? "topics" : "", ChatPreference.isOmp(agent?.agent) ? "omp" : ""]) {
-            guard topicsCapable, ChatPreference.isOmp(agent?.agent), !topicsModel.offered else { return }
-            await topicsModel.refresh(client: client)
+        // Whether the shared omp agent offers topics (#758), on `TopicsDiscoveryBackoff`'s
+        // schedule (`topics_unsupported` stops; `topics_unreachable` backs off 60 s to 10 min).
+        // A guest has no event stream: the task restarts, so the schedule starts over, when the
+        // share comes back running after a pause, a reconnect or the host going offline, and
+        // when the agent's status changes. The Topics tab then polls the list every 15 s.
+        .task(id: [topicsCapable ? "topics" : "", ChatPreference.isOmp(agent?.agent) ? "omp" : "",
+                   availability == .running ? "running" : "", agent?.agentStatus ?? ""]) {
+            guard topicsCapable, ChatPreference.isOmp(agent?.agent), availability == .running,
+                  !topicsModel.offered else { return }
+            await topicsModel.discover(client: client)
         }
         // A shared omp agent opens where Settings' "omp agents open in" says (#735), once per
         // mount, as the owner's page opens from it; afterwards the guest's own pick stands.
         .onChange(of: showsChat, initial: true) { _, available in
             if available, !chatDefaulted {
                 chatDefaulted = true
-                tab = ChatPreference.opensInChat ? .chat : .terminal
+                if !tabChosen { tab = ChatPreference.opensInChat ? .chat : .terminal }
             } else if !available, tab == .chat {
                 tab = .terminal
             }
         }
         // Settings' "omp agents open in" Topics opens the Topics tab once it exists, once per
-        // mount, like Chat above; without topics that setting opens Chat.
+        // mount, like Chat above, unless the guest already picked a tab; without topics that
+        // setting opens Chat.
         .onChange(of: showsTopics) { _, available in
             if available, !topicsDefaulted {
                 topicsDefaulted = true
-                if ChatPreference.settingMode == .topics { tab = .topics }
+                if ChatPreference.settingMode == .topics, !tabChosen { tab = .topics }
             } else if !available, tab == .topics {
                 tab = showsChat ? .chat : .terminal
             }
@@ -303,7 +312,12 @@ struct GuestPaneView: View {
                            badge: Int = 0, compact: Bool = false, action: (() -> Void)? = nil) -> some View {
         let selected = value != nil && tab == value
         return Button {
-            if let value { tab = value } else { action?() }
+            if let value {
+                tabChosen = true
+                tab = value
+            } else {
+                action?()
+            }
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: systemImage).font(.system(size: 12, weight: .semibold))

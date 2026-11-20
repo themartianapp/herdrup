@@ -8,8 +8,14 @@ import XCTest
 /// Every fixture is synthetic.
 final class AgentTopicsTests: XCTestCase {
 
+    /// A current herdr: topics, and `topic` honoured on `agent.transcript`.
     private static let pongWithTopics =
+        #"{"id":"x","result":{"type":"pong","version":"0.9.9","protocol":22,"capabilities":{"agent_transcript":true,"agent_topics":true,"agent_transcript_topic":true}}}"#
+    /// `agent.topics.*` but no `agent_transcript_topic`: a server that would ignore `topic`.
+    private static let pongTopicsOnly =
         #"{"id":"x","result":{"type":"pong","version":"0.9.9","protocol":22,"capabilities":{"agent_transcript":true,"agent_topics":true}}}"#
+    private static let pongTopicsTranscriptTopicFalse =
+        #"{"id":"x","result":{"type":"pong","version":"0.9.9","protocol":22,"capabilities":{"agent_transcript":true,"agent_topics":true,"agent_transcript_topic":false}}}"#
     private static let pongWithoutTopics =
         #"{"id":"x","result":{"type":"pong","version":"0.9.4","protocol":22,"capabilities":{"agent_transcript":true}}}"#
     private static let emptyPage =
@@ -25,6 +31,84 @@ final class AgentTopicsTests: XCTestCase {
         XCTAssertTrue(try capabilities(#"{"agent_transcript":true,"agent_topics":true}"#).agentTopics)
         XCTAssertFalse(try capabilities(#"{"agent_transcript":true}"#).agentTopics, "an older server has no topics")
         XCTAssertFalse(try capabilities(#"{"agent_topics":false}"#).agentTopics)
+        XCTAssertTrue(try capabilities(#"{"agent_topics":true,"agent_transcript_topic":true}"#).agentTranscriptTopic)
+        XCTAssertFalse(try capabilities(#"{"agent_topics":true}"#).agentTranscriptTopic,
+                       "agent_topics alone does not say agent.transcript honours topic")
+        XCTAssertFalse(try capabilities(#"{"agent_transcript_topic":false}"#).agentTranscriptTopic)
+    }
+
+    /// herdrup#757: `agent_topics` without `agent_transcript_topic` (absent or false) refuses a
+    /// topic's transcript before sending, so a server that ignores `topic` cannot answer with
+    /// the Inbox's page as the topic's. The topics calls themselves still go out.
+    func testTopicTranscriptNeedsAgentTranscriptTopic() async throws {
+        for pong in [Self.pongTopicsOnly, Self.pongTopicsTranscriptTopicFalse] {
+            let transport = RecordingTransport { method, _ in
+                switch method {
+                case "ping": return pong
+                case "agent.topics.list":
+                    return #"{"id":"x","result":{"type":"agent_topics","agent":"enyo","pane_id":"w1:p1","topics":[]}}"#
+                default: return Self.emptyPage
+                }
+            }
+            let client = HerdrClient(transport: transport)
+            do {
+                _ = try await client.agentTranscript(target: "w1:p1", topic: "t1")
+                XCTFail("a topic's transcript must not be asked of this server")
+            } catch {
+                XCTAssertEqual(error as? AgentTranscriptError, .unsupported)
+            }
+            XCTAssertFalse(transport.requests.contains { $0.method == "agent.transcript" },
+                           "refused before sending")
+            _ = try await client.agentTopicsList(target: "w1:p1")
+            XCTAssertEqual(transport.requests.last?.method, "agent.topics.list", "agent_topics still gates topics calls")
+        }
+        let both = RecordingTransport { method, _ in method == "ping" ? Self.pongWithTopics : Self.emptyPage }
+        _ = try await HerdrClient(transport: both).agentTranscript(target: "w1:p1", topic: "t1")
+        XCTAssertEqual(try both.last().params["topic"] as? String, "t1", "both advertised: the topic is sent")
+    }
+
+    // MARK: Discovery schedule (#758)
+
+    /// `topics_unsupported`, a server without `agent_topics` and a gone agent stop discovery
+    /// for good, on the first answer or after any number of retries.
+    func testDiscoveryStopsOnPermanentRefusals() {
+        for error in [AgentTopicsError.unsupported, .notAdvertised, .agentNotFound] {
+            var backoff = TopicsDiscoveryBackoff()
+            XCTAssertEqual(backoff.decide(after: error), .stop, "\(error)")
+            _ = backoff.decide(after: AgentTopicsError.unreachable)
+            XCTAssertEqual(backoff.decide(after: error), .stop, "\(error) after a retry")
+        }
+    }
+
+    /// `topics_unreachable` (every omp agent without topics on), a timeout or a dropped
+    /// connection back off 60 s, doubling, to a 10 minute cap that then repeats.
+    func testUnreachableBacksOffToATenMinuteCap() {
+        var backoff = TopicsDiscoveryBackoff()
+        var waits: [UInt64] = []
+        for _ in 0..<8 {
+            guard case .retry(let seconds) = backoff.decide(after: AgentTopicsError.unreachable) else {
+                return XCTFail("unreachable retries")
+            }
+            waits.append(seconds)
+        }
+        XCTAssertEqual(waits, [60, 120, 240, 480, 600, 600, 600, 600])
+        for error: Error in [AgentTopicsError.timeout, TransportError.closedBeforeResponse] {
+            var other = TopicsDiscoveryBackoff()
+            XCTAssertEqual(other.decide(after: error), .retry(afterSeconds: 60), "\(error) backs off too")
+        }
+    }
+
+    /// A change of the agent (status, session, a topics change, a guest reconnect) resets the
+    /// schedule to its start; a successful list ends it and also starts any later run fresh.
+    func testResetAndSuccessRestartTheSchedule() {
+        var backoff = TopicsDiscoveryBackoff()
+        for _ in 0..<6 { _ = backoff.decide(after: AgentTopicsError.unreachable) }
+        XCTAssertEqual(backoff.decide(after: AgentTopicsError.unreachable), .retry(afterSeconds: 600))
+        backoff.reset()
+        XCTAssertEqual(backoff.decide(after: AgentTopicsError.unreachable), .retry(afterSeconds: 60))
+        XCTAssertEqual(backoff.decide(after: AgentTopicsError.unreachable), .retry(afterSeconds: 120))
+        XCTAssertEqual(backoff.decide(after: nil), .offered)
+        XCTAssertEqual(backoff.decide(after: AgentTopicsError.unreachable), .retry(afterSeconds: 60))
     }
 
     // MARK: Decoding

@@ -13,6 +13,7 @@ final class SettingsTests: XCTestCase {
         }
         continueAfterFailure = false
         let app = XCUIApplication.launched(mock: "list")
+        restoreFullScreenAfterTest(app)
         XCTAssertTrue(app.buttons["Settings"].firstMatch.exists(within: 15))
         let window = app.windows.firstMatch
         let initialSize = window.frame.size

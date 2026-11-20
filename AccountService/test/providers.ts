@@ -44,9 +44,39 @@ export interface Providers {
   stranger: SigningKey;
 }
 
+export const APPLE_TOKEN_URL = "https://appleid.apple.com/auth/token";
+export const APPLE_REVOKE_URL = "https://appleid.apple.com/auth/revoke";
+
+/** A form the Worker posted to Apple's token or revoke endpoint. */
+export interface AppleCall {
+  url: string;
+  form: Record<string, string>;
+}
+
+/**
+ * Apple's /auth/token and /auth/revoke as the tests set them up: every call is recorded, and
+ * `respond` answers it (by default a token exchange gives a refresh token and a revoke 200).
+ */
+export const appleRest: { calls: AppleCall[]; respond: (call: AppleCall) => Response | Promise<Response> } = {
+  calls: [],
+  respond: defaultAppleResponse,
+};
+
+export function defaultAppleResponse(call: AppleCall): Response {
+  if (call.url === APPLE_TOKEN_URL) {
+    return Response.json({ access_token: "test-access", token_type: "Bearer", expires_in: 3600, refresh_token: `refresh-for-${call.form.code}`, id_token: "x" });
+  }
+  return new Response(null, { status: 200 });
+}
+
+export function resetAppleRest(): void {
+  appleRest.calls = [];
+  appleRest.respond = defaultAppleResponse;
+}
+
 let providers: Promise<Providers> | undefined;
 
-/** The isolate's provider keys, and the fetch spy that publishes them. */
+/** The isolate's provider keys, and the fetch spy that publishes them and stands in for Apple's REST endpoints. */
 export function fakeProviders(): Promise<Providers> {
   providers ??= (async () => {
     const keys: Providers = {
@@ -58,8 +88,19 @@ export function fakeProviders(): Promise<Providers> {
       [APPLE_JWKS_URL]: [keys.apple.publicJwk],
       [GOOGLE_JWKS_URL]: [keys.google.publicJwk],
     };
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL) => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = input instanceof Request ? input.url : input.toString();
+      if (url === APPLE_TOKEN_URL || url === APPLE_REVOKE_URL) {
+        const request = new Request(url, init);
+        if (request.method !== "POST" || request.headers.get("content-type") !== "application/x-www-form-urlencoded") {
+          throw new Error(`unexpected request to Apple: ${request.method} ${request.headers.get("content-type")}`);
+        }
+        // The form is ASCII (URL-encoded), so decoding its bytes as UTF-8 is exact.
+        const form = new TextDecoder().decode(await request.arrayBuffer());
+        const call = { url, form: Object.fromEntries(new URLSearchParams(form)) };
+        appleRest.calls.push(call);
+        return appleRest.respond(call);
+      }
       const listed = published[url];
       if (listed === undefined) throw new Error(`unexpected fetch in a test: ${url}`);
       return new Response(JSON.stringify({ keys: listed }), {

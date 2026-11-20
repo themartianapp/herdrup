@@ -117,8 +117,8 @@ AccountService/
 | `spent_refresh_tokens` | `(session_id, token_hash)`, `exp_ms` | Every refresh token the session rotated away, until that token's own expiry; reuse of any of them revokes the session (§2.5) |
 | `used_nonces` | `nonce_hash`, `exp_ms` | Single use of sign-in nonces |
 | `enrol_challenges` | `id`, `account_id`, `session_id`, `server_pkcs8`, `salt`, `exp_ms` | 60 s; bound to the session that asked; deleted when used |
-| `web_flows` | `state_hash`, `provider`, `nonce`, `pkce_verifier`, `client` (app\|web), `handoff_challenge`, `exp_ms` | 10 min |
-| `handoffs` | `code_hash`, `account_id`, `handoff_challenge`, `platform`, `display_hint`, `exp_ms` | 2 min, single use |
+| `web_flows` | `state_hash`, `provider`, `client` (app\|web), `platform`, `browser_hash`, `nonce`, `pkce_verifier`, `handoff_challenge`, `exp_ms` | 10 min; taken by its callback (migration 0004, §2.6) |
+| `handoffs` | `code_hash`, `account_id`, `handoff_challenge`, `platform`, `created`, `display_hint` (sealed), `exp_ms` | 2 min, single use (§2.6) |
 | `sync_items` | `(account_id, collection, item_id)`, `rev`, `updated_ms`, `deleted`, `body` (JSON) | Unique index `(account_id, rev)` |
 | `sync_usage` | `(account_id, collection)`, `items` | Live items per collection, against its cap (§5.5) |
 
@@ -193,9 +193,12 @@ Scopes:
 
 ### 2.3 Web and desktop flow through the Worker
 
-1. The client makes a random `handoff_verifier` and opens
-   `GET /v1/auth/web/start?provider=apple|google&client=app|web&handoff_challenge=S256(verifier)`.
-   Desktop opens it in the system browser; the web guest navigates to it at the top level.
+1. The desktop makes a random `handoff_verifier` and opens
+   `GET /v1/auth/web/start?provider=apple|google&client=app&platform=<its platform>&handoff_challenge=S256(verifier)`
+   in the system browser. The web guest navigates at the top level to
+   `GET /v1/auth/web/start?provider=apple|google&client=web`, with nothing else: it gets no
+   handoff, and a `handoff_challenge` or `platform` with `client=web` is refused (`400`), not
+   ignored.
 2. The Worker stores a `web_flows` row: `state`, `nonce`, the Google PKCE verifier and the
    handoff challenge. It then redirects:
    - Apple: `https://appleid.apple.com/auth/authorize?client_id=<Services ID>&redirect_uri=https://accounts.herdrup.app/v1/auth/web/apple/callback&response_type=code%20id_token&response_mode=form_post&state&nonce`.
@@ -215,6 +218,7 @@ Scopes:
 
 The desktop already handles `herdrup://pair#` and `herdrup://guest-invite#` links
 (app/desk_pairing.go, docs/DESIGN.md §pairing), so `herdrup://account#` is one more route there.
+§2.6 has the details step 5 settled.
 
 ### 2.4 Verifying ID tokens in the Worker
 
@@ -304,6 +308,114 @@ A dump of D1 can't be joined against Google user ids. Apple's server notificatio
     site, so web sign-in is offered only on `guest.herdrup.app`. The access token stays in memory.
 - **Apple credential state:** at launch the iOS app calls `getCredentialState(forUserID:)` and
   observes `credentialRevokedNotification`. When the state is revoked, it signs out locally.
+
+### 2.6 Decided in step 5, the Worker part (20 Nov)
+
+PR 5's Worker half (`src/web.ts`, `src/browser.ts`, `migrations/0004_web_flows.sql`) settles these.
+
+**Start.** `GET /v1/auth/web/start` takes exactly these parameters, and anything else is
+`400 bad_request`:
+
+- `provider=apple|google`;
+- `client=app` with `platform` (any §2.5 platform but `web`) and `handoff_challenge`, the
+  43-character b64url SHA-256 of the app's verifier;
+- or `client=web` with nothing else, because the web guest's session lands in its cookie. A
+  `handoff_challenge` or `platform` here is refused, not ignored, so a client that thinks it
+  will get a handoff finds out at once.
+
+It answers `303` to the provider. `AUTH_IP_LIMIT` covers start, both callbacks and the handoff.
+
+- The Google web flow needs `GOOGLE_WEB_CLIENT_SECRET`. Without it, start answers
+  `503 provider_not_configured` and logs `not_configured`. Apple's web flow needs no secret and
+  is unaffected.
+- `client=web` also needs `WEB_ORIGIN` (`https://guest.herdrup.app`, a var).
+
+**The flow is bound to its browser.** Each browser holds one flow secret, `__Host-hu_flow` (32
+random bytes; `Secure; HttpOnly; SameSite=None; Path=/; Max-Age=600`). Every flow it starts stores
+the secret's hash in `web_flows.browser_hash`, and the callback must present it.
+
+- **One secret per browser, not per flow** (PR 5 review, P2). A start reuses the secret the
+  browser already holds and only renews its Max-Age; it makes a new one only when there is none
+  or it is malformed. No callback clears it, success or failure; it ends with its Max-Age. So a
+  desktop sign-in and a web guest sign-in pending in one browser both finish, in either order,
+  and a failed or cancelled one breaks no other.
+- Reusing a presented value is safe: only this Worker can set a `__Host-` cookie for its own
+  host, so another site or a herdrup.app sibling can't plant one.
+
+- This stops a login-CSRF: a page can't make the victim's browser finish the attacker's flow,
+  which would sign the web guest into the attacker's account and sync the victim's share list
+  there.
+- The cookie has to be `SameSite=None` because Apple's callback is a cross-site `form_post`. It
+  is a top-level navigation, so third-party-cookie blocking doesn't apply.
+- A flow secret alone does nothing: it only works together with a state this Worker issued to
+  the same browser, within 10 minutes and once.
+
+**A state works once.** The callback takes the row with `DELETE … RETURNING`, so a second
+callback with the same state is refused. A state of the other provider is refused too.
+
+- An unknown, reused or malformed state gets a plain `400 state_invalid`, because nothing tells
+  us which client to return to.
+- Once the flow is found, every failure returns the browser to its client with an error code:
+  `herdrup://account#error=<code>`, or `https://guest.herdrup.app/web/?account_error=<code>`.
+- The codes are `flow_expired`, `browser_mismatch`, `cancelled`, `provider_error`,
+  `exchange_failed`, `provider_not_configured`, `token_invalid`, `nonce_invalid` and `nonce_used`.
+
+**ID tokens.** The flow's nonce is a normal sign-in nonce (§2.2), stored in the row and spent at
+the callback (`proveIdentity`, the same check as a native sign-in).
+
+- The audience must be the provider's **web** client only: the Services ID, or the Google web
+  client. A token minted for a native client is refused here.
+- Google's code is exchanged with the client secret and the PKCE verifier (5 s timeout). Only
+  `id_token` is read from the answer. The access token is never read, stored, logged or passed on.
+
+**Handoff.** The code is 32 random bytes, and `handoffs` keeps its SHA-256.
+
+- `POST /v1/auth/handoff` takes exactly `{code, handoff_verifier}`. It takes no `platform` or
+  `device_name`: the platform was fixed at start and is bound to the code, and a device is named
+  when it enrols (`POST /v1/devices {…, name, platform}`, §3), exactly as after a native sign-in
+  (whose body is `{id_token, nonce, platform}`). Any other field, or a missing or malformed code
+  or verifier (RFC 7636: 43–128 characters), is `400` and doesn't spend the code.
+- Otherwise the attempt spends the code whatever the verifier: `401 invalid_verifier`, then
+  `invalid_code`. So a grabbed code can't be tried twice. A code past its 2 minutes is
+  `401 code_expired`.
+- The session opens only at redemption, with the start's `platform`. The answer is the same as a
+  native sign-in's: tokens, `created`, and `display_hint` for Google.
+- **The display hint is never stored readably.** Google's email waits in `handoffs.display_hint`
+  sealed with AES-GCM, under a key derived by HKDF from the code. Only the `herdrup://` URL
+  carries the code, so D1 and its Time Travel copies never hold the email (§2.1, §11).
+- The web guest gets no display hint.
+
+**The web guest's cookie.** After a `client=web` sign-in, the callback sets `__Host-hu_refresh`:
+`Max-Age=7776000` (90 days, renewed with every rotation), `Path=/; Secure; HttpOnly;
+SameSite=Strict`. It then redirects to `https://guest.herdrup.app/web/?account=1`. Setting it on a
+cross-site top-level navigation is allowed; the guest page's own fetches are same-site, so they
+carry it.
+
+- `POST /v1/auth/refresh` from `Origin: https://guest.herdrup.app` uses the cookie, ignores the
+  body, and answers `{account_id, access_token, access_expires_in}` with the rotated cookie. The
+  refresh token never reaches the page.
+- A refused cookie (expired, unknown, or reused, which revokes the session as in §2.5) is cleared.
+- `POST /v1/auth/signout` from that origin ends the cookie's session, even with an expired access
+  token, and clears the cookie. It always answers `204`.
+- From any other origin, these endpoints ignore the cookie and work as for the apps. Other
+  herdrup.app origins are the same site, so they would carry the cookie: the Origin check keeps
+  them out.
+
+**CORS.** Only `https://guest.herdrup.app`, always with `Access-Control-Allow-Credentials: true`
+and `Vary: Origin`, and never `*`.
+
+- It covers only the endpoints the web guest calls: `/v1/health` (the page reads its features to
+  decide whether to offer sign-in), refresh, signout, `/v1/account`, the device endpoints,
+  `/v1/statements` and `/v1/sync`. Their error answers carry it too, so the page can read a 401.
+  Health gets the same headers as the rest, `Allow-Credentials: true` included: one rule for the
+  one origin, and health reads no cookie either way.
+- Preflights: from the web guest, for a method the route takes, `204` with
+  `Allow-Methods` (the route's), `Allow-Headers: authorization, content-type` and `Max-Age: 600`.
+  Anything else gets `403` with no CORS headers.
+- Every other endpoint has no CORS, so a preflight gets `405`.
+
+**Account deletion on the web guest** isn't offered. It needs a fresh ID token and nonce
+(§6.1), which the cookie flow never gives the page, so the apps delete.
 
 ---
 
@@ -697,8 +809,9 @@ code needed to revoke. Then:
    We never store Apple tokens. If the exchange or revoke fails, the deletion still goes ahead
    (TN3194), and the app shows Apple's manual path: Settings → Apple Account → Sign in with
    Apple → HerdrUp → Stop using.
-3. Delete everything in one `db.batch()`: `sync_items`, `sync_usage`, `sessions`, `devices`, `handoffs`,
-   `enrol_challenges`, `identities`, `accounts`, matched on `account_id`.
+3. Delete everything in one `db.batch()`, matched on `account_id`: `sync_items`, `sync_usage`,
+   `enrol_challenges`, `handoffs`, `sessions` (and their `spent_refresh_tokens`), `devices`, `identities`,
+   then `accounts` (§6.5 has the exact list and how it is kept complete).
 4. The app clears its Keychain account items and statement cache, and returns to signed out.
    Local copies of hosts and prompts stay on the device, as they did before sign-in. The
    confirm screen says so.
@@ -736,6 +849,86 @@ Apple's JWKS (`iss`, `aud` ∈ our client ids), hashes `events.sub`, and:
   host closes account-bound sessions at the deadline and refuses new ones. The `GuestRecord`
   stays on the host until the owner removes it. The 4B page shows the person as not seen since…
 - Plain shares (from "Only this device") are not bound to the account and keep working.
+
+### 6.5 Decided in step 4 (20 Nov)
+
+PR 4 (`src/deletion.ts`, `src/apple.ts`, `src/apple_notify.ts`) settles these.
+
+**The call.** `POST /v1/account/delete` takes a bearer access token and
+`{provider, id_token, nonce, authorization_code?}`, and answers `200 {deleted: true, manual_revoke}`.
+
+- The fresh sign-in is checked like a sign-in (`proveIdentity`, shared with §2.4): the nonce
+  was issued by this Worker and is spent here, and the token carries it.
+- Its identity must belong to the session's own account. Otherwise the answer is
+  `403 wrong_account`, and nothing is spent but the nonce.
+- `authorization_code` is Apple only: printable ASCII, ≤1,024 characters. A code with Google
+  is `400`.
+- Order of checks: `DELETE_IP_LIMIT` per IP before anything else, then the session and
+  `ACCOUNT_LIMIT`, then the body.
+
+**Delete first, revoke after.** The deletion is one D1 batch, which is a transaction. Apple's
+revoke runs after it, and nothing is ever compensated or undone.
+
+- `manual_revoke: true` covers every case where Apple didn't confirm the revoke: no code, an
+  unusable `APPLE_SIWA_P8` or `APPLE_KEY_ID`, an exchange or revoke refused, no refresh token in
+  the answer, a network error, or a 5 s timeout.
+- In all those cases the account is already gone.
+- A missing or unusable key also logs `not_configured`, so the owner can see it.
+
+**Which client_id.** The code is exchanged and revoked with the `aud` of the same sign-in's ID
+token: `com.jerryfane.herdr` for native codes, the Services ID for web codes. A web code's
+exchange also sends `redirect_uri` = the Services ID's return URL.
+
+**The client secret.** It is signed per call and lives 5 minutes (`exp = iat + 300`). Header
+`{alg: ES256, kid: APPLE_KEY_ID}`; payload
+`{iss: APPLE_TEAM_ID, iat, exp, aud: "https://appleid.apple.com", sub: client_id}`; a raw 64-byte
+r‖s signature, as JOSE wants. `APPLE_SIWA_P8` is the `.p8` exactly as downloaded (PKCS8 PEM).
+`APPLE_TEAM_ID` and `APPLE_KEY_ID` are vars and must be 10 upper-case letters or digits. The
+imported key is cached per isolate.
+
+**Every table is covered.** `ACCOUNT_TABLES` lists the tables with an `account_id` column. A test
+reads every `CREATE TABLE` from the migrations' own SQL and checks that the list is exactly the
+tables with that column. Every other table must be named in the test with how deletion covers it:
+
+| Table | How deletion covers it |
+|---|---|
+| `accounts` | its own row, by `id` |
+| `spent_refresh_tokens` | by the account's session ids, in the same batch |
+| `used_nonces` | nothing to delete: it holds only hashes and expiries, nothing that names an account |
+| `web_flows` | nothing to delete: a sign-in still in progress has no account yet; it goes at its callback or after 10 minutes (§2.6) |
+
+A new table therefore fails the test until it is handled. The batch deletes children first, so
+it never depends on `ON DELETE CASCADE`.
+
+**Racing calls.** Any request already past authentication either commits before the deletion
+batch or finds the account gone:
+
+- A sync push writes through `INSERT … SELECT … FROM accounts` (§5.5), so it writes nothing once
+  the account is gone, and answers `401 invalid_token`.
+- A full pull's next page answers `401` too.
+
+**Notifications.** `POST /v1/apple/notifications {payload}` answers `204` whether or not an
+account matched, so it never says who has an account.
+
+- The JWS is checked with the same RS256 verifier and Apple JWKS cache as ID tokens.
+- `iss` must be `https://appleid.apple.com`. The bare `appleid.apple.com` is accepted too.
+- `aud` must be one of our two Apple client ids.
+- `iat` must not be in the future; `exp`, when present, must not have passed.
+- `events` may be a JSON string, as Apple sends it, or an object, as in Apple's samples.
+- `consent-revoked` and `account-deleted` delete the account. Every other type is acknowledged
+  and ignored.
+- **Replay guard:** a deleting event must be strictly after the identity's `created_ms`, or it
+  deletes nothing, so an old or delayed revoke can't delete an account the person made since.
+  - `event_time` in milliseconds is compared exactly; there is no slack.
+  - `event_time` in seconds (a value below 10^12, as in Apple's samples), or `iat` when
+    `event_time` is missing, counts from the start of its second. So an event in the same second
+    as the sign-up deletes nothing.
+  - On a tie or any doubt nothing is deleted; the person can still delete in the app
+    (PR 4 review, P2).
+- Bad tokens answer `401 token_invalid` with a `reason`, and Apple's unreachable keys answer `503`.
+- `DELETE_IP_LIMIT` (5/min per IP) covers notifications as §8 says. Apple sends from few IPs, but
+  at our size that is far below 5 a minute. If a §1.4 growth trigger fires, give notifications
+  their own limit.
 
 ---
 
@@ -799,6 +992,25 @@ Logging copies the relay's rule:
   session ids, device keys, host ids, IPs, user agents, request bodies or URLs.
 - Workers Logs, traces and Logpush are off in `wrangler.toml`.
 
+**Health and features (step 5).** `GET /v1/health` answers `{ok, version, features}`. The apps
+ship separately from the Worker, so an app offers a feature only when the live Worker lists it.
+The names are a stable contract:
+
+- `native_sign_in`, `devices`, `statements`, `sync` and `delete` are always listed.
+- `web_sign_in_apple` is listed when `APPLE_WEB_CLIENT_ID` is set.
+- `web_sign_in_google` is listed when both `GOOGLE_WEB_CLIENT_ID` and `GOOGLE_WEB_CLIENT_SECRET`
+  are set.
+- `apple_revoke` is listed when `APPLE_SIWA_P8` and `APPLE_KEY_ID` are set and the key parses,
+  checked by the same loader the revoke uses (§6.5).
+
+Each flag is a boolean fact about the configuration: health never returns a var's or secret's
+value. Health takes no rate limit and touches no D1 row. Parsing the key happens once per isolate
+(cached). The web guest reads it cross-origin, so it carries CORS for `https://guest.herdrup.app`
+(§2.6).
+
+`VERSION` lives in `src/version.ts`, not in the entry module: `wrangler dev` refuses an entry
+module that exports anything but its handler.
+
 ---
 
 ## 9. Phasing into PRs
@@ -808,8 +1020,8 @@ Logging copies the relay's rule:
 | 1 | herdrup | **Worker skeleton + native auth** (built 19 Nov). `AccountService/`, migration 0001, `/v1/health`, nonce, Apple/Google ID-token sign-in, sessions (refresh, rotation, reuse revokes the family, sign-out), `/v1/account`, rate limits, logging rules, hourly cleanup, README with deploy/rollback like GuestRelay's, CI job "Account service (Linux)". | `@cloudflare/vitest-plugin` in workerd with a local D1; test-generated RSA keys served by a fetch spy at the real JWKS URLs; per-key counter rate limits (no clock windows). Cases: good tokens (both Apple audiences, both Google clients); wrong `iss`/`aud`/`azp`; expired / future / too-old `iat`; `alg: none`/HS256/`crit`; unknown `kid`; bad signature; nonce mismatch, forgery, expiry, reuse; refresh rotation, reuse revokes, racing refreshes; per-IP and per-account limits; no stored sub/email/token; logs hold only endpoint and outcome; JWKS cache timing with an explicit clock. |
 | 2 | herdrup | **Devices + statements** (built 20 Nov). Challenge/enrol, device list/rename/remove, `/v1/statements`, `/.well-known/jwks.json`, two-slot rotation vars, migration `0002_devices.sql`, `STATEMENT_LIMIT` and `ENROL_LIMIT`. | X25519 PoP vectors in `AccountService/test/vectors/enrol-v1.json` (made with Node's crypto, RFC 7748 key pairs), shared with the iOS, Go and TS clients; low-order points rejected; 409 for another account; one device per session; device cap; removal stops statements; pairwise `sub` stable per host, different across hosts and accounts; golden `statement-v1.json` (RFC 8032 test key) that herdr's tests reuse; JWKS during rotation and after a revocation. |
 | 3 | herdrup | **Sync** (built 20 Nov). `GET`/`POST /v1/sync`, schemas per collection, caps, tombstones, `reset_required`, migration `0003_sync.sql`, `SYNC_WRITE_LIMIT`; open points settled in §5.5. | Ordering and last-writer-wins; per-key settings don't clobber; `base_rev` conflict; unknown field → 400; caps → 413/403; tombstone pruning; full-reset path. |
-| 4 | herdrup | **Deletion + Apple revoke + notifications.** `/v1/account/delete`, client secret signed in the Worker from `APPLE_SIWA_P8`, `/v1/apple/notifications`. | Table sweep: no row with the `account_id` remains in any table; client-secret JWT claims and ES256 signature checked against a generated P-256 key; revoke called with the client_id matching the token `aud`; revoke failure still deletes and returns `manual_revoke: true`; notification JWS verify (bad sig, wrong `aud`); `consent-revoked` deletes. |
-| 5 | herdrup + herdrup-desktop | **Web sign-in flow + sign-in UI (1B) + sync client (#699).** Worker: `/v1/auth/web/start`, the Apple `form_post` and Google callbacks, handoff with PKCE, the web refresh cookie and CORS for `guest.herdrup.app` (moved here from PR1, next to their only clients). Apps: HerdrKit `AccountClient`, `AccountSession` (Keychain), `DeviceEnroller`, `StatementCache`, `SyncEngine` (Linux-testable, protocols like `GuestKeyStore`); onboarding 1B with Apple + Google; account screen (devices, sign-out, delete); desktop `internal/account` + `herdrup://account#`; web guest sign-in. | Worker: web `state` reuse, handoff without/with wrong verifier, CORS only for `guest.herdrup.app`, cookie flags. HerdrKit unit tests with URLProtocol stubs (single-flight refresh, 401 → re-auth, PoP vector); sync merge tests; encoder test that payloads hold no secret patterns; UI test for 1B with a mock server; Go tests for the handoff and Secrets fallback; web guest vitest for the cookie flow. |
+| 4 | herdrup | **Deletion + Apple revoke + notifications** (built 20 Nov). `/v1/account/delete`, client secret signed in the Worker from `APPLE_SIWA_P8`, `/v1/apple/notifications`, `DELETE_IP_LIMIT`; open points settled in §6.5. | Table sweep: no row with the `account_id` remains in any table; client-secret JWT claims and ES256 signature checked against a generated P-256 key; revoke called with the client_id matching the token `aud`; revoke failure still deletes and returns `manual_revoke: true`; notification JWS verify (bad sig, wrong `aud`); `consent-revoked` deletes. |
+| 5 | herdrup + herdrup-desktop | **Web sign-in flow + sign-in UI (1B) + sync client (#699).** Worker (built 20 Nov; open points settled in §2.6): `/v1/auth/web/start`, the Apple `form_post` and Google callbacks, handoff with PKCE, the web refresh cookie and CORS for `guest.herdrup.app` (moved here from PR1, next to their only clients), migration `0004_web_flows.sql`. Apps: HerdrKit `AccountClient`, `AccountSession` (Keychain), `DeviceEnroller`, `StatementCache`, `SyncEngine` (Linux-testable, protocols like `GuestKeyStore`); onboarding 1B with Apple + Google; account screen (devices, sign-out, delete); desktop `internal/account` + `herdrup://account#`; web guest sign-in. | Worker: web `state` reuse, handoff without/with wrong verifier, CORS only for `guest.herdrup.app`, cookie flags. HerdrKit unit tests with URLProtocol stubs (single-flight refresh, 401 → re-auth, PoP vector); sync merge tests; encoder test that payloads hold no secret patterns; UI test for 1B with a mock server; Go tests for the handoff and Secrets fallback; web guest vitest for the cookie flow. |
 | 6 | jerryfane/herdr (#440) | **Account-bound shares on the host.** Statement verify (ring Ed25519), JWKS cache, `GuestRecord.account`/`devices`, hello `account`, in-band refresh, `guest.revoke {person}`, `guest.remove_device`, `acct:1` in invites, config switch. | Golden statements from PR 2; expired / wrong `aud` / wrong `dev` / unknown `kid` → refetch / stale-JWKS grace; plain shares unchanged (old `guests.json` loads); account-bound device without statement refused; new device added + audit; removed device refused with a valid statement; revoke by person closes live sessions; session closed at the statement deadline. |
 | 7 | herdrup + herdrup-desktop | **2A + 4B (#700).** Invite screen with "Add to my account" / "Only this device" (only for `acct:1`), share list from `shares` sync, owner page per person (devices, shares, revoke once, remove device). Relay CSP `connect-src`. | UI tests for 2A both paths and for old invites (plain Accept); 4B grouping by `person`; revoke-once calls `guest.revoke {person}`; GuestRelay `npm test` covers the `_headers` CSP. |
 | 8 | herdrup-web + App Store Connect | **Policy + labels + review notes (#701).** | Site build; a reviewer reads the policy diff against §7. |

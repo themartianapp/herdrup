@@ -274,6 +274,68 @@ public enum AgentTopicsError: Error, Equatable, Sendable {
     }
 }
 
+// MARK: - Discovery
+
+/// When to ask an agent for its topics list again while it does not offer them (#758).
+///
+/// `topics_unreachable` is the steady answer of every omp agent without topics turned on,
+/// so it backs off: 60 s, doubling, capped at 10 minutes. There are no short early retries:
+/// an agent that is just starting changes its status (or its session) as it comes up, and
+/// that resets the schedule (`reset()`), so the quick second look comes from the agent, not
+/// from a timer. A timeout or a dropped connection backs off the same way. `topics_unsupported`,
+/// a server without `agent_topics` and a gone agent stop discovery for good.
+public struct TopicsDiscoveryBackoff: Sendable, Equatable {
+    /// Seconds between attempts, the last one repeating.
+    public static let delays: [UInt64] = [60, 120, 240, 480, 600]
+
+    public enum Decision: Sendable, Equatable {
+        /// The agent answered: it offers topics.
+        case offered
+        /// The agent will not offer topics: stop asking.
+        case stop
+        /// Ask again after this many seconds.
+        case retry(afterSeconds: UInt64)
+    }
+
+    /// Retries scheduled since the start or the last `reset()`.
+    public private(set) var attempt = 0
+
+    /// The delays in use: `delays` unless a test or a mock passes its own.
+    public let schedule: [UInt64]
+
+    public init(schedule: [UInt64] = TopicsDiscoveryBackoff.delays) {
+        self.schedule = schedule.isEmpty ? Self.delays : schedule
+    }
+
+    /// What to do after one `agent.topics.list` answer: nil error for a list.
+    public mutating func decide(after error: Error?) -> Decision {
+        guard let error else {
+            attempt = 0
+            return .offered
+        }
+        if let topics = error as? AgentTopicsError, topics.isPermanent { return .stop }
+        let delays = schedule
+        let seconds = delays[min(attempt, delays.count - 1)]
+        attempt += 1
+        return .retry(afterSeconds: seconds)
+    }
+
+    /// The agent changed (status, session, a topics change, a guest reconnect): start the
+    /// schedule over.
+    public mutating func reset() { attempt = 0 }
+}
+
+extension AgentTopicsError {
+    /// The agent will not offer topics for the rest of this page's life: `topics_unsupported`,
+    /// a server without `agent_topics`, or the agent is gone. Anything else may pass.
+    public var isPermanent: Bool {
+        switch self {
+        case .unsupported, .notAdvertised, .agentNotFound: return true
+        case .unreachable, .timeout, .rejected, .topicNotFound, .other: return false
+        }
+    }
+}
+
 // MARK: - Event
 
 /// Why a topic changed (`AgentTopicChangeReason`).

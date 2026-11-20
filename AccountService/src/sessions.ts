@@ -132,6 +132,14 @@ export async function refreshSession(db: D1Database, refreshToken: string, nowMs
   return { ok: false, error: revoked.meta.changes > 0 ? "session_revoked" : "invalid_token" };
 }
 
+/** Ends the session whose current refresh token this is (the web guest's sign-out). Any other token ends nothing. */
+export async function endSessionByRefreshToken(db: D1Database, refreshToken: string): Promise<void> {
+  const match = REFRESH_TOKEN.exec(refreshToken);
+  if (match === null) return;
+  const [, sessionId, secret] = match;
+  await db.prepare("DELETE FROM sessions WHERE id = ? AND refresh_hash = ?").bind(sessionId, await sha256Hex(secret)).run();
+}
+
 export interface Principal {
   accountId: string;
   sessionId: string;
