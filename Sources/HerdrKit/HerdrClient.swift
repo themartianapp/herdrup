@@ -44,9 +44,15 @@ public actor HerdrClient {
     /// The value herdr reads as "a HerdrUp client acting for the owner".
     public static let appInputSource = "app"
 
-    public init(transport: HerdrTransport) {
+    /// Where this client records the replies a cold start paints from (the agent list, each
+    /// agent's newest chat page, the Gram inbox's first page), and where the views read
+    /// them back. Nil keeps nothing (mocks, the bench's no-cache run, one-off clients).
+    public nonisolated let contentCache: ContentCacheScope?
+
+    public init(transport: HerdrTransport, contentCache: ContentCacheScope? = nil) {
         self.transport = transport
         self.inputSource = transport.actsAsGuest ? nil : Self.appInputSource
+        self.contentCache = contentCache
     }
 
     private func nextID(_ method: String) -> String {
@@ -69,12 +75,15 @@ public actor HerdrClient {
         return try decoder.decode(ResultEnvelope<R>.self, from: data).result
     }
 
+    /// `record` receives the reply line and its decoded result, for `contentCache`.
     private func call<P: Encodable, R: Decodable>(
-        _ method: String, _ params: P, as type: R.Type
+        _ method: String, _ params: P, as type: R.Type, record: ((String, R) -> Void)? = nil
     ) async throws -> R {
         let line = try encodeRequest(method, params)
         let response = try await transport.roundTrip(line)
-        return try decodeResult(response, as: type)
+        let result = try decodeResult(response, as: type)
+        record?(response, result)
+        return result
     }
 
     // MARK: - Commands
@@ -112,7 +121,7 @@ public actor HerdrClient {
         // Unstructured, so a waiter's cancellation does not fail the others' answer.
         let task = Task { () async throws -> AgentListing in
             defer { if self.listingFlight?.token == token { self.listingFlight = nil } }
-            let listing = try await self.fetchAgentListing()
+            let listing = try await self.fetchAgentListing(sentAt: sentAt)
             if self.lastListing.map({ $0.sentAt <= sentAt }) ?? true {
                 self.lastListing = (sentAt, listing)
             }
@@ -141,8 +150,21 @@ public actor HerdrClient {
         listChange.advance(to: instant)
     }
 
-    private func fetchAgentListing() async throws -> AgentListing {
-        let result = try await call("agent.list", EmptyParams(), as: AgentListResult.self)
+    /// The one request behind every `agentListing` caller; its reply is what a cold start
+    /// paints from next time (`contentCache`), under the rules `agentListing` serves by: a
+    /// list sent before the last `noteAgentListChanged()` is older than what is on screen,
+    /// so it is not kept, and a reply to an older request that lands after a newer one's is
+    /// older than it, so the cache does not keep it (`ContentCacheScope.recordAgentList`
+    /// checks that at the entry, across every client of this machine and session). The
+    /// cache keeps the copy it had, or the next list's.
+    private func fetchAgentListing(sentAt: ContinuousClock.Instant) async throws -> AgentListing {
+        let listChange = self.listChange
+        let result = try await call("agent.list", EmptyParams(), as: AgentListResult.self,
+                                    record: contentCache.map { cache in { line, _ in
+                                        // Checked when the reply lands, so an event during the request counts.
+                                        guard listChange.latest.map({ $0 <= sentAt }) ?? true else { return }
+                                        cache.recordAgentList(line, sentAt: sentAt)
+                                    } })
         return AgentListing(agents: result.agents, originCapabilities: result.originCapabilities,
                             originMachineID: result.originMachineID)
     }
@@ -667,16 +689,29 @@ public actor HerdrClient {
     /// which decodes as a normal changed answer with `hasMore` nil, i.e. "this is
     /// everything". An old daemon therefore behaves exactly as before rather than
     /// erroring or paging half an inbox.
+    ///
+    /// `keepsForColdStart` records a changed answer in `contentCache` as the inbox's first
+    /// page, for the next cold start to paint before it asks. Only the inbox's own head
+    /// refresh sets it: a badge count or a one-message probe is not what the inbox shows.
     public func gramList(
         unreadOnly: Bool = false, ifUnchangedDigest: String? = nil,
-        limit: Int? = nil, beforeID: String? = nil
+        limit: Int? = nil, beforeID: String? = nil, keepsForColdStart: Bool = false
     ) async throws -> GramListAnswer {
+        let keeper = keepsForColdStart && !unreadOnly && beforeID == nil ? contentCache : nil
+        let deletions = gramDeletions
         let result = try await call(
             "gram.list",
             GramListParams(callerPaneID: nil, onlyQueue: false, unreadOnly: unreadOnly,
                            ifUnchangedDigest: ifUnchangedDigest, limit: limit,
                            beforeID: beforeID),
-            as: GramListResult.self)
+            as: GramListResult.self,
+            record: keeper.map { cache in { line, result in
+                // A delete sent or answered while this page was out: the page may still hold
+                // the deleted message, so it must not become what the next cold start paints.
+                guard self.gramDeletions == deletions else { return }
+                // "Unchanged" carries no list: the page kept last time still holds.
+                if result.messages != nil { cache.recordGramHead(line) }
+            } })
         return GramListAnswer(
             messages: result.messages, digest: result.digest, storeID: result.storeID,
             hasMore: result.hasMore, unreadCount: result.unreadCount)
@@ -791,10 +826,21 @@ public actor HerdrClient {
 
     struct GramDeleteParams: Encodable { let id: String }
 
+    /// Moves when a `gram.delete` is sent and when it answers, so a head page asked for
+    /// before or during a delete is not kept for the next cold start (`gramList`).
+    private var gramDeletions: UInt64 = 0
+
     /// The owner deletes a gram message and any file attached to it, for good. As
     /// the owner the app sends no caller pane, so it may delete any message.
+    ///
+    /// Once herdr confirms it, the inbox head kept in `contentCache` is dropped: it may hold
+    /// the message, and the next cold start must not paint it back. The next head refresh
+    /// keeps a new one.
     public func gramDelete(id: String) async throws {
+        gramDeletions &+= 1
+        defer { gramDeletions &+= 1 }
         _ = try await call("gram.delete", GramDeleteParams(id: id), as: JSONNull.self)
+        contentCache?.forgetGramHead()
     }
 
     struct GramUploadDiscardParams: Encodable {
@@ -2060,8 +2106,14 @@ public actor HerdrClient {
         let params = AgentTranscriptParams(target: target, before: before, after: after,
                                            limit: limit.map { min(max($0, 1), 50) }, subagent: subagent,
                                            heldFrom: heldFrom)
+        // The newest page (no cursor) is what a chat opens on, so it is what a cold start
+        // paints from; a page of older history or of appended entries is not.
+        let keeper = before == nil && after == nil ? contentCache : nil
         do {
-            return try await call("agent.transcript", params, as: AgentTranscriptPage.self)
+            return try await call("agent.transcript", params, as: AgentTranscriptPage.self,
+                                  record: keeper.map { cache in { line, _ in
+                                      cache.recordTranscript(line, target: target, subagent: subagent)
+                                  } })
         } catch let error as APIError {
             switch error.code {
             case "agent_not_found": throw AgentTranscriptError.agentNotFound

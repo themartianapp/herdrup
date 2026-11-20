@@ -137,6 +137,21 @@ herdr's JSON API exposes both, so panes and agents become real UI objects instea
   existing share on updated hosts. Previously revoked shares need a fresh invitation.
   Timed-out or cancelled relay requests close their acquired socket before reporting completion,
   including when the encrypted handshake never answers.
+- **Cold start from the last known screen** — the agent list (per machine and herdr session),
+  each agent's newest chat page, Gram's first page and the text of each terminal's last screen
+  are kept on the phone (`HerdrKit/ContentCache`, in Caches: never backed up or synced; 20 MB,
+  least recently used first out). A cold start paints them at once with a small "Updating…"
+  mark and swaps in fresh data when it arrives, without moving the scroll position. The app's own
+  credentials, keys and tokens are never stored there; the cached replies and screen text are
+  whatever the agents printed, which can hold secrets of their own, and get the protection of the
+  app's other files. A guest keeps only its share's one agent. Forgetting a machine, or leaving a
+  share, wipes what it kept, and a reply or screen that lands after the wipe is dropped rather than
+  written back. Only the newest agent list is kept, whichever client of the session asked for it
+  (an older request answering late, even on a client a session switch replaced, is dropped), a
+  deleted Gram message drops the kept first page, a terminal's screen is kept only once its live
+  keyframe has been painted, and an erased terminal is kept blank. Until a list succeeds on the
+  connection, every failure's error and guidance replace the kept roster, the newest on each
+  Retry. Works with any herdr: no capability needed.
 
 ## Requirements
 
