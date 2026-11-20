@@ -41,17 +41,19 @@ esac
 TYPES=com.apple.CoreSimulator.SimDeviceType
 RUNTIMES=(com.apple.CoreSimulator.SimRuntime.iOS-27-0 com.apple.CoreSimulator.SimRuntime.iOS-27-1)
 DERIVED_DATA=$(cd "$MACSERVE_APP_DIR/../../.." && pwd) || exit 1
-TIMEOUT_BIN=$(command -v timeout || command -v gtimeout || echo Tools/ci/timeout.py)
+# shellcheck source=Tools/ci/timeout-bin.sh
+. Tools/ci/timeout-bin.sh
 mkdir -p TestReceipts "$MACSERVE_OUTPUT"
 
 created=()
 finish() {
   local udid
-  for udid in "${created[@]}"; do
-    "$TIMEOUT_BIN" 120 xcrun simctl shutdown "$udid" >/dev/null 2>&1
-    "$TIMEOUT_BIN" 120 xcrun simctl delete "$udid" >/dev/null 2>&1
-  done
+  # Receipts first: the simulator clean-up below can take minutes on a wedged CoreSimulator.
   cp -R TestReceipts "$MACSERVE_OUTPUT/" || true
+  for udid in "${created[@]}"; do
+    "$TIMEOUT_BIN" --signal=TERM --kill-after=15s 120 xcrun simctl shutdown "$udid" >/dev/null 2>&1
+    "$TIMEOUT_BIN" --signal=TERM --kill-after=15s 120 xcrun simctl delete "$udid" >/dev/null 2>&1
+  done
 }
 trap finish EXIT
 
@@ -62,7 +64,7 @@ create() {
   shift
   for type in "$@"; do
     for runtime in "${RUNTIMES[@]}"; do
-      if udid=$(xcrun simctl create "$name-${MACSERVE_JOB_ID:-local}" "$TYPES.$type" "$runtime" 2>/dev/null); then
+      if udid=$("$TIMEOUT_BIN" --signal=TERM --kill-after=15s 120 xcrun simctl create "$name-${MACSERVE_JOB_ID:-local}" "$TYPES.$type" "$runtime" 2>/dev/null); then
         echo "$name: $udid ($type, $runtime)" >&2
         echo "$udid"
         return 0
@@ -114,5 +116,14 @@ if [ "$shard" = ipad-script ]; then
   fi
 fi
 
-Tools/ci/ui-shard.sh "$shard" || failed=1
+# THE WHOLE SHARD IS BOUNDED BELOW macserve's 2 h JOB CAP, so a hang the rounds' own bounds
+# miss still leaves time to copy TestReceipts to MACSERVE_OUTPUT (finish): herdrup #674's
+# ipad-script job j_1b3bd71b hung in an unbounded simctl call until macserve killed it at
+# the cap, and exported nothing. The build above takes at most 30 min of the 2 h.
+"$TIMEOUT_BIN" --signal=TERM --kill-after=60s 80m Tools/ci/ui-shard.sh "$shard"
+status=$?
+if [ "$status" -eq 124 ]; then
+  echo "::error::Tools/ci/ui-shard.sh $shard ran past its 80m bound; see TestReceipts"
+fi
+[ "$status" -eq 0 ] || failed=1
 exit "$failed"
