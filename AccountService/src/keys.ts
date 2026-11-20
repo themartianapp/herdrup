@@ -1,12 +1,13 @@
-// The keys derived from the ACCOUNT_HMAC_KEY secret (32 random bytes, standard base64):
-// one HMAC key for sign-in nonces and one for the stored hash of each provider's user id.
-// HKDF-SHA256 with an empty salt and a distinct info string per key, so later keys (the
-// pairwise per-host account ids) come from the same root without touching these.
+// The keys derived from the ACCOUNT_HMAC_KEY secret (32 random bytes, standard base64): one
+// HMAC key for sign-in nonces, one for the stored hash of each provider's user id, and one for
+// the pairwise account id each host sees in statements (src/statements.ts). HKDF-SHA256 with
+// an empty salt and a distinct info string per key, so adding a key never changes the others.
 import { hex, utf8 } from "./bytes";
 
 export interface ServiceKeys {
   nonce: CryptoKey;
   subject: CryptoKey;
+  pairwise: CryptoKey;
 }
 
 const SECRET = /^[A-Za-z0-9+/]{43}=$/;
@@ -32,7 +33,11 @@ async function derive(secret: string): Promise<ServiceKeys> {
     );
     return crypto.subtle.importKey("raw", bits, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   };
-  return { nonce: await subkey("herdrup-accounts nonce v1"), subject: await subkey("herdrup-accounts subject v1") };
+  return {
+    nonce: await subkey("herdrup-accounts nonce v1"),
+    subject: await subkey("herdrup-accounts subject v1"),
+    pairwise: await subkey("herdrup-accounts pairwise v1"),
+  };
 }
 
 export type Provider = "apple" | "google";

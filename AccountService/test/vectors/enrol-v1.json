@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "description": "Enrolment proof of possession (AccountService/src/devices.ts, DESIGN.md §3.2). The device holds X25519 key d (public D); the Worker's challenge holds e (public E = server_pub) and a salt. k = X25519(d, E) = X25519(e, D); refuse an all-zero k. mk = HKDF-SHA256(ikm = k, salt, info = \"herdrup account enrol v1\", 32 bytes). mac = HMAC-SHA256(mk, \"herdrup-enrol-v1|\" + account_id + \"|\" + device_pub + \"|\" + challenge_id). Keys, salt and mac are unpadded base64url (private keys as their raw 32 bytes). Cases 1 and 2 use the RFC 7748 §6.1 key pairs. low_order_device_pubs are public keys whose shared secret is all zero for any private key; the Worker refuses them with invalid_device_key.",
+  "info": "herdrup account enrol v1",
+  "message_prefix": "herdrup-enrol-v1|",
+  "cases": [
+    {
+      "name": "rfc7748-alice-device-bob-server",
+      "device_private": "dwdtCnMYpX08FsFyUbJmRd9ML4frwJkqsXf7pR25LCo",
+      "device_pub": "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",
+      "server_private": "XasIfmJKikt54X-Lg4AO5m87sSkmGLb9HC-LJ_-I4Os",
+      "server_pub": "3p7bfXt9wbTTW2HC7OQ1Nz-DQ8hbeGdNrfx-FG-IK08",
+      "salt": "ERERERERERERERERERERERERERERERERERERERERERE",
+      "account_id": "AAAAAAAAAAAAAAAAAAAAAA",
+      "challenge_id": "BBBBBBBBBBBBBBBBBBBBBB",
+      "shared_secret": "Sl2dW6TOLeFyjjv0gDUPJeB-IclH0Z4zdvCbPB4WF0I",
+      "mk": "NVfMrue_gD3QbgoKTx95S6_NRED8qmMju98wiyXWjg0",
+      "message": "herdrup-enrol-v1|AAAAAAAAAAAAAAAAAAAAAA|hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo|BBBBBBBBBBBBBBBBBBBBBB",
+      "mac": "zLUDJQRBdqeNjtcF9NzuvhhJ1NWoejU_mzfMbT9R_J8"
+    },
+    {
+      "name": "rfc7748-bob-device-alice-server",
+      "device_private": "XasIfmJKikt54X-Lg4AO5m87sSkmGLb9HC-LJ_-I4Os",
+      "device_pub": "3p7bfXt9wbTTW2HC7OQ1Nz-DQ8hbeGdNrfx-FG-IK08",
+      "server_private": "dwdtCnMYpX08FsFyUbJmRd9ML4frwJkqsXf7pR25LCo",
+      "server_pub": "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",
+      "salt": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "account_id": "acct_Example-012345678",
+      "challenge_id": "chal_Example-012345678",
+      "shared_secret": "Sl2dW6TOLeFyjjv0gDUPJeB-IclH0Z4zdvCbPB4WF0I",
+      "mk": "wSvxo3HFDNOG53zqoJWLxb7o2mhUxoat0y673gvdiBw",
+      "message": "herdrup-enrol-v1|acct_Example-012345678|3p7bfXt9wbTTW2HC7OQ1Nz-DQ8hbeGdNrfx-FG-IK08|chal_Example-012345678",
+      "mac": "Q3gwWe2uynRVpTOrmuDul98Q1sHv0eOQJlOI_fbysp4"
+    }
+  ],
+  "low_order_device_pubs": [
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "4Ot6fDtBuK4WVuP68Z_EatoJjeucMrH9hmIFFl9JuAA",
+    "X5yVvKNQjCSx0LFVnIPvWwREXMRYHI6G2CJO3dCfEVc",
+    "7P_______________________________________38",
+    "7f_______________________________________38",
+    "7v_______________________________________38"
+  ]
+}
