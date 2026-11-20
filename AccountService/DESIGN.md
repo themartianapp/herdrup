@@ -620,7 +620,9 @@ whole (`403 quota`). Its deletes run before its writes, so swapping one item for
 works whatever order the client lists them in. The caps are `CHECK` constraints on counters
 that triggers keep (`accounts.sync_items`, `sync_bytes`, and `sync_usage.items` per collection),
 so two devices pushing at once can't pass them either. The 1 MB counts the stored bodies' UTF-8
-bytes.
+bytes. The cost: each item written also updates its `accounts` and `sync_usage` rows, so about
+3 D1 rows are written per item. A first upload of 2,000 items is about 6k of the 100k free daily
+writes, and a usual push of a few items is about 10 (§1.4).
 
 **Answers.** `applied[]` is `{collection, id, rev}`. A write identical to the stored item isn't
 written again and keeps its `rev`. Deleting an item the server doesn't hold writes nothing and
