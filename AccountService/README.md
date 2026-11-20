@@ -76,7 +76,9 @@ this Worker and the steps after it is in [DESIGN.md](DESIGN.md).
 **Web sign-in** (herdrup-desktop and the web guest; DESIGN.md §2.3, §2.6). The client opens
 `/v1/auth/web/start` in a browser. The Worker keeps the flow (state, nonce, Google's PKCE
 verifier, the app's handoff challenge) for 10 minutes and binds it to that browser with the
-`__Host-hu_flow` cookie. It then sends the browser to Apple (Services ID, `form_post`, no scope)
+`__Host-hu_flow` cookie: one secret per browser, shared by all its pending sign-ins and never
+cleared by a callback, so two sign-ins in one browser don't break each other. It then sends the
+browser to Apple (Services ID, `form_post`, no scope)
 or Google (web client, `openid email`, PKCE).
 
 The callback takes the flow, so each state works once, and checks the browser. It then verifies

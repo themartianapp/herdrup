@@ -14,9 +14,11 @@
 // A flow is one web_flows row, 10 minutes, taken (deleted) by the first callback naming its
 // state, so a state never works twice. The callback must come from the browser that started
 // the flow (its __Host-hu_flow cookie), which stops a page from finishing someone else's flow in
-// the victim's browser. The ID token must carry the flow's nonce (issued and spent like a
-// native sign-in's) and name our web client: the Services ID for Apple, the web client for
-// Google.
+// the victim's browser. That cookie is one secret per browser, shared by every flow pending in
+// it: a start reuses it while it lives and only renews its Max-Age, and no callback clears it,
+// so starting a second sign-in (or failing one) never breaks another. The ID token must carry
+// the flow's nonce (issued and spent like a native sign-in's) and name our web client: the
+// Services ID for Apple, the web client for Google.
 //
 // Apple's ID token arrives in its form_post, so signing in needs no Apple secret. Google's code
 // is exchanged at its token endpoint with GOOGLE_WEB_CLIENT_SECRET and the PKCE verifier; only
@@ -29,7 +31,7 @@
 //
 // Nothing here logs or stores state, codes, verifiers or provider tokens.
 import { findOrCreateAccount, MAX_AUTH_BODY_BYTES, openAuthRequest, proveIdentity } from "./auth";
-import { clearFlowCookie, FLOW_COOKIE, FLOW_TTL_MS, flowCookie, readCookie, refreshCookie, webOrigin } from "./browser";
+import { FLOW_COOKIE, FLOW_TTL_MS, flowCookie, readCookie, refreshCookie, webOrigin } from "./browser";
 import { b64url, fromB64url, randomB64url, sameString, sha256Hex, utf8 } from "./bytes";
 import type { Env } from "./env";
 import { errorResponse, json, log, readCapped, readJsonObject, type Endpoint } from "./http";
@@ -134,7 +136,11 @@ export async function handleWebStart(request: Request, env: Env, nowMs: number):
   if (config === null || !configured(env, provider, client)) return notConfigured(endpoint);
 
   const state = randomB64url(32);
-  const browser = randomB64url(32);
+  // The browser's flow secret: the one it already holds, so its other pending flows stay valid,
+  // or a new one. Only this Worker can set a __Host- cookie for its host, so a value presented
+  // here is one we issued to this browser.
+  const held = readCookie(request, FLOW_COOKIE);
+  const browser = held !== null && B64URL_32.test(held) ? held : randomB64url(32);
   const { nonce } = await issueNonce(keys.nonce, nowMs);
   const pkceVerifier = provider === "google" ? randomB64url(32) : null;
   await env.DB.prepare(
@@ -175,7 +181,7 @@ async function takeFlow(env: Env, provider: Provider, state: string | null): Pro
 /** Back to the client that started the flow, with `error`. */
 function back(env: Env, flow: FlowRow, error: string): Response {
   const location = flow.client === "app" ? `${APP_REDIRECT}#error=${error}` : `${webOrigin(env) ?? ""}/web/?account_error=${error}`;
-  return redirect(location, [clearFlowCookie()]);
+  return redirect(location);
 }
 
 /** The flow's own checks once taken: not expired, from the browser that started it, still configured. Null when it may go on. */
@@ -204,7 +210,7 @@ async function finish(env: Env, keys: ServiceKeys, flow: FlowRow, idToken: strin
 
   if (flow.client === "web") {
     const tokens = await openSession(env.DB, accountId, "web", nowMs);
-    return redirect(`${webOrigin(env) ?? ""}/web/?account=1`, [refreshCookie(tokens.refresh_token), clearFlowCookie()]);
+    return redirect(`${webOrigin(env) ?? ""}/web/?account=1`, [refreshCookie(tokens.refresh_token)]);
   }
   const code = crypto.getRandomValues(new Uint8Array(32));
   const codeText = b64url(code);
@@ -214,7 +220,7 @@ async function finish(env: Env, keys: ServiceKeys, flow: FlowRow, idToken: strin
   )
     .bind(await sha256Hex(codeText), accountId, flow.handoff_challenge, flow.platform, created ? 1 : 0, hint, nowMs + HANDOFF_TTL_MS)
     .run();
-  return redirect(`${APP_REDIRECT}#code=${codeText}`, [clearFlowCookie()]);
+  return redirect(`${APP_REDIRECT}#code=${codeText}`);
 }
 
 export async function handleAppleCallback(request: Request, env: Env, nowMs: number): Promise<Response> {

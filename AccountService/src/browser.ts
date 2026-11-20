@@ -6,9 +6,11 @@
 //                      accounts.herdrup.app are one site, so the guest's fetches carry it and
 //                      no other site's do. Max-Age is the refresh token's own lifetime, renewed
 //                      at every rotation.
-//   __Host-hu_flow     binds a web sign-in to the browser that started it, for the 10 minutes
-//                      the flow lives. SameSite=None, because Apple's callback is a cross-site
-//                      POST (form_post) and a Lax cookie wouldn't come with it.
+//   __Host-hu_flow     one secret per browser that binds its pending web sign-ins to it. Every
+//                      flow it starts within the cookie's life binds to the same value; each
+//                      start renews Max-Age to the 10 minutes a flow lives. No callback clears
+//                      it, so one sign-in never breaks another. SameSite=None, because Apple's
+//                      callback is a cross-site POST (form_post) and a Lax cookie wouldn't come.
 //
 // CORS: exactly WEB_ORIGIN (https://guest.herdrup.app), with credentials, on the endpoints the
 // web guest calls; never `*`, never another origin. Cookie-authenticated calls also require
@@ -36,7 +38,6 @@ export const refreshCookie = (token: string): string =>
   `${REFRESH_COOKIE}=${token}; Max-Age=${REFRESH_TTL_MS / 1000}; ${ATTRIBUTES}; SameSite=Strict`;
 export const clearRefreshCookie = (): string => `${REFRESH_COOKIE}=; Max-Age=0; ${ATTRIBUTES}; SameSite=Strict`;
 export const flowCookie = (value: string): string => `${FLOW_COOKIE}=${value}; Max-Age=${FLOW_TTL_MS / 1000}; ${ATTRIBUTES}; SameSite=None`;
-export const clearFlowCookie = (): string => `${FLOW_COOKIE}=; Max-Age=0; ${ATTRIBUTES}; SameSite=None`;
 
 /** The configured web guest origin, or null while WEB_ORIGIN is unset. */
 export function webOrigin(env: Env): string | null {

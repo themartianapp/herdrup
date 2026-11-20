@@ -330,15 +330,25 @@ It answers `303` to the provider. `AUTH_IP_LIMIT` covers start, both callbacks a
   is unaffected.
 - `client=web` also needs `WEB_ORIGIN` (`https://guest.herdrup.app`, a var).
 
-**The flow is bound to its browser.** Start sets `__Host-hu_flow` (32 random bytes;
-`Secure; HttpOnly; SameSite=None; Path=/; Max-Age=600`) and stores its hash in
-`web_flows.browser_hash`. The callback must present it.
+**The flow is bound to its browser.** Each browser holds one flow secret, `__Host-hu_flow` (32
+random bytes; `Secure; HttpOnly; SameSite=None; Path=/; Max-Age=600`). Every flow it starts stores
+the secret's hash in `web_flows.browser_hash`, and the callback must present it.
+
+- **One secret per browser, not per flow** (PR 5 review, P2). A start reuses the secret the
+  browser already holds and only renews its Max-Age; it makes a new one only when there is none
+  or it is malformed. No callback clears it, success or failure; it ends with its Max-Age. So a
+  desktop sign-in and a web guest sign-in pending in one browser both finish, in either order,
+  and a failed or cancelled one breaks no other.
+- Reusing a presented value is safe: only this Worker can set a `__Host-` cookie for its own
+  host, so another site or a herdrup.app sibling can't plant one.
 
 - This stops a login-CSRF: a page can't make the victim's browser finish the attacker's flow,
   which would sign the web guest into the attacker's account and sync the victim's share list
   there.
 - The cookie has to be `SameSite=None` because Apple's callback is a cross-site `form_post`. It
   is a top-level navigation, so third-party-cookie blocking doesn't apply.
+- A flow secret alone does nothing: it only works together with a state this Worker issued to
+  the same browser, within 10 minutes and once.
 
 **A state works once.** The callback takes the row with `DELETE … RETURNING`, so a second
 callback with the same state is refused. A state of the other provider is refused too.

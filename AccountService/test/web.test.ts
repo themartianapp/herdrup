@@ -94,14 +94,16 @@ interface Started {
   verifier: string;
 }
 
-/** GET /v1/auth/web/start as the browser does, with a fresh handoff verifier for client=app. */
-async function start(provider: "apple" | "google", client: "app" | "web", ip = freshIp()): Promise<Started> {
+/**
+ * GET /v1/auth/web/start as the browser does, with a fresh handoff verifier for client=app.
+ * `browserCookie` is the Cookie header of a browser that already holds a flow cookie.
+ */
+async function start(provider: "apple" | "google", client: "app" | "web", ip = freshIp(), browserCookie?: string): Promise<Started> {
   const verifier = randomB64url(48);
   const query = client === "app" ? `&platform=macos&handoff_challenge=${await s256(verifier)}` : "";
-  const response = await SELF.fetch(`${ORIGIN}/v1/auth/web/start?provider=${provider}&client=${client}${query}`, {
-    headers: { "CF-Connecting-IP": ip },
-    redirect: "manual",
-  });
+  const headers: Record<string, string> = { "CF-Connecting-IP": ip };
+  if (browserCookie !== undefined) headers.Cookie = browserCookie;
+  const response = await SELF.fetch(`${ORIGIN}/v1/auth/web/start?provider=${provider}&client=${client}${query}`, { headers, redirect: "manual" });
   expect(response.status).toBe(303);
   const location = new URL(response.headers.get("Location")!);
   const flow = /__Host-hu_flow=([^;]+)/.exec(response.headers.get("Set-Cookie") ?? "")?.[1];
@@ -288,10 +290,10 @@ describe("Apple callback (form_post)", () => {
     expect(response.status).toBe(303);
     expect(location(response)).toBe(`${GUEST}/web/?account=1`);
     expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
+    // Only the refresh cookie: the browser's flow cookie stays, for any other sign-in it has pending.
     const cookies = response.headers.getSetCookie();
-    expect(cookies).toHaveLength(2);
+    expect(cookies).toHaveLength(1);
     expect(cookies[0]).toMatch(/^__Host-hu_refresh=r1\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}; Max-Age=7776000; Path=\/; Secure; HttpOnly; SameSite=Strict$/);
-    expect(cookies[1]).toBe("__Host-hu_flow=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=None");
     const session = await env.DB.prepare("SELECT platform FROM sessions WHERE id = ?").bind(refreshFrom(response)!.split(".")[1]).first<{ platform: string }>();
     expect(session?.platform).toBe("web");
   });
@@ -316,7 +318,7 @@ describe("Apple callback (form_post)", () => {
     await env.DB.prepare("UPDATE web_flows SET exp_ms = ? WHERE state_hash = ?").bind(Date.now() - 1, await sha256(expired.state)).run();
     const late = await appleCallback({ state: expired.state, id_token: await appleIdToken(sub, expired.nonce) }, expired.cookie);
     expect(location(late)).toBe(`${GUEST}/web/?account_error=flow_expired`);
-    expect(late.headers.getSetCookie()).toEqual(["__Host-hu_flow=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=None"]);
+    expect(late.headers.getSetCookie()).toEqual([]);
 
     for (const cookie of [undefined, `__Host-hu_flow=${randomB64url(32)}`, "__Host-hu_flow=x"]) {
       const started = await start("apple", "app");
@@ -326,6 +328,74 @@ describe("Apple callback (form_post)", () => {
       expect(await rejection(await appleCallback(fields, started.cookie))).toEqual({ status: 400, error: "state_invalid" });
     }
     expect(await identityCount("apple", sub)).toBe(0);
+  });
+
+  it("keeps sign-ins started in one browser independent: both finish, in either order, and a failed one breaks no other", async () => {
+    /** One browser's __Host-hu_flow cookie, as the browser keeps it: set, replaced or cleared by each answer. */
+    class Browser {
+      cookie: string | undefined;
+      take(response: Response): Response {
+        for (const header of response.headers.getSetCookie()) {
+          const match = /^__Host-hu_flow=([^;]*);.*Max-Age=(\d+)/.exec(header);
+          if (match !== null) this.cookie = match[2] === "0" ? undefined : `__Host-hu_flow=${match[1]}`;
+        }
+        return response;
+      }
+      async start(provider: "apple" | "google", client: "app" | "web"): Promise<Started> {
+        const started = await start(provider, client, freshIp(), this.cookie);
+        this.take(started.response);
+        return started;
+      }
+      async apple(flow: Started, key = keys.apple): Promise<string | null> {
+        const fields = { state: flow.state, id_token: await appleIdToken(freshSub(), flow.nonce, {}, key) };
+        return location(this.take(await appleCallback(fields, this.cookie)));
+      }
+      async google(flow: Started, extra: Record<string, string> = {}): Promise<string | null> {
+        return location(this.take(await googleCallback({ ...flow, cookie: this.cookie ?? "" }, extra.error === undefined ? { sub: freshSub() } : null, extra)));
+      }
+    }
+
+    for (const order of ["first-first", "second-first"]) {
+      // A desktop sign-in (Apple, client=app), then a web guest sign-in (Google, client=web), in one browser.
+      const browser = new Browser();
+      const a = await browser.start("apple", "app");
+      const b = await browser.start("google", "web");
+      const finishA = async () => expect(await browser.apple(a), order).toMatch(/^herdrup:\/\/account#code=/);
+      const finishB = async () => expect(await browser.google(b), order).toBe(`${GUEST}/web/?account=1`);
+      if (order === "first-first") {
+        await finishA();
+        await finishB();
+      } else {
+        await finishB();
+        await finishA();
+      }
+      // The second start renewed the browser's secret's Max-Age without replacing it.
+      expect(b.response.headers.get("Set-Cookie")).toBe(`${a.cookie}; Max-Age=600; Path=/; Secure; HttpOnly; SameSite=None`);
+    }
+
+    // One fails (a bad token), another is cancelled, and a third in the same browser still finishes.
+    const browser = new Browser();
+    const a = await browser.start("apple", "app");
+    const b = await browser.start("apple", "web");
+    const c = await browser.start("google", "app");
+    expect(await browser.apple(a, keys.stranger)).toBe("herdrup://account#error=token_invalid");
+    expect(await browser.google(c, { error: "access_denied" })).toBe("herdrup://account#error=cancelled");
+    expect(browser.cookie).toBe(a.cookie);
+    expect(await browser.apple(b)).toBe(`${GUEST}/web/?account=1`);
+
+    // Another browser still can't finish this browser's flows.
+    const d = await browser.start("apple", "web");
+    const other = new Browser();
+    await other.start("apple", "web");
+    expect(other.cookie).not.toBe(browser.cookie);
+    expect(await other.apple(d)).toBe(`${GUEST}/web/?account_error=browser_mismatch`);
+  });
+
+  it("issues a new browser secret when the presented one is malformed", async () => {
+    const started = await start("apple", "web", freshIp(), "__Host-hu_flow=not-ours");
+    expect(started.cookie).toMatch(/^__Host-hu_flow=[A-Za-z0-9_-]{43}$/);
+    const response = await appleCallback({ state: started.state, id_token: await appleIdToken(freshSub(), started.nonce) }, started.cookie);
+    expect(location(response)).toBe(`${GUEST}/web/?account=1`);
   });
 
   it("refuses a bad id_token: another key, a native audience, the wrong nonce, expired, or none", async () => {
