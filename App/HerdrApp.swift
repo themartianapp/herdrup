@@ -10115,6 +10115,15 @@ private extension View {
             .settingsGroup()
             .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.group))
     }
+}
+
+extension View {
+    /// Center + cap a column at a comfortable reading width on wide canvases;
+    /// inert on iPhone (narrower than `cap`). See `ReadableColumn`. Module-wide so the
+    /// connect screen, Settings and Gram's feed share one definition.
+    func readableColumn(_ cap: CGFloat = 560) -> some View {
+        modifier(ReadableColumn(cap: cap))
+    }
 
     /// One inset group (#357 "HerdrUp voice"): `surface`, radius 18, clipping its rows. The
     /// connect screen passes `outline: true` to keep the 1 pt `hairlineQuiet` outline; Settings
@@ -10125,15 +10134,6 @@ private extension View {
             .background(Palette.surface)
             .clipShape(shape)
             .overlay { if outline { shape.stroke(Palette.hairlineQuiet, lineWidth: 1) } }
-    }
-}
-
-extension View {
-    /// Center + cap a column at a comfortable reading width on wide canvases;
-    /// inert on iPhone (narrower than `cap`). See `ReadableColumn`. Module-wide so the
-    /// connect screen, Settings and Gram's feed share one definition.
-    func readableColumn(_ cap: CGFloat = 560) -> some View {
-        modifier(ReadableColumn(cap: cap))
     }
 }
 
