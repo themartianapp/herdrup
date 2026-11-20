@@ -31,6 +31,8 @@ import { VERSION } from "./version";
 async function features(env: Env): Promise<string[]> {
   const set = (value: string | undefined) => (value?.trim() ?? "").length > 0;
   const list = ["native_sign_in", "devices", "statements", "sync", "delete"];
+  // The iOS client's own Google sign-in (ASWebAuthenticationSession + PKCE), which needs only its client id.
+  if (set(env.GOOGLE_IOS_CLIENT_ID)) list.push("native_sign_in_google");
   if (set(env.APPLE_WEB_CLIENT_ID)) list.push("web_sign_in_apple");
   if (set(env.GOOGLE_WEB_CLIENT_ID) && set(env.GOOGLE_WEB_CLIENT_SECRET)) list.push("web_sign_in_google");
   // The same loader the revoke uses: the key must be present and parse, with a valid Key ID.

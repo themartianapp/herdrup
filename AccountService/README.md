@@ -47,6 +47,7 @@ something else.
 | Feature | Listed when |
 |---|---|
 | `native_sign_in`, `devices`, `statements`, `sync`, `delete` | always (this build) |
+| `native_sign_in_google` | `GOOGLE_IOS_CLIENT_ID` is set: the iOS app may offer its own Google sign-in (ASWebAuthenticationSession + PKCE against the iOS client), which needs no secret |
 | `web_sign_in_apple` | `APPLE_WEB_CLIENT_ID` is set |
 | `web_sign_in_google` | `GOOGLE_WEB_CLIENT_ID` and `GOOGLE_WEB_CLIENT_SECRET` are both set |
 | `apple_revoke` | `APPLE_SIWA_P8` and `APPLE_KEY_ID` are both set and the key parses (the revoke's own loader); otherwise deletion answers `manual_revoke: true` for Apple |

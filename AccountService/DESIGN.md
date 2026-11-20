@@ -997,6 +997,10 @@ ship separately from the Worker, so an app offers a feature only when the live W
 The names are a stable contract:
 
 - `native_sign_in`, `devices`, `statements`, `sync` and `delete` are always listed.
+- `native_sign_in_google` is listed when `GOOGLE_IOS_CLIENT_ID` is set. It tells the iOS app it
+  may offer native Google sign-in (ASWebAuthenticationSession with PKCE against the iOS client,
+  then `POST /v1/auth/google`), which needs no client secret. `web_sign_in_google` doesn't cover
+  it: that one is the web client plus its secret.
 - `web_sign_in_apple` is listed when `APPLE_WEB_CLIENT_ID` is set.
 - `web_sign_in_google` is listed when both `GOOGLE_WEB_CLIENT_ID` and `GOOGLE_WEB_CLIENT_SECRET`
   are set.
