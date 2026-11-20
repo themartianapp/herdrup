@@ -103,7 +103,7 @@ describe("routing", () => {
   it("answers health, unknown paths and wrong methods", async () => {
     const health = await get("/v1/health");
     expect(health.status).toBe(200);
-    expect(await health.json()).toEqual({ ok: true, version: "0.5.1", features: expect.any(Array) });
+    expect(await health.json()).toEqual({ ok: true, version: "0.5.2", features: expect.any(Array) });
     expect((await get("/v1/nope")).status).toBe(404);
     const wrong = await get("/v1/auth/nonce");
     expect(wrong.status).toBe(405);
@@ -116,7 +116,7 @@ describe("routing", () => {
     const base64 = btoa(String.fromCharCode(...der));
     const pem = `-----BEGIN PRIVATE KEY-----\n${base64.match(/.{1,64}/g)?.join("\n")}\n-----END PRIVATE KEY-----\n`;
     const config = env as unknown as Record<string, string | undefined>;
-    const names = ["APPLE_WEB_CLIENT_ID", "GOOGLE_WEB_CLIENT_ID", "GOOGLE_WEB_CLIENT_SECRET", "APPLE_SIWA_P8", "APPLE_KEY_ID"];
+    const names = ["GOOGLE_IOS_CLIENT_ID", "APPLE_WEB_CLIENT_ID", "GOOGLE_WEB_CLIENT_ID", "GOOGLE_WEB_CLIENT_SECRET", "APPLE_SIWA_P8", "APPLE_KEY_ID"];
     const saved = Object.fromEntries(names.map((name) => [name, config[name]]));
     const ALWAYS = ["native_sign_in", "devices", "statements", "sync", "delete"];
     const listed = async (values: Record<string, string | undefined>) => {
@@ -130,6 +130,9 @@ describe("routing", () => {
     };
     try {
       expect(await listed({})).toEqual(ALWAYS);
+      expect(await listed({ GOOGLE_IOS_CLIENT_ID: "552913387875-ios.apps.googleusercontent.com" })).toEqual([...ALWAYS, "native_sign_in_google"]);
+      expect(await listed({ GOOGLE_IOS_CLIENT_ID: "  " })).toEqual(ALWAYS);
+      expect(await listed({ GOOGLE_IOS_CLIENT_ID: "" })).toEqual(ALWAYS);
       expect(await listed({ APPLE_WEB_CLIENT_ID: "com.example.web" })).toEqual([...ALWAYS, "web_sign_in_apple"]);
       expect(await listed({ APPLE_WEB_CLIENT_ID: "  " })).toEqual(ALWAYS);
       expect(await listed({ GOOGLE_WEB_CLIENT_ID: "web.apps.googleusercontent.com" })).toEqual(ALWAYS);
@@ -145,13 +148,14 @@ describe("routing", () => {
       expect(await listed({ APPLE_SIWA_P8: pem, APPLE_KEY_ID: "TESTKEY123" })).toEqual([...ALWAYS, "apple_revoke"]);
       expect(
         await listed({
+          GOOGLE_IOS_CLIENT_ID: "552913387875-ios.apps.googleusercontent.com",
           APPLE_WEB_CLIENT_ID: "com.example.web",
           GOOGLE_WEB_CLIENT_ID: "web.apps.googleusercontent.com",
           GOOGLE_WEB_CLIENT_SECRET: "GOCSPX-test-secret-value",
           APPLE_SIWA_P8: pem,
           APPLE_KEY_ID: "TESTKEY123",
         }),
-      ).toEqual([...ALWAYS, "web_sign_in_apple", "web_sign_in_google", "apple_revoke"]);
+      ).toEqual([...ALWAYS, "native_sign_in_google", "web_sign_in_apple", "web_sign_in_google", "apple_revoke"]);
     } finally {
       for (const name of names) config[name] = saved[name];
     }
