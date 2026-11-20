@@ -8,7 +8,9 @@ HerdrUITests and HerdrFontTests must therefore appear as a whole class in an iPh
 (iphone-terminal or iphone-app, exactly one of them), or, for an iPad-only class, as a whole
 class in the ipad shard, or be one of the classes the `desktop-refs` script shard runs
 (Herdrup Desktop's references, ui-shard.sh DESKTOP_REFERENCE_CLASSES). Every selector must
-name an existing class or method, and every script shard's `run` an executable file.
+name an existing class or method, and every script shard's `run` an executable file. The
+Herdr scheme's test action holds only hosted bundles: macserve's UI shards import one shared
+.xctestrun, which a hostless package test target would break.
 
 The `smoke` shard is the fast tier's: a few dozen tests run on every push, while the full
 shards above still run before merge. It may overlap them, but only as a subset: each smoke
@@ -46,6 +48,7 @@ class MacserveShardTests(unittest.TestCase):
         config = json.loads((ROOT / ".macserve.json").read_text())
         cls.ui = config["ui_test"]["shards"]
         cls.script = config["script"]["shards"]
+        cls.project = (ROOT / "project.yml").read_text()
         cls.classes = {**test_classes("HerdrUITests"), **test_classes("HerdrFontTests")}
         cls.ui_shard = (ROOT / "Tools/ci/ui-shard.sh").read_text()
         references = re.search(r"^DESKTOP_REFERENCE_CLASSES=\(([^)]*)\)", cls.ui_shard, re.M)
@@ -89,8 +92,33 @@ class MacserveShardTests(unittest.TestCase):
         for shard, spec in self.script.items():
             run = ROOT / spec["run"]
             self.assertTrue(run.is_file() and os.access(run, os.X_OK), "%s: %s is no executable file" % (shard, run))
-        for shard in ("ipad-script", "desktop-refs"):
+        for shard in ("desktop-refs", "settings-stack"):
             self.assertRegex(self.ui_shard, r"(?m)^  %s\)$" % re.escape(shard), "ui-shard.sh has no %s case" % shard)
+
+    def test_ipad_script_moved_out_of_the_long_script_lane(self):
+        # 2026-11-19: AgentListChromeTests runs in the ipad UI-test shard; the Settings
+        # regression, SwiftTerm's UIKit API tests and the built-version check keep a short
+        # script shard; no shard may quietly bring the long one back.
+        self.assertNotIn("ipad-script", self.script)
+        self.assertIn("HerdrUITests/AgentListChromeTests", self.ui["ipad"])
+        self.assertEqual(self.script["settings-stack"]["run"], "Tools/ci/macserve-settings-stack.sh")
+        case = re.search(r"(?ms)^  settings-stack\)$(.*?)^    ;;$", self.ui_shard)
+        self.assertIsNotNone(case, "ui-shard.sh has no settings-stack case")
+        for step in ("testCompactSettingsSurviveResizeAndResume", "swiftterm_api iPad", "swiftterm_api iPhone"):
+            self.assertIn(step, case.group(1), "settings-stack no longer runs %s" % step)
+        runner = (ROOT / "Tools/ci/macserve-script-shard.sh").read_text()
+        self.assertIn("CFBundleShortVersionString", runner, "the built-version check is gone")
+
+    def test_the_herdr_scheme_tests_only_hosted_bundles(self):
+        # Review of #750: SwiftTerm's package test target in the Herdr scheme's test action
+        # added TestHostPath="__PLATFORMS__/…/Xcode/Agents/xctest" to the shared .xctestrun,
+        # which macserve's product import refuses as outside the products: every UI shard
+        # failed with no test run. Hostless package tests run from their own scheme
+        # (ui-shard.sh swiftterm_api, in settings-stack), and no unit_test shard selects them.
+        scheme = re.search(r"^    scheme:\n      testTargets:\n((?:        - .*\n)+)", self.project, re.M)
+        self.assertIsNotNone(scheme, "project.yml's Herdr target has no scheme testTargets")
+        self.assertNotIn("package:", scheme.group(1))
+        self.assertNotIn("unit_test", json.loads((ROOT / ".macserve.json").read_text()))
 
 
 if __name__ == "__main__":
