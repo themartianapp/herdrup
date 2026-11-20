@@ -226,12 +226,13 @@ struct GuestPaneView: View {
             transcriptCapable = capabilities?.agentTranscript ?? false
             topicsCapable = capabilities?.agentTopics ?? false
         }
-        // Whether the shared omp agent offers topics: asked once known, retrying while the list
-        // fails (`TopicsModel.discover`), and again when the share comes back running after a
-        // pause, a reconnect or the host going offline (#758). The Topics tab then polls the
-        // list every 15 s while it shows.
+        // Whether the shared omp agent offers topics (#758), on `TopicsDiscoveryBackoff`'s
+        // schedule (`topics_unsupported` stops; `topics_unreachable` backs off 60 s to 10 min).
+        // A guest has no event stream: the task restarts, so the schedule starts over, when the
+        // share comes back running after a pause, a reconnect or the host going offline, and
+        // when the agent's status changes. The Topics tab then polls the list every 15 s.
         .task(id: [topicsCapable ? "topics" : "", ChatPreference.isOmp(agent?.agent) ? "omp" : "",
-                   availability == .running ? "running" : ""]) {
+                   availability == .running ? "running" : "", agent?.agentStatus ?? ""]) {
             guard topicsCapable, ChatPreference.isOmp(agent?.agent), availability == .running,
                   !topicsModel.offered else { return }
             await topicsModel.discover(client: client)

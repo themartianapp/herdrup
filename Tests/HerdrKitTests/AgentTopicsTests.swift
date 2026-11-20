@@ -67,6 +67,50 @@ final class AgentTopicsTests: XCTestCase {
         XCTAssertEqual(try both.last().params["topic"] as? String, "t1", "both advertised: the topic is sent")
     }
 
+    // MARK: Discovery schedule (#758)
+
+    /// `topics_unsupported`, a server without `agent_topics` and a gone agent stop discovery
+    /// for good, on the first answer or after any number of retries.
+    func testDiscoveryStopsOnPermanentRefusals() {
+        for error in [AgentTopicsError.unsupported, .notAdvertised, .agentNotFound] {
+            var backoff = TopicsDiscoveryBackoff()
+            XCTAssertEqual(backoff.decide(after: error), .stop, "\(error)")
+            _ = backoff.decide(after: AgentTopicsError.unreachable)
+            XCTAssertEqual(backoff.decide(after: error), .stop, "\(error) after a retry")
+        }
+    }
+
+    /// `topics_unreachable` (every omp agent without topics on), a timeout or a dropped
+    /// connection back off 60 s, doubling, to a 10 minute cap that then repeats.
+    func testUnreachableBacksOffToATenMinuteCap() {
+        var backoff = TopicsDiscoveryBackoff()
+        var waits: [UInt64] = []
+        for _ in 0..<8 {
+            guard case .retry(let seconds) = backoff.decide(after: AgentTopicsError.unreachable) else {
+                return XCTFail("unreachable retries")
+            }
+            waits.append(seconds)
+        }
+        XCTAssertEqual(waits, [60, 120, 240, 480, 600, 600, 600, 600])
+        for error: Error in [AgentTopicsError.timeout, TransportError.closedBeforeResponse] {
+            var other = TopicsDiscoveryBackoff()
+            XCTAssertEqual(other.decide(after: error), .retry(afterSeconds: 60), "\(error) backs off too")
+        }
+    }
+
+    /// A change of the agent (status, session, a topics change, a guest reconnect) resets the
+    /// schedule to its start; a successful list ends it and also starts any later run fresh.
+    func testResetAndSuccessRestartTheSchedule() {
+        var backoff = TopicsDiscoveryBackoff()
+        for _ in 0..<6 { _ = backoff.decide(after: AgentTopicsError.unreachable) }
+        XCTAssertEqual(backoff.decide(after: AgentTopicsError.unreachable), .retry(afterSeconds: 600))
+        backoff.reset()
+        XCTAssertEqual(backoff.decide(after: AgentTopicsError.unreachable), .retry(afterSeconds: 60))
+        XCTAssertEqual(backoff.decide(after: AgentTopicsError.unreachable), .retry(afterSeconds: 120))
+        XCTAssertEqual(backoff.decide(after: nil), .offered)
+        XCTAssertEqual(backoff.decide(after: AgentTopicsError.unreachable), .retry(afterSeconds: 60))
+    }
+
     // MARK: Decoding
 
     func testListDecodesEveryFieldInSchemaSpelling() throws {

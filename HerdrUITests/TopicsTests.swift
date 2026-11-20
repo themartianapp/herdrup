@@ -247,7 +247,7 @@ final class TopicsTests: XCTestCase {
     /// #758: the agent's first topics lists fail (`topics_unreachable`, as an agent that offers
     /// its topics a moment late); discovery keeps asking and Topics appears, for the owner.
     func testOwnerDiscoveryRetriesAfterAFailedFirstList() {
-        let app = launch("chatview", ["HERDR_MOCK_TOPICS_FAIL_FIRST": "2"])
+        let app = launch("chatview", ["HERDR_MOCK_TOPICS_FAIL_FIRST": "2", "HERDR_MOCK_TOPICS_DISCOVERY_SECONDS": "3"])
         openHerdrApp(app)
         XCTAssertTrue(app.buttons["chat-switch-chat"].exists(within: 12), "the page opens as before")
         XCTAssertTrue(app.buttons["chat-switch-topics"].exists(within: 25),
@@ -258,7 +258,7 @@ final class TopicsTests: XCTestCase {
 
     /// #758, guest side: the same late agent, and the guest's Topics tab appears.
     func testGuestDiscoveryRetriesAfterAFailedFirstList() {
-        let app = launch("guestchat", ["HERDR_MOCK_TOPICS_FAIL_FIRST": "2"])
+        let app = launch("guestchat", ["HERDR_MOCK_TOPICS_FAIL_FIRST": "2", "HERDR_MOCK_TOPICS_DISCOVERY_SECONDS": "3"])
         XCTAssertTrue(app.buttons["guest-tab-chat"].exists(within: 12))
         XCTAssertTrue(app.buttons["guest-tab-topics"].exists(within: 25),
                       "a later list succeeds and the guest gets the Topics tab")
@@ -268,7 +268,8 @@ final class TopicsTests: XCTestCase {
     /// When the topics arrive the Topics tab appears, but the guest's pick stands. Without a
     /// pick, the same setting does open Topics.
     func testGuestExplicitTabSurvivesTopicsArriving() {
-        let picked = launch("guestchat", ["HERDR_MOCK_TOPICS_FAIL_FIRST": "2", "HERDR_MOCK_CHAT_OPENS_IN": "topics"])
+        let picked = launch("guestchat", ["HERDR_MOCK_TOPICS_FAIL_FIRST": "2", "HERDR_MOCK_TOPICS_DISCOVERY_SECONDS": "3",
+                                          "HERDR_MOCK_CHAT_OPENS_IN": "topics"])
         let terminal = picked.buttons["guest-tab-terminal"]
         XCTAssertTrue(terminal.exists(within: 12))
         XCTAssertFalse(picked.buttons["guest-tab-topics"].exists, "discovery is still pending")
@@ -278,7 +279,8 @@ final class TopicsTests: XCTestCase {
         XCTAssertFalse(picked.buttons["guest-tab-topics"].isSelected)
         picked.terminate()
 
-        let unpicked = launch("guestchat", ["HERDR_MOCK_TOPICS_FAIL_FIRST": "2", "HERDR_MOCK_CHAT_OPENS_IN": "topics"])
+        let unpicked = launch("guestchat", ["HERDR_MOCK_TOPICS_FAIL_FIRST": "2", "HERDR_MOCK_TOPICS_DISCOVERY_SECONDS": "3",
+                                            "HERDR_MOCK_CHAT_OPENS_IN": "topics"])
         let topics = unpicked.buttons["guest-tab-topics"]
         XCTAssertTrue(topics.exists(within: 25))
         XCTAssertTrue(poll(5, every: 0.3) { topics.isSelected }, "with no pick, Settings' Topics opens Topics")

@@ -21,8 +21,8 @@ final class TopicsModel: ObservableObject {
     @Published private(set) var loaded = false
     /// The agent answered `agent.topics.list` this session: the page offers Topics.
     @Published private(set) var offered = false
-    /// The newest list answer says this agent has no topics to offer (`topics_unsupported`,
-    /// no `agent_topics`, the agent is gone), as opposed to a failure worth retrying.
+    /// The agent will not offer topics for this page's life (`topics_unsupported`, no
+    /// `agent_topics`, the agent is gone): discovery stopped for good.
     private(set) var refused = false
     /// Why the newest list call failed. The last list stays on screen (`topics_unreachable`
     /// keeps it, as herdr's API asks).
@@ -48,9 +48,15 @@ final class TopicsModel: ObservableObject {
     static let backstopSeconds: UInt64 = 60
     /// The host caps a message at 32 KiB (`invalid_params` beyond it), as `agent.prompt`.
     static let maxMessageBytes = 32 * 1024
-    /// Gaps between discovery attempts while the agent's topics list fails, in seconds. The
-    /// last one repeats.
-    static let discoveryDelays: [UInt64] = [2, 4, 8, 15, 30, 60]
+    /// Discovery's retry schedule (`TopicsDiscoveryBackoff.delays`). DEBUG: the UI tests'
+    /// `HERDR_MOCK_TOPICS_DISCOVERY_SECONDS` shortens it, so a retry lands inside a test.
+    static var discoverySchedule: [UInt64] {
+        #if DEBUG
+        if let seconds = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_DISCOVERY_SECONDS"]
+            .flatMap(UInt64.init) { return [seconds] }
+        #endif
+        return TopicsDiscoveryBackoff.delays
+    }
 
     init(target: String) {
         self.target = target
@@ -70,19 +76,66 @@ final class TopicsModel: ObservableObject {
 
     func sendNote(for topicID: String) -> String? { sendNotes[topicID] }
 
-    /// Learns whether the agent offers topics, retrying while the list fails for a reason
-    /// that may pass (`topics_unreachable`, a timeout, a dropped connection) until it answers
-    /// or says it has none (herdrup#758). The page runs it again on its own refresh triggers
-    /// (foreground, reconnect, a status change), so a "no" is asked again then too.
-    func discover(client: HerdrClient) async {
-        var attempt = 0
-        while !offered, !Task.isCancelled {
-            await refresh(client: client)
-            if offered || refused { return }
-            let delays = Self.discoveryDelays
-            try? await Task.sleep(nanoseconds: delays[min(attempt, delays.count - 1)] * 1_000_000_000)
-            attempt += 1
+    /// Learns whether the agent offers topics (herdrup#758), on `TopicsDiscoveryBackoff`'s
+    /// schedule: `topics_unsupported` stops for good; `topics_unreachable` (every omp agent
+    /// without topics turned on), a timeout or a dropped connection ask again after 60 s,
+    /// doubling to a 10 minute cap. The page restarts this when the agent's status or session
+    /// changes and when a guest's share comes back, which starts the schedule over; for the
+    /// owner (`eventsPaneID`) an `agent.topics.changed` for the pane does too, at once.
+    func discover(client: HerdrClient, eventsPaneID: String? = nil) async {
+        guard !offered, !refused else { return }
+        await withTaskGroup(of: Void.self) { group in
+            if let eventsPaneID {
+                group.addTask { await self.wakeDiscoveryOnTopicChanges(client: client, paneID: eventsPaneID) }
+            }
+            group.addTask { await self.discoveryLoop(client: client) }
+            // The loop ends the discovery; the event watcher goes with it.
+            await group.next()
+            group.cancelAll()
         }
+    }
+
+    /// Set by an `agent.topics.changed` while discovery waits: the wait ends and the schedule
+    /// starts over.
+    private var discoveryWoken = false
+    private var discoveryWait: Task<Void, Never>?
+
+    private func discoveryLoop(client: HerdrClient) async {
+        var backoff = TopicsDiscoveryBackoff(schedule: Self.discoverySchedule)
+        while !Task.isCancelled {
+            discoveryWoken = false
+            let error = await listForDiscovery(client: client)
+            if Task.isCancelled { return }
+            switch backoff.decide(after: error) {
+            case .offered, .stop:
+                return
+            case .retry(let seconds):
+                let wait = Task<Void, Never> { try? await Task.sleep(nanoseconds: seconds * 1_000_000_000) }
+                discoveryWait = wait
+                await withTaskCancellationHandler { await wait.value } onCancel: { wait.cancel() }
+                discoveryWait = nil
+                if discoveryWoken { backoff.reset() }
+            }
+        }
+    }
+
+    private func wakeDiscoveryOnTopicChanges(client: HerdrClient, paneID: String) async {
+        do {
+            for try await line in client.subscribeTopicChanges() {
+                guard case .changed(let change) = line, change.paneID == paneID else { continue }
+                discoveryWoken = true
+                discoveryWait?.cancel()
+            }
+        } catch {}
+        // Refused or dropped: the schedule alone keeps asking. Stay until discovery ends.
+        while !Task.isCancelled { try? await Task.sleep(nanoseconds: 3_600_000_000_000) }
+    }
+
+    /// One list for discovery: nil when the agent answered, else why not.
+    private func listForDiscovery(client: HerdrClient) async -> Error? {
+        await refresh(client: client)
+        if offered { return nil }
+        return lastListError ?? AgentTopicsError.unreachable
     }
 
     /// Brings the list up to date. Concurrent calls coalesce into one more round.
@@ -99,6 +152,9 @@ final class TopicsModel: ObservableObject {
         } while refreshAgain
     }
 
+    /// Why the newest list call failed, for discovery; nil after one succeeds.
+    private var lastListError: Error?
+
     private func refreshOnce(client: HerdrClient) async {
         do {
             let list = try await client.agentTopicsList(target: target)
@@ -106,22 +162,22 @@ final class TopicsModel: ObservableObject {
             if ordered != topics { topics = ordered }
             if !offered { offered = true }
             refused = false
+            lastListError = nil
             if problem != nil { problem = nil }
         } catch is CancellationError {
             return
         } catch let error as AgentTopicsError {
-            switch error {
-            case .unsupported, .notAdvertised, .agentNotFound:
+            lastListError = error
+            if error.isPermanent {
                 // Not an agent with topics (any more): the page goes back to Chat and Terminal.
                 offered = false
                 refused = true
                 problem = nil
-            default:
-                refused = false
+            } else {
                 problem = Self.describe(error)
             }
         } catch {
-            refused = false
+            lastListError = error
             problem = Self.describe(error)
         }
         if !loaded { loaded = true }

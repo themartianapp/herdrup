@@ -6261,15 +6261,18 @@ struct TerminalPaneContent: View {
             } catch {}
             capabilitiesResolved = true
         }
-        // Whether this omp agent offers topics: asked once it is known to be an omp agent on a
-        // machine with `agent_topics`, retrying while the list fails (`TopicsModel.discover`),
-        // and again each time the pane comes to the front or the agent's status changes, until
-        // the agent answers (#758). The Topics view keeps the list current after that.
+        // Whether this omp agent offers topics (#758), on `TopicsDiscoveryBackoff`'s schedule
+        // (`topics_unsupported` stops; `topics_unreachable` backs off 60 s to 10 min). The task
+        // restarts, so the schedule starts over, when the pane comes to the front, the agent's
+        // status changes, or its session's topic files change (`topic_sessions`, a new or
+        // switched session); an `agent.topics.changed` for this pane restarts it too. The
+        // Topics view keeps the list current after that.
         .task(id: [topicsCapable ? "topics" : "", ChatPreference.isOmp(agent?.agent) ? "omp" : "",
-                   isForeground ? "front" : "", agent?.agentStatus ?? ""]) {
+                   isForeground ? "front" : "", agent?.agentStatus ?? "",
+                   (agent?.topicSessions ?? []).map(\.topicID).joined(separator: ",")]) {
             guard topicsCapable, ChatPreference.isOmp(agent?.agent), isForeground,
                   !topicsModel.offered else { return }
-            await topicsModel.discover(client: client)
+            await topicsModel.discover(client: client, eventsPaneID: paneID)
         }
         // While the server refuses this omp agent a transcript, ask again: soon after it
         // starts, then less often, and at once when its status changes (its first turn writes
