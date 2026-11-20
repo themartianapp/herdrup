@@ -360,9 +360,17 @@ async function sha256(text: string): Promise<string> {
 }
 
 describe("POST /v1/auth/handoff", () => {
-  it("refuses a missing or malformed verifier without spending the code", async () => {
+  it("takes exactly {code, handoff_verifier}: a missing, malformed or extra field is refused without spending the code", async () => {
     const { code, started } = await appleAppFlow();
-    for (const body of [{ code }, { code, handoff_verifier: "" }, { code, handoff_verifier: "short" }, { code, handoff_verifier: 42 }, { handoff_verifier: started.verifier }]) {
+    for (const body of [
+      { code },
+      { code, handoff_verifier: "" },
+      { code, handoff_verifier: "short" },
+      { code, handoff_verifier: 42 },
+      { handoff_verifier: started.verifier },
+      { code, handoff_verifier: started.verifier, platform: "macos" },
+      { code, handoff_verifier: started.verifier, device_name: "Luca's Mac" },
+    ]) {
       expect(await rejection(await handoff(body))).toEqual({ status: 400, error: "bad_request" });
     }
     expect((await handoff({ code, handoff_verifier: started.verifier })).status).toBe(200);

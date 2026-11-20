@@ -67,8 +67,16 @@ function decodeJson(part: string): Record<string, unknown> | null {
   }
 }
 
-export async function verifyIdToken(token: string, config: ProviderConfig, nowMs: number): Promise<IdTokenResult> {
-  const fail = (reason: IdTokenFailure): IdTokenResult => ({ ok: false, reason });
+export type JwsFailure = "malformed" | "unsupported_alg" | "unknown_kid" | "bad_signature";
+
+export type JwsResult = { ok: true; payload: Record<string, unknown> } | { ok: false; reason: JwsFailure | "keys_unavailable" };
+
+/**
+ * The payload of a compact JWS signed RS256 by a key in `jwks`, checked before any of it is
+ * trusted. Claims are the caller's to check. Shared by ID tokens and Apple's notifications.
+ */
+export async function verifyRs256Jws(token: string, jwks: JwksCache, nowMs: number): Promise<JwsResult> {
+  const fail = (reason: JwsFailure): JwsResult => ({ ok: false, reason });
   if (token.length > MAX_TOKEN_LENGTH) return fail("malformed");
   const parts = token.split(".");
   if (parts.length !== 3) return fail("malformed");
@@ -82,11 +90,19 @@ export async function verifyIdToken(token: string, config: ProviderConfig, nowMs
   if (header.alg !== "RS256" || header.crit !== undefined) return fail("unsupported_alg");
   if (typeof header.kid !== "string" || header.kid.length === 0) return fail("malformed");
 
-  const key = await config.jwks.key(header.kid, nowMs);
+  const key = await jwks.key(header.kid, nowMs);
   if (key === "unavailable") return { ok: false, reason: "keys_unavailable" };
   if (key === "unknown_kid") return fail("unknown_kid");
   const signed = utf8(`${headerPart}.${payloadPart}`);
   if (!(await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, signature, signed))) return fail("bad_signature");
+  return { ok: true, payload };
+}
+
+export async function verifyIdToken(token: string, config: ProviderConfig, nowMs: number): Promise<IdTokenResult> {
+  const fail = (reason: IdTokenFailure): IdTokenResult => ({ ok: false, reason });
+  const jws = await verifyRs256Jws(token, config.jwks, nowMs);
+  if (!jws.ok) return jws;
+  const { payload } = jws;
 
   const { iss, aud, azp, exp, iat, nonce, sub, email } = payload;
   if (typeof iss !== "string" || !config.issuers.includes(iss)) return fail("wrong_issuer");

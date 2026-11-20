@@ -103,7 +103,7 @@ describe("routing", () => {
   it("answers health, unknown paths and wrong methods", async () => {
     const health = await get("/v1/health");
     expect(health.status).toBe(200);
-    expect(await health.json()).toEqual({ ok: true, version: "0.3.0" });
+    expect(await health.json()).toEqual({ ok: true, version: "0.5.0" });
     expect((await get("/v1/nope")).status).toBe(404);
     const wrong = await get("/v1/auth/nonce");
     expect(wrong.status).toBe(405);

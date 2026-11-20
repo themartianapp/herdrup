@@ -289,6 +289,9 @@ export async function handleHandoff(request: Request, env: Env, nowMs: number): 
   if (keys instanceof Response) return keys;
   const body = await readJsonObject(request, MAX_AUTH_BODY_BYTES);
   if (body instanceof Response) return body;
+  // Exactly these two fields. The session's platform was fixed at start, and devices are named
+  // when they enrol (POST /v1/devices), so a platform or device_name here is a client bug: 400.
+  if (Object.keys(body).some((key) => key !== "code" && key !== "handoff_verifier")) return errorResponse(400, "bad_request");
   const { code, handoff_verifier: verifier } = body;
   if (typeof code !== "string" || !B64URL_32.test(code) || typeof verifier !== "string" || !VERIFIER.test(verifier)) {
     return errorResponse(400, "bad_request");
