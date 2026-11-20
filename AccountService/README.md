@@ -95,8 +95,8 @@ dropped unread. Then:
   that cookie; the refresh token itself never reaches the page. The cookie counts only on
   requests with `Origin: https://guest.herdrup.app`.
 
-CORS allows exactly that origin, with credentials, on the endpoints the page calls: refresh,
-signout, account, devices, statements, sync. It never allows `*`. Without
+CORS allows exactly that origin, with credentials, on the endpoints the page calls: health,
+refresh, signout, account, devices, statements, sync. It never allows `*`. Without
 `GOOGLE_WEB_CLIENT_SECRET`, the Google web flow answers `503 provider_not_configured`, and
 Apple's still works.
 
@@ -246,6 +246,7 @@ npm ci
 npm test                 # vitest in workerd: local D1, generated Apple/Google keys, no network
 npm run typecheck
 npx wrangler deploy --dry-run --outdir /tmp/accounts-dry   # bundle check only
+npx wrangler dev         # local Worker; src/index.ts must export only its handler (VERSION is in src/version.ts)
 ```
 
 Before the first deploy, once:

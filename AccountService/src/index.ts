@@ -18,8 +18,9 @@ import { handleJwks, handleStatements } from "./statements";
 import { handlePull, handlePush } from "./sync";
 import { corsHeaders, preflight } from "./browser";
 import { handleAppleCallback, handleGoogleCallback, handleHandoff, handleWebStart } from "./web";
+import { VERSION } from "./version";
 
-export const VERSION = "0.5.0";
+// This module exports only its handler: `wrangler dev` refuses an entry module with other exports.
 
 /**
  * What this Worker can do right now, for `GET /v1/health`: the apps ship separately, so they show
@@ -27,7 +28,7 @@ export const VERSION = "0.5.0";
  * Each flag is a boolean fact about the configuration; no value of a var or secret is ever
  * returned.
  */
-export async function features(env: Env): Promise<string[]> {
+async function features(env: Env): Promise<string[]> {
   const set = (value: string | undefined) => (value?.trim() ?? "").length > 0;
   const list = ["native_sign_in", "devices", "statements", "sync", "delete"];
   if (set(env.APPLE_WEB_CLIENT_ID)) list.push("web_sign_in_apple");
@@ -69,8 +70,12 @@ const ROUTES: Record<string, Route> = {
 const DEVICE_PATH = /^\/v1\/devices\/([A-Za-z0-9_-]{22})$/;
 const DEVICE_ROUTE: Route = { methods: ["PATCH", "DELETE"], endpoint: "/v1/devices/:id" };
 
-/** The endpoints the web guest's page calls: CORS for WEB_ORIGIN only (src/browser.ts). */
+/**
+ * The endpoints the web guest's page calls: CORS for WEB_ORIGIN only (src/browser.ts). Health is
+ * one: the page reads its features to decide whether to offer sign-in.
+ */
 const WEB_GUEST_ENDPOINTS: ReadonlySet<RoutedEndpoint> = new Set([
+  "/v1/health",
   "/v1/auth/refresh",
   "/v1/auth/signout",
   "/v1/account",
@@ -92,7 +97,7 @@ async function serve(request: Request, env: Env): Promise<Response> {
   return response;
 }
 
-export async function handleRequest(request: Request, env: Env): Promise<Response> {
+async function handleRequest(request: Request, env: Env): Promise<Response> {
   const { pathname } = new URL(request.url);
   const deviceId = DEVICE_PATH.exec(pathname)?.[1];
   const route = deviceId === undefined ? ROUTES[pathname] : DEVICE_ROUTE;
