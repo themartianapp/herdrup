@@ -288,18 +288,28 @@ public struct SyncChange: Equatable, Codable, Sendable {
     public static let maxBodyBytes = 16 * 1024
 
     public static func upsert(_ key: SyncKey, _ body: SyncBody, baseRev: Int? = nil) throws -> SyncChange {
+        let change = SyncChange(key: key, baseRev: baseRev, body: body)
+        try change.validate()
+        return change
+    }
+
+    public static func delete(_ key: SyncKey, baseRev: Int? = nil) throws -> SyncChange {
+        let change = SyncChange(key: key, baseRev: baseRev, body: nil)
+        try change.validate()
+        return change
+    }
+
+    /// Checks the change as the service would and refuses a secret-like body (§5.4). Every way
+    /// into the push queue goes through this: `upsert`, `delete`, `SyncEngine.stage`, and the
+    /// queue itself before each push (a decoded or stored change was never checked).
+    public func validate() throws {
+        guard let body else { return try SyncValidation.check(key: key, body: nil) }
         guard body.collection == key.collection else { throw SyncError.invalid(field: "collection") }
         let json = try body.jsonData()
         // Secrets first: a key pasted into a nickname is refused as a secret, not as too long.
         if let finding = SyncSecretScan.findings(inBody: json).first { throw SyncError.secretLike(field: finding.field) }
         try SyncValidation.check(key: key, body: body)
-        guard json.count <= maxBodyBytes else { throw SyncError.tooLarge }
-        return SyncChange(key: key, baseRev: baseRev, body: body)
-    }
-
-    public static func delete(_ key: SyncKey, baseRev: Int? = nil) throws -> SyncChange {
-        try SyncValidation.check(key: key, body: nil)
-        return SyncChange(key: key, baseRev: baseRev, body: nil)
+        guard json.count <= Self.maxBodyBytes else { throw SyncError.tooLarge }
     }
 
     private init(key: SyncKey, baseRev: Int?, body: SyncBody?) {
@@ -513,17 +523,27 @@ enum SyncValidation {
         return name.allSatisfy { ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x61 && $0 <= 0x7A) || ($0 >= 0x30 && $0 <= 0x39) }
     }
 
-    /// A relay's base URL: http(s), no credentials, query or fragment, and no path segment
-    /// that is (or decodes to) `i`, so an invite link can't ride in it.
+    /// A relay's base URL: http(s), no credentials, query or fragment, and no segment of the
+    /// resolved path that is (or decodes to) `i`, so an invite link can't ride in it. Dot
+    /// segments are resolved first, as sync.ts (WHATWG URL) does, so `/x/../i/…` is refused and
+    /// `/foo/../bar` is fine.
     static func isRelayBase(_ value: String) -> Bool {
         guard value.count <= 256, !value.contains(where: { $0.isWhitespace || $0 == "?" || $0 == "#" || $0 == "\\" }),
               let components = URLComponents(string: value),
               let scheme = components.scheme?.lowercased(), scheme == "https" || scheme == "http",
               components.host?.isEmpty == false, components.user == nil, components.password == nil
         else { return false }
-        for segment in components.percentEncodedPath.split(separator: "/", omittingEmptySubsequences: false) {
-            guard let decoded = String(segment).removingPercentEncoding else { return false }
-            if decoded == "i" || decoded == "." || decoded == ".." { return false }
+        var resolved: [String] = []
+        for segment in components.percentEncodedPath.split(separator: "/", omittingEmptySubsequences: false).dropFirst() {
+            switch segment.lowercased() {
+            case ".", "%2e": continue
+            case "..", ".%2e", "%2e.", "%2e%2e": _ = resolved.popLast()
+            default: resolved.append(String(segment))
+            }
+        }
+        for segment in resolved {
+            guard let decoded = segment.removingPercentEncoding else { return false }
+            if decoded == "i" { return false }
         }
         return true
     }

@@ -295,6 +295,134 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(service.body("settings", "ui.fontScale")?["value"] as? Double, 1.5)
     }
 
+    // MARK: Sign-out during a sync
+
+    /// Serves the fake, answering requests that match `hold` only after `delay`.
+    private func holdReplies(_ delay: TimeInterval = 0.4, where hold: @escaping @Sendable (AccountServiceStub.Request) -> Bool) {
+        let service = service!
+        AccountServiceStub.handler = { request in
+            var reply = service.handle(request)
+            if hold(request) { reply.delay = delay }
+            return reply
+        }
+    }
+
+    /// Waits until the stub has seen a request matching `match`.
+    private func waitForRequest(_ match: (AccountServiceStub.Request) -> Bool,
+                                file: StaticString = #filePath, line: UInt = #line) async throws {
+        for _ in 0..<200 {
+            if AccountServiceStub.requests.contains(where: match) { return }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTFail("the request never went out", file: file, line: line)
+    }
+
+    func testClearDuringAHeldPullSavesNothingAndTheNextSyncStartsOver() async throws {
+        let store = InMemorySyncStateStore()
+        let a = try device(store: store)
+        service.write("settings", "chat.fontSize", body: ["value": 15])
+        service.write("settings", "terminal.fontSize", body: ["value": 13])
+        service.write("settings", "guest.ownerName", body: ["value": "Old Account"])
+        _ = try await a.sync()
+        XCTAssertEqual(try store.loadSyncState()?.since, 3)
+
+        service.write("settings", "ui.theme", body: ["value": "dark"])
+        holdReplies { $0.method == "GET" && $0.query["since"] == "3" }
+        let held = Task { try await a.sync() }
+        try await waitForRequest { $0.method == "GET" && $0.query["since"] == "3" }
+
+        // Signed out while the pull is on the wire.
+        try await a.clear()
+        XCTAssertNil(try store.loadSyncState())
+        _ = try? await held.value
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        XCTAssertNil(try store.loadSyncState(), "the stale pull must not write the old account's copy back")
+        let state = await a.currentState
+        XCTAssertEqual(state, SyncState())
+
+        // Signed in again: a full replace from 0, not an incremental pull from the old cursor.
+        holdReplies(0) { _ in false }
+        let report = try await a.sync()
+        XCTAssertEqual(pulls.last, ["since": "0"])
+        XCTAssertTrue(report.replaced)
+        XCTAssertEqual(try store.loadSyncState()?.since, 4)
+    }
+
+    func testClearDuringAHeldPushSavesNothingAndTheNextSyncStartsOver() async throws {
+        let store = InMemorySyncStateStore()
+        let a = try device(store: store)
+        service.write("settings", "chat.fontSize", body: ["value": 15])
+        _ = try await a.sync()
+
+        try await a.stage(.upsert(.setting("ui.theme"), .setting(.string("dark"))))
+        holdReplies { $0.method == "POST" && $0.path == "/v1/sync" }
+        let held = Task { try await a.sync() }
+        try await waitForRequest { $0.method == "POST" && $0.path == "/v1/sync" }
+
+        try await a.clear()
+        XCTAssertNil(try store.loadSyncState())
+        _ = try? await held.value
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        XCTAssertNil(try store.loadSyncState(), "the stale push must not write the old account's copy back")
+        let state = await a.currentState
+        XCTAssertEqual(state, SyncState())
+        let pushesBefore = pushes.count
+
+        holdReplies(0) { _ in false }
+        let report = try await a.sync()
+        XCTAssertEqual(pushes.count, pushesBefore, "nothing of the old queue is pushed again")
+        XCTAssertEqual(pulls.last, ["since": "0"])
+        XCTAssertTrue(report.replaced)
+    }
+
+    func testStageRefusesADecodedChangeWithASecret() async throws {
+        let store = InMemorySyncStateStore()
+        let a = try device(store: store)
+        let decoded = try JSONDecoder().decode(SyncChange.self, from: Data("""
+            {"collection":"prompts","id":"6f9619ff-8b86-d011-b42d-00c04fc964ff",
+             "body":{"text":"-----BEGIN OPENSSH PRIVATE KEY-----\\nb3BlbnNzaC1rZXktdjEAAAAA\\n-----END OPENSSH PRIVATE KEY-----"}}
+            """.utf8))
+
+        do {
+            try await a.stage(decoded)
+            XCTFail("expected secretLike")
+        } catch {
+            guard case .secretLike? = error as? SyncError else { return XCTFail("\(error)") }
+        }
+        let state = await a.currentState
+        XCTAssertTrue(state.pending.isEmpty)
+        XCTAssertNil(try store.loadSyncState())
+
+        // An invalid decoded change is refused at the same boundary.
+        let invalid = try JSONDecoder().decode(SyncChange.self, from: Data("""
+            {"collection":"settings","id":"previews.javascript","body":{"value":true}}
+            """.utf8))
+        do {
+            try await a.stage(invalid)
+            XCTFail("expected invalid")
+        } catch {
+            XCTAssertEqual(error as? SyncError, .invalid(field: "id"))
+        }
+    }
+
+    func testAQueuedSecretFromAStoredStateIsNeverPushed() async throws {
+        let secret = try JSONDecoder().decode(SyncChange.self, from: Data("""
+            {"collection":"prompts","id":"6f9619ff-8b86-d011-b42d-00c04fc964ff",
+             "body":{"text":"pin SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU"}}
+            """.utf8))
+        let fine = try SyncChange.upsert(.setting("ui.theme"), .setting(.string("light")))
+        let a = try device(store: InMemorySyncStateStore(state: SyncState(since: 0, pending: [secret, fine])))
+
+        let report = try await a.sync()
+
+        XCTAssertEqual(report.rejected.map(\.change), [secret])
+        XCTAssertEqual(pushes.flatMap { $0 }.map { $0["id"] as? String }, ["ui.theme"])
+        let state = await a.currentState
+        XCTAssertTrue(state.pending.isEmpty)
+    }
+
     // MARK: Push limits and refusals
 
     func testPushesInBatchesOfAHundred() async throws {

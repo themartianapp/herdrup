@@ -121,17 +121,21 @@ final class SyncNoSecretsTests: XCTestCase {
     func testAnInviteLinkIsNotARelay() {
         let hostID = "HostAAAAAAAAAAAAAAAAAA", guestID = "GuestAAAAAAAAAAAAAAAAA"
         let nodePub = String(repeating: "N", count: 43)
-        for relay in [inviteLink, "https://guest.herdrup.app/i", "https://guest.herdrup.app/%69/x",
-                      "https://guest.herdrup.app/x/../i/abc", "https://guest.herdrup.app/i#payload",
+        for relay in [inviteLink, "https://guest.herdrup.app/i", "https://relay.example/i/", "https://guest.herdrup.app/%69/x",
+                      "https://guest.herdrup.app/x/../i/abc", "https://guest.herdrup.app/x/%2e%2E/i/abc",
+                      "https://guest.herdrup.app/i#payload",
                       "https://guest.herdrup.app/?invite=abc", "https://user:pass@guest.herdrup.app",
                       "herdrup://guest-invite#abc", "ftp://guest.herdrup.app"] {
             XCTAssertThrowsError(try SyncChange.upsert(
                 .share(hostID: hostID, guestID: guestID),
                 .share(SyncShare(relay: relay, hostID: hostID, nodePub: nodePub, guestID: guestID))), relay)
         }
-        XCTAssertNoThrow(try SyncChange.upsert(
-            .share(hostID: hostID, guestID: guestID),
-            .share(SyncShare(relay: "https://relay.example.com/herdr", hostID: hostID, nodePub: nodePub, guestID: guestID))))
+        // Dot segments are fine where they don't resolve to `i`: sync.ts stores the resolved path.
+        for relay in ["https://relay.example.com/herdr", "https://relay.example/foo/../bar", "https://relay.example/./x/"] {
+            XCTAssertNoThrow(try SyncChange.upsert(
+                .share(hostID: hostID, guestID: guestID),
+                .share(SyncShare(relay: relay, hostID: hostID, nodePub: nodePub, guestID: guestID))), relay)
+        }
     }
 
     func testDeviceShapedAndUnknownSettingsStayLocal() {

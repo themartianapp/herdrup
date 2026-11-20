@@ -61,7 +61,13 @@ final class AccountServiceStub: URLProtocol {
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-    override func stopLoading() {}
+    /// A cancelled load gets no answer: a delayed reply after `stopLoading` is dropped.
+    private let stopLock = NSLock()
+    private var stopped = false
+
+    override func stopLoading() {
+        stopLock.lock(); stopped = true; stopLock.unlock()
+    }
 
     override func startLoading() {
         let url = request.url!
@@ -78,6 +84,8 @@ final class AccountServiceStub: URLProtocol {
             return
         }
         let finish = { [self] in
+            stopLock.lock(); let isStopped = stopped; stopLock.unlock()
+            if isStopped { return }
             let response = HTTPURLResponse(url: url, statusCode: reply.status, httpVersion: "HTTP/1.1",
                                            headerFields: ["Content-Type": "application/json"])!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)

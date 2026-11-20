@@ -103,6 +103,10 @@ public actor SyncEngine {
     private let now: @Sendable () -> Date
     private var state: SyncState
     private var running: Task<SyncReport, Error>?
+    /// Bumped by `clear()`. A run started under another epoch belongs to a session that has
+    /// ended: after every await it checks this, and drops its results without touching
+    /// `state` or the store, so a sign-out mid-sync can't write the old account's copy back.
+    private var epoch = 0
 
     public init(session: AccountSession, store: SyncStateStore, now: @escaping @Sendable () -> Date = { Date() }) throws {
         self.session = session
@@ -129,33 +133,48 @@ public actor SyncEngine {
         state.items.first { $0.key == key }?.rev ?? 0
     }
 
-    /// Queues a local change; a later change to the same item replaces it.
+    /// Queues a local change; a later change to the same item replaces it. The change is
+    /// checked here whatever made it (`SyncChange.validate`), so nothing secret-like is queued.
     public func stage(_ change: SyncChange) throws {
+        try change.validate()
         state.pending.removeAll { $0.key == change.key }
         state.pending.append(change)
         try store.saveSyncState(state)
     }
 
-    /// Forgets everything: at sign-out and account deletion. The app's own copies stay.
+    /// Forgets everything: at sign-out and account deletion. The app's own copies stay. A sync
+    /// in flight is cancelled and whatever it still receives is dropped; the next sync is a
+    /// full pull from 0.
     public func clear() throws {
+        epoch += 1
+        running?.cancel()
+        running = nil
         state = SyncState()
         try store.deleteSyncState()
     }
 
-    /// Pushes the queue, then pulls. Concurrent calls share one run.
+    /// Pushes the queue, then pulls. Concurrent calls share one run. A run that `clear()`
+    /// ended throws `CancellationError`.
     public func sync() async throws -> SyncReport {
         if let running { return try await running.value }
-        let task = Task { try await self.run() }
+        let started = epoch
+        let task = Task { try await self.run(epoch: started) }
         running = task
         defer { if running == task { running = nil } }
         return try await task.value
     }
 
-    private func run() async throws -> SyncReport {
+    /// Throws when `clear()` ran since `started`: the caller must not apply or save anything.
+    private func ensureCurrent(_ started: Int) throws {
+        guard epoch == started else { throw CancellationError() }
+    }
+
+    private func run(epoch started: Int) async throws -> SyncReport {
         let before = effective()
         var report = SyncReport()
-        try await push(into: &report)
-        try await pull(into: &report)
+        try await push(into: &report, epoch: started)
+        try await pull(into: &report, epoch: started)
+        try ensureCurrent(started)
         try store.saveSyncState(state)
         let after = effective()
         for (key, item) in after where before[key]?.body != item.body {
@@ -168,7 +187,16 @@ public actor SyncEngine {
 
     // MARK: Push
 
-    private func push(into report: inout SyncReport) async throws {
+    private func push(into report: inout SyncReport, epoch started: Int) async throws {
+        // The queue boundary: a change from a stored state was never checked by `stage`.
+        for change in state.pending {
+            do {
+                try change.validate()
+            } catch {
+                report.rejected.append(SyncRejection(change: change, field: Self.field(of: error)))
+                dropPending(change)
+            }
+        }
         var queue = state.pending
         while !queue.isEmpty {
             let batch = try Self.nextBatch(of: queue)
@@ -179,20 +207,30 @@ public actor SyncEngine {
                 let changes = remaining
                 do {
                     let result = try await session.authorized { try await client.push(changes, accessToken: $0) }
+                    try ensureCurrent(started)
                     apply(result, of: changes, into: &report)
                     remaining = []
                 } catch AccountError.refused(400, "invalid_item", let field, let index?) where changes.indices.contains(index) {
+                    try ensureCurrent(started)
                     // One bad change refuses the whole push: drop it, push the rest again.
                     let bad = changes[index]
                     report.rejected.append(SyncRejection(change: bad, field: field ?? ""))
                     dropPending(bad)
                     remaining.remove(at: index)
                 } catch AccountError.refused(403, "quota", _, _) {
+                    try ensureCurrent(started)
                     report.overQuota = true
                     return
                 }
             }
             try store.saveSyncState(state)
+        }
+    }
+
+    private static func field(of error: Error) -> String {
+        switch error as? SyncError {
+        case .invalid(let field)?, .secretLike(let field)?: return field
+        case .tooLarge?, nil: return "body"
         }
     }
 
@@ -240,12 +278,13 @@ public actor SyncEngine {
 
     // MARK: Pull
 
-    private func pull(into report: inout SyncReport) async throws {
+    private func pull(into report: inout SyncReport, epoch started: Int) async throws {
         var resets = 0
         var since = state.since
         while true {
             do {
                 let (items, rev) = try await pullPages(since: since)
+                try ensureCurrent(started)
                 if since == 0 {
                     // A full pull replaces this device's copy (DESIGN §5.5): what it doesn't
                     // list is gone, including deletes whose tombstones were pruned meanwhile.
@@ -256,6 +295,7 @@ public actor SyncEngine {
                 state.since = rev
                 return
             } catch AccountError.refused(410, "reset_required", _, _) where resets < Self.maxResets {
+                try ensureCurrent(started)
                 resets += 1
                 since = 0
             }
