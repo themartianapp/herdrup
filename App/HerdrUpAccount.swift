@@ -494,16 +494,16 @@ final class HerdrUpAccount: ObservableObject {
     }
 
     static func describe(_ error: Error) -> String {
-        switch error {
-        case ProviderSignInError.failed(let text):
-            return text
-        case AccountError.unreachable:
+        if case ProviderSignInError.failed(let text)? = error as? ProviderSignInError { return text }
+        guard let account = error as? AccountError else { return error.localizedDescription }
+        switch account {
+        case .unreachable:
             return "HerdrUp accounts can't be reached. Check the connection and try again."
-        case AccountError.signedOut:
+        case .signedOut:
             return "You're signed out. Sign in again."
-        case AccountError.malformedResponse:
+        case .malformedResponse:
             return "The account service answered in a way this version doesn't understand. Update herdrup and try again."
-        case AccountError.refused(let status, let code, _, _):
+        case .refused(let status, let code, _, _):
             switch code {
             case "nonce_used", "nonce_mismatch", "nonce_invalid": return "The sign-in took too long. Try again."
             case "token_invalid", "token_expired": return "The sign-in wasn't accepted. Try again."
@@ -511,8 +511,6 @@ final class HerdrUpAccount: ObservableObject {
             case "provider_not_configured": return "This sign-in isn't available yet."
             default: return code.isEmpty ? "The account service refused (\(status))." : "The account service refused (\(code))."
             }
-        default:
-            return error.localizedDescription
         }
     }
 }

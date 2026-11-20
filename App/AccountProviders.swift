@@ -2,6 +2,7 @@ import AuthenticationServices
 import CryptoKit
 import Foundation
 import HerdrKit
+import Security
 import UIKit
 
 /// What a provider's sign-in gives the app (DESIGN #698 §2.1, §6.1): the ID token carrying the
@@ -31,8 +32,8 @@ protocol AccountProviderSignIn {
 struct NativeProviderSignIn: AccountProviderSignIn {
     @MainActor func signIn(_ provider: AccountProvider, nonce: String) async throws -> ProviderCredential {
         switch provider {
-        case .apple: return try await AppleSignIn().run(nonce: nonce)
-        case .google: return try await GoogleSignIn().run(nonce: nonce)
+        case .apple: return try await AppleSignIn(anchor: presentationWindow()).run(nonce: nonce)
+        case .google: return try await GoogleSignIn(anchor: presentationWindow()).run(nonce: nonce)
         }
     }
 }
@@ -53,6 +54,12 @@ private final class AppleSignIn: NSObject, ASAuthorizationControllerDelegate,
     private var continuation: CheckedContinuation<ProviderCredential, Error>?
     /// Kept for the length of the request: the controller holds its delegate weakly.
     private var retained: AppleSignIn?
+    /// The window the sheet presents over, read on the main actor when the flow starts.
+    private nonisolated let anchor: ASPresentationAnchor
+
+    init(anchor: ASPresentationAnchor) {
+        self.anchor = anchor
+    }
 
     func run(nonce: String) async throws -> ProviderCredential {
         let request = ASAuthorizationAppleIDProvider().createRequest()
@@ -75,7 +82,7 @@ private final class AppleSignIn: NSObject, ASAuthorizationControllerDelegate,
     }
 
     nonisolated func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
-        MainActor.assumeIsolated { presentationWindow() }
+        anchor
     }
 
     nonisolated func authorizationController(controller: ASAuthorizationController,
@@ -108,6 +115,15 @@ private final class AppleSignIn: NSObject, ASAuthorizationControllerDelegate,
 private final class GoogleSignIn: NSObject, ASWebAuthenticationPresentationContextProviding {
     static var clientID: String? {
         Bundle.main.object(forInfoDictionaryKey: "HerdrGoogleIOSClientID") as? String
+    }
+
+    /// The window the page presents over, read on the main actor when the flow starts.
+    private nonisolated let anchor: ASPresentationAnchor
+    /// The running session, kept until it calls back.
+    private var running: ASWebAuthenticationSession?
+
+    init(anchor: ASPresentationAnchor) {
+        self.anchor = anchor
     }
 
     /// `com.googleusercontent.apps.<id>`: the client id reversed, its own URL scheme.
@@ -150,7 +166,8 @@ private final class GoogleSignIn: NSObject, ASWebAuthenticationPresentationConte
     }
 
     private func authenticate(url: URL, scheme: String) async throws -> URL {
-        try await withCheckedThrowingContinuation { continuation in
+        defer { running = nil }
+        return try await withCheckedThrowingContinuation { continuation in
             let session = ASWebAuthenticationSession(url: url, callbackURLScheme: scheme) { callback, error in
                 if let callback {
                     continuation.resume(returning: callback)
@@ -161,6 +178,7 @@ private final class GoogleSignIn: NSObject, ASWebAuthenticationPresentationConte
                 }
             }
             session.presentationContextProvider = self
+            running = session
             if !session.start() {
                 continuation.resume(throwing: ProviderSignInError.failed("Couldn't open Google's sign-in page."))
             }
@@ -194,7 +212,7 @@ private final class GoogleSignIn: NSObject, ASWebAuthenticationPresentationConte
     }
 
     nonisolated func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        MainActor.assumeIsolated { presentationWindow() }
+        anchor
     }
 
     private static func randomB64URL(_ count: Int) -> String {

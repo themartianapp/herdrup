@@ -139,7 +139,7 @@ struct AccountSyncRun {
             guard let body = Self.syncBody(saved, label: nil) else { return nil }
             return (saved, SyncHostMerge.Local(id: saved.id.uuidString.lowercased(), body: body))
         }
-        let plan = SyncHostMerge.plan(local: machines.map(\.1), mirror: mirror, known: known)
+        let plan = SyncHostMerge.plan(local: machines.map { $0.1 }, mirror: mirror, known: known)
         var staged = false
         applying(true)
         defer { applying(false) }
