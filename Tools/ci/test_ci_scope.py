@@ -193,9 +193,11 @@ class UiReasonTests(unittest.TestCase):
 
     def test_a_header_comment_and_another_job_in_ci_skip_the_matrix(self) -> None:
         # The ci.yml half of #744: the file's header comment and a new job after the others.
-        old = "# checks, the CI tooling checks and the guest relay Worker."
-        self.assertIn(old, CI_YML)
-        text = CI_YML.replace(old, "# checks, the CI tooling checks, the guest relay and account Workers.", 1)
+        # Built from ci.yml's own first line, so a later header edit cannot break the test
+        # (#744 itself reworded the line this test once replaced, and main's run failed).
+        old = CI_YML.splitlines()[0]
+        self.assertTrue(old.startswith("# "), "ci.yml no longer starts with a header comment: %r" % old)
+        text = CI_YML.replace(old, old + " (and the account service Worker)", 1)
         text += "\n  # The account service Worker.\n  accounts:\n    runs-on: ubuntu-latest\n"
         self.write(CI_WORKFLOW, text)
         self.commit("header and job")
