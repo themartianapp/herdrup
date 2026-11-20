@@ -14,7 +14,7 @@
 import { randomB64url, sameString } from "./bytes";
 import type { Env } from "./env";
 import { errorResponse, json, log, readJsonObject, type Endpoint } from "./http";
-import { APPLE_ISSUER, APPLE_JWKS, GOOGLE_ISSUERS, GOOGLE_JWKS, verifyIdToken, type ProviderConfig } from "./idtoken";
+import { APPLE_ISSUER, APPLE_JWKS, GOOGLE_ISSUERS, GOOGLE_JWKS, verifyIdToken, type ProviderConfig, type VerifiedIdToken } from "./idtoken";
 import { serviceKeys, subjectHash, type Provider, type ServiceKeys } from "./keys";
 import { issueNonce, openNonce, spendNonce } from "./nonce";
 import { authenticate, dayOf, openSession, PLATFORMS, refreshSession, type Platform, type Principal } from "./sessions";
@@ -22,7 +22,7 @@ import { authenticate, dayOf, openSession, PLATFORMS, refreshSession, type Platf
 /** Largest sign-in or refresh body: an ID token is ~1 KB, and verifyIdToken refuses past 4 KB. */
 export const MAX_AUTH_BODY_BYTES = 8192;
 
-function providerConfig(env: Env, provider: Provider): ProviderConfig | null {
+export function providerConfig(env: Env, provider: Provider): ProviderConfig | null {
   const audiences = (
     provider === "apple" ? [env.APPLE_APP_CLIENT_ID, env.APPLE_WEB_CLIENT_ID] : [env.GOOGLE_IOS_CLIENT_ID, env.GOOGLE_WEB_CLIENT_ID]
   ).filter((id): id is string => typeof id === "string" && id.length > 0);
@@ -70,6 +70,31 @@ export async function handleSignIn(request: Request, env: Env, provider: Provide
     return errorResponse(400, "bad_request");
   }
 
+  const proof = await proveIdentity(env.DB, keys, config, endpoint, idToken, nonce, nowMs);
+  if (proof instanceof Response) return proof;
+  const { accountId, created } = await findOrCreateAccount(env.DB, provider, proof.subjectHash, nowMs);
+  const tokens = await openSession(env.DB, accountId, platform as Platform, nowMs);
+  return json(200, {
+    ...tokens,
+    created,
+    ...(proof.token.email === undefined ? {} : { display_hint: proof.token.email }),
+  });
+}
+
+/**
+ * A fresh sign-in with the provider: `nonce` is one this Worker issued and hasn't expired, the
+ * ID token verifies and carries it, and the nonce is then spent. Sign-in and account deletion
+ * (src/deletion.ts) both take one. The verified token and its identity hash, or the error.
+ */
+export async function proveIdentity(
+  db: D1Database,
+  keys: ServiceKeys,
+  config: ProviderConfig,
+  endpoint: Endpoint,
+  idToken: string,
+  nonce: string,
+  nowMs: number,
+): Promise<{ token: VerifiedIdToken; subjectHash: string } | Response> {
   const nonceExpiresMs = await openNonce(keys.nonce, nonce, nowMs);
   if (nonceExpiresMs === null) return errorResponse(401, "nonce_invalid");
   const verified = await verifyIdToken(idToken, config, nowMs);
@@ -81,15 +106,8 @@ export async function handleSignIn(request: Request, env: Env, provider: Provide
     return json(401, { error: "token_invalid", reason: verified.reason });
   }
   if (!sameString(verified.token.nonce, nonce)) return json(401, { error: "token_invalid", reason: "nonce_mismatch" });
-  if (!(await spendNonce(env.DB, nonce, nonceExpiresMs))) return errorResponse(401, "nonce_used");
-
-  const { accountId, created } = await findOrCreateAccount(env.DB, provider, await subjectHash(keys.subject, provider, verified.token.sub), nowMs);
-  const tokens = await openSession(env.DB, accountId, platform as Platform, nowMs);
-  return json(200, {
-    ...tokens,
-    created,
-    ...(verified.token.email === undefined ? {} : { display_hint: verified.token.email }),
-  });
+  if (!(await spendNonce(db, nonce, nonceExpiresMs))) return errorResponse(401, "nonce_used");
+  return { token: verified.token, subjectHash: await subjectHash(keys.subject, config.provider, verified.token.sub) };
 }
 
 /**

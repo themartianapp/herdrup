@@ -697,8 +697,9 @@ code needed to revoke. Then:
    We never store Apple tokens. If the exchange or revoke fails, the deletion still goes ahead
    (TN3194), and the app shows Apple's manual path: Settings → Apple Account → Sign in with
    Apple → HerdrUp → Stop using.
-3. Delete everything in one `db.batch()`: `sync_items`, `sync_usage`, `sessions`, `devices`, `handoffs`,
-   `enrol_challenges`, `identities`, `accounts`, matched on `account_id`.
+3. Delete everything in one `db.batch()`, matched on `account_id`: `sync_items`, `sync_usage`,
+   `enrol_challenges`, `sessions` (and their `spent_refresh_tokens`), `devices`, `identities`,
+   then `accounts` (§6.5 has the exact list and how it is kept complete).
 4. The app clears its Keychain account items and statement cache, and returns to signed out.
    Local copies of hosts and prompts stay on the device, as they did before sign-in. The
    confirm screen says so.
@@ -736,6 +737,80 @@ Apple's JWKS (`iss`, `aud` ∈ our client ids), hashes `events.sub`, and:
   host closes account-bound sessions at the deadline and refuses new ones. The `GuestRecord`
   stays on the host until the owner removes it. The 4B page shows the person as not seen since…
 - Plain shares (from "Only this device") are not bound to the account and keep working.
+
+### 6.5 Decided in step 4 (20 Nov)
+
+PR 4 (`src/deletion.ts`, `src/apple.ts`, `src/apple_notify.ts`) settles these.
+
+**The call.** `POST /v1/account/delete` takes a bearer access token and
+`{provider, id_token, nonce, authorization_code?}`, and answers `200 {deleted: true, manual_revoke}`.
+
+- The fresh sign-in is checked like a sign-in (`proveIdentity`, shared with §2.4): the nonce
+  was issued by this Worker and is spent here, and the token carries it.
+- Its identity must belong to the session's own account. Otherwise the answer is
+  `403 wrong_account`, and nothing is spent but the nonce.
+- `authorization_code` is Apple only: printable ASCII, ≤1,024 characters. A code with Google
+  is `400`.
+- Order of checks: `DELETE_IP_LIMIT` per IP before anything else, then the session and
+  `ACCOUNT_LIMIT`, then the body.
+
+**Delete first, revoke after.** The deletion is one D1 batch, which is a transaction. Apple's
+revoke runs after it, and nothing is ever compensated or undone.
+
+- `manual_revoke: true` covers every case where Apple didn't confirm the revoke: no code, an
+  unusable `APPLE_SIWA_P8` or `APPLE_KEY_ID`, an exchange or revoke refused, no refresh token in
+  the answer, a network error, or a 5 s timeout.
+- In all those cases the account is already gone.
+- A missing or unusable key also logs `not_configured`, so the owner can see it.
+
+**Which client_id.** The code is exchanged and revoked with the `aud` of the same sign-in's ID
+token: `com.jerryfane.herdr` for native codes, the Services ID for web codes. A web code's
+exchange also sends `redirect_uri` = the Services ID's return URL.
+
+**The client secret.** It is signed per call and lives 5 minutes (`exp = iat + 300`). Header
+`{alg: ES256, kid: APPLE_KEY_ID}`; payload
+`{iss: APPLE_TEAM_ID, iat, exp, aud: "https://appleid.apple.com", sub: client_id}`; a raw 64-byte
+r‖s signature, as JOSE wants. `APPLE_SIWA_P8` is the `.p8` exactly as downloaded (PKCS8 PEM).
+`APPLE_TEAM_ID` and `APPLE_KEY_ID` are vars and must be 10 upper-case letters or digits. The
+imported key is cached per isolate.
+
+**Every table is covered.** `ACCOUNT_TABLES` lists the tables with an `account_id` column. A test
+reads every `CREATE TABLE` from the migrations' own SQL and checks that the list is exactly the
+tables with that column. Every other table must be named in the test with how deletion covers it:
+
+| Table | How deletion covers it |
+|---|---|
+| `accounts` | its own row, by `id` |
+| `spent_refresh_tokens` | by the account's session ids, in the same batch |
+| `used_nonces` | nothing to delete: it holds only hashes and expiries, nothing that names an account |
+
+A new table therefore fails the test until it is handled. The batch deletes children first, so
+it never depends on `ON DELETE CASCADE`.
+
+**Racing calls.** Any request already past authentication either commits before the deletion
+batch or finds the account gone:
+
+- A sync push writes through `INSERT … SELECT … FROM accounts` (§5.5), so it writes nothing once
+  the account is gone, and answers `401 invalid_token`.
+- A full pull's next page answers `401` too.
+
+**Notifications.** `POST /v1/apple/notifications {payload}` answers `204` whether or not an
+account matched, so it never says who has an account.
+
+- The JWS is checked with the same RS256 verifier and Apple JWKS cache as ID tokens.
+- `iss` must be `https://appleid.apple.com`. The bare `appleid.apple.com` is accepted too.
+- `aud` must be one of our two Apple client ids.
+- `iat` must not be in the future; `exp`, when present, must not have passed.
+- `events` may be a JSON string, as Apple sends it, or an object, as in Apple's samples.
+- `consent-revoked` and `account-deleted` delete the account. Every other type is acknowledged
+  and ignored.
+- **Replay guard:** an event whose `event_time` is from before the identity's `created_ms`
+  deletes nothing. `event_time` may be in ms or s; when it is missing, `iat` stands in. So an old
+  revoke can't delete an account the person made since.
+- Bad tokens answer `401 token_invalid` with a `reason`, and Apple's unreachable keys answer `503`.
+- `DELETE_IP_LIMIT` (5/min per IP) covers notifications as §8 says. Apple sends from few IPs, but
+  at our size that is far below 5 a minute. If a §1.4 growth trigger fires, give notifications
+  their own limit.
 
 ---
 
@@ -808,7 +883,7 @@ Logging copies the relay's rule:
 | 1 | herdrup | **Worker skeleton + native auth** (built 19 Nov). `AccountService/`, migration 0001, `/v1/health`, nonce, Apple/Google ID-token sign-in, sessions (refresh, rotation, reuse revokes the family, sign-out), `/v1/account`, rate limits, logging rules, hourly cleanup, README with deploy/rollback like GuestRelay's, CI job "Account service (Linux)". | `@cloudflare/vitest-plugin` in workerd with a local D1; test-generated RSA keys served by a fetch spy at the real JWKS URLs; per-key counter rate limits (no clock windows). Cases: good tokens (both Apple audiences, both Google clients); wrong `iss`/`aud`/`azp`; expired / future / too-old `iat`; `alg: none`/HS256/`crit`; unknown `kid`; bad signature; nonce mismatch, forgery, expiry, reuse; refresh rotation, reuse revokes, racing refreshes; per-IP and per-account limits; no stored sub/email/token; logs hold only endpoint and outcome; JWKS cache timing with an explicit clock. |
 | 2 | herdrup | **Devices + statements** (built 20 Nov). Challenge/enrol, device list/rename/remove, `/v1/statements`, `/.well-known/jwks.json`, two-slot rotation vars, migration `0002_devices.sql`, `STATEMENT_LIMIT` and `ENROL_LIMIT`. | X25519 PoP vectors in `AccountService/test/vectors/enrol-v1.json` (made with Node's crypto, RFC 7748 key pairs), shared with the iOS, Go and TS clients; low-order points rejected; 409 for another account; one device per session; device cap; removal stops statements; pairwise `sub` stable per host, different across hosts and accounts; golden `statement-v1.json` (RFC 8032 test key) that herdr's tests reuse; JWKS during rotation and after a revocation. |
 | 3 | herdrup | **Sync** (built 20 Nov). `GET`/`POST /v1/sync`, schemas per collection, caps, tombstones, `reset_required`, migration `0003_sync.sql`, `SYNC_WRITE_LIMIT`; open points settled in §5.5. | Ordering and last-writer-wins; per-key settings don't clobber; `base_rev` conflict; unknown field → 400; caps → 413/403; tombstone pruning; full-reset path. |
-| 4 | herdrup | **Deletion + Apple revoke + notifications.** `/v1/account/delete`, client secret signed in the Worker from `APPLE_SIWA_P8`, `/v1/apple/notifications`. | Table sweep: no row with the `account_id` remains in any table; client-secret JWT claims and ES256 signature checked against a generated P-256 key; revoke called with the client_id matching the token `aud`; revoke failure still deletes and returns `manual_revoke: true`; notification JWS verify (bad sig, wrong `aud`); `consent-revoked` deletes. |
+| 4 | herdrup | **Deletion + Apple revoke + notifications** (built 20 Nov). `/v1/account/delete`, client secret signed in the Worker from `APPLE_SIWA_P8`, `/v1/apple/notifications`, `DELETE_IP_LIMIT`; open points settled in §6.5. | Table sweep: no row with the `account_id` remains in any table; client-secret JWT claims and ES256 signature checked against a generated P-256 key; revoke called with the client_id matching the token `aud`; revoke failure still deletes and returns `manual_revoke: true`; notification JWS verify (bad sig, wrong `aud`); `consent-revoked` deletes. |
 | 5 | herdrup + herdrup-desktop | **Web sign-in flow + sign-in UI (1B) + sync client (#699).** Worker: `/v1/auth/web/start`, the Apple `form_post` and Google callbacks, handoff with PKCE, the web refresh cookie and CORS for `guest.herdrup.app` (moved here from PR1, next to their only clients). Apps: HerdrKit `AccountClient`, `AccountSession` (Keychain), `DeviceEnroller`, `StatementCache`, `SyncEngine` (Linux-testable, protocols like `GuestKeyStore`); onboarding 1B with Apple + Google; account screen (devices, sign-out, delete); desktop `internal/account` + `herdrup://account#`; web guest sign-in. | Worker: web `state` reuse, handoff without/with wrong verifier, CORS only for `guest.herdrup.app`, cookie flags. HerdrKit unit tests with URLProtocol stubs (single-flight refresh, 401 → re-auth, PoP vector); sync merge tests; encoder test that payloads hold no secret patterns; UI test for 1B with a mock server; Go tests for the handoff and Secrets fallback; web guest vitest for the cookie flow. |
 | 6 | jerryfane/herdr (#440) | **Account-bound shares on the host.** Statement verify (ring Ed25519), JWKS cache, `GuestRecord.account`/`devices`, hello `account`, in-band refresh, `guest.revoke {person}`, `guest.remove_device`, `acct:1` in invites, config switch. | Golden statements from PR 2; expired / wrong `aud` / wrong `dev` / unknown `kid` → refetch / stale-JWKS grace; plain shares unchanged (old `guests.json` loads); account-bound device without statement refused; new device added + audit; removed device refused with a valid statement; revoke by person closes live sessions; session closed at the statement deadline. |
 | 7 | herdrup + herdrup-desktop | **2A + 4B (#700).** Invite screen with "Add to my account" / "Only this device" (only for `acct:1`), share list from `shares` sync, owner page per person (devices, shares, revoke once, remove device). Relay CSP `connect-src`. | UI tests for 2A both paths and for old invites (plain Accept); 4B grouping by `person`; revoke-once calls `guest.revoke {person}`; GuestRelay `npm test` covers the `_headers` CSP. |

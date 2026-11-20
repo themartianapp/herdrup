@@ -5,10 +5,15 @@ export interface Env {
   STATEMENT_LIMIT?: RateLimit;
   ENROL_LIMIT?: RateLimit;
   SYNC_WRITE_LIMIT?: RateLimit;
+  DELETE_IP_LIMIT?: RateLimit;
   /** 32 random bytes, standard base64 (wrangler secret). See src/keys.ts. */
   ACCOUNT_HMAC_KEY?: string;
   APPLE_APP_CLIENT_ID?: string;
   APPLE_WEB_CLIENT_ID?: string;
+  /** Sign in with Apple's key (the .p8 file, PKCS8 PEM; wrangler secret), its Key ID and the Team ID (vars). See src/apple.ts. */
+  APPLE_SIWA_P8?: string;
+  APPLE_KEY_ID?: string;
+  APPLE_TEAM_ID?: string;
   GOOGLE_IOS_CLIENT_ID?: string;
   GOOGLE_WEB_CLIENT_ID?: string;
   /** Statement signing keys, two slots for rotation (src/signing.ts): Ed25519 PKCS8 DER, standard base64 (wrangler secrets). */
