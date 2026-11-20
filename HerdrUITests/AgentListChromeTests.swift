@@ -1,12 +1,16 @@
 import XCTest
 import UIKit
 
+/// On iPad two of these tests shrink the app into a window, which iPadOS keeps for later
+/// launches. Each returns the app to full screen when it ends (`restoreFullScreenAfterTest`,
+/// HerdrUITests/Support/FullScreen.swift), so the class can run anywhere in the `ipad` shard.
 final class AgentListChromeTests: XCTestCase {
     func testBackReturnsFromAgentsToMachines() {
         let app = XCUIApplication.launched(mock: "list")
         let back = app.buttons[UIDevice.current.userInterfaceIdiom == .pad ? "agents-back" : "Back"].firstMatch
         XCTAssertTrue(back.exists(within: 10))
         if UIDevice.current.userInterfaceIdiom == .pad {
+            restoreFullScreenAfterTest(app)
             let window = app.windows.firstMatch
             // iPadOS can restore a compact window from an earlier launch. Resize only
             // a full-screen window: a minimum-size window cannot shrink any further.
@@ -24,14 +28,14 @@ final class AgentListChromeTests: XCTestCase {
 
     /// iPad: Back leads in full screen (no window controls on the left), joins the
     /// right-hand capsule in a window, and in a window the bar sits inside the window's
-    /// top edge instead of touching it. Named to run first in this class: the next test
-    /// leaves the window shrunk, and iPadOS restores that size on later launches.
+    /// top edge instead of touching it. It leaves full screen and returns to it at the end.
     func testAIPadBackFollowsFullScreenAndWindowMode() throws {
         guard UIDevice.current.userInterfaceIdiom == .pad else {
             throw XCTSkip("iPad window modes only")
         }
         continueAfterFailure = false
         let app = XCUIApplication.launched(mock: "list")
+        restoreFullScreenAfterTest(app)
         let window = app.windows.firstMatch
         let back = app.buttons["agents-back"].firstMatch
         let title = app.staticTexts["Agents"].firstMatch
