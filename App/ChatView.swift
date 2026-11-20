@@ -89,14 +89,19 @@ final class ChatModel: ObservableObject {
     let presentation: ChatPresentation
 
     /// `subagent`: the model pages that subagent's own conversation (read-only) instead.
-    init(target: String, subagent: String? = nil) {
-        store = TranscriptStore(target: target, subagent: subagent)
+    /// `topic`: the model pages that topic's conversation (`agent.transcript` with `topic`).
+    init(target: String, subagent: String? = nil, topic: String? = nil) {
+        store = TranscriptStore(target: target, subagent: subagent, topic: topic)
         presentation = ChatPresentation()
         store.onChange = { [weak self] in self?.sync() }
         #if DEBUG
         SnapshotStress.track(self)
         #endif
     }
+
+    /// omp's question UI is the Inbox's, in the terminal: a subagent's or a topic's question
+    /// is answered there, not from this chat.
+    var answersQuestions: Bool { store.subagent == nil && store.topic == nil }
 
     var target: String { store.target }
 
@@ -145,9 +150,10 @@ final class ChatModel: ObservableObject {
     }
 
     /// A cold start (slow-network fix 4): the newest page this agent's chat showed last
-    /// time, from disk, until the first refresh replaces it. Only onto an empty chat.
+    /// time, from disk, until the first refresh replaces it. Only onto an empty chat, and
+    /// never a topic's (the cache keeps the Inbox's page only).
     private func showKeptPage(client: HerdrClient) {
-        guard !store.loaded,
+        guard !store.loaded, store.topic == nil,
               let page = client.contentCache?.transcript(target: store.target, subagent: store.subagent)
         else { return }
         store.showCached(page)
@@ -174,7 +180,7 @@ final class ChatModel: ObservableObject {
     /// Answers omp's open question with one of its options. The card shows the choice at
     /// once; a refusal puts the buttons back with the reason.
     func answer(client: HerdrClient, askID: String, option: String) async {
-        guard answeringAskID == nil, store.subagent == nil else { return }
+        guard answeringAskID == nil, answersQuestions else { return }
         answeringAskID = askID
         answerProblem = nil
         defer { answeringAskID = nil }
@@ -227,7 +233,7 @@ final class ChatModel: ObservableObject {
     /// The card shows the answers at once; a refusal keeps the draft, on the refused field's
     /// step when herdr names one.
     func answerForm(client: HerdrClient, askID: String, draft: AskFormDraft) async {
-        guard answeringAskID == nil, store.subagent == nil else { return }
+        guard answeringAskID == nil, answersQuestions else { return }
         answeringAskID = askID
         answerProblem = nil
         draft.errors = [:]
@@ -284,13 +290,18 @@ final class ChatModel: ObservableObject {
     /// Keeps the chat current while it is on screen: the agent's own events where the
     /// server sends them (owner), a 3 s poll while a send waits to show up in the
     /// transcript or while omp works, and a slow poll otherwise as a backstop for a missed
-    /// event (and for guests, who have no event stream).
+    /// event (and for guests, who have no event stream). A topic's chat follows that topic's
+    /// `agent.topics.changed` events instead of the pane's status.
     func follow(client: HerdrClient, paneID: String?) async {
         showKeptPage(client: client)
         await store.refresh(client: client)
         await withTaskGroup(of: Void.self) { group in
             if let paneID {
-                group.addTask { await self.followEvents(client: client, paneID: paneID) }
+                if let topic = store.topic {
+                    group.addTask { await self.followTopicEvents(client: client, topic: topic) }
+                } else {
+                    group.addTask { await self.followEvents(client: client, paneID: paneID) }
+                }
             }
             group.addTask { await self.poll(client: client) }
         }
@@ -343,6 +354,21 @@ final class ChatModel: ObservableObject {
         }
     }
 
+    private func followTopicEvents(client: HerdrClient, topic: String) async {
+        while !Task.isCancelled {
+            do {
+                for try await line in client.subscribeTopicChanges() {
+                    if case .changed(let change) = line, change.topicID == topic {
+                        await store.refresh(client: client)
+                    }
+                }
+            } catch is APIError {
+                return   // the server refuses the subscription: polling alone keeps up
+            } catch {}
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+        }
+    }
+
     /// Republishes the store. Each value is assigned only when it changed: an equal
     /// assignment still sends `objectWillChange`, which redraws the whole chat.
     private func sync() {
@@ -380,6 +406,9 @@ final class ChatModel: ObservableObject {
             case .subagentNotFound:
                 assign(\.unsupported, false)
                 assign(\.failure, "This subagent's conversation can't be found.")
+            case .topicNotFound:
+                assign(\.unsupported, false)
+                assign(\.failure, "This topic's conversation can't be found.")
             }
         } else if let error = store.lastError {
             // A guest whose host refuses the method for guests: the Chat tab goes away.
@@ -1165,7 +1194,7 @@ struct ChatView: View {
                 revealFormTop(frame)
             },
             formReviewLaidOut: { frame in revealFormTop(frame) },
-            canAnswer: model.store.subagent == nil,
+            canAnswer: model.answersQuestions,
             openTerminal: {
                 model.presentation.sheet = nil
                 onOpenTerminal()

@@ -214,6 +214,9 @@ public final class TranscriptStore {
     /// The subagent whose own conversation this store pages (read-only), or nil for the
     /// agent's.
     public let subagent: String?
+    /// The topic whose conversation this store pages (`agent.transcript` with `topic`), or nil
+    /// for the agent's own one (the Inbox). One store per (agent, topic).
+    public let topic: String?
     public private(set) var entries: [TranscriptEntry] = []
     public private(set) var turns: [TranscriptTurn] = []
     public private(set) var pendingAsk: TranscriptPendingAsk?
@@ -283,11 +286,13 @@ public final class TranscriptStore {
     /// The clock that ages unmatched sends (`TranscriptOutbox.demoteUnseen`); tests inject one.
     private let now: () -> Date
 
-    public init(target: String, subagent: String? = nil, pageTurns: UInt32 = TranscriptStore.pageTurns,
+    public init(target: String, subagent: String? = nil, topic: String? = nil,
+                pageTurns: UInt32 = TranscriptStore.pageTurns,
                 newestPageTurns: UInt32 = TranscriptStore.newestPageTurns,
                 now: @escaping () -> Date = { Date() }) {
         self.target = target
         self.subagent = subagent
+        self.topic = topic
         self.pageTurns = pageTurns
         self.newestPageTurns = newestPageTurns
         self.now = now
@@ -329,7 +334,7 @@ public final class TranscriptStore {
             // What this store holds, so marks herdr learns late reach scrolled-in history too.
             let heldFrom = hasOlder ? beforeCursor : ""
             let page = try await client.agentTranscript(target: target, after: after, subagent: subagent,
-                                                        heldFrom: heldFrom)
+                                                        heldFrom: heldFrom, topic: topic)
             guard version == generation else { return }
             if let session = page.sessionID, let known = sessionID, session != known {
                 // omp started a new session in this pane: the old cursor's history is not
@@ -356,7 +361,8 @@ public final class TranscriptStore {
         generation += 1
         let version = generation
         do {
-            let page = try await client.agentTranscript(target: target, limit: newestPageTurns, subagent: subagent)
+            let page = try await client.agentTranscript(target: target, limit: newestPageTurns, subagent: subagent,
+                                                        topic: topic)
             guard version == generation else { return }
             applyNewest(page)
         } catch is CancellationError {
@@ -408,7 +414,7 @@ public final class TranscriptStore {
         let page: AgentTranscriptPage
         do {
             page = try await client.agentTranscript(target: target, before: before, limit: pageTurns,
-                                                    subagent: subagent)
+                                                    subagent: subagent, topic: topic)
         } catch AgentTranscriptError.cursorExpired {
             guard version == generation else { return }
             // The file was replaced under us: the history we hold is no longer pageable.

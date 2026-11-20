@@ -26,7 +26,7 @@ invocation_logs = false
 [observability.traces]
 enabled = false
 
-# Accounts, their sign-in identities, sessions and spent sign-in nonces (migrations/).
+# Accounts, their sign-in identities, sessions, devices and sync items (migrations/).
 [[d1_databases]]
 binding = "DB"
 database_name = "herdrup-accounts"
@@ -57,14 +57,21 @@ name = "STATEMENT_LIMIT"
 namespace_id = "6983"
 simple = { limit = 30, period = 60 }
 
-# ... and device challenges and enrolments.
+# ... device challenges and enrolments ...
 [[ratelimits]]
 name = "ENROL_LIMIT"
 namespace_id = "6985"
 simple = { limit = 10, period = 60 }
 
+# ... and sync pushes (POST /v1/sync). Pulls count against ACCOUNT_LIMIT alone.
+[[ratelimits]]
+name = "SYNC_WRITE_LIMIT"
+namespace_id = "6984"
+simple = { limit = 30, period = 60 }
+
 # Hourly cleanup (src/cleanup.ts): spent nonces and refresh tokens, enrolment challenges and
-# sessions past their expiry, and accounts not seen for 24 months.
+# sessions past their expiry, sync tombstones older than 90 days, and accounts not seen for 24
+# months.
 [triggers]
 crons = ["17 * * * *"]
 

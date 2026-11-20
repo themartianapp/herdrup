@@ -4,9 +4,9 @@
 epic #696), on `accounts.herdrup.app` with a D1 database. Signing in is optional: signed out,
 HerdrUp works exactly as before, and plain guest invites never touch this Worker.
 
-It signs people in with Apple or Google and keeps their sessions (step 1), and binds each
-device's guest key to the account and signs the short-lived statements hosts check (step 2).
-Later steps add sync of non-secret settings and account deletion.
+It signs people in with Apple or Google and keeps their sessions (step 1), binds each device's
+guest key to the account and signs the short-lived statements hosts check (step 2), and syncs
+non-secret settings between the account's devices (step 3). Account deletion comes next.
 It is a separate Worker from `herdrup-guest`: it holds personal data, its own secrets and its
 own deploys, so a bug or rollback here can't drop a guest session.
 
@@ -27,6 +27,8 @@ own deploys, so a bug or rollback here can't drop a guest session.
 | `PATCH /v1/devices/<id>` | bearer; `{name}` | `{device}` |
 | `DELETE /v1/devices/<id>` | bearer | 204; that device's sessions end |
 | `POST /v1/statements` | bearer; `{hosts: [host_id, … ≤ 50]}` | `{statements: [{host, jws}], exp}` |
+| `GET /v1/sync?since=<rev>`, `GET /v1/sync?cursor=<cursor>` | bearer | `{rev, changes: [item, … ≤ 500], more, cursor?}`; `410 reset_required` |
+| `POST /v1/sync` | bearer; `{changes: [{collection, id, base_rev?, deleted?, body?}, … ≤ 100]}` | `{rev, applied: [{collection, id, rev}], conflicts: [{collection, id, server}]}` |
 | `GET /.well-known/jwks.json` | | `{keys, revoked_kids}`, `Cache-Control: public, max-age=3600` |
 
 `platform` is one of `ios`, `ipados`, `macos`, `windows`, `linux`, `web`. Errors are
@@ -77,6 +79,30 @@ account id and host id), so hosts can't tell they share a guest; host ids are ne
 the times with 60 s skew. `test/vectors/statement-v1.json` holds golden statements for herdr's
 tests. A removed device gets no new statements, so its access ends within 10 minutes.
 
+**Sync.** An item is `{collection, id, rev, updated_ms, deleted, body}`. The collections are
+`hosts`, `prompts`, `settings` (one item per key), `agent_prefs` and `shares`. Each has an
+allowlist schema in `src/sync.ts`; DESIGN.md §5.1 and §5.5 list the fields, ids and synced
+settings keys. Any other field, a malformed value or a key that isn't synced refuses the whole
+push with `400 {"error":"invalid_item","index","field"}`. The stored body is re-serialised from
+the validated fields. Secrets (keys, passwords, pins, invite links, tokens) have no field to
+travel in.
+
+- **Order:** every write takes the account's next revision in the push's one D1 batch, so the
+  last write to reach the server wins. A pull returns the items changed after `since`, in
+  revision order. While `more` is true, send the answer's opaque `cursor` back
+  (`?cursor=<cursor>`) for the next page. The last page's `rev` is the next `since`.
+- **Conflicts:** a change with `base_rev` is written only while the item is still at that
+  revision (`0` = create only). Otherwise it is listed in `conflicts[]` with the server's copy.
+  Background pushes leave `base_rev` out.
+- **Deletes** leave a tombstone (`deleted: true`, `body: null`). The hourly cron prunes
+  tombstones after 90 days, and a push keeps the newest 2,000 per account. A pull that may have
+  missed a pruned delete, or whose cursor is newer than the account, gets `410 reset_required`.
+  The client then pulls from 0 and drops what the server doesn't list. A full pull pages past a
+  floor that was already there when it began (DESIGN.md §5.5).
+- **Caps:** 16 KB per item and 100 changes or 256 KB per push (`413 too_large`). Per account:
+  2,000 live items, 1 MB of bodies, and 200 hosts, 500 prompts, 300 settings, 1,000 agent
+  prefs and 500 shares (`403 quota`). A push that would pass a cap rolls back whole.
+
 ## Privacy
 
 - **Stored:** an account id (16 random bytes) with its creation time and last-seen day; for each
@@ -85,6 +111,8 @@ tests. A removed device gets no new statements, so its access ends within 10 min
   **Never stored:** names, emails, ID tokens, tokens in the clear.
 - **Devices:** each device's id, public key, name, platform, creation time and the day of its
   last statement. Host ids and statements are never stored.
+- **Sync:** the allowlisted fields of each synced item (DESIGN.md §5), its revision and the time
+  the server stored it, plus tombstones of deleted items for 90 days. Item bodies are never logged.
 - **Email:** Apple is asked for nothing. Google's email is read from the ID token and handed back
   once as `display_hint`, then dropped.
 - **Logs:** a log line is `{endpoint, outcome}`, written only for `not_configured`,
@@ -92,8 +120,8 @@ tests. A removed device gets no new statements, so its access ends within 10 min
   their hashes, emails, account, session or device ids, device keys, host ids, IPs, bodies or
   URLs. `wrangler.toml` turns off Workers Logs (including invocation logs), traces and Logpush.
 - **Retention:** spent nonces, spent refresh tokens and enrolment challenges go at their own
-  expiry, sessions when their refresh token expires, and accounts not seen for 24 months, with
-  their identities, sessions and devices (hourly cron).
+  expiry, sessions when their refresh token expires, sync tombstones after 90 days, and accounts
+  not seen for 24 months, with their identities, sessions, devices and sync items (hourly cron).
   D1 Time Travel keeps point-in-time history for 7 days on Workers Free (30 on Paid).
 
 ## Limits
@@ -104,9 +132,10 @@ tests. A removed device gets no new statements, so its access ends within 10 min
 | `ACCOUNT_LIMIT` | account id | 120 / 60 s | every authenticated call |
 | `STATEMENT_LIMIT` | account id | 30 / 60 s | `/v1/statements`, on top of `ACCOUNT_LIMIT` |
 | `ENROL_LIMIT` | account id | 10 / 60 s | device challenge and enrolment, on top of `ACCOUNT_LIMIT` |
+| `SYNC_WRITE_LIMIT` | account id | 30 / 60 s | `POST /v1/sync`, on top of `ACCOUNT_LIMIT` |
 
-Bodies are capped at 8 KB for sign-in, 2 KB for devices and 4 KB for statements; ID tokens at
-4 KB; 50 hosts per statement call.
+Bodies are capped at 8 KB for sign-in, 2 KB for devices, 4 KB for statements and 256 KB for
+sync pushes; ID tokens at 4 KB; 50 hosts per statement call.
 
 ## Configuration
 
@@ -161,6 +190,9 @@ the deploy that needs them.
 For step 2 on a Worker that already runs step 1: apply the migrations (`0002_devices.sql`), put
 `STATEMENT_KEY_A` as above, then deploy.
 
+For step 3: apply the migrations (`0003_sync.sql`), then deploy. It adds the `SYNC_WRITE_LIMIT`
+binding (namespace `6984`) and needs no secret.
+
 ### Rotate the statement key
 
 Hosts cache the JWKS for an hour and statements live 10 minutes. With slot A active:
@@ -188,4 +220,5 @@ accepts no new devices (DESIGN.md §3.4).
   Settings → Domains & Routes. Apps stay signed in locally and retry; guest access and plain
   invites are unaffected.
 - **Restore data:** `npx wrangler d1 time-travel restore herdrup-accounts --timestamp <time>`
-  (within the Time Travel window).
+  (within the Time Travel window). Sync clients whose cursor is then ahead of their account get
+  `410 reset_required` and pull everything again.
