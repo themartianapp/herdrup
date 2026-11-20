@@ -804,9 +804,14 @@ account matched, so it never says who has an account.
 - `events` may be a JSON string, as Apple sends it, or an object, as in Apple's samples.
 - `consent-revoked` and `account-deleted` delete the account. Every other type is acknowledged
   and ignored.
-- **Replay guard:** an event whose `event_time` is from before the identity's `created_ms`
-  deletes nothing. `event_time` may be in ms or s; when it is missing, `iat` stands in. So an old
-  revoke can't delete an account the person made since.
+- **Replay guard:** a deleting event must be strictly after the identity's `created_ms`, or it
+  deletes nothing, so an old or delayed revoke can't delete an account the person made since.
+  - `event_time` in milliseconds is compared exactly; there is no slack.
+  - `event_time` in seconds (a value below 10^12, as in Apple's samples), or `iat` when
+    `event_time` is missing, counts from the start of its second. So an event in the same second
+    as the sign-up deletes nothing.
+  - On a tie or any doubt nothing is deleted; the person can still delete in the app
+    (PR 4 review, P2).
 - Bad tokens answer `401 token_invalid` with a `reason`, and Apple's unreachable keys answer `503`.
 - `DELETE_IP_LIMIT` (5/min per IP) covers notifications as §8 says. Apple sends from few IPs, but
   at our size that is far below 5 a minute. If a §1.4 growth trigger fires, give notifications

@@ -522,6 +522,37 @@ describe("POST /v1/apple/notifications", () => {
     expect(await accountExists(session.accountId)).toBe(true);
   });
 
+  it("deletes only for an event strictly after the identity was created, to the millisecond, and never on a same-second tie", async () => {
+    const outcome = async (eventTime: (createdMs: number) => number | undefined, iat?: (createdMs: number) => number) => {
+      const who = appleUser();
+      const session = await signIn(who);
+      const created = (await env.DB.prepare("SELECT created_ms FROM identities WHERE account_id = ?").bind(session.accountId).first<{ created_ms: number }>())!.created_ms;
+      const time = eventTime(created);
+      const claims = {
+        ...claimsFor(who.sub, "consent-revoked"),
+        events: JSON.stringify({ type: "consent-revoked", sub: who.sub, ...(time === undefined ? {} : { event_time: time }) }),
+        ...(iat === undefined ? {} : { iat: iat(created) }),
+      };
+      expect((await notification(claims)).status).toBe(204);
+      return (await accountExists(session.accountId)) ? "kept" : "deleted";
+    };
+    const cases: [string, () => Promise<string>, string][] = [
+      ["ms, 60 s before", () => outcome((created) => created - 60_000), "kept"],
+      ["ms, 1 s before", () => outcome((created) => created - 1000), "kept"],
+      ["ms, 500 ms before", () => outcome((created) => created - 500), "kept"],
+      ["ms, 1 ms before", () => outcome((created) => created - 1), "kept"],
+      ["ms, same instant", () => outcome((created) => created), "kept"],
+      ["ms, 1 ms after", () => outcome((created) => created + 1), "deleted"],
+      ["s, the same second", () => outcome((created) => Math.floor(created / 1000)), "kept"],
+      ["s, the next second", () => outcome((created) => Math.floor(created / 1000) + 1), "deleted"],
+      ["no event_time, iat in the same second", () => outcome(() => undefined, (created) => Math.floor(created / 1000)), "kept"],
+      ["no event_time, iat the next second", () => outcome(() => undefined, (created) => Math.floor(created / 1000) + 1), "deleted"],
+    ];
+    const results: Record<string, string> = {};
+    for (const [label, run] of cases) results[label] = await run();
+    expect(results).toEqual(Object.fromEntries(cases.map(([label, , expected]) => [label, expected])));
+  });
+
   it("allows 5 notifications per IP a minute", async () => {
     const send = () => SELF.fetch(`${ORIGIN}/v1/apple/notifications`, { method: "POST", headers: { "CF-Connecting-IP": "2001:db8:4::eeee" }, body: "{}" });
     for (let i = 0; i < 5; i++) expect((await send()).status).toBe(400);

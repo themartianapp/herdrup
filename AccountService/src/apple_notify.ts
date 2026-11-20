@@ -76,10 +76,13 @@ export async function handleAppleNotification(request: Request, env: Env, nowMs:
     .bind(await subjectHash((await keys).subject, "apple", sub))
     .first<{ account_id: string; created_ms: number }>();
   if (identity === null) return noContent();
-  // event_time is in milliseconds in Apple's deliveries and in seconds in its samples; iat stands in when it is missing.
+  // The earliest instant the event can have happened. event_time is in milliseconds in Apple's
+  // deliveries and in seconds in its samples (a value below 1e12); iat (seconds) stands in when
+  // it is missing. A seconds value could be anywhere in its second, so it counts from the
+  // second's start. Only an event strictly after the identity was created deletes: on a tie or
+  // any doubt nothing is deleted, and the person can still delete in the app.
   const eventMs = typeof eventTime === "number" ? (eventTime < 1e12 ? eventTime * 1000 : eventTime) : iat * 1000;
-  // A second of slack for seconds-precision times.
-  if (eventMs + 1000 <= identity.created_ms) return noContent();
+  if (eventMs <= identity.created_ms) return noContent();
   await deleteAccount(env.DB, identity.account_id);
   return noContent();
 }
