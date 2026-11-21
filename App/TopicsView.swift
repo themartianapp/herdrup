@@ -25,7 +25,8 @@ final class TopicsModel: ObservableObject {
     /// False is for good: no topic chat can be shown on this server (herdrup#766, #775).
     @Published private(set) var topicTranscripts: Bool?
     /// The agent will not offer topics for this page's life (`topics_unsupported`, no
-    /// `agent_topics`, the agent is gone): discovery stopped for good.
+    /// `agent_topics`): discovery stopped for good. Not `agent_not_found`: a restarting agent
+    /// leaves its pane without one for a moment, and its topics come back (herdrup#777).
     private(set) var refused = false
     /// Why the newest list call failed. The last list stays on screen (`topics_unreachable`
     /// keeps it, as herdr's API asks).
@@ -81,11 +82,12 @@ final class TopicsModel: ObservableObject {
 
     /// Learns whether the agent offers topics (herdrup#758), on `TopicsDiscoveryBackoff`'s
     /// schedule: `topics_unsupported` stops for good; `topics_unreachable` (every omp agent
-    /// without topics turned on), a timeout or a dropped connection ask again after 60 s,
-    /// doubling to a 10 minute cap. The page restarts this when the agent's status or session
-    /// changes and when a guest's share comes back, which starts the schedule over; for the
-    /// owner (`eventsPaneID`) an `agent.topics.changed` for the pane does too, at once, even
-    /// while a list is still on its way (`TopicsDiscoveryLoop.wake`, herdrup#767).
+    /// without topics turned on), `agent_not_found` (an agent restarting), a timeout or a
+    /// dropped connection ask again after 60 s, doubling to a 10 minute cap. The page restarts
+    /// this when the agent's status or session changes and when a guest's share comes back,
+    /// which starts the schedule over; for the owner (`eventsPaneID`) an `agent.topics.changed`
+    /// for the pane does too, at once, even while a list is still on its way
+    /// (`TopicsDiscoveryLoop.wake`, herdrup#767).
     func discover(client: HerdrClient, eventsPaneID: String? = nil) async {
         guard !offered, !refused else { return }
         let loop = TopicsDiscoveryLoop(schedule: Self.discoverySchedule) { [weak self] in

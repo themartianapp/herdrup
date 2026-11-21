@@ -282,8 +282,9 @@ public enum AgentTopicsError: Error, Equatable, Sendable {
 /// so it backs off: 60 s, doubling, capped at 10 minutes. There are no short early retries:
 /// an agent that is just starting changes its status (or its session) as it comes up, and
 /// that resets the schedule (`reset()`), so the quick second look comes from the agent, not
-/// from a timer. A timeout or a dropped connection backs off the same way. `topics_unsupported`,
-/// a server without `agent_topics` and a gone agent stop discovery for good.
+/// from a timer. A timeout, a dropped connection and `agent_not_found` (the pane has no agent
+/// for a moment while it restarts, herdrup#777) back off the same way. `topics_unsupported`
+/// and a server without `agent_topics` stop discovery for good.
 public struct TopicsDiscoveryBackoff: Sendable, Equatable {
     /// Seconds between attempts, the last one repeating.
     public static let delays: [UInt64] = [60, 120, 240, 480, 600]
@@ -387,12 +388,13 @@ public final class TopicsDiscoveryLoop {
 }
 
 extension AgentTopicsError {
-    /// The agent will not offer topics for the rest of this page's life: `topics_unsupported`,
-    /// a server without `agent_topics`, or the agent is gone. Anything else may pass.
+    /// The agent will not offer topics for the rest of this page's life: `topics_unsupported`
+    /// or a server without `agent_topics`. Anything else may pass, `agent_not_found` too: a
+    /// restarting agent leaves its pane without one for a moment (herdrup#777).
     public var isPermanent: Bool {
         switch self {
-        case .unsupported, .notAdvertised, .agentNotFound: return true
-        case .unreachable, .timeout, .rejected, .topicNotFound, .other: return false
+        case .unsupported, .notAdvertised: return true
+        case .unreachable, .timeout, .rejected, .topicNotFound, .agentNotFound, .other: return false
         }
     }
 }

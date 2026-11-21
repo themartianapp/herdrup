@@ -16,6 +16,11 @@ final class TopicsMock: @unchecked Sendable {
     /// (an agent that offers its topics only a moment later), so discovery has to retry.
     private static let failsFirst = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_FAIL_FIRST"]
         .flatMap(Int.init) ?? 0
+    /// `HERDR_MOCK_TOPICS_GONE_AT=<n>[,<n>…]`: those list calls (counted from 1) answer
+    /// `agent_not_found`, as an agent that restarts and leaves its pane without one for a moment
+    /// (herdrup#777).
+    private static let goneAt = Set((ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_GONE_AT"] ?? "")
+        .split(separator: ",").compactMap { Int($0) })
     /// `HERDR_MOCK_TOPICS_SEND_DELAY=<seconds>`: `agent.topics.send` answers that much later, and
     /// a send to a running topic is `queued`, so its receipt can land after the reader moved on.
     private static let sendDelay = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_SEND_DELAY"]
@@ -107,6 +112,9 @@ final class TopicsMock: @unchecked Sendable {
             switch method {
             case "agent.topics.list":
                 listCalls += 1
+                if Self.goneAt.contains(listCalls) {
+                    return ChatMockConversation.error(id: id, code: "agent_not_found", message: "no such agent")
+                }
                 if (Self.goesUnreachable && listCalls > 1) || listCalls <= Self.failsFirst {
                     return ChatMockConversation.error(id: id, code: "topics_unreachable",
                                                       message: "the agent has not offered its topics")
