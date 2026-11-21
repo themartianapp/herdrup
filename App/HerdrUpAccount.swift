@@ -63,6 +63,8 @@ final class HerdrUpAccount: ObservableObject {
     @Published private(set) var busy: Busy?
     @Published private(set) var lastSync: AccountSyncSummary?
     @Published private(set) var syncing = false
+    /// The last sync failed (or the account is full); a later successful sync clears it.
+    @Published private(set) var syncFailed = false
     /// How many machines and prompts the account holds, as of the last sync.
     @Published private(set) var syncedCounts = (hosts: 0, prompts: 0)
     /// The account page is on screen and shows `notice` itself; the root shows it otherwise.
@@ -145,6 +147,10 @@ final class HerdrUpAccount: ObservableObject {
         self.profile = profile
         signedIn = profile != nil
         onboardingDone = defaults.bool(forKey: Self.onboardingKey)
+        #if DEBUG
+        // The `account` mock's signed-in launch: the email a Google sign-in passed this session.
+        if ScreenshotMock.mode != nil, signedIn { displayHint = MockAccountService.shared.signedInEmail }
+        #endif
         syncLoop = AccountSyncLoop { [weak self] in await self?.runSync() }
     }
 
@@ -421,6 +427,7 @@ final class HerdrUpAccount: ObservableObject {
         devices = []
         enrolment = .unknown
         lastSync = nil
+        syncFailed = false
         syncedCounts = (0, 0)
     }
 
@@ -482,6 +489,7 @@ final class HerdrUpAccount: ObservableObject {
         do {
             let summary = try await run.run()
             lastSync = summary
+            syncFailed = summary.overQuota
             let hosts = await sync.items(in: .hosts).count
             let prompts = await sync.items(in: .prompts).count
             syncedCounts = (hosts, prompts)
@@ -494,6 +502,7 @@ final class HerdrUpAccount: ObservableObject {
         } catch AccountError.signedOut {
             return
         } catch {
+            syncFailed = true
             // A background sync that can't reach the service tries again later, quietly.
             if report || (error as? AccountError) != .unreachable {
                 notice = AccountNotice(title: "Couldn't sync", message: Self.describe(error))
@@ -544,6 +553,28 @@ final class HerdrUpAccount: ObservableObject {
         case .google?: return "Signed in with Google"
         default: return "Signed in with Apple"
         }
+    }
+
+    /// The account email, when this session knows a real one: Google's `display_hint`. Apple's
+    /// private-relay addresses say nothing about the person, so they count as none.
+    var email: String? {
+        guard let hint = displayHint?.trimmingCharacters(in: .whitespacesAndNewlines),
+              hint.contains("@"), !hint.lowercased().hasSuffix("@privaterelay.appleid.com") else { return nil }
+        return hint
+    }
+
+    /// The account at a glance, for the avatar on the machine list.
+    enum Glance: Equatable {
+        case signedOut
+        case signedIn(email: String?)
+        /// Signed in, but the last sync or this device's enrolment failed.
+        case needsAttention(email: String?)
+    }
+
+    var glance: Glance {
+        guard signedIn else { return .signedOut }
+        if case .failed = enrolment { return .needsAttention(email: email) }
+        return syncFailed ? .needsAttention(email: email) : .signedIn(email: email)
     }
 
     static func describe(_ error: Error) -> String {

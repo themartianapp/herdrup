@@ -176,6 +176,74 @@ final class HerdrUpAccountTests: XCTestCase {
         alert.buttons["OK"].tap()
     }
 
+    // MARK: The account avatar on the machine list
+
+    func testTheMachineListAvatarShowsTheAccountState() throws {
+        let local: [[String: Any]] = [
+            ["id": UUID().uuidString, "host": "10.0.4.12", "username": "ci", "nickname": "build-box", "authKind": "key"],
+        ]
+        var app = try launch(hosts: local)
+        var avatar = app.descendants(matching: .any)["hosts.account"]
+        XCTAssertTrue(avatar.exists(within: 10), "the machine list shows the account avatar")
+        XCTAssertEqual(avatar.label, "HerdrUp account")
+        pollValue(avatar, "signed out", equals: "Signed out")
+        XCTAssertGreaterThanOrEqual(avatar.frame.width, 44, "the hit target is at least 44 pt")
+        XCTAssertGreaterThanOrEqual(avatar.frame.height, 44)
+        attach(app, "hosts-account-signed-out")
+        app.terminate()
+
+        app = try launch(signedIn: true, hosts: local, environment: ["HERDR_MOCK_ACCOUNT_EMAIL": "sam.rivera@gmail.com"])
+        avatar = app.descendants(matching: .any)["hosts.account"]
+        XCTAssertTrue(avatar.exists(within: 10))
+        pollValue(avatar, "signed in and synced", equals: "Signed in as sam.rivera@gmail.com")
+        attach(app, "hosts-account-signed-in")
+        app.terminate()
+
+        app = try launch(signedIn: true, hosts: local, environment: [
+            "HERDR_MOCK_ACCOUNT_EMAIL": "sam.rivera@gmail.com", "HERDR_MOCK_ACCOUNT_SYNC_OFFLINE": "1",
+        ])
+        avatar = app.descendants(matching: .any)["hosts.account"]
+        XCTAssertTrue(avatar.exists(within: 10))
+        pollValue(avatar, "signed in, sync failed", equals: "Needs attention")
+        attach(app, "hosts-account-needs-attention")
+    }
+
+    func testTappingTheAvatarOpensTheAccountPage() throws {
+        let local: [[String: Any]] = [
+            ["id": UUID().uuidString, "host": "10.0.4.12", "username": "ci", "nickname": "build-box", "authKind": "key"],
+        ]
+        var app = try launch(hosts: local)
+        var avatar = app.descendants(matching: .any)["hosts.account"]
+        XCTAssertTrue(avatar.waitForHittable(timeout: 10))
+        avatar.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["account-signed-out"].exists(within: 8),
+                      "signed out, the avatar opens the sign-in page")
+        XCTAssertTrue(appleButton(app).exists(within: 5))
+        app.terminate()
+
+        app = try launch(signedIn: true, hosts: local)
+        avatar = app.descendants(matching: .any)["hosts.account"]
+        XCTAssertTrue(avatar.waitForHittable(timeout: 10))
+        avatar.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["account-identity"].exists(within: 8),
+                      "signed in, the avatar opens the account page")
+        XCTAssertTrue(app.buttons["account-sign-out"].exists)
+        let close = app.buttons["account-sheet-close"]
+        XCTAssertTrue(close.waitForHittable(timeout: 5))
+        close.tap()
+        XCTAssertTrue(avatar.waitForHittable(timeout: 5), "closing returns to the machine list")
+    }
+
+    private func pollValue(_ element: XCUIElement, _ what: String, equals expected: String,
+                           file: StaticString = #filePath, line: UInt = #line) {
+        var last = ""
+        let met = poll(15, every: 0.3) {
+            last = element.value as? String ?? ""
+            return last == expected
+        }
+        if !met { XCTFail("\(what): hosts.account value = \(last)", file: file, line: line) }
+    }
+
     // MARK: Enrolment refusals
 
     func testAKeyInAnotherAccountOffersToSignOut() throws {

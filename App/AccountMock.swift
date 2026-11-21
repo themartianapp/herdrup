@@ -17,6 +17,10 @@ import SwiftUI
 /// - `HERDR_MOCK_ACCOUNT_ENROL`: `device_in_other_account` or `too_many_devices` refuses the
 ///   enrolment with that code.
 /// - `HERDR_MOCK_ACCOUNT_MANUAL_REVOKE=1`: deletion answers `manual_revoke: true`.
+/// - `HERDR_MOCK_ACCOUNT_EMAIL`: with `SIGNED_IN`, the email the session knows (Google's
+///   `display_hint`), so the machine list's avatar shows its initial.
+/// - `HERDR_MOCK_ACCOUNT_SYNC_OFFLINE=1`: sync can't reach the service (a quiet failure), so
+///   the account needs attention.
 /// - Saved machines on this device: the `-dev.herdr.savedHosts.v1` launch argument
 ///   (SavedHostMissingSecretTests' pattern); mock runs never write the saved list.
 ///
@@ -36,6 +40,10 @@ final class MockAccountService: AccountProviderSignIn, @unchecked Sendable {
     let tokenStore: InMemoryAccountTokenStore
     let defaults: UserDefaults
     let server = MockAccountServer()
+    /// `HERDR_MOCK_ACCOUNT_EMAIL`.
+    let signedInEmail: String?
+    /// `HERDR_MOCK_ACCOUNT_SYNC_OFFLINE=1`.
+    let syncOffline: Bool
 
     private init() {
         let env = ProcessInfo.processInfo.environment
@@ -46,6 +54,8 @@ final class MockAccountService: AccountProviderSignIn, @unchecked Sendable {
         client = AccountClient(baseURL: URL(string: "https://accounts.mock.herdrup.invalid")!,
                                session: URLSession(configuration: config))
         let signedIn = env["HERDR_MOCK_ACCOUNT_SIGNED_IN"] == "1"
+        signedInEmail = signedIn ? env["HERDR_MOCK_ACCOUNT_EMAIL"] : nil
+        syncOffline = env["HERDR_MOCK_ACCOUNT_SYNC_OFFLINE"] == "1"
         tokenStore = InMemoryAccountTokenStore(refreshToken: signedIn ? "r1.mock-session.fixture-refresh" : nil)
         let suite = "herdr.mock.account"
         defaults = UserDefaults(suiteName: suite) ?? .standard
@@ -225,6 +235,10 @@ final class MockAccountURLProtocol: URLProtocol {
     override func startLoading() {
         guard let url = request.url else { return }
         let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        if MockAccountService.shared.syncOffline, (components?.path ?? url.path) == "/v1/sync" {
+            client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
+            return
+        }
         let body = request.httpBody ?? request.httpBodyStream.map(Self.read)
         let (status, object) = MockAccountService.shared.server.answer(
             method: request.httpMethod ?? "GET", path: components?.path ?? url.path,
@@ -262,11 +276,12 @@ struct AccountMockRoot: View {
     var body: some View {
         AccountOnboardingGate {
             ConnectView { _ in }
-                .overlay(alignment: .topTrailing) {
+                // Bottom trailing: the logo row's trailing edge is the account avatar's.
+                .overlay(alignment: .bottomTrailing) {
                     Button("Settings") { showSettings = true }
                         .accessibilityIdentifier("fixture-open-settings")
                         .buttonStyle(.bordered)
-                        .padding(.top, 8).padding(.trailing, 20)
+                        .padding(.bottom, 8).padding(.trailing, 20)
                 }
         }
         .sheet(isPresented: $showSettings) {

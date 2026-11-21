@@ -470,6 +470,145 @@ struct HerdrUpAccountContent: View {
     }
 }
 
+// MARK: The account avatar on the machine list (host-status proposal 1)
+
+/// The HerdrUp account at a glance, on the trailing edge of the machine list's logo row: a
+/// 32 pt circle with your initial (or a person when the email isn't known) and one 9 pt status
+/// dot. Colour is only the dot: `status.done` signed in, `status.waiting` when the last sync
+/// or this device's enrolment failed; signed out has no dot. Tap opens Settings › HerdrUp
+/// account. Desktop matches these numbers (they are the spec's):
+/// - circle 32 pt; signed out `surface` fill with a 1 pt inset `hairline` ring and a
+///   `person.fill` glyph at 15 pt in `textDim`; signed in `surfaceRaised` fill, the initial in
+///   app font 15 pt semibold, tracking −0.23, in `text`;
+/// - dot 9 pt with a 2 pt `ground` ring, its centre 3.5 pt in from the circle's bottom-right
+///   edge (the CSS `right: -1px; bottom: -1px` of a 9 pt dot on a 32 pt circle);
+/// - hit target 44 × 44 pt around the circle.
+struct AccountAvatarButton: View {
+    @ObservedObject private var account = HerdrUpAccount.shared
+    var action: () -> Void
+
+    static let diameter: CGFloat = 32
+    static let dot: CGFloat = 9
+    static let dotRing: CGFloat = 2
+    static let hitTarget: CGFloat = 44
+
+    var body: some View {
+        let glance = account.glance
+        Button(action: action) {
+            AccountAvatar(glance: glance)
+                .frame(width: Self.hitTarget, height: Self.hitTarget)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .hoverEffect(.highlight)
+        // The 44 pt target is centred on the 32 pt circle; pull it out so the circle itself
+        // sits on the row's trailing edge, as the spec draws it.
+        .padding(.trailing, -(Self.hitTarget - Self.diameter) / 2)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("HerdrUp account")
+        .accessibilityValue(Self.value(glance))
+        .accessibilityAddTraits(.isButton)
+        .accessibilityIdentifier("hosts.account")
+    }
+
+    static func value(_ glance: HerdrUpAccount.Glance) -> String {
+        switch glance {
+        case .signedOut: return "Signed out"
+        case .signedIn(let email?): return "Signed in as \(email)"
+        case .signedIn(nil): return "Signed in"
+        case .needsAttention: return "Needs attention"
+        }
+    }
+}
+
+/// The circle itself, for one state.
+struct AccountAvatar: View {
+    let glance: HerdrUpAccount.Glance
+
+    var body: some View {
+        ZStack {
+            switch glance {
+            case .signedOut:
+                Circle().fill(Palette.surface)
+                    .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
+                person
+            case .signedIn(let email), .needsAttention(let email):
+                Circle().fill(Palette.surfaceRaised)
+                if let initial = Self.initial(email) {
+                    Text(initial)
+                        .font(Typography.app(15, .semibold)).tracking(-0.23)
+                        .foregroundStyle(Palette.text)
+                } else {
+                    person
+                }
+            }
+        }
+        .frame(width: AccountAvatarButton.diameter, height: AccountAvatarButton.diameter)
+        .overlay(alignment: .bottomTrailing) {
+            if let color = dotColor {
+                Circle().fill(color)
+                    .frame(width: AccountAvatarButton.dot, height: AccountAvatarButton.dot)
+                    // The ring lies wholly outside the dot (CSS `box-shadow: 0 0 0 2px`).
+                    .background(Circle().fill(Palette.ground)
+                        .frame(width: AccountAvatarButton.dot + 2 * AccountAvatarButton.dotRing,
+                               height: AccountAvatarButton.dot + 2 * AccountAvatarButton.dotRing))
+                    .offset(x: 1, y: 1)
+            }
+        }
+    }
+
+    private var person: some View {
+        Image(systemName: "person.fill")
+            .font(.system(size: 15, weight: .regular))
+            .foregroundStyle(glance == .signedOut ? Palette.textDim : Palette.text)
+    }
+
+    private var dotColor: Color? {
+        switch glance {
+        case .signedOut: return nil
+        case .signedIn: return Palette.done
+        case .needsAttention: return Palette.waiting
+        }
+    }
+
+    /// The email's first letter, uppercased; nil without an email.
+    static func initial(_ email: String?) -> String? {
+        guard let first = email?.trimmingCharacters(in: .whitespacesAndNewlines).first, first != "@" else { return nil }
+        return String(first).uppercased()
+    }
+}
+
+/// Settings › HerdrUp account as a sheet, for where the Settings index isn't (the machine
+/// list): the same page body, under the same top bar, with Close.
+struct HerdrUpAccountSheet: View {
+    @ObservedObject private var account = HerdrUpAccount.shared
+    var onClose: () -> Void
+
+    var body: some View {
+        ZStack {
+            Palette.ground.ignoresSafeArea()
+            VStack(spacing: 0) {
+                VStack(spacing: 1) {
+                    SectionTopBar(title: SettingsSection.herdrupAccount.label) {
+                        SectionBarButton(icon: "xmark", label: "Close", identifier: "account-sheet-close", action: onClose)
+                    }
+                    if account.signedIn {
+                        Text(account.identityLine).font(Typography.machine(12)).foregroundStyle(Palette.textFaint)
+                            .lineLimit(1).frame(maxWidth: .infinity)
+                            .padding(.horizontal, 16).padding(.bottom, 12)
+                    }
+                }
+                ScrollView {
+                    HerdrUpAccountContent(account: account)
+                        .padding(.bottom, 16)
+                        .readableColumn()
+                }
+            }
+        }
+        .presentationDragIndicator(.visible)
+    }
+}
+
 // MARK: Notices
 
 extension View {
