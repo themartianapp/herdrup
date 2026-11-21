@@ -100,6 +100,9 @@ final class HerdrUpAccount: ObservableObject {
     /// A sign-out whose synced copy couldn't be deleted: retried at launch and before the next
     /// sign-in.
     private static let cleanupKey = "account.sync.cleanupPending"
+    /// The stored display hint couldn't be deleted or replaced: it may name another account (or
+    /// an earlier one), so it is never restored, and its delete is retried at each launch.
+    private static let hintCleanupKey = "account.hint.cleanupPending"
 
     private init() {
         let client: AccountClient
@@ -137,7 +140,17 @@ final class HerdrUpAccount: ObservableObject {
             Task { @MainActor in HerdrUpAccount.shared.sessionEnded(reason) }
         }
         statements = StatementCache(session: session)
-        let profile = defaults.data(forKey: Self.profileKey).flatMap { try? JSONDecoder().decode(AccountProfile.self, from: $0) }
+        var profile = defaults.data(forKey: Self.profileKey).flatMap { try? JSONDecoder().decode(AccountProfile.self, from: $0) }
+        // The session is the refresh token, not the profile: `AccountSession` deletes the token
+        // first and the rest is cleared after, so a kill in between leaves a profile (and a
+        // hint) with no token. That is signed out. A Keychain that can't be read right now
+        // (nil here) leaves the decision to `start()`, which asks the session again.
+        let tokenStored: Bool?
+        do { tokenStored = try tokens.loadRefreshToken() != nil } catch { tokenStored = nil }
+        if tokenStored == false, profile != nil {
+            profile = nil
+            defaults.removeObject(forKey: Self.profileKey)
+        }
         // No session, or a sign-out that didn't finish: the synced copy belongs to no one, so
         // it is deleted before anything loads it. If that fails, this launch keeps sync state
         // in memory and the delete is tried again.
@@ -157,11 +170,12 @@ final class HerdrUpAccount: ObservableObject {
         signedIn = profile != nil
         onboardingDone = defaults.bool(forKey: Self.onboardingKey)
         syncLoop = AccountSyncLoop { [weak self] in await self?.runSync() }
-        // The email shown for the session: restored with it, gone without it.
-        if profile != nil {
+        // The email shown for the session: restored only with a stored token and only when no
+        // earlier delete or replace of it failed; otherwise it is deleted (and retried).
+        if tokenStored == true, profile != nil, !defaults.bool(forKey: Self.hintCleanupKey) {
             displayHint = try? hints.loadDisplayHint()
-        } else {
-            try? hints.deleteDisplayHint()
+        } else if tokenStored != nil || defaults.bool(forKey: Self.hintCleanupKey) {
+            deleteStoredHint()
         }
     }
 
@@ -171,10 +185,24 @@ final class HerdrUpAccount: ObservableObject {
     /// costs only the initial on the next launch.
     private func rememberDisplayHint(_ hint: String?) {
         displayHint = hint
-        if let hint, !hint.isEmpty {
-            try? hints.saveDisplayHint(hint)
-        } else {
-            try? hints.deleteDisplayHint()
+        guard let hint, !hint.isEmpty else { return deleteStoredHint() }
+        do {
+            try hints.saveDisplayHint(hint)
+            defaults.removeObject(forKey: Self.hintCleanupKey)
+        } catch {
+            // The previous account's hint may still be stored: never restore it, delete it.
+            deleteStoredHint()
+        }
+    }
+
+    /// Deletes the stored hint. A failed delete is remembered (`hintCleanupKey`): the stored
+    /// hint is then never restored, and the delete is tried again at the next launch.
+    private func deleteStoredHint() {
+        do {
+            try hints.deleteDisplayHint()
+            defaults.removeObject(forKey: Self.hintCleanupKey)
+        } catch {
+            defaults.set(true, forKey: Self.hintCleanupKey)
         }
     }
 
@@ -206,14 +234,23 @@ final class HerdrUpAccount: ObservableObject {
             Task { @MainActor in await HerdrUpAccount.shared.appleCredentialRevoked() }
         }
         Task {
-            await loadHealth()
+            // The session first (a Keychain read), so a stale profile never shows as signed in
+            // while the network answers.
             let stored = (try? await session.isSignedIn()) ?? signedIn
-            if !stored, profile != nil { forgetProfile() }
+            if !stored {
+                if profile != nil { forgetProfile() }
+                deleteStoredHint()
+                displayHint = nil
+            } else if displayHint == nil, !defaults.bool(forKey: Self.hintCleanupKey) {
+                // The Keychain couldn't be read at init: restore the hint now the session is known.
+                displayHint = try? hints.loadDisplayHint()
+            }
             if stored, profile == nil {
                 // A session without a profile (an older build's): ask which provider at deletion.
                 profile = AccountProfile(provider: .apple, appleUserID: nil)
             }
             signedIn = stored
+            await loadHealth()
             guard stored else { return }
             if let user = profile?.appleUserID, profile?.provider == .apple,
                await AppleCredentialWatch.isRevoked(userID: user) {

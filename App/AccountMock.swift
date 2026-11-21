@@ -19,7 +19,10 @@ import SwiftUI
 /// - `HERDR_MOCK_ACCOUNT_MANUAL_REVOKE=1`: deletion answers `manual_revoke: true`.
 /// - `HERDR_MOCK_ACCOUNT_STORED_HINT`: the display hint already stored beside the session from an
 ///   earlier launch (Google's `display_hint`), as a relaunch finds it. The app restores it with
-///   a stored session and deletes it without one.
+///   a stored session and deletes it without one. The root's `fixture-stored-hint` element
+///   reads the stored value back ("none" when there is none).
+/// - `HERDR_MOCK_ACCOUNT_PROFILE_ONLY=1`: the profile is stored but the refresh token isn't (a
+///   sign-out killed half-way), which is signed out.
 /// - `HERDR_MOCK_ACCOUNT_SYNC_OFFLINE=1`: sync can't reach the service (a quiet failure), so
 ///   the account needs attention.
 /// - Saved machines on this device: the `-dev.herdr.savedHosts.v1` launch argument
@@ -61,9 +64,14 @@ final class MockAccountService: AccountProviderSignIn, @unchecked Sendable {
         let suite = "herdr.mock.account"
         defaults = UserDefaults(suiteName: suite) ?? .standard
         defaults.removePersistentDomain(forName: suite)
+        // `HERDR_MOCK_ACCOUNT_PROFILE_ONLY=1`: what a kill mid-sign-out leaves, the profile (and
+        // perhaps a hint) still stored but the refresh token already deleted.
+        let profileOnly = env["HERDR_MOCK_ACCOUNT_PROFILE_ONLY"] == "1"
         if signedIn {
             server.signedIn = true
             server.enrolCurrent(name: "Mock iPhone", platform: "ios", devicePub: "fixture-device-pub")
+        }
+        if signedIn || profileOnly {
             defaults.set(try? JSONEncoder().encode(AccountProfile(provider: .apple, appleUserID: nil)),
                          forKey: "account.profile.v1")
             defaults.set(true, forKey: "account.onboarding.done")
@@ -283,6 +291,15 @@ struct AccountMockRoot: View {
                         .accessibilityIdentifier("fixture-open-settings")
                         .buttonStyle(.bordered)
                         .padding(.bottom, 8).padding(.trailing, 20)
+                }
+                .overlay(alignment: .bottomLeading) {
+                    // What the hint store holds, for the tests (re-read whenever the account
+                    // changes, since this view observes it).
+                    Color.clear.frame(width: 1, height: 1)
+                        .accessibilityElement()
+                        .accessibilityIdentifier("fixture-stored-hint")
+                        .accessibilityLabel((try? MockAccountService.shared.hintStore.loadDisplayHint()).flatMap { $0 } ?? "none")
+                        .id(account.signedIn)
                 }
         }
         .sheet(isPresented: $showSettings) {

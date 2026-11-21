@@ -238,6 +238,22 @@ final class HerdrUpAccountTests: XCTestCase {
         let avatar = app.descendants(matching: .any)["hosts.account"]
         XCTAssertTrue(avatar.exists(within: 10))
         pollValue(avatar, "a hint left without its session", equals: "Signed out")
+        pollLabel(app, "fixture-stored-hint", "the orphaned hint is deleted") { $0 == "none" }
+    }
+
+    func testAProfileWithoutARefreshTokenIsSignedOutAndDropsTheHint() throws {
+        // A sign-out killed after AccountSession deleted the token but before the profile and
+        // hint went: the next launch must not show the old account (#780 review F1).
+        let app = try launch(hosts: [["id": UUID().uuidString, "host": "10.0.4.12", "username": "ci",
+                                      "nickname": "build-box", "authKind": "key"]],
+                             environment: ["HERDR_MOCK_ACCOUNT_PROFILE_ONLY": "1",
+                                           "HERDR_MOCK_ACCOUNT_STORED_HINT": "sam.rivera@gmail.com"])
+        let avatar = app.descendants(matching: .any)["hosts.account"]
+        XCTAssertTrue(avatar.exists(within: 10))
+        XCTAssertEqual(avatar.value as? String, "Signed out", "signed out from the first frame, not after health()")
+        pollLabel(app, "fixture-stored-hint", "the hint goes with the session") { $0 == "none" }
+        avatar.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["account-signed-out"].exists(within: 8))
     }
 
     func testTappingTheAvatarOpensTheAccountPage() throws {
