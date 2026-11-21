@@ -56,6 +56,16 @@ final class SavedPromptsStore: ObservableObject {
         persist()
     }
 
+    /// The list after a HerdrUp account sync (App/AccountSync.swift): the account's prompts
+    /// merged with this device's. Mock runs keep it in memory, like `SavedHostsStore`.
+    func applySynced(_ merged: [SavedPrompt]) {
+        prompts = merged
+        #if DEBUG
+        if ScreenshotMock.mode != nil { return }
+        #endif
+        persist()
+    }
+
     private func persist() {
         guard let data = try? JSONEncoder().encode(prompts) else { return }
         UserDefaults.standard.set(data, forKey: defaultsKey)

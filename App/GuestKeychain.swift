@@ -53,10 +53,16 @@ struct KeychainGuestKeyStore: GuestKeyStore {
 /// install: leaving a share removes the grant, not the key.
 enum GuestDevice {
     static func identity() throws -> GuestIdentity {
+        try GuestIdentity.loadOrCreate(store: keyStore)
+    }
+
+    /// Where this install's guest key lives. The device the HerdrUp account enrols
+    /// (`DeviceEnroller`) is this same key.
+    static var keyStore: GuestKeyStore {
         #if DEBUG && !HERDR_SHARE_EXTENSION
-        if ScreenshotMock.mode != nil { return try GuestIdentity.loadOrCreate(store: mockKeyStore) }
+        if ScreenshotMock.mode != nil { return mockKeyStore }
         #endif
-        return try GuestIdentity.loadOrCreate(store: KeychainGuestKeyStore())
+        return KeychainGuestKeyStore()
     }
 
     #if DEBUG && !HERDR_SHARE_EXTENSION

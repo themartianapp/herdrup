@@ -29,6 +29,9 @@ TARGETS = {
         "file": "herdr.mobileprovision",
         "label": "app",
         "app_group": "group.com.jerryfane.herdr",
+        # HerdrUp account sign-in (#698): the App ID has the Sign in with Apple capability, and
+        # App/Herdr.entitlements asks for it, so a profile without it can't sign the archive.
+        "entitlement_keys": ["com.apple.developer.applesignin"],
     },
     "share": {
         "bundle_id": "com.jerryfane.herdr.share",
@@ -152,12 +155,15 @@ def profile_content(prof):
 
 
 def supports_app_group(t, prof):
-    if "app_group" not in t:
+    """The profile carries the target's App Group and every key in `entitlement_keys`."""
+    if "app_group" not in t and "entitlement_keys" not in t:
         return True
     decoded = subprocess.run(["security", "cms", "-D"], input=profile_content(prof),
                              capture_output=True, check=True).stdout
     entitlements = plistlib.loads(decoded).get("Entitlements", {})
-    return t["app_group"] in entitlements.get("com.apple.security.application-groups", [])
+    if "app_group" in t and t["app_group"] not in entitlements.get("com.apple.security.application-groups", []):
+        return False
+    return all(key in entitlements for key in t.get("entitlement_keys", []))
 
 
 def distribution_cert_ids():
@@ -231,10 +237,11 @@ def main(names):
         cert_ids = distribution_cert_ids()
         prof = find_active_profile(t) or create_profile(t, bundle_rid, cert_ids)
         if not supports_app_group(t, prof):
-            die(f"Profile for {t['bundle_id']} lacks {t['app_group']}. In Apple Developer "
-                "Certificates, Identifiers & Profiles, register the App Group and assign it "
-                "to both com.jerryfane.herdr and com.jerryfane.herdr.share, then rerun. "
-                "No archive was signed with an incomplete profile.")
+            die(f"Profile for {t['bundle_id']} lacks {t.get('app_group')} or one of "
+                f"{t.get('entitlement_keys', [])}. In Apple Developer Certificates, Identifiers & "
+                "Profiles, register the App Group and assign it to both com.jerryfane.herdr and "
+                "com.jerryfane.herdr.share, and enable Sign in with Apple on com.jerryfane.herdr, "
+                "then rerun. No archive was signed with an incomplete profile.")
         install(t, prof)
 
 

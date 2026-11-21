@@ -208,6 +208,85 @@ final class SavedHostsStore: ObservableObject {
         return true
     }
 
+    // MARK: HerdrUp account sync (App/AccountSync.swift)
+
+    /// Whether this phone's Keychain holds machine `id`'s secret of `kind`. The account sync
+    /// keeps a machine on the kind whose secret is here, so it never looks in an empty store.
+    func hasSecret(id: UUID, kind: SavedAuthKind) -> Bool {
+        let store = kind == .password ? passwordKeychain : keychain
+        return store.load(account: id.uuidString)?.isEmpty == false
+    }
+
+    /// Puts a machine from the HerdrUp account in the list, or updates it in place by id. Only
+    /// the synced fields change: a secret never syncs (DESIGN #698 §5.4), so a new machine has
+    /// none here and its row asks for one, as for any host whose secret is not on this phone.
+    func applySynced(id: UUID, host: String, username: String, nickname: String?, authKind: SavedAuthKind?) {
+        if let i = hosts.firstIndex(where: { $0.id == id }) {
+            let old = hosts[i]
+            let updated = SavedHost(id: id, host: host, username: username, nickname: nickname, authKind: authKind)
+            guard updated != old else { return }
+            hosts[i] = updated
+            persist()
+            if host != old.host || username != old.username { Self.wipeContentCache(old) }
+        } else {
+            hosts.append(SavedHost(id: id, host: host, username: username, nickname: nickname, authKind: authKind))
+            persist()
+        }
+    }
+
+    /// The account holds this machine under another id (DESIGN #698 §5.5: the account's id
+    /// wins): moves the record and its secret to `id`. The secret is copied before the old
+    /// item is deleted, and only a copied one is deleted, so a Keychain failure can orphan a
+    /// secret but never lose one. Returns false, changing nothing, when a copy fails.
+    @discardableResult
+    func adoptSyncID(_ existing: SavedHost, id: UUID) -> Bool {
+        guard existing.id != id, !hosts.contains(where: { $0.id == id }),
+              let i = hosts.firstIndex(where: { $0.id == existing.id }) else { return false }
+        let old = existing.id.uuidString
+        let new = id.uuidString
+        var copied: [KeychainCredentialStore] = []
+        for store in [keychain, passwordKeychain] {
+            guard let secret = store.load(account: old) else { continue }
+            guard store.save(account: new, secret: secret) else {
+                for done in copied { _ = done.delete(account: new) }
+                return false
+            }
+            copied.append(store)
+        }
+        for store in copied { _ = store.delete(account: old) }
+        let current = hosts[i]
+        hosts[i] = SavedHost(id: id, host: current.host, username: current.username,
+                             nickname: current.nickname, authKind: current.authKind)
+        persist()
+        return true
+    }
+
+    /// `duplicate` is the same machine as `kept` (DESIGN #698 §5.5), which holds the account's
+    /// item: one copy stays. When only the duplicate has its secret on this phone, the secret
+    /// moves to `kept` first, so merging never loses a working machine. What the machine showed
+    /// stays cached: it is still in the list. Returns false, changing nothing, when the
+    /// Keychain refuses.
+    @discardableResult
+    func mergeDuplicate(_ duplicate: SavedHost, into kept: SavedHost) -> Bool {
+        guard duplicate.id != kept.id, let k = hosts.firstIndex(where: { $0.id == kept.id }),
+              hosts.contains(where: { $0.id == duplicate.id }) else { return false }
+        if secret(for: hosts[k]) == nil, let moving = secret(for: duplicate) {
+            let account = kept.id.uuidString
+            let saved: Bool
+            switch moving {
+            case .key(let key): saved = keychain.save(account: account, secret: key)
+            case .password(let password): saved = passwordKeychain.save(account: account, secret: password)
+            }
+            guard saved else { return false }
+            hosts[k].authKind = duplicate.auth
+        }
+        guard keychain.delete(account: duplicate.id.uuidString),
+              passwordKeychain.delete(account: duplicate.id.uuidString) else { return false }
+        hosts.removeAll { $0.id == duplicate.id }
+        persist()
+        return true
+    }
+
     private static func wipeContentCache(_ host: SavedHost) {
         #if !HERDR_SHARE_EXTENSION
         AppContentCache.wipe(machine: host)

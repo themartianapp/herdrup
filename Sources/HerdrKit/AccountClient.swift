@@ -34,6 +34,14 @@ public struct AccountClient: Sendable {
         }
     }
 
+    // MARK: Health
+
+    /// `GET /v1/health`: the service's version and the features this deployment offers, so an
+    /// app shows only the sign-in providers the service is configured for.
+    public func health() async throws -> AccountHealth {
+        try await send("GET", "v1/health")
+    }
+
     // MARK: Sign-in and sessions (DESIGN §2.2, §2.5)
 
     /// `POST /v1/auth/nonce`: the nonce to hand to Apple (`request.nonce`) or Google (`nonce`).
@@ -227,6 +235,25 @@ public enum AccountProvider: String, Codable, Sendable {
 /// The `platform` the service records per session and device (sessions.ts `PLATFORMS`).
 public enum AccountPlatform: String, Codable, Sendable {
     case ios, ipados, macos, windows, linux, web
+}
+
+/// `GET /v1/health`'s answer. `features` are flags about the deployment's configuration
+/// (AccountService/src/index.ts `features`); an app offers a flow only when its flag is listed.
+public struct AccountHealth: Decodable, Equatable, Sendable {
+    /// Native ID-token sign-in (`/v1/auth/apple`, `/v1/auth/google`); Apple's app client.
+    public static let nativeSignIn = "native_sign_in"
+    /// Native Google sign-in with the Google iOS client (`GOOGLE_IOS_CLIENT_ID` configured).
+    public static let nativeSignInGoogle = "native_sign_in_google"
+
+    public let version: String
+    public let features: [String]
+
+    public init(version: String, features: [String]) {
+        self.version = version
+        self.features = features
+    }
+
+    public func offers(_ feature: String) -> Bool { features.contains(feature) }
 }
 
 public struct AccountNonce: Decodable, Equatable, Sendable {
