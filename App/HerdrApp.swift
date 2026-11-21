@@ -946,6 +946,8 @@ struct ConnectView: View {
     /// The add/edit sheet target; nil = closed.
     @State private var editorTarget: HostEditorTarget?
     @State private var showingOwnerSetup = false
+    /// Settings › HerdrUp account, opened from the account avatar (#698 host-status proposal 1).
+    @State private var showingAccount = false
 
     var body: some View {
         ZStack {
@@ -993,6 +995,9 @@ struct ConnectView: View {
                 editorTarget = nil
                 onConnect(creds)
             }
+        }
+        .sheet(isPresented: $showingAccount) {
+            HerdrUpAccountSheet { showingAccount = false }
         }
         .sheet(isPresented: $showingInviteScan, onDismiss: {
             guard let invite = scannedInvite else { return }
@@ -1132,12 +1137,18 @@ struct ConnectView: View {
     // line of intent. The icon carries its own dark ground, so it reads as the app mark.
     private var header: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Image("AppLogo")
-                .resizable()
-                .interpolation(.high)
-                .frame(width: 44, height: 44)
-                .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-                .accessibilityHidden(true)
+            // The logo row: the app mark, and on its trailing edge the HerdrUp account avatar,
+            // vertically centred with it. Nothing else on the screen moves.
+            HStack(alignment: .center, spacing: 0) {
+                Image("AppLogo")
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 44, height: 44)
+                    .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .accessibilityHidden(true)
+                Spacer(minLength: 12)
+                AccountAvatarButton { showingAccount = true }
+            }
             VStack(alignment: .leading, spacing: 2) {
                 Text("herdrup")
                     .font(connectFont(34, .bold))

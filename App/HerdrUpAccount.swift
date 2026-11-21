@@ -6,7 +6,7 @@ import UIKit
 /// What this device remembers about the signed-in account, besides the refresh token in the
 /// Keychain: which provider signed in (deletion asks the same one again, DESIGN #698 §6.1) and
 /// Apple's user id (the launch credential check, §2.5). Nothing secret. Google's email
-/// (`display_hint`) is shown, never kept, so it lives only in `HerdrUpAccount.displayHint`.
+/// (`display_hint`) lives beside the session in the Keychain (`AccountHintStore`), not here.
 struct AccountProfile: Codable, Equatable {
     var provider: AccountProvider
     var appleUserID: String?
@@ -63,6 +63,8 @@ final class HerdrUpAccount: ObservableObject {
     @Published private(set) var busy: Busy?
     @Published private(set) var lastSync: AccountSyncSummary?
     @Published private(set) var syncing = false
+    /// The last sync failed (or the account is full); a later successful sync clears it.
+    @Published private(set) var syncFailed = false
     /// How many machines and prompts the account holds, as of the last sync.
     @Published private(set) var syncedCounts = (hosts: 0, prompts: 0)
     /// The account page is on screen and shows `notice` itself; the root shows it otherwise.
@@ -90,35 +92,46 @@ final class HerdrUpAccount: ObservableObject {
     private var applying = false
     /// The file the sync state lives in, so a sign-out that couldn't delete it can retry.
     private let syncStore: SyncStateStore
+    /// Where the session's display hint lives: the Keychain item beside the refresh token.
+    private let hints: AccountHintStore
 
     private static let profileKey = "account.profile.v1"
     private static let onboardingKey = "account.onboarding.done"
     /// A sign-out whose synced copy couldn't be deleted: retried at launch and before the next
     /// sign-in.
     private static let cleanupKey = "account.sync.cleanupPending"
+    /// The stored display hint couldn't be deleted or replaced: it may name another account (or
+    /// an earlier one), so it is never restored, and its delete is retried at each launch.
+    private static let hintCleanupKey = "account.hint.cleanupPending"
 
     private init() {
         let client: AccountClient
         let tokens: AccountTokenStore
+        let hints: AccountHintStore
         var syncStore: SyncStateStore
         #if DEBUG
         if ScreenshotMock.mode != nil {
             let mock = MockAccountService.shared
             client = mock.client
             tokens = mock.tokenStore
+            hints = mock.hintStore
             syncStore = InMemorySyncStateStore()
             providers = mock
             defaults = mock.defaults
         } else {
             client = AccountClient()
-            tokens = KeychainAccountTokenStore()
+            let keychain = KeychainAccountTokenStore()
+            tokens = keychain
+            hints = keychain
             syncStore = (try? FileSyncStateStore.standard()) ?? InMemorySyncStateStore()
             providers = NativeProviderSignIn()
             defaults = .standard
         }
         #else
         client = AccountClient()
-        tokens = KeychainAccountTokenStore()
+        let keychain = KeychainAccountTokenStore()
+        tokens = keychain
+        hints = keychain
         syncStore = (try? FileSyncStateStore.standard()) ?? InMemorySyncStateStore()
         providers = NativeProviderSignIn()
         defaults = .standard
@@ -127,7 +140,17 @@ final class HerdrUpAccount: ObservableObject {
             Task { @MainActor in HerdrUpAccount.shared.sessionEnded(reason) }
         }
         statements = StatementCache(session: session)
-        let profile = defaults.data(forKey: Self.profileKey).flatMap { try? JSONDecoder().decode(AccountProfile.self, from: $0) }
+        var profile = defaults.data(forKey: Self.profileKey).flatMap { try? JSONDecoder().decode(AccountProfile.self, from: $0) }
+        // The session is the refresh token, not the profile: `AccountSession` deletes the token
+        // first and the rest is cleared after, so a kill in between leaves a profile (and a
+        // hint) with no token. That is signed out. A Keychain that can't be read right now
+        // (nil here) leaves the decision to `start()`, which asks the session again.
+        let tokenStored: Bool?
+        do { tokenStored = try tokens.loadRefreshToken() != nil } catch { tokenStored = nil }
+        if tokenStored == false, profile != nil {
+            profile = nil
+            defaults.removeObject(forKey: Self.profileKey)
+        }
         // No session, or a sign-out that didn't finish: the synced copy belongs to no one, so
         // it is deleted before anything loads it. If that fails, this launch keeps sync state
         // in memory and the delete is tried again.
@@ -141,11 +164,46 @@ final class HerdrUpAccount: ObservableObject {
             }
         }
         self.syncStore = syncStore
+        self.hints = hints
         sync = Self.engine(session: session, store: syncStore)
         self.profile = profile
         signedIn = profile != nil
         onboardingDone = defaults.bool(forKey: Self.onboardingKey)
         syncLoop = AccountSyncLoop { [weak self] in await self?.runSync() }
+        // The email shown for the session: restored only with a stored token and only when no
+        // earlier delete or replace of it failed; otherwise it is deleted (and retried).
+        if tokenStored == true, profile != nil, !defaults.bool(forKey: Self.hintCleanupKey) {
+            displayHint = try? hints.loadDisplayHint()
+        } else if tokenStored != nil || defaults.bool(forKey: Self.hintCleanupKey) {
+            deleteStoredHint()
+        }
+    }
+
+    /// Keeps the email the service passed at sign-in (Google's `display_hint`) beside the
+    /// session, so the account shows it after a relaunch; nil deletes it (sign-out, an ended
+    /// session, deletion, an Apple sign-in without one). Best effort: a Keychain that refuses
+    /// costs only the initial on the next launch.
+    private func rememberDisplayHint(_ hint: String?) {
+        displayHint = hint
+        guard let hint, !hint.isEmpty else { return deleteStoredHint() }
+        do {
+            try hints.saveDisplayHint(hint)
+            defaults.removeObject(forKey: Self.hintCleanupKey)
+        } catch {
+            // The previous account's hint may still be stored: never restore it, delete it.
+            deleteStoredHint()
+        }
+    }
+
+    /// Deletes the stored hint. A failed delete is remembered (`hintCleanupKey`): the stored
+    /// hint is then never restored, and the delete is tried again at the next launch.
+    private func deleteStoredHint() {
+        do {
+            try hints.deleteDisplayHint()
+            defaults.removeObject(forKey: Self.hintCleanupKey)
+        } catch {
+            defaults.set(true, forKey: Self.hintCleanupKey)
+        }
     }
 
     /// The sync engine over `store`. An unreadable state file is deleted, and the next sync
@@ -176,14 +234,23 @@ final class HerdrUpAccount: ObservableObject {
             Task { @MainActor in await HerdrUpAccount.shared.appleCredentialRevoked() }
         }
         Task {
-            await loadHealth()
+            // The session first (a Keychain read), so a stale profile never shows as signed in
+            // while the network answers.
             let stored = (try? await session.isSignedIn()) ?? signedIn
-            if !stored, profile != nil { forgetProfile() }
+            if !stored {
+                if profile != nil { forgetProfile() }
+                deleteStoredHint()
+                displayHint = nil
+            } else if displayHint == nil, !defaults.bool(forKey: Self.hintCleanupKey) {
+                // The Keychain couldn't be read at init: restore the hint now the session is known.
+                displayHint = try? hints.loadDisplayHint()
+            }
             if stored, profile == nil {
                 // A session without a profile (an older build's): ask which provider at deletion.
                 profile = AccountProfile(provider: .apple, appleUserID: nil)
             }
             signedIn = stored
+            await loadHealth()
             guard stored else { return }
             if let user = profile?.appleUserID, profile?.provider == .apple,
                await AppleCredentialWatch.isRevoked(userID: user) {
@@ -262,7 +329,7 @@ final class HerdrUpAccount: ObservableObject {
             let answer = try await session.signIn(provider: provider, idToken: credential.idToken,
                                                   nonce: nonce.nonce, platform: Self.platform)
             saveProfile(AccountProfile(provider: provider, appleUserID: credential.appleUserID))
-            displayHint = answer.displayHint
+            rememberDisplayHint(answer.displayHint)
             signedIn = true
         } catch ProviderSignInError.cancelled {
             return
@@ -417,10 +484,11 @@ final class HerdrUpAccount: ObservableObject {
         SavedStoresAccountLocal.forget(defaults)
         forgetProfile()
         signedIn = false
-        displayHint = nil
+        rememberDisplayHint(nil)
         devices = []
         enrolment = .unknown
         lastSync = nil
+        syncFailed = false
         syncedCounts = (0, 0)
     }
 
@@ -482,6 +550,7 @@ final class HerdrUpAccount: ObservableObject {
         do {
             let summary = try await run.run()
             lastSync = summary
+            syncFailed = summary.overQuota
             let hosts = await sync.items(in: .hosts).count
             let prompts = await sync.items(in: .prompts).count
             syncedCounts = (hosts, prompts)
@@ -494,6 +563,7 @@ final class HerdrUpAccount: ObservableObject {
         } catch AccountError.signedOut {
             return
         } catch {
+            syncFailed = true
             // A background sync that can't reach the service tries again later, quietly.
             if report || (error as? AccountError) != .unreachable {
                 notice = AccountNotice(title: "Couldn't sync", message: Self.describe(error))
@@ -544,6 +614,28 @@ final class HerdrUpAccount: ObservableObject {
         case .google?: return "Signed in with Google"
         default: return "Signed in with Apple"
         }
+    }
+
+    /// The account email, when this session knows a real one: Google's `display_hint`. Apple's
+    /// private-relay addresses say nothing about the person, so they count as none.
+    var email: String? {
+        guard let hint = displayHint?.trimmingCharacters(in: .whitespacesAndNewlines),
+              hint.contains("@"), !hint.lowercased().hasSuffix("@privaterelay.appleid.com") else { return nil }
+        return hint
+    }
+
+    /// The account at a glance, for the avatar on the machine list.
+    enum Glance: Equatable {
+        case signedOut
+        case signedIn(email: String?)
+        /// Signed in, but the last sync or this device's enrolment failed.
+        case needsAttention(email: String?)
+    }
+
+    var glance: Glance {
+        guard signedIn else { return .signedOut }
+        if case .failed = enrolment { return .needsAttention(email: email) }
+        return syncFailed ? .needsAttention(email: email) : .signedIn(email: email)
     }
 
     static func describe(_ error: Error) -> String {

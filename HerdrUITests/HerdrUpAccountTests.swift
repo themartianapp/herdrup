@@ -176,6 +176,122 @@ final class HerdrUpAccountTests: XCTestCase {
         alert.buttons["OK"].tap()
     }
 
+    // MARK: The account avatar on the machine list
+
+    func testTheMachineListAvatarShowsTheAccountState() throws {
+        let local: [[String: Any]] = [
+            ["id": UUID().uuidString, "host": "10.0.4.12", "username": "ci", "nickname": "build-box", "authKind": "key"],
+        ]
+        var app = try launch(hosts: local)
+        var avatar = app.descendants(matching: .any)["hosts.account"]
+        XCTAssertTrue(avatar.exists(within: 10), "the machine list shows the account avatar")
+        XCTAssertEqual(avatar.label, "HerdrUp account")
+        pollValue(avatar, "signed out", equals: "Signed out")
+        XCTAssertGreaterThanOrEqual(avatar.frame.width, 44, "the hit target is at least 44 pt")
+        XCTAssertGreaterThanOrEqual(avatar.frame.height, 44)
+        attach(app, "hosts-account-signed-out")
+        app.terminate()
+
+        app = try launch(signedIn: true, hosts: local, environment: ["HERDR_MOCK_ACCOUNT_STORED_HINT": "sam.rivera@gmail.com"])
+        avatar = app.descendants(matching: .any)["hosts.account"]
+        XCTAssertTrue(avatar.exists(within: 10))
+        pollValue(avatar, "signed in and synced", equals: "Signed in as sam.rivera@gmail.com")
+        attach(app, "hosts-account-signed-in")
+        app.terminate()
+
+        app = try launch(signedIn: true, hosts: local, environment: [
+            "HERDR_MOCK_ACCOUNT_STORED_HINT": "sam.rivera@gmail.com", "HERDR_MOCK_ACCOUNT_SYNC_OFFLINE": "1",
+        ])
+        avatar = app.descendants(matching: .any)["hosts.account"]
+        XCTAssertTrue(avatar.exists(within: 10))
+        pollValue(avatar, "signed in, sync failed", equals: "Needs attention")
+        attach(app, "hosts-account-needs-attention")
+    }
+
+    func testARelaunchWithAStoredSessionStillShowsTheInitial() throws {
+        // A Google sign-in in an earlier launch stored its display hint beside the session; this
+        // launch only finds them, and the service passes no hint again until the next sign-in.
+        let app = try launch(signedIn: true, environment: ["HERDR_MOCK_ACCOUNT_STORED_HINT": "sam.rivera@gmail.com"])
+        let avatar = app.descendants(matching: .any)["hosts.account"]
+        XCTAssertTrue(avatar.exists(within: 10))
+        pollValue(avatar, "relaunched with a stored hint", equals: "Signed in as sam.rivera@gmail.com")
+
+        // Signing out deletes the hint with the session.
+        avatar.tap()
+        let signOut = app.buttons["account-sign-out"]
+        XCTAssertTrue(signOut.waitForHittable(timeout: 8))
+        signOut.tap()
+        let confirm = app.buttons["account-confirm-sign-out"].firstMatch
+        XCTAssertTrue(confirm.exists(within: 3))
+        confirm.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["account-signed-out"].exists(within: 8))
+        let close = app.buttons["account-sheet-close"]
+        XCTAssertTrue(close.waitForHittable(timeout: 5))
+        close.tap()
+        pollValue(avatar, "after sign-out", equals: "Signed out")
+    }
+
+    func testAStoredHintWithoutASessionIsNotShown() throws {
+        let app = try launch(hosts: [["id": UUID().uuidString, "host": "10.0.4.12", "username": "ci",
+                                      "nickname": "build-box", "authKind": "key"]],
+                             environment: ["HERDR_MOCK_ACCOUNT_STORED_HINT": "sam.rivera@gmail.com"])
+        let avatar = app.descendants(matching: .any)["hosts.account"]
+        XCTAssertTrue(avatar.exists(within: 10))
+        pollValue(avatar, "a hint left without its session", equals: "Signed out")
+        pollLabel(app, "fixture-stored-hint", "the orphaned hint is deleted") { $0 == "none" }
+    }
+
+    func testAProfileWithoutARefreshTokenIsSignedOutAndDropsTheHint() throws {
+        // A sign-out killed after AccountSession deleted the token but before the profile and
+        // hint went: the next launch must not show the old account (#780 review F1).
+        let app = try launch(hosts: [["id": UUID().uuidString, "host": "10.0.4.12", "username": "ci",
+                                      "nickname": "build-box", "authKind": "key"]],
+                             environment: ["HERDR_MOCK_ACCOUNT_PROFILE_ONLY": "1",
+                                           "HERDR_MOCK_ACCOUNT_STORED_HINT": "sam.rivera@gmail.com"])
+        let avatar = app.descendants(matching: .any)["hosts.account"]
+        XCTAssertTrue(avatar.exists(within: 10))
+        XCTAssertEqual(avatar.value as? String, "Signed out", "signed out from the first frame, not after health()")
+        pollLabel(app, "fixture-stored-hint", "the hint goes with the session") { $0 == "none" }
+        avatar.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["account-signed-out"].exists(within: 8))
+    }
+
+    func testTappingTheAvatarOpensTheAccountPage() throws {
+        let local: [[String: Any]] = [
+            ["id": UUID().uuidString, "host": "10.0.4.12", "username": "ci", "nickname": "build-box", "authKind": "key"],
+        ]
+        var app = try launch(hosts: local)
+        var avatar = app.descendants(matching: .any)["hosts.account"]
+        XCTAssertTrue(avatar.waitForHittable(timeout: 10))
+        avatar.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["account-signed-out"].exists(within: 8),
+                      "signed out, the avatar opens the sign-in page")
+        XCTAssertTrue(appleButton(app).exists(within: 5))
+        app.terminate()
+
+        app = try launch(signedIn: true, hosts: local)
+        avatar = app.descendants(matching: .any)["hosts.account"]
+        XCTAssertTrue(avatar.waitForHittable(timeout: 10))
+        avatar.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["account-identity"].exists(within: 8),
+                      "signed in, the avatar opens the account page")
+        XCTAssertTrue(app.buttons["account-sign-out"].exists)
+        let close = app.buttons["account-sheet-close"]
+        XCTAssertTrue(close.waitForHittable(timeout: 5))
+        close.tap()
+        XCTAssertTrue(avatar.waitForHittable(timeout: 5), "closing returns to the machine list")
+    }
+
+    private func pollValue(_ element: XCUIElement, _ what: String, equals expected: String,
+                           file: StaticString = #filePath, line: UInt = #line) {
+        var last = ""
+        let met = poll(15, every: 0.3) {
+            last = element.value as? String ?? ""
+            return last == expected
+        }
+        if !met { XCTFail("\(what): hosts.account value = \(last)", file: file, line: line) }
+    }
+
     // MARK: Enrolment refusals
 
     func testAKeyInAnotherAccountOffersToSignOut() throws {
