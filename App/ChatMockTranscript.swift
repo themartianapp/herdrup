@@ -46,12 +46,19 @@ final class ChatMockConversation: @unchecked Sendable {
     /// `HERDR_MOCK_CHAT_ANSWERED=<option>`: the owner's question starts answered, so the
     /// agent is not blocked on a menu and a reply goes out as a prompt (`agent.prompt`).
     private static let answeredAtLaunch = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_ANSWERED"]
+    /// `HERDR_MOCK_CHAT_DISMISS=1`: the pending ask (plain or form) is `dismissable`, and
+    /// `agent.dismiss_ask` cancels it. Unset, herdr is one without Dismiss.
+    static let dismissable = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_DISMISS"] == "1"
+    /// `HERDR_MOCK_CHAT_DISMISS_ANSWER=<code>`: `agent.dismiss_ask` refuses with that code.
+    static let dismissRefusal = ProcessInfo.processInfo.environment["HERDR_MOCK_CHAT_DISMISS_ANSWER"]
 
     let audience: Audience
     private let lock = NSLock()
     private var answered: String?
     /// omp's `details.answers` once the form (`ChatMockAskForm`) was answered.
     private var formAnswers: [[String: String]]?
+    /// `agent.dismiss_ask` cancelled the ask: omp's result reads cancelled.
+    private var dismissed = false
     /// What came after the written conversation, oldest first, as omp appends it to the session
     /// file: turns of work (`HERDR_MOCK_CHAT_GROWTH`) and prompts sent through `agent.prompt`.
     /// Append-only, so an `after` cursor (a turn count) always names the same turns.
@@ -88,7 +95,8 @@ final class ChatMockConversation: @unchecked Sendable {
 
     /// The question no longer blocks omp: answered, or (a form) ended unanswered. Under `lock`.
     private var settled: Bool {
-        answered != nil || formAnswers != nil || (ChatMockAskForm.enabled && ChatMockAskForm.endedStatus != nil)
+        answered != nil || formAnswers != nil || dismissed
+            || (ChatMockAskForm.enabled && ChatMockAskForm.endedStatus != nil)
     }
 
     // MARK: Requests
@@ -160,12 +168,14 @@ final class ChatMockConversation: @unchecked Sendable {
                 // No herdr with form asks withholds them from guests: an owner-only host
                 // (`HERDR_MOCK_GUEST_OWNER_ANSWERS`) says so by refusing `agent.answer_form`.
                 "form_answerable": ChatMockAskForm.answerable,
+                "dismissable": Self.dismissable,
             ]
         } else {
             result["pending_ask"] = [
                 "id": askID,
                 "questions": [["question": question, "options": options, "multi": false, "recommended": 0]],
                 "answerable": audience == .owner || !GuestMockTransport.ownerOnlyAnswers,
+                "dismissable": Self.dismissable,
             ]
         }
         if let subagents = subagents {
@@ -280,6 +290,24 @@ final class ChatMockConversation: @unchecked Sendable {
         }
     }
 
+    /// `agent.dismiss_ask`: Esc on omp's pending ask; the next page shows it cancelled.
+    func dismissAsk(id: String, params: [String: Any]) -> String {
+        let ask = params["ask_id"] as? String ?? ""
+        return lock.withLock {
+            if let refusal = Self.dismissRefusal {
+                return Self.error(id: id, code: refusal, message: "mock refusal")
+            }
+            guard !settled else {
+                return Self.error(id: id, code: "ask_not_pending", message: "no pending question")
+            }
+            guard ask == askID else {
+                return Self.error(id: id, code: "ask_mismatch", message: "another question is pending")
+            }
+            dismissed = true
+            return Self.encode(id: id, result: ["dismissed": true])
+        }
+    }
+
     /// The ask entry: omp's old single question, or (`ChatMockAskForm`) its HTML form.
     private func askEntry() -> [String: Any] {
         guard ChatMockAskForm.enabled else {
@@ -287,6 +315,7 @@ final class ChatMockConversation: @unchecked Sendable {
                 "question": question, "options": options, "multi": false, "recommended": 0,
             ]]]
             if let answered { ask["answer"] = [answered] }
+            if dismissed { ask["form_status"] = "cancelled" }
             return ask
         }
         var ask: [String: Any] = ["kind": "ask", "questions": ChatMockAskForm.questions, "form": ChatMockAskForm.form]
@@ -294,6 +323,8 @@ final class ChatMockConversation: @unchecked Sendable {
             ask["form_answer"] = formAnswers
             ask["form_status"] = "answered"
             ask["answer"] = formAnswers.map { "\($0["question"] ?? ""): \($0["answer"] ?? "")" }
+        } else if dismissed {
+            ask["form_status"] = "cancelled"
         } else if let status = ChatMockAskForm.endedStatus {
             ask["form_status"] = status
         }
@@ -622,6 +653,8 @@ struct ChatMockTransport: HerdrTransport {
             return ChatMockConversation.owner.answer(id: id, params: params)
         case "agent.answer_form":
             return ChatMockConversation.owner.answerForm(id: id, params: params)
+        case "agent.dismiss_ask":
+            return ChatMockConversation.owner.dismissAsk(id: id, params: params)
         case "agent.prompt":
             return ChatMockConversation.owner.prompt(id: id, params: params)
         default:

@@ -86,6 +86,16 @@ struct AgentAnswerFormParams: Encodable, Sendable {
     }
 }
 
+struct AgentDismissAskParams: Encodable, Sendable {
+    let target: String
+    let askID: String
+
+    enum CodingKeys: String, CodingKey {
+        case target
+        case askID = "ask_id"
+    }
+}
+
 // MARK: - Entries
 
 /// Who wrote a user turn. A guest prompt arrives as `<name> (via HerdrUp): <text>`; the
@@ -588,6 +598,9 @@ public struct TranscriptPendingAsk: Decodable, Sendable, Equatable {
     public let form: AskForm?
     /// herdr can drive this form's terminal dialog for this caller (`agent.answer_form`).
     public let formAnswerable: Bool
+    /// herdr can dismiss this ask for this caller (`agent.dismiss_ask`, Esc in omp's dialog),
+    /// owner or guest. False on servers without it: the chat offers no Dismiss.
+    public let dismissable: Bool
 
     /// Whether the chat's buttons could answer this question's shape: one single-select
     /// question with options, exactly the server's rule for `answerable`.
@@ -601,16 +614,17 @@ public struct TranscriptPendingAsk: Decodable, Sendable, Equatable {
     public var isWithheldFromCaller: Bool { hasAnswerableShape && !answerable }
 
     public init(id: String, questions: [TranscriptQuestion], answerable: Bool, form: AskForm? = nil,
-                formAnswerable: Bool = false) {
+                formAnswerable: Bool = false, dismissable: Bool = false) {
         self.id = id
         self.questions = questions
         self.answerable = answerable
         self.form = form
         self.formAnswerable = formAnswerable
+        self.dismissable = dismissable
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, questions, answerable, form
+        case id, questions, answerable, form, dismissable
         case formAnswerable = "form_answerable"
     }
 
@@ -621,6 +635,7 @@ public struct TranscriptPendingAsk: Decodable, Sendable, Equatable {
         answerable = try c.decodeIfPresent(Bool.self, forKey: .answerable) ?? false
         form = (try? c.decodeIfPresent(AskForm.self, forKey: .form)) ?? nil
         formAnswerable = try c.decodeIfPresent(Bool.self, forKey: .formAnswerable) ?? false
+        dismissable = try c.decodeIfPresent(Bool.self, forKey: .dismissable) ?? false
     }
 }
 
@@ -881,5 +896,39 @@ extension APIError {
     /// on screen); the person can still answer by hand in the Terminal view.
     public var asksForTerminalAnswer: Bool {
         code == "ask_unsupported" || code == "ask_ui_not_found"
+    }
+}
+
+/// Result of `agent.dismiss_ask`: herdr pressed Esc on omp's pending ask, whose tool result
+/// then reads cancelled.
+public struct AgentDismissAskResult: Decodable, Sendable, Equatable {
+    public let dismissed: Bool
+
+    public init(dismissed: Bool) {
+        self.dismissed = dismissed
+    }
+}
+
+/// Why `agent.dismiss_ask` did not dismiss.
+public enum AgentDismissAskError: Error, Sendable, Equatable {
+    /// The ask is gone (answered, timed out, cancelled) or a newer ask replaced it
+    /// (`ask_not_pending`, `ask_mismatch`): the transcript already has the outcome.
+    case alreadyAnswered(code: String)
+    /// Any other refusal (`forbidden`, `guest_forbidden`, an unknown agent…).
+    case refused(APIError)
+
+    /// The codes herdr answers with when the ask is no longer the pending one.
+    static let alreadyAnsweredCodes: Set<String> = ["ask_not_pending", "ask_mismatch"]
+
+    init(_ error: APIError) {
+        self = Self.alreadyAnsweredCodes.contains(error.code) ? .alreadyAnswered(code: error.code) : .refused(error)
+    }
+
+    /// The server's error code.
+    public var code: String {
+        switch self {
+        case .alreadyAnswered(let code): return code
+        case .refused(let error): return error.code
+        }
     }
 }
