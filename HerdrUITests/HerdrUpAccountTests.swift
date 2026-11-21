@@ -192,7 +192,7 @@ final class HerdrUpAccountTests: XCTestCase {
         attach(app, "hosts-account-signed-out")
         app.terminate()
 
-        app = try launch(signedIn: true, hosts: local, environment: ["HERDR_MOCK_ACCOUNT_EMAIL": "sam.rivera@gmail.com"])
+        app = try launch(signedIn: true, hosts: local, environment: ["HERDR_MOCK_ACCOUNT_STORED_HINT": "sam.rivera@gmail.com"])
         avatar = app.descendants(matching: .any)["hosts.account"]
         XCTAssertTrue(avatar.exists(within: 10))
         pollValue(avatar, "signed in and synced", equals: "Signed in as sam.rivera@gmail.com")
@@ -200,12 +200,44 @@ final class HerdrUpAccountTests: XCTestCase {
         app.terminate()
 
         app = try launch(signedIn: true, hosts: local, environment: [
-            "HERDR_MOCK_ACCOUNT_EMAIL": "sam.rivera@gmail.com", "HERDR_MOCK_ACCOUNT_SYNC_OFFLINE": "1",
+            "HERDR_MOCK_ACCOUNT_STORED_HINT": "sam.rivera@gmail.com", "HERDR_MOCK_ACCOUNT_SYNC_OFFLINE": "1",
         ])
         avatar = app.descendants(matching: .any)["hosts.account"]
         XCTAssertTrue(avatar.exists(within: 10))
         pollValue(avatar, "signed in, sync failed", equals: "Needs attention")
         attach(app, "hosts-account-needs-attention")
+    }
+
+    func testARelaunchWithAStoredSessionStillShowsTheInitial() throws {
+        // A Google sign-in in an earlier launch stored its display hint beside the session; this
+        // launch only finds them, and the service passes no hint again until the next sign-in.
+        let app = try launch(signedIn: true, environment: ["HERDR_MOCK_ACCOUNT_STORED_HINT": "sam.rivera@gmail.com"])
+        let avatar = app.descendants(matching: .any)["hosts.account"]
+        XCTAssertTrue(avatar.exists(within: 10))
+        pollValue(avatar, "relaunched with a stored hint", equals: "Signed in as sam.rivera@gmail.com")
+
+        // Signing out deletes the hint with the session.
+        avatar.tap()
+        let signOut = app.buttons["account-sign-out"]
+        XCTAssertTrue(signOut.waitForHittable(timeout: 8))
+        signOut.tap()
+        let confirm = app.buttons["account-confirm-sign-out"].firstMatch
+        XCTAssertTrue(confirm.exists(within: 3))
+        confirm.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["account-signed-out"].exists(within: 8))
+        let close = app.buttons["account-sheet-close"]
+        XCTAssertTrue(close.waitForHittable(timeout: 5))
+        close.tap()
+        pollValue(avatar, "after sign-out", equals: "Signed out")
+    }
+
+    func testAStoredHintWithoutASessionIsNotShown() throws {
+        let app = try launch(hosts: [["id": UUID().uuidString, "host": "10.0.4.12", "username": "ci",
+                                      "nickname": "build-box", "authKind": "key"]],
+                             environment: ["HERDR_MOCK_ACCOUNT_STORED_HINT": "sam.rivera@gmail.com"])
+        let avatar = app.descendants(matching: .any)["hosts.account"]
+        XCTAssertTrue(avatar.exists(within: 10))
+        pollValue(avatar, "a hint left without its session", equals: "Signed out")
     }
 
     func testTappingTheAvatarOpensTheAccountPage() throws {

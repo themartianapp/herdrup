@@ -6,7 +6,7 @@ import UIKit
 /// What this device remembers about the signed-in account, besides the refresh token in the
 /// Keychain: which provider signed in (deletion asks the same one again, DESIGN #698 §6.1) and
 /// Apple's user id (the launch credential check, §2.5). Nothing secret. Google's email
-/// (`display_hint`) is shown, never kept, so it lives only in `HerdrUpAccount.displayHint`.
+/// (`display_hint`) lives beside the session in the Keychain (`AccountHintStore`), not here.
 struct AccountProfile: Codable, Equatable {
     var provider: AccountProvider
     var appleUserID: String?
@@ -92,6 +92,8 @@ final class HerdrUpAccount: ObservableObject {
     private var applying = false
     /// The file the sync state lives in, so a sign-out that couldn't delete it can retry.
     private let syncStore: SyncStateStore
+    /// Where the session's display hint lives: the Keychain item beside the refresh token.
+    private let hints: AccountHintStore
 
     private static let profileKey = "account.profile.v1"
     private static let onboardingKey = "account.onboarding.done"
@@ -102,25 +104,31 @@ final class HerdrUpAccount: ObservableObject {
     private init() {
         let client: AccountClient
         let tokens: AccountTokenStore
+        let hints: AccountHintStore
         var syncStore: SyncStateStore
         #if DEBUG
         if ScreenshotMock.mode != nil {
             let mock = MockAccountService.shared
             client = mock.client
             tokens = mock.tokenStore
+            hints = mock.hintStore
             syncStore = InMemorySyncStateStore()
             providers = mock
             defaults = mock.defaults
         } else {
             client = AccountClient()
-            tokens = KeychainAccountTokenStore()
+            let keychain = KeychainAccountTokenStore()
+            tokens = keychain
+            hints = keychain
             syncStore = (try? FileSyncStateStore.standard()) ?? InMemorySyncStateStore()
             providers = NativeProviderSignIn()
             defaults = .standard
         }
         #else
         client = AccountClient()
-        tokens = KeychainAccountTokenStore()
+        let keychain = KeychainAccountTokenStore()
+        tokens = keychain
+        hints = keychain
         syncStore = (try? FileSyncStateStore.standard()) ?? InMemorySyncStateStore()
         providers = NativeProviderSignIn()
         defaults = .standard
@@ -143,15 +151,31 @@ final class HerdrUpAccount: ObservableObject {
             }
         }
         self.syncStore = syncStore
+        self.hints = hints
         sync = Self.engine(session: session, store: syncStore)
         self.profile = profile
         signedIn = profile != nil
         onboardingDone = defaults.bool(forKey: Self.onboardingKey)
-        #if DEBUG
-        // The `account` mock's signed-in launch: the email a Google sign-in passed this session.
-        if ScreenshotMock.mode != nil, signedIn { displayHint = MockAccountService.shared.signedInEmail }
-        #endif
         syncLoop = AccountSyncLoop { [weak self] in await self?.runSync() }
+        // The email shown for the session: restored with it, gone without it.
+        if profile != nil {
+            displayHint = try? hints.loadDisplayHint()
+        } else {
+            try? hints.deleteDisplayHint()
+        }
+    }
+
+    /// Keeps the email the service passed at sign-in (Google's `display_hint`) beside the
+    /// session, so the account shows it after a relaunch; nil deletes it (sign-out, an ended
+    /// session, deletion, an Apple sign-in without one). Best effort: a Keychain that refuses
+    /// costs only the initial on the next launch.
+    private func rememberDisplayHint(_ hint: String?) {
+        displayHint = hint
+        if let hint, !hint.isEmpty {
+            try? hints.saveDisplayHint(hint)
+        } else {
+            try? hints.deleteDisplayHint()
+        }
     }
 
     /// The sync engine over `store`. An unreadable state file is deleted, and the next sync
@@ -268,7 +292,7 @@ final class HerdrUpAccount: ObservableObject {
             let answer = try await session.signIn(provider: provider, idToken: credential.idToken,
                                                   nonce: nonce.nonce, platform: Self.platform)
             saveProfile(AccountProfile(provider: provider, appleUserID: credential.appleUserID))
-            displayHint = answer.displayHint
+            rememberDisplayHint(answer.displayHint)
             signedIn = true
         } catch ProviderSignInError.cancelled {
             return
@@ -423,7 +447,7 @@ final class HerdrUpAccount: ObservableObject {
         SavedStoresAccountLocal.forget(defaults)
         forgetProfile()
         signedIn = false
-        displayHint = nil
+        rememberDisplayHint(nil)
         devices = []
         enrolment = .unknown
         lastSync = nil
