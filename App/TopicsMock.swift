@@ -60,6 +60,10 @@ final class TopicsMock: @unchecked Sendable {
     private var topics: [Topic]
     private var created = 0
     private var listCalls = 0
+    /// `HERDR_MOCK_TOPICS_TRANSCRIPT_STARTUP=<n>`: the first `n` topic transcript calls answer
+    /// `transcript_unsupported`, as a topic whose session is still starting.
+    private var startupRefusals = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_TRANSCRIPT_STARTUP"]
+        .flatMap(Int.init) ?? 0
 
     private init(agent: String, paneID: String, readerAuthor: [String: String]) {
         self.agent = agent
@@ -166,6 +170,11 @@ final class TopicsMock: @unchecked Sendable {
         lock.withLock {
             guard let topic = topics.first(where: { $0.id == topicID }) else {
                 return ChatMockConversation.error(id: id, code: "topic_not_found", message: "no such topic")
+            }
+            if startupRefusals > 0 {
+                startupRefusals -= 1
+                return ChatMockConversation.error(id: id, code: "transcript_unsupported",
+                                                  message: "the topic's session is still starting")
             }
             var entries: [[String: Any]] = []
             for (index, message) in topic.messages.enumerated() {

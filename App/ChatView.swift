@@ -317,12 +317,23 @@ final class ChatModel: ObservableObject {
         }
     }
 
+    /// Gaps between polls while the server refuses this transcript (`transcript_unsupported`),
+    /// in seconds, the last one repeating: an agent or session that is still starting answers so
+    /// for its first seconds, and a mounted chat recovers by itself (herdrup#775).
+    static let recoveryPollSeconds: [UInt64] = [1, 2, 4, 8, 15, 30]
+    private var recoveryAttempt = 0
+
     /// Sleeps until the next poll is due. True when a staged or updated send cut it short.
     private func waitForPoll() async -> Bool {
         let seconds: UInt64
         if hasPendingSend && Date() < fastPollUntil {
             seconds = Self.fastPollSeconds
+        } else if unsupported {
+            let delays = Self.recoveryPollSeconds
+            seconds = delays[min(recoveryAttempt, delays.count - 1)]
+            recoveryAttempt += 1
         } else {
+            recoveryAttempt = 0
             seconds = store.isWorking ? 3 : 30
         }
         let wait = Task<Void, Never> {
