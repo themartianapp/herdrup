@@ -287,6 +287,34 @@ final class ChatModel: ObservableObject {
         await store.refresh(client: client)
     }
 
+    /// Dismisses omp's pending ask (`agent.dismiss_ask`, Esc in its dialog): the refresh
+    /// shows it cancelled. An ask already gone (answered elsewhere, or replaced) refreshes
+    /// silently; other refusals show on the card like an answer's.
+    func dismissAsk(client: HerdrClient, askID: String) async {
+        guard answeringAskID == nil, answersQuestions else { return }
+        answeringAskID = askID
+        answerProblem = nil
+        defer { answeringAskID = nil }
+        do {
+            _ = try await client.agentDismissAsk(target: target, askID: askID)
+            formDrafts[askID] = nil
+        } catch let error as AgentDismissAskError {
+            switch error {
+            case .alreadyAnswered:
+                break
+            case .refused(let refusal):
+                answerProblem = ChatAnswerProblem(askID: askID, message: "Couldn't dismiss: \(refusal.message)",
+                                                  offersTerminal: false)
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            answerProblem = ChatAnswerProblem(askID: askID, message: "Couldn't reach the agent. Try again.",
+                                              offersTerminal: false)
+        }
+        await store.refresh(client: client)
+    }
+
     /// Keeps the chat current while it is on screen: the agent's own events where the
     /// server sends them (owner), a 3 s poll while a send waits to show up in the
     /// transcript or while omp works, and a slow poll otherwise as a backstop for a missed
@@ -1186,6 +1214,7 @@ struct ChatView: View {
             openNote: { note in model.presentation.sheet = .note(note) },
             openQuestion: { id in model.presentation.sheet = .question(id: id) },
             answer: { id, option in Task { await model.answer(client: client, askID: id, option: option) } },
+            dismissAsk: { id in Task { await model.dismissAsk(client: client, askID: id) } },
             submitForm: { id, draft in
                 // The answer moves the conversation on: the chat follows it again. Like Jump to
                 // latest, that retires an up-arrow jump, whose settle would otherwise read the
@@ -1844,6 +1873,9 @@ private struct ChatQuestionSheet: View {
                                 onAnswer: { option in
                                     Task { await model.answer(client: client, askID: id, option: option) }
                                 },
+                                onDismiss: model.answersQuestions ? {
+                                    Task { await model.dismissAsk(client: client, askID: id) }
+                                } : nil,
                                 onOpenTerminal: onOpenTerminal)
                     if case .user(let text, _, _) = turn.prompt?.kind, !text.isEmpty {
                         DisclosureGroup("Show context") { ChatMarkdownView(markdown: text).textSelection(.enabled) }
@@ -1930,6 +1962,8 @@ private struct ChatRowActions {
     let openNote: (TranscriptNote) -> Void
     let openQuestion: (String) -> Void
     let answer: (_ askID: String, _ option: String) -> Void
+    /// Dismiss the pending ask (`agent.dismiss_ask`).
+    let dismissAsk: (_ askID: String) -> Void
     let submitForm: (_ askID: String, _ draft: AskFormDraft) -> Void
     /// A form's review opened: from now on, bring its card's top (window coordinates) into
     /// view as it lays out, until the reader moves the chat (`ChatFormReveal`).
@@ -2008,6 +2042,7 @@ private struct ChatRowView: View, Equatable {
         ChatAskCard(id: id, ask: ask, pending: pending, viewer: viewer, answering: answering, problem: problem,
                     answersRefused: answersRefused,
                     onAnswer: { option in actions.answer(id, option) },
+                    onDismiss: actions.canAnswer ? { actions.dismissAsk(id) } : nil,
                     onOpenTerminal: actions.openTerminal)
     }
 
@@ -2048,6 +2083,7 @@ private struct ChatRowView: View, Equatable {
                                 canAnswerHere: actions.canAnswer,
                                 onSubmit: { if let formDraft { actions.submitForm(id, formDraft) } },
                                 onOpenTerminal: actions.openTerminal,
+                                onDismiss: { actions.dismissAsk(id) },
                                 onReviewOpened: actions.formReviewOpened,
                                 onReviewLaidOut: actions.formReviewLaidOut)
                     .frame(maxWidth: sizeClass == .regular ? 520 : .infinity, alignment: .leading)
@@ -2397,6 +2433,9 @@ struct ChatAskCard: View {
     /// The guest's host refused guest answers (`ChatModel.answersRefused`).
     let answersRefused: Bool
     let onAnswer: (String) -> Void
+    /// Dismiss the pending ask (`agent.dismiss_ask`); shown only when herdr marks it
+    /// `dismissable` for this caller. Nil in a read-only transcript.
+    let onDismiss: (() -> Void)?
     let onOpenTerminal: () -> Void
 
     /// A guest who cannot answer: the question waits for the owner.
@@ -2484,6 +2523,9 @@ struct ChatAskCard: View {
             }
             .opacity(answering ? 0.6 : 1)
             footer
+            if let onDismiss, pending?.dismissable == true {
+                dismissButton(onDismiss)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
@@ -2523,6 +2565,22 @@ struct ChatAskCard: View {
         }
     }
 
+    /// "Dismiss": Esc on omp's dialog, so the ask ends cancelled. A secondary text button,
+    /// never a destructive colour.
+    private func dismissButton(_ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text("Dismiss").font(Typography.app(14 * textScale, .semibold))
+                .foregroundStyle(Palette.textDim)
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(answering)
+        .opacity(answering ? 0.5 : 1)
+        .padding(.top, 8)
+        .accessibilityIdentifier("chat.ask.dismiss")
+    }
+
     private var terminalButton: some View {
         Button(action: onOpenTerminal) {
             HStack(spacing: 6) {
@@ -2541,7 +2599,8 @@ struct ChatAskCard: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(questionText).font(Typography.app(14 * textScale, .medium)).foregroundStyle(Palette.textDim)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("Not answered").font(Typography.app(13 * textScale)).foregroundStyle(Palette.textFaint)
+            Text(ask.formStatus == .cancelled ? "Cancelled" : "Not answered")
+                .font(Typography.app(13 * textScale)).foregroundStyle(Palette.textFaint)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12).padding(.vertical, 10)

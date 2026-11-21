@@ -2240,6 +2240,18 @@ public actor HerdrClient {
         }
     }
 
+    /// Dismiss omp's pending ask (`agent.dismiss_ask`): herdr presses Esc in its dialog, and
+    /// omp's tool result reads cancelled. Server refusals arrive as `AgentDismissAskError`.
+    public func agentDismissAsk(target: String, askID: String) async throws -> AgentDismissAskResult {
+        do {
+            return try await call("agent.dismiss_ask",
+                                  AgentDismissAskParams(target: target, askID: askID),
+                                  as: AgentDismissAskResult.self)
+        } catch let error as APIError {
+            throw AgentDismissAskError(error)
+        }
+    }
+
     // MARK: - Guest access (owner)
 
     /// Create a one-use invite for a live agent (`guest.invite.create`). `target` is the

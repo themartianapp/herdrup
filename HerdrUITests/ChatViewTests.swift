@@ -462,6 +462,38 @@ final class ChatViewTests: XCTestCase {
         XCTAssertFalse(app.buttons["chat-ask-option-0"].exists, "an answered question offers no buttons")
     }
 
+    /// A `dismissable` question offers Dismiss next to its options; tapping it calls
+    /// `agent.dismiss_ask` and the card reads Cancelled. Without the flag, no Dismiss.
+    func testDismissingTheQuestion() {
+        let app = launch("chatview", ["HERDR_MOCK_CHAT_DISMISS": "1"])
+        openAgent("herdr-app", in: app)
+        let dismiss = app.buttons["chat.ask.dismiss"]
+        XCTAssertTrue(dismiss.exists(within: 10), "a dismissable question offers Dismiss")
+        XCTAssertEqual(dismiss.label, "Dismiss")
+        dismiss.tap()
+        XCTAssertTrue(app.staticTexts["Cancelled"].exists(within: 8), "the dismissed question reads Cancelled")
+        XCTAssertFalse(app.buttons["chat-ask-option-0"].exists, "a dismissed question offers no buttons")
+        XCTAssertFalse(app.buttons["chat.ask.dismiss"].exists)
+    }
+
+    /// herdr says the question is already gone: the chat refreshes with no error.
+    func testDismissingAnAnsweredQuestionRefreshesSilently() {
+        let app = launch("chatview", ["HERDR_MOCK_CHAT_DISMISS": "1", "HERDR_MOCK_CHAT_DISMISS_ANSWER": "ask_mismatch"])
+        openAgent("herdr-app", in: app)
+        let dismiss = app.buttons["chat.ask.dismiss"]
+        XCTAssertTrue(dismiss.exists(within: 10))
+        dismiss.tap()
+        XCTAssertTrue(app.buttons["chat-ask-option-0"].exists(within: 8))
+        XCTAssertFalse(app.staticTexts["chat-ask-problem"].exists, "an ask already gone shows no failure")
+    }
+
+    func testQuestionWithoutDismissableOffersNoDismiss() {
+        let app = launch("chatview")
+        openAgent("herdr-app", in: app)
+        XCTAssertTrue(app.buttons["chat-ask-option-0"].exists(within: 10))
+        XCTAssertFalse(app.buttons["chat.ask.dismiss"].exists, "an older herdr sends no dismissable")
+    }
+
     /// A server that cannot answer through the UI sends the owner to the terminal.
     func testRefusedAnswerOffersTheTerminal() {
         let app = launch("chatview", ["HERDR_MOCK_CHAT_ANSWER": "ask_ui_not_found"])
@@ -784,6 +816,28 @@ final class ChatViewTests: XCTestCase {
         XCTAssertEqual(ended.label, "Timed out · recommendations used")
         XCTAssertFalse(app.buttons["chat-ask-form-option-0"].exists)
         attach(app, "form-timed-out")
+    }
+
+    /// Dismiss on a pending form: the card turns into the compact Cancelled line.
+    func testDismissingAFormReadsCancelled() {
+        let app = launchForm(["HERDR_MOCK_CHAT_DISMISS": "1"])
+        let dismiss = app.buttons["chat.ask.dismiss"]
+        XCTAssertTrue(dismiss.exists(within: 5), "a dismissable form offers Dismiss next to Back")
+        dismiss.tap()
+        let ended = app.staticTexts["chat-ask-form-ended"]
+        XCTAssertTrue(ended.exists(within: 8))
+        XCTAssertEqual(ended.label, "Cancelled")
+    }
+
+    /// A guest whose host marks the form dismissable dismisses it the same way.
+    func testGuestDismissesAForm() {
+        let app = launch("guestchat", ["HERDR_MOCK_CHAT_FORM": "1", "HERDR_MOCK_CHAT_DISMISS": "1"])
+        let dismiss = app.buttons["chat.ask.dismiss"]
+        XCTAssertTrue(dismiss.exists(within: 12))
+        dismiss.tap()
+        let ended = app.staticTexts["chat-ask-form-ended"]
+        XCTAssertTrue(ended.exists(within: 8))
+        XCTAssertEqual(ended.label, "Cancelled")
     }
 
     // MARK: - Guest

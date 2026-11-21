@@ -102,6 +102,9 @@ struct ChatAskFormCard: View {
     let canAnswerHere: Bool
     let onSubmit: () -> Void
     let onOpenTerminal: () -> Void
+    /// Dismiss the pending form (`agent.dismiss_ask`); nil when herdr says this caller can't
+    /// (`pending_ask.dismissable`).
+    let onDismiss: (() -> Void)?
     /// The review opened: the card's frame in window coordinates, for the chat to show its top.
     let onReviewOpened: (CGRect) -> Void
     /// The open review laid out again (its frame, as above): the chat keeps its top in view
@@ -123,6 +126,7 @@ struct ChatAskFormCard: View {
             } else if pending != nil, let draft {
                 AskFormStepper(draft: draft, mode: mode, answering: answering, problem: problem,
                                onSubmit: onSubmit, onOpenTerminal: onOpenTerminal,
+                               onDismiss: pending?.dismissable == true && canAnswerHere ? onDismiss : nil,
                                onReviewOpened: onReviewOpened, onReviewLaidOut: onReviewLaidOut)
             } else {
                 ended(nil)
@@ -276,6 +280,7 @@ struct AskFormStepper: View {
     let problem: ChatAnswerProblem?
     let onSubmit: () -> Void
     let onOpenTerminal: () -> Void
+    let onDismiss: (() -> Void)?
     let onReviewOpened: (CGRect) -> Void
     let onReviewLaidOut: (CGRect) -> Void
 
@@ -613,6 +618,7 @@ struct AskFormStepper: View {
             if draft.isReviewing {
                 HStack {
                     backLink
+                    dismissLink
                     Spacer(minLength: 8)
                     Text("Tap an answer to change it").font(Typography.app(13 * textScale)).foregroundStyle(Palette.textFaint)
                 }
@@ -646,6 +652,7 @@ struct AskFormStepper: View {
     private func navigation(next: Next) -> some View {
         HStack {
             backLink
+            dismissLink
             Spacer(minLength: 8)
             switch next {
             case .link(let title):
@@ -699,6 +706,26 @@ struct AskFormStepper: View {
         .buttonStyle(.plain)
         .disabled(!enabled)
         .accessibilityIdentifier("chat-ask-form-back")
+    }
+
+    /// "Dismiss": Esc on omp's dialog (`agent.dismiss_ask`), so the ask ends cancelled.
+    /// A secondary text link next to Back, never a destructive colour.
+    @ViewBuilder
+    private var dismissLink: some View {
+        if let onDismiss {
+            Button {
+                focused = false
+                onDismiss()
+            } label: {
+                Text("Dismiss").font(Typography.app(14 * textScale, .semibold))
+                    .foregroundStyle(answering ? AskFormStyle.disabled : Palette.textDim)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(answering)
+            .padding(.leading, 14)
+            .accessibilityIdentifier("chat.ask.dismiss")
+        }
     }
 
     private func link(_ title: String, chevron: AskFormIcon, enabled: Bool) -> some View {
