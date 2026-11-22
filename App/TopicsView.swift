@@ -402,20 +402,18 @@ final class TopicsModel: ObservableObject {
         return failure
     }
 
-    /// Opens a topic by id (a suggestion's Start, its "Continued in topic" line). A topic not
-    /// in the list yet waits for a list that started after this call and answered: the round
-    /// already in flight may predate the accept, and a failed list keeps the old one
-    /// (herdrup#795). False when that list does not have it (a start that failed puts the
-    /// suggestion back to open), or when no list answered: the caller stays where it is.
+    /// Opens a topic by id (a suggestion's Start, its "Continued in topic" line), as soon as
+    /// the list has it, from any round (`TopicsListRounds.waitUntilListed`): the round in
+    /// flight may predate the accept, and a failed list keeps the old one (herdrup#795, #806).
+    /// False when a list from after this call answered without it (a start that failed puts
+    /// the suggestion back to open), or when it is still missing after the bounded rounds:
+    /// the caller stays where it is.
     @discardableResult
     func open(topicID: String, client: HerdrClient) async -> Bool {
-        if topic(topicID) == nil {
-            let listed = await rounds.listedAfterNow { [weak self] in
-                await self?.refreshOnce(client: client) ?? false
-            }
-            guard listed else { return false }
+        let listed = await rounds.waitUntilListed(isListed: { topic(topicID) != nil }) { [weak self] in
+            await self?.refreshOnce(client: client) ?? false
         }
-        guard topic(topicID) != nil else { return false }
+        guard listed else { return false }
         selectedTopicID = topicID
         return true
     }
