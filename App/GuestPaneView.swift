@@ -173,8 +173,9 @@ struct GuestPaneView: View {
                              onFindResult: { index, total, capped in findMatches = (index, total, capped) },
                              onOpenTopic: { topicID in
                                  Task {
-                                     await topicsModel.open(topicID: topicID, client: client)
-                                     tab = .topics
+                                     if await topicsModel.open(topicID: topicID, client: client) {
+                                         tab = .topics
+                                     }
                                  }
                              })
                     // Typing redraws this page; the chat skips it (`ChatView ==`).

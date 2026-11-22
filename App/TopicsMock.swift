@@ -45,6 +45,13 @@ final class TopicsMock: @unchecked Sendable {
     /// never starts, so the suggestion stays open in the list (and transcript), as omp puts it
     /// back when a seeded topic's start fails.
     static let acceptReverts = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_ACCEPT_REVERTS"] != nil
+    /// `HERDR_MOCK_TOPICS_SUGGEST_AFTER=<seconds>`: the list carries no open suggestion until
+    /// that long after the mock starts, as an agent that suggests a topic while the reader is
+    /// already in its Inbox.
+    private static let suggestAfter = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_SUGGEST_AFTER"]
+        .flatMap(Double.init) ?? 0
+    /// When the list starts carrying open suggestions (`suggestAfter`).
+    private let suggestionsFrom = Date().addingTimeInterval(TopicsMock.suggestAfter)
 
     private struct Suggestion {
         let id: String
@@ -167,7 +174,8 @@ final class TopicsMock: @unchecked Sendable {
                     },
                 ]
                 if Self.suggests {
-                    result["suggestions"] = suggestions.filter { $0.state == "open" }.map { suggestion -> [String: Any] in
+                    let shown = Date() >= suggestionsFrom ? suggestions : []
+                    result["suggestions"] = shown.filter { $0.state == "open" }.map { suggestion -> [String: Any] in
                         ["suggestion_id": suggestion.id, "title": suggestion.title, "reason": suggestion.reason,
                          "message_ids": suggestion.messageIDs, "created_unix_ms": suggestion.createdMs]
                     }

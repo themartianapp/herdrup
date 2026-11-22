@@ -478,12 +478,21 @@ final class ChatModel: ObservableObject {
             settledAt[suggestion.id] = nil
             changed = true
         }
-        if changed { rebuildRows() }
+        if changed { republishRows() }
     }
 
     private func rebuildRows() {
         rows = ChatRow.rows(turns: turns, outgoing: outgoing, listed: listedSuggestions, settled: settledSuggestions)
         rowIndex = Dictionary(rows.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// Rows changed without a store change: `rows` is not `@Published`, and a transcript change
+    /// redraws only because `sync()` assigns the published `turns` first. A listed suggestion or
+    /// a local Start / Not now line changes no published value, so it announces itself, or a
+    /// mounted chat (`ChatView` is `.equatable()`) never draws it (herdrup#790).
+    private func republishRows() {
+        objectWillChange.send()
+        rebuildRows()
     }
 
     /// Suggestions this reader started or set aside, by id, shown compactly at once; the
@@ -504,7 +513,7 @@ final class ChatModel: ObservableObject {
                                                            messageIDs: known.messageIDs, state: state,
                                                            topicID: topicID, by: "owner")
         settledAt[id] = Date()
-        rebuildRows()
+        republishRows()
     }
 
     /// Republishes the store. Each value is assigned only when it changed: an equal
