@@ -895,7 +895,7 @@ tables with that column. Every other table must be named in the test with how de
 | `accounts` | its own row, by `id` |
 | `spent_refresh_tokens` | by the account's session ids, in the same batch |
 | `used_nonces` | nothing to delete: it holds only hashes and expiries, nothing that names an account |
-| `web_flows` | nothing to delete: a sign-in still in progress has no account yet; it goes at its callback or after 10 minutes (§2.6) |
+| `web_flows` | a sign-in's flow has no account yet (`account_id` NULL) and goes at its callback or after 10 minutes (§2.6); a deletion's confirmation flow carries its account and is deleted with it (§6.6) |
 
 A new table therefore fails the test until it is handled. The batch deletes children first, so
 it never depends on `ON DELETE CASCADE`.
@@ -929,6 +929,63 @@ account matched, so it never says who has an account.
 - `DELETE_IP_LIMIT` (5/min per IP) covers notifications as §8 says. Apple sends from few IPs, but
   at our size that is far below 5 a minute. If a §1.4 growth trigger fires, give notifications
   their own limit.
+
+### 6.6 Deleting from the desktop: the web confirmation (22 Nov)
+
+herdrup-desktop signs in through the browser (§2.3), so it never holds an ID token and can't
+send `{id_token, nonce}`. It confirms a deletion with a fresh **web** sign-in instead, bound to the
+account and session that ask. The health feature `web_delete` says the Worker offers this; it is
+listed when either provider's web flow is configured.
+
+1. **Ticket.** `POST /v1/account/delete/start` with the session's bearer token and
+   `{provider: "apple"|"google", handoff_challenge}`, where the challenge is S256 (43-character
+   b64url) of a verifier the app keeps. The answer is
+   `200 {start_url, expires_in: 300}`, with
+   `start_url = https://accounts.herdrup.app/v1/auth/web/start?purpose=delete&ticket=<32 B>`.
+   - The ticket is stored as a hash in `delete_tickets`, with the account, the session, the
+     provider and the challenge, for 5 minutes. The URL carries the ticket, never an access
+     token, because it goes through the system browser.
+   - The provider is the one the account signed in with. `503 provider_not_configured` when that
+     provider's web flow can't run (Google without its secret).
+   - `DELETE_IP_LIMIT` per IP, then the session and `ACCOUNT_LIMIT`.
+2. **Browser.** The app opens `start_url`. The start takes the ticket (single use: a second open is
+   `400 ticket_invalid`; past 5 minutes it goes to `herdrup://account#delete_error=flow_expired`).
+   It then runs the same web flow as a sign-in (§2.3, §2.6): the provider's web client, a nonce,
+   PKCE for Google, the browser's `__Host-hu_flow` binding, one state, 10 minutes. The
+   `web_flows` row carries `purpose = 'delete'` with the ticket's account and session. The start
+   takes exactly `purpose=delete&ticket=…`; anything else is a 400.
+3. **Callback.** The ID token is verified as in a sign-in (web audience, the flow's nonce, spent).
+   A deletion's callback **never makes an account or a session**:
+   - The identity must already be linked to the ticket's account. Otherwise the browser goes to
+     `herdrup://account#delete_error=wrong_account`.
+   - Otherwise it gets a delete code (32 B), and the browser goes to
+     `herdrup://account#delete_code=<code>`.
+   - The code waits in `delete_handoffs` for 5 minutes, bound to the account, the session, the
+     identity (provider and subject hash), the client id (the token's `aud`) and the challenge.
+   - For Apple, the form_post's authorization code is kept with it for the revoke. It is sealed
+     with AES-GCM under a key derived from the delete code, so D1 never holds it readably.
+   - Every other failure goes to `herdrup://account#delete_error=<code>`, with the codes of §2.6
+     (`cancelled`, `token_invalid`, `browser_mismatch`, …).
+4. **Delete.** `POST /v1/account/delete` with the same session's bearer token and exactly
+   `{handoff_code, handoff_verifier}`, in place of `{provider, id_token, nonce, authorization_code?}`.
+   - The code is taken first, so it is spent by any outcome: `401 invalid_code` (unknown or spent),
+     `401 code_expired`, `401 invalid_verifier`, or `403 wrong_account` (another account, another
+     session, or the identity no longer the account's).
+   - Then comes the same deletion as §6.1: one batch, then Apple's revoke with the kept code and
+     the Services ID as `client_id`. The answer is `200 {deleted: true, manual_revoke}`, as
+     before.
+   - Malformed bodies, or a body mixing both proofs, are `400` and spend nothing.
+
+**Sign-in and delete codes are separate.** They live in separate tables (`handoffs`,
+`delete_handoffs`), and each redemption reads only its own. A sign-in code is `invalid_code` at
+`/v1/account/delete` and still works for its sign-in. A delete code is `invalid_code` at
+`/v1/auth/handoff`, opens no session, and still works for its deletion. The desktop tells them
+apart by the fragment key: `#code=` or `#delete_code=`.
+
+**Cleanup.** Tickets, deletion flows and codes are deleted with their session (sign-out, refresh
+reuse) or account, and by the hourly cron past their expiry. Deletion's table sweep (§6.5)
+covers `delete_tickets`, `delete_handoffs` and `web_flows`, which now has `account_id`.
+Migration `0005_web_delete.sql`.
 
 ---
 
@@ -1004,6 +1061,8 @@ The names are a stable contract:
 - `web_sign_in_apple` is listed when `APPLE_WEB_CLIENT_ID` is set.
 - `web_sign_in_google` is listed when both `GOOGLE_WEB_CLIENT_ID` and `GOOGLE_WEB_CLIENT_SECRET`
   are set.
+- `web_delete` is listed when `web_sign_in_apple` or `web_sign_in_google` is: the desktop may
+  confirm a deletion through the web flow (§6.6) for a provider whose web flow is listed.
 - `apple_revoke` is listed when `APPLE_SIWA_P8` and `APPLE_KEY_ID` are set and the key parses,
   checked by the same loader the revoke uses (§6.5).
 

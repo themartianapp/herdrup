@@ -7,7 +7,7 @@
 // ids or their hashes, emails, account, session or device ids, device keys, host ids, IPs,
 // bodies or URLs.
 import { appleSigner } from "./apple";
-import { handleAccountDelete } from "./deletion";
+import { handleAccountDelete, handleDeleteStart } from "./deletion";
 import { handleAppleNotification } from "./apple_notify";
 import { handleAccount, handleNonce, handleRefresh, handleSignIn, handleSignOut } from "./auth";
 import { cleanup } from "./cleanup";
@@ -33,8 +33,13 @@ async function features(env: Env): Promise<string[]> {
   const list = ["native_sign_in", "devices", "statements", "sync", "delete"];
   // The iOS client's own Google sign-in (ASWebAuthenticationSession + PKCE), which needs only its client id.
   if (set(env.GOOGLE_IOS_CLIENT_ID)) list.push("native_sign_in_google");
-  if (set(env.APPLE_WEB_CLIENT_ID)) list.push("web_sign_in_apple");
-  if (set(env.GOOGLE_WEB_CLIENT_ID) && set(env.GOOGLE_WEB_CLIENT_SECRET)) list.push("web_sign_in_google");
+  const webApple = set(env.APPLE_WEB_CLIENT_ID);
+  const webGoogle = set(env.GOOGLE_WEB_CLIENT_ID) && set(env.GOOGLE_WEB_CLIENT_SECRET);
+  if (webApple) list.push("web_sign_in_apple");
+  if (webGoogle) list.push("web_sign_in_google");
+  // The desktop's deletion, confirmed by a web sign-in (POST /v1/account/delete/start), for the
+  // providers whose web flow runs: the app offers it for the provider the account signed in with.
+  if (webApple || webGoogle) list.push("web_delete");
   // The same loader the revoke uses: the key must be present and parse, with a valid Key ID.
   if ((await appleSigner(env)) !== null) list.push("apple_revoke");
   return list;
@@ -60,6 +65,7 @@ const ROUTES: Record<string, Route> = {
   "/v1/auth/signout": { methods: ["POST"], endpoint: "/v1/auth/signout" },
   "/v1/account": { methods: ["GET"], endpoint: "/v1/account" },
   "/v1/account/delete": { methods: ["POST"], endpoint: "/v1/account/delete" },
+  "/v1/account/delete/start": { methods: ["POST"], endpoint: "/v1/account/delete/start" },
   "/v1/apple/notifications": { methods: ["POST"], endpoint: "/v1/apple/notifications" },
   "/v1/devices/challenge": { methods: ["POST"], endpoint: "/v1/devices/challenge" },
   "/v1/devices": { methods: ["GET", "POST"], endpoint: "/v1/devices" },
@@ -132,6 +138,8 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         return await handleAccount(request, env, now);
       case "/v1/account/delete":
         return await handleAccountDelete(request, env, now);
+      case "/v1/account/delete/start":
+        return await handleDeleteStart(request, env, now);
       case "/v1/apple/notifications":
         return await handleAppleNotification(request, env, now);
       case "/v1/devices/challenge":

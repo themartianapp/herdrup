@@ -21,6 +21,8 @@ export const CLIENT_SECRET_TTL_SECONDS = 300;
 const FETCH_TIMEOUT_MS = 5000;
 /** Apple's Team ID and Key ID: 10 upper-case letters or digits. */
 const APPLE_ID = /^[A-Z0-9]{10}$/;
+/** Apple's authorization codes: printable ASCII, a few hundred characters. */
+export const AUTHORIZATION_CODE = /^[\x21-\x7e]{1,1024}$/;
 
 export interface AppleSigner {
   keyId: string;
