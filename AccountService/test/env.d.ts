@@ -6,6 +6,7 @@ declare namespace Cloudflare {
     STATEMENT_LIMIT: RateLimit;
     ENROL_LIMIT: RateLimit;
     SYNC_WRITE_LIMIT: RateLimit;
+    APPROVAL_LIMIT: RateLimit;
     DELETE_IP_LIMIT: RateLimit;
     ACCOUNT_HMAC_KEY: string;
     APPLE_APP_CLIENT_ID: string;
@@ -24,4 +25,10 @@ declare namespace Cloudflare {
     GOOGLE_WEB_CLIENT_SECRET?: string;
     WEB_ORIGIN: string;
   }
+}
+
+// Vite's `?raw` import: a file's exact text (test/approvals.test.ts compares a vector byte for byte).
+declare module "*?raw" {
+  const text: string;
+  export default text;
 }

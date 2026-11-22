@@ -10,7 +10,9 @@
 // `sub` is the account's id for that host alone: the first 22 base64url characters of
 // HMAC-SHA256(pairwise key, account_id "|" host_id), so two hosts can't tell they share a
 // guest. Host ids are never stored. `dev` is always the calling session's own device, so a
-// stolen access token mints statements only for a key the thief doesn't hold. Hosts verify
+// stolen access token mints statements only for a key the thief doesn't hold. A key withdrawn
+// from the account (a browser with owner access, removed from Devices: src/approvals.ts) gets
+// none, even enrolled again, until it is approved again or the withdrawal expires. Hosts verify
 // statements against the JWKS (src/signing.ts) and check `aud` against their own host id.
 import { b64url, utf8 } from "./bytes";
 import { openAccountRequest } from "./auth";
@@ -72,11 +74,17 @@ export async function handleStatements(request: Request, env: Env, nowMs: number
   if (!Array.isArray(hosts) || hosts.length === 0 || hosts.length > MAX_HOSTS) return errorResponse(400, "bad_request");
   if (!hosts.every((host): host is string => typeof host === "string" && HOST_ID.test(host))) return errorResponse(400, "bad_request");
 
-  // Read at every issue: a device removed since the session authenticated gets nothing.
-  const device = await env.DB.prepare("SELECT device_pub, last_statement_day FROM devices WHERE id = ? AND account_id = ?")
-    .bind(principal.deviceId, principal.accountId)
-    .first<{ device_pub: string; last_statement_day: number }>();
+  // Read at every issue: a device removed since the session authenticated gets nothing, and
+  // neither does a key withdrawn from this account.
+  const device = await env.DB.prepare(
+    `SELECT d.device_pub, d.last_statement_day,
+            EXISTS (SELECT 1 FROM withdrawals w WHERE w.account_id = d.account_id AND w.device_pub = d.device_pub AND w.exp_ms > ?3) AS withdrawn
+       FROM devices d WHERE d.id = ?1 AND d.account_id = ?2`,
+  )
+    .bind(principal.deviceId, principal.accountId, nowMs)
+    .first<{ device_pub: string; last_statement_day: number; withdrawn: number }>();
   if (device === null) return errorResponse(403, "device_removed");
+  if (device.withdrawn !== 0) return errorResponse(403, "device_withdrawn");
   const today = dayOf(nowMs);
   if (device.last_statement_day < today) {
     await env.DB.prepare("UPDATE devices SET last_statement_day = ? WHERE id = ?").bind(today, principal.deviceId).run();

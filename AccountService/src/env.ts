@@ -5,6 +5,7 @@ export interface Env {
   STATEMENT_LIMIT?: RateLimit;
   ENROL_LIMIT?: RateLimit;
   SYNC_WRITE_LIMIT?: RateLimit;
+  APPROVAL_LIMIT?: RateLimit;
   DELETE_IP_LIMIT?: RateLimit;
   /** 32 random bytes, standard base64 (wrangler secret). See src/keys.ts. */
   ACCOUNT_HMAC_KEY?: string;

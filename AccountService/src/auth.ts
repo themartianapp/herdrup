@@ -173,7 +173,7 @@ export async function openAccountRequest(
   env: Env,
   endpoint: Endpoint,
   nowMs: number,
-  extraLimit?: "STATEMENT_LIMIT" | "ENROL_LIMIT" | "SYNC_WRITE_LIMIT",
+  extraLimit?: "STATEMENT_LIMIT" | "ENROL_LIMIT" | "SYNC_WRITE_LIMIT" | "APPROVAL_LIMIT",
 ): Promise<Principal | Response> {
   const extra = extraLimit === undefined ? null : env[extraLimit];
   if (env.ACCOUNT_LIMIT === undefined || extra === undefined) {

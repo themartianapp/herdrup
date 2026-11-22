@@ -22,6 +22,14 @@ export type Endpoint =
   | "/v1/devices/:id"
   | "/v1/statements"
   | "/v1/sync"
+  | "/v1/approvals"
+  | "/v1/approvals/:id"
+  | "/v1/approvals/:id/claim"
+  | "/v1/approvals/:id/reveal"
+  | "/v1/approvals/:id/finish"
+  | "/v1/browsers/:id/envelope"
+  | "/v1/browsers/self"
+  | "/v1/withdrawals"
   | "/.well-known/jwks.json"
   | "cron";
 

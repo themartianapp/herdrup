@@ -2,9 +2,13 @@
 //
 //   POST   /v1/devices/challenge  → {challenge_id, server_pub, salt, account_id, expires_in}
 //   POST   /v1/devices            {challenge_id, device_pub, mac, name, platform} → {device}
-//   GET    /v1/devices            → {devices: [{id, name, platform, device_pub, created_ms, current}]}
+//   GET    /v1/devices            → {devices: [{id, name, platform, device_pub, created_ms, current, access?}]}
 //   PATCH  /v1/devices/<id>       {name} → {device}
 //   DELETE /v1/devices/<id>       → 204; ends the sessions bound to that device
+//
+// A browser (platform "web") gains `access: {state, scope?, expires_ms?}` once it asked for owner
+// access (src/approvals.ts): display only, the machines' grants decide. Removing a browser that
+// had access records a withdrawal, which stops statements for its key on the account.
 //
 // An X25519 key can't sign, so the device proves it holds the private half with a key
 // agreement against a fresh server key E (the challenge, 60 seconds, one use):
@@ -17,6 +21,7 @@
 // A session enrols one device, once: its device is fixed after that, so a stolen access token
 // can't bind the thief's own key to the account. A key belongs to one account at a time.
 import { b64url, fromB64url, randomB64url, sameString, utf8 } from "./bytes";
+import { browserAccess, withdrawal, type AccessJson } from "./approvals";
 import { openAccountRequest } from "./auth";
 import type { Env } from "./env";
 import { errorResponse, json, readJsonObject, type Endpoint } from "./http";
@@ -41,13 +46,14 @@ interface DeviceRow {
   created_ms: number;
 }
 
-const deviceJson = (row: DeviceRow, principal: Principal) => ({
+const deviceJson = (row: DeviceRow, principal: Principal, access?: AccessJson) => ({
   id: row.id,
   name: row.name,
   platform: row.platform,
   device_pub: row.device_pub,
   created_ms: row.created_ms,
   current: row.id === principal.deviceId,
+  ...(access === undefined ? {} : { access }),
 });
 
 /** A device name with control characters removed and trimmed, or null when empty or too long. */
@@ -195,7 +201,8 @@ export async function handleListDevices(request: Request, env: Env, nowMs: numbe
   const { results } = await env.DB.prepare("SELECT * FROM devices WHERE account_id = ? ORDER BY created_ms, id")
     .bind(principal.accountId)
     .all<DeviceRow>();
-  return json(200, { devices: results.map((row) => deviceJson(row, principal)) });
+  const access = await browserAccess(env.DB, principal.accountId, nowMs);
+  return json(200, { devices: results.map((row) => deviceJson(row, principal, access.get(row.id))) });
 }
 
 export async function handleDevice(request: Request, env: Env, deviceId: string, nowMs: number): Promise<Response> {
@@ -203,9 +210,19 @@ export async function handleDevice(request: Request, env: Env, deviceId: string,
   const principal = await openAccountRequest(request, env, endpoint, nowMs);
   if (principal instanceof Response) return principal;
   if (request.method === "DELETE") {
-    // The sessions bound to the device go with it (ON DELETE CASCADE): that device is signed out.
-    const removed = await env.DB.prepare("DELETE FROM devices WHERE id = ? AND account_id = ?").bind(deviceId, principal.accountId).run();
-    return removed.meta.changes > 0
+    // Any device of the account may remove any other. The sessions bound to the device go with
+    // it (ON DELETE CASCADE): that device is signed out. A browser's access, envelopes and
+    // request go too; if it had access, a withdrawal is recorded in the same batch.
+    const target = await env.DB.prepare("SELECT device_pub, platform FROM devices WHERE id = ? AND account_id = ?")
+      .bind(deviceId, principal.accountId)
+      .first<{ device_pub: string; platform: string }>();
+    if (target === null) return errorResponse(404, "not_found");
+    const withdraw = target.platform === "web" ? await withdrawal(env.DB, principal.accountId, deviceId, target.device_pub, nowMs) : null;
+    const results = await env.DB.batch([
+      ...(withdraw === null ? [] : [withdraw]),
+      env.DB.prepare("DELETE FROM devices WHERE id = ? AND account_id = ?").bind(deviceId, principal.accountId),
+    ]);
+    return results[results.length - 1].meta.changes > 0
       ? new Response(null, { status: 204, headers: { "cache-control": "no-store" } })
       : errorResponse(404, "not_found");
   }
