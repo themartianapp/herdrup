@@ -103,7 +103,7 @@ describe("routing", () => {
   it("answers health, unknown paths and wrong methods", async () => {
     const health = await get("/v1/health");
     expect(health.status).toBe(200);
-    expect(await health.json()).toEqual({ ok: true, version: "0.5.2", features: expect.any(Array) });
+    expect(await health.json()).toEqual({ ok: true, version: "0.6.0", features: expect.any(Array) });
     expect((await get("/v1/nope")).status).toBe(404);
     const wrong = await get("/v1/auth/nonce");
     expect(wrong.status).toBe(405);
@@ -133,13 +133,14 @@ describe("routing", () => {
       expect(await listed({ GOOGLE_IOS_CLIENT_ID: "552913387875-ios.apps.googleusercontent.com" })).toEqual([...ALWAYS, "native_sign_in_google"]);
       expect(await listed({ GOOGLE_IOS_CLIENT_ID: "  " })).toEqual(ALWAYS);
       expect(await listed({ GOOGLE_IOS_CLIENT_ID: "" })).toEqual(ALWAYS);
-      expect(await listed({ APPLE_WEB_CLIENT_ID: "com.example.web" })).toEqual([...ALWAYS, "web_sign_in_apple"]);
+      expect(await listed({ APPLE_WEB_CLIENT_ID: "com.example.web" })).toEqual([...ALWAYS, "web_sign_in_apple", "web_delete"]);
       expect(await listed({ APPLE_WEB_CLIENT_ID: "  " })).toEqual(ALWAYS);
       expect(await listed({ GOOGLE_WEB_CLIENT_ID: "web.apps.googleusercontent.com" })).toEqual(ALWAYS);
       expect(await listed({ GOOGLE_WEB_CLIENT_SECRET: "GOCSPX-test-secret-value" })).toEqual(ALWAYS);
       expect(await listed({ GOOGLE_WEB_CLIENT_ID: "web.apps.googleusercontent.com", GOOGLE_WEB_CLIENT_SECRET: "GOCSPX-test-secret-value" })).toEqual([
         ...ALWAYS,
         "web_sign_in_google",
+        "web_delete",
       ]);
       expect(await listed({ APPLE_SIWA_P8: pem })).toEqual(ALWAYS);
       expect(await listed({ APPLE_KEY_ID: "TESTKEY123" })).toEqual(ALWAYS);
@@ -155,7 +156,7 @@ describe("routing", () => {
           APPLE_SIWA_P8: pem,
           APPLE_KEY_ID: "TESTKEY123",
         }),
-      ).toEqual([...ALWAYS, "native_sign_in_google", "web_sign_in_apple", "web_sign_in_google", "apple_revoke"]);
+      ).toEqual([...ALWAYS, "native_sign_in_google", "web_sign_in_apple", "web_sign_in_google", "web_delete", "apple_revoke"]);
     } finally {
       for (const name of names) config[name] = saved[name];
     }

@@ -132,7 +132,21 @@ async function populate(who: Identity): Promise<{ first: Session; second: Sessio
     env.DB.prepare(
       "INSERT INTO handoffs (code_hash, account_id, handoff_challenge, platform, created, display_hint, exp_ms) VALUES (?, ?, ?, 'macos', 0, NULL, ?)",
     ).bind(randomB64url(32), first.accountId, randomB64url(32), Date.now() + 120_000),
+    // A desktop deletion's confirmation waiting to be redeemed (test/web_delete.test.ts runs the real flow).
+    env.DB.prepare(
+      `INSERT INTO delete_handoffs (code_hash, account_id, session_id, provider, subject_hash, client_id, handoff_challenge, apple_code, exp_ms)
+       VALUES (?, ?, ?, 'apple', 'x', 'com.jerryfane.herdr.signin', ?, NULL, ?)`,
+    ).bind(randomB64url(32), first.accountId, first.access.split(".")[1], randomB64url(32), Date.now() + 300_000),
   ]);
+  // Two deletion tickets: one left pending, one taken by its browser start into a pending web flow.
+  const ticket = async () => {
+    const response = await post("/v1/account/delete/start", { provider: "apple", handoff_challenge: randomB64url(32) }, second.access);
+    expect(response.status).toBe(200);
+    return (await response.json<{ start_url: string }>()).start_url;
+  };
+  await ticket();
+  const started = await SELF.fetch(await ticket(), { headers: { "CF-Connecting-IP": freshIp() }, redirect: "manual" });
+  expect(started.status).toBe(303);
   expect((await post("/v1/devices/challenge", {}, first.access)).status).toBe(200);
   const refreshed = await post("/v1/auth/refresh", { refresh_token: first.refresh });
   expect(refreshed.status).toBe(200);
@@ -174,7 +188,7 @@ const NOT_KEYED_BY_ACCOUNT: Record<string, string> = {
   accounts: "the account row itself, by id",
   spent_refresh_tokens: "keyed by session_id; deleted with the account's sessions",
   used_nonces: "SHA-256 of spent nonces and their expiry: nothing that names an account",
-  web_flows: "a sign-in still in progress: no account yet, gone at its callback or after 10 minutes",
+  // Sign-in flows have no account (account_id NULL); a deletion's flow is keyed by its account.
 };
 
 describe("deletion covers every table", () => {

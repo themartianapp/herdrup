@@ -25,7 +25,8 @@ own deploys, so a bug or rollback here can't drop a guest session.
 | `POST /v1/auth/web/apple/callback`, `GET /v1/auth/web/google/callback` | from the provider | 303 to `herdrup://account#code=…` or `https://guest.herdrup.app/web/?account=1` (`…#error=` / `?account_error=` on failure) |
 | `POST /v1/auth/handoff` | exactly `{code, handoff_verifier}` (no `platform` or `device_name`: the platform was given at start, and devices are named when they enrol) | the same as a native sign-in |
 | `GET /v1/account` | `Authorization: Bearer <access>` | `{account_id, created_ms}` |
-| `POST /v1/account/delete` | bearer; `{provider, id_token, nonce, authorization_code?}` from a fresh sign-in | `{deleted: true, manual_revoke}` |
+| `POST /v1/account/delete` | bearer; `{provider, id_token, nonce, authorization_code?}` from a fresh sign-in, or `{handoff_code, handoff_verifier}` from the desktop's web confirmation | `{deleted: true, manual_revoke}` |
+| `POST /v1/account/delete/start` | bearer; `{provider, handoff_challenge}` | `{start_url, expires_in: 300}`; the browser opens `start_url` and comes back to `herdrup://account#delete_code=…` (or `#delete_error=…`) |
 | `POST /v1/apple/notifications` | `{payload: <Apple's JWS>}` | 204 |
 | `POST /v1/devices/challenge` | bearer | `{challenge_id, server_pub, salt, account_id, expires_in}`: 60 s, one use |
 | `POST /v1/devices` | bearer; `{challenge_id, device_pub, mac, name, platform}` | 201 `{device}` (200 when the key is already the account's) |
@@ -50,6 +51,7 @@ something else.
 | `native_sign_in_google` | `GOOGLE_IOS_CLIENT_ID` is set: the iOS app may offer its own Google sign-in (ASWebAuthenticationSession + PKCE against the iOS client), which needs no secret |
 | `web_sign_in_apple` | `APPLE_WEB_CLIENT_ID` is set |
 | `web_sign_in_google` | `GOOGLE_WEB_CLIENT_ID` and `GOOGLE_WEB_CLIENT_SECRET` are both set |
+| `web_delete` | `web_sign_in_apple` or `web_sign_in_google` is listed: the desktop may confirm a deletion through the web flow |
 | `apple_revoke` | `APPLE_SIWA_P8` and `APPLE_KEY_ID` are both set and the key parses (the revoke's own loader); otherwise deletion answers `manual_revoke: true` for Apple |
 
 Each flag only says whether something is configured. No value of a var or secret is returned.
@@ -155,6 +157,15 @@ The ID token must belong to the session's own account (`403 wrong_account`). The
 the account goes in one D1 batch: sync items, devices, sessions and their spent refresh tokens,
 challenges, pending web-sign-in handoffs, identities and the account. Every token of the account fails from then on, and no
 statement is issued again.
+
+The desktop never holds an ID token, so it confirms in the browser instead (DESIGN.md §6.6). It
+asks `POST /v1/account/delete/start` for a single-use ticket URL, bound to its session and
+account, valid 5 minutes. The web sign-in at that URL must be an identity already linked to the
+account (`#delete_error=wrong_account` otherwise; it never makes an account). It hands back a
+delete code, single use and valid 5 minutes, that only this session redeems, with the verifier
+behind its challenge: `POST /v1/account/delete {handoff_code, handoff_verifier}`. For Apple, the
+sign-in's authorization code is kept (sealed under the delete code) for the revoke. Sign-in and
+delete codes live in separate tables and never stand in for each other.
 
 For Apple, the sign-in's `authorization_code` is then exchanged and its refresh token revoked at
 `appleid.apple.com`, with the ID token's `aud` as `client_id` and a 5-minute ES256 client secret
@@ -291,6 +302,9 @@ For step 5's Worker part:
 4. Check that the Services ID's return URL is `https://accounts.herdrup.app/v1/auth/web/apple/callback`
    and the Google web client's redirect is `https://accounts.herdrup.app/v1/auth/web/google/callback`
    (DESIGN.md §10).
+
+For the desktop's web deletion: apply the migrations (`0005_web_delete.sql`), then deploy. No new
+secret, var or binding.
 
 ### Rotate the statement key
 
