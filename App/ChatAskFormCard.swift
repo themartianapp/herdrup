@@ -588,8 +588,33 @@ struct AskFormStepper: View {
 
     // MARK: The footer
 
+    /// The mode's controls, then the card's problem in every mode: Dismiss shows in all of
+    /// them, and its refusal must too (herdrup#782).
     @ViewBuilder
     private var footer: some View {
+        modeFooter
+        if let problem {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(problem.message).font(Typography.app(13 * textScale)).foregroundStyle(Palette.waiting)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("chat-ask-problem")
+                if problem.offersTerminal && !modeOffersTerminal { terminalButton }
+            }
+            .padding(.top, 10)
+        }
+    }
+
+    /// The mode's footer already has "Answer in Terminal".
+    private var modeOffersTerminal: Bool {
+        switch mode {
+        case .browse(let offersTerminal): return offersTerminal
+        case .needsTerminal: return true
+        case .waiting, .answer: return false
+        }
+    }
+
+    @ViewBuilder
+    private var modeFooter: some View {
         switch mode {
         case .waiting(let owner):
             // Every field is read on its own step; the owner answers.
@@ -630,15 +655,6 @@ struct AskFormStepper: View {
                 // offers Next.
                 navigation(next: field.kind == .choice && !field.multi && draft.state(field).other == nil
                            ? .reviewAll : .button(enabled: draft.isComplete(field)))
-            }
-            if let problem {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(problem.message).font(Typography.app(13 * textScale)).foregroundStyle(Palette.waiting)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("chat-ask-problem")
-                    if problem.offersTerminal { terminalButton }
-                }
-                .padding(.top, 10)
             }
         }
     }
