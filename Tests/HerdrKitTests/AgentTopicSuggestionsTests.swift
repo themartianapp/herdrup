@@ -28,14 +28,19 @@ final class AgentTopicSuggestionsTests: XCTestCase {
     // MARK: Capabilities
 
     func testCapabilitiesDecodeAndDefaultOff() throws {
-        let all = try capabilities(#"{"agent_topics":true,"agent_topics_switch":true,"agent_topic_suggestions":true}"#)
+        let all = try capabilities(#"{"agent_topics":true,"agent_topics_switch":true,"agent_topics_switch_when_idle":true,"agent_topic_suggestions":true}"#)
         XCTAssertTrue(all.agentTopicsSwitch)
+        XCTAssertTrue(all.agentTopicsSwitchWhenIdle)
         XCTAssertTrue(all.agentTopicSuggestions)
         let old = try capabilities(#"{"agent_topics":true}"#)
         XCTAssertFalse(old.agentTopicsSwitch, "an older server has no switch")
+        XCTAssertFalse(old.agentTopicsSwitchWhenIdle, "an older server cannot wait for idle")
         XCTAssertFalse(old.agentTopicSuggestions, "an older server has no suggestions")
-        let off = try capabilities(#"{"agent_topics_switch":false,"agent_topic_suggestions":false}"#)
+        let switchOnly = try capabilities(#"{"agent_topics_switch":true}"#)
+        XCTAssertFalse(switchOnly.agentTopicsSwitchWhenIdle, "the switch before herdr#493 ignores when_idle")
+        let off = try capabilities(#"{"agent_topics_switch":false,"agent_topics_switch_when_idle":false,"agent_topic_suggestions":false}"#)
         XCTAssertFalse(off.agentTopicsSwitch)
+        XCTAssertFalse(off.agentTopicsSwitchWhenIdle)
         XCTAssertFalse(off.agentTopicSuggestions)
     }
 

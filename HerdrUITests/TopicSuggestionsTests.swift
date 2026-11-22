@@ -176,6 +176,36 @@ final class TopicSuggestionsTests: XCTestCase {
         XCTAssertFalse(app.buttons["Topics switch pending"].exists)
     }
 
+    /// A herdr without `agent_topics_switch_when_idle` ignores `when_idle` and restarts at once:
+    /// a working agent's confirmation offers only Switch now (and Cancel), and nothing is pending.
+    func testBusyAgentOnOlderServerOffersOnlySwitchNow() {
+        let app = launch("chatview", ["HERDR_MOCK_TOPICS_SWITCH_BUSY": "1",
+                                      "HERDR_MOCK_TOPICS_SWITCH_NO_WHEN_IDLE": "1"])
+        let row = any(app, "agent-row-w9:p1")
+        XCTAssertTrue(row.exists(within: 12))
+        row.press(forDuration: 1.0)
+        XCTAssertTrue(app.buttons["Turn on topics"].exists(within: 5))
+        XCTAssertFalse(app.buttons["Topics switch pending"].exists)
+        app.buttons["Turn on topics"].tap()
+
+        let now = app.buttons["Switch now"]
+        XCTAssertTrue(now.exists(within: 5), "a working agent still gets the warning choice")
+        XCTAssertFalse(app.buttons["Switch when it's done"].exists, "an older herdr cannot wait")
+        XCTAssertFalse(app.buttons["Restart with topics"].exists)
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Stops what it's doing"))
+            .firstMatch.exists)
+        shot(app, "topics-switch-busy-old-server")
+        now.tap()
+
+        let status = any(app, "topics-switch-status")
+        XCTAssertTrue(status.exists(within: 10))
+        XCTAssertTrue(poll(10, every: 0.3) { status.label.contains("Topics are on for herdr-app.") },
+                      "switched at once: \(status.label)")
+        XCTAssertTrue(menuOffers("Turn off topics", row: row, in: app))
+        XCTAssertFalse(app.buttons["Topics switch pending"].exists)
+        XCTAssertFalse(app.buttons["Cancel pending switch"].exists)
+    }
+
     // MARK: Suggestion in the Inbox
 
     /// The Inbox marks where the subject began and asks at the suggestion: title, reason, how

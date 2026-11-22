@@ -2035,6 +2035,8 @@ struct TerminalHomeView: View {
     @State private var topicsSwitchStatus: TopicsSwitchStatus?
     /// The daemon has the owner's per-agent Topics switch (ping `agent_topics_switch`).
     @State private var topicsSwitchSupported = false
+    /// herdr honours `when_idle` (`agent_topics_switch_when_idle`): a working agent can finish first.
+    @State private var topicsSwitchWhenIdleSupported = false
     /// A pending "Swap subscription" confirmation: which agent, and the target
     /// account. A swap IS a full restart (kills + --resume) onto a different
     /// credential account, so it interrupts a busy turn exactly like the plain
@@ -3552,11 +3554,15 @@ struct TerminalHomeView: View {
                 presenting: topicsSwitchCandidate
             ) { request in
                 if request.busy {
-                    // The agent is working: by default herdr waits for its turn to end.
-                    Button("Switch when it's done") {
-                        Task { await switchTopics(request, whenIdle: true) }
+                    // The agent is working: by default herdr waits for its turn to end. An older
+                    // herdr (no `agent_topics_switch_when_idle`) ignores `when_idle` and restarts
+                    // at once, so it is never offered there.
+                    if topicsSwitchWhenIdleSupported {
+                        Button("Switch when it's done") {
+                            Task { await switchTopics(request, whenIdle: true) }
+                        }
+                        .keyboardShortcut(.defaultAction)
                     }
-                    .keyboardShortcut(.defaultAction)
                     Button("Switch now", role: .destructive) {
                         Task { await switchTopics(request, whenIdle: false) }
                     }
@@ -4511,7 +4517,7 @@ struct TerminalHomeView: View {
             // daemon with `agent_topics_switch`. It restarts the agent, so it confirms first; a
             // working agent can keep its turn and switch when it goes idle (herdr holds it).
             if topicsSwitchSupported, ChatPreference.isOmp(row.info.agent), let enabled = row.info.topicsEnabled {
-                if row.info.isTopicsSwitchPending {
+                if topicsSwitchWhenIdleSupported, row.info.isTopicsSwitchPending {
                     StableMenuItem(disabled: "Topics switch pending", systemImage: "clock")
                     // The agent's current state again: herdr drops the switch it was holding.
                     StableMenuItem("Cancel pending switch", systemImage: "xmark.circle") {
@@ -5130,6 +5136,7 @@ struct TerminalHomeView: View {
                     sessionTransferSupported = capabilities?.agentSessionTransfer == true
                     forgetSupported = capabilities?.agentForget == true
                     topicsSwitchSupported = capabilities?.agentTopicsSwitch == true
+                    topicsSwitchWhenIdleSupported = capabilities?.agentTopicsSwitchWhenIdle == true
                     avatars.canEdit = capabilities?.agentAvatar == true
                     groups.setSupported(capabilities?.agentGroups == true)
                     // PARSED HERE, IN THE SAME BLOCK THAT MARKS THE CHECK DONE.
