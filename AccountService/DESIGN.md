@@ -1054,8 +1054,9 @@ Logging copies the relay's rule:
 ship separately from the Worker, so an app offers a feature only when the live Worker lists it.
 The names are a stable contract:
 
-- `native_sign_in`, `devices`, `statements`, `sync`, `delete` and `web_approve` (browser
-  approval, §12) are always listed.
+- `native_sign_in`, `devices`, `statements`, `sync`, `delete`, `web_approve` (browser
+  approval, §12) and `approval_expiry_final` (a reported `expired` is final, §12.2) are always
+  listed.
 - `native_sign_in_google` is listed when `GOOGLE_IOS_CLIENT_ID` is set. It tells the iOS app it
   may offer native Google sign-in (ASWebAuthenticationSession with PKCE against the iOS client,
   then `POST /v1/auth/google`), which needs no client secret. `web_sign_in_google` doesn't cover
@@ -1290,6 +1291,15 @@ person to type a code. What the service enforces for that argument:
 - a browser can't claim (`403 not_an_approver`) and an approver can't ask (`403 not_a_browser`);
 - a request lives 10 minutes (`410 expired` after), and a new request replaces the browser's
   live one (one per browser);
+- **a reported expiry is final.** Every read of approval state (`GET /v1/approvals/<id>`, the
+  approver's list, Devices, `GET /v1/browsers/self`, and each step before it acts) first stores
+  `outcome = 'expired'` for the account's live requests past their 10 minutes, in the same batch
+  as the read, and answers from the row as it is afterwards. Every step's update requires
+  `outcome IS NULL`, the finish's single-use gate included, so a finish or deny that started
+  before the expiry (its clock read earlier, its Worker run slow) is refused with `410 expired`
+  once the expiry is stored, and writes no envelope or access. The apps may treat a reported
+  `expired` as final once health lists `approval_expiry_final` (migration
+  `0007_approval_expiry.sql` lets `outcome` hold it);
 - `APPROVAL_LIMIT` (30 / 60 s per account, every route, on top of `ACCOUNT_LIMIT`) and at most
   10 requests per account per hour (`429 too_many_requests`), counted in fixed hour windows per
   browser and summed over the account in the inserting statement.

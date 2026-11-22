@@ -1,7 +1,7 @@
 import { SELF, env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { findOrCreateAccount } from "../src/auth";
-import { approveCommit, fingerprint, MAX_REQUESTS_PER_HOUR, reportStatements } from "../src/approvals";
+import { approveCommit, fingerprint, handleFinish, MAX_REQUESTS_PER_HOUR, reportStatements } from "../src/approvals";
 import { b64url, fromB64url, hex, randomB64url } from "../src/bytes";
 import { cleanup } from "../src/cleanup";
 import { enrolMac, x25519 } from "../src/devices";
@@ -387,6 +387,81 @@ describe("browser approval", () => {
     await approved(browser, approver);
     await env.DB.prepare("UPDATE browser_access SET expires_ms = ? WHERE device_id = ?").bind(Date.now() - 1, browser.id).run();
     expect(await deviceAccess(approver, browser.id)).toMatchObject({ state: "expired", scope: "terminal" });
+  });
+
+  describe("a reported expiry is final", () => {
+    const outcome = (id: string) => env.DB.prepare("SELECT outcome FROM approval_requests WHERE id = ?").bind(id).first("outcome");
+    const expire = async (id: string) => {
+      const expMs = Date.now() - 1;
+      await env.DB.prepare("UPDATE approval_requests SET exp_ms = ? WHERE id = ?").bind(expMs, id).run();
+      return expMs;
+    };
+    /** A finish that started before the expiry (its nowMs), running only now: a slow Worker run. */
+    const lateFinish = (approver: Party, id: string, body: unknown, nowMs: number) =>
+      handleFinish(
+        new Request(`${ORIGIN}/v1/approvals/${id}/finish`, {
+          method: "POST",
+          headers: { "content-type": "application/json", Authorization: `Bearer ${approver.access}` },
+          body: JSON.stringify(body),
+        }),
+        env,
+        id,
+        nowMs,
+      );
+
+    it("lists approval_expiry_final in health", async () => {
+      const health = await (await call("GET", "/v1/health")).json<{ features: string[] }>();
+      expect(health.features).toContain("approval_expiry_final");
+    });
+
+    it("stores the expiry the first time the request is read after it", async () => {
+      const approver = await party("macos");
+      const browser = await party("web", approver.accountId);
+      const pending = await claimed(browser, approver);
+      await expire(pending.id);
+      expect(await outcome(pending.id)).toBeNull();
+      expect(await getRequest(browser, pending.id)).toMatchObject({ state: "expired", expires_in: 0 });
+      expect(await outcome(pending.id)).toBe("expired");
+      expect(await getRequest(approver, pending.id)).toMatchObject({ state: "expired" });
+
+      // The browser's polling path (Devices, self) and the approver's list store it too.
+      for (const path of ["/v1/browsers/self", "/v1/devices", "/v1/approvals"]) {
+        const other = await claimed(await party("web", approver.accountId), approver);
+        await expire(other.id);
+        const caller = path === "/v1/browsers/self" ? browser : approver;
+        expect((await call("GET", path, caller)).status, path).toBe(200);
+        expect(await outcome(other.id), path).toBe("expired");
+      }
+    });
+
+    it("refuses a finish that started before the expiry once a read has stored it, and writes nothing", async () => {
+      const approver = await party("macos");
+      const browser = await party("web", approver.accountId);
+      const pending = await revealed(browser, approver);
+      const body = { outcome: "approved", ...(await report(browser, approver, 1)) };
+      const expMs = await expire(pending.id);
+      expect((await getRequest(browser, pending.id)).state).toBe("expired");
+
+      const late = await lateFinish(approver, pending.id, body, expMs - 1000);
+      expect(await rejection(late)).toEqual({ status: 410, error: "expired" });
+      expect(await outcome(pending.id)).toBe("expired");
+      expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM browser_envelopes WHERE device_id = ?").bind(browser.id).first("n")).toBe(0);
+      expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM browser_access WHERE device_id = ?").bind(browser.id).first("n")).toBe(0);
+      expect((await getRequest(browser, pending.id)).state).toBe("expired");
+    });
+
+    it("refuses a deny that started before the expiry once a read has stored it", async () => {
+      const approver = await party("macos");
+      const browser = await party("web", approver.accountId);
+      const pending = await claimed(browser, approver);
+      const expMs = await expire(pending.id);
+      expect((await getRequest(approver, pending.id)).state).toBe("expired");
+
+      const late = await lateFinish(approver, pending.id, { outcome: "denied" }, expMs - 1000);
+      expect(await rejection(late)).toEqual({ status: 410, error: "expired" });
+      expect(await outcome(pending.id)).toBe("expired");
+      expect((await getRequest(browser, pending.id)).state).toBe("expired");
+    });
   });
 
   it("refuses another account's approver and keeps each role to its side", async () => {

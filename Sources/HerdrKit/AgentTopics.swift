@@ -292,10 +292,17 @@ struct AgentTopicSuggestionParams: Encodable, Sendable {
     }
 }
 
-/// `agent.topics.set_enabled`: the owner's Topics switch for one omp agent.
+/// `agent.topics.set_enabled`: the owner's Topics switch for one omp agent. `when_idle`: if the
+/// agent is working, herdr applies the switch when it next goes idle instead of cutting the turn.
 struct AgentTopicsSetEnabledParams: Encodable, Sendable {
     let target: String
     let enabled: Bool
+    let whenIdle: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case target, enabled
+        case whenIdle = "when_idle"
+    }
 }
 
 // MARK: - Suggestion results
@@ -362,21 +369,34 @@ struct AgentTopicsOrganiseStarted: Decodable, Sendable {
 }
 
 /// `agent.topics.set_enabled` (`type: "agent_topics_switched"`): whether the switch changed
-/// anything (false: it already was so), and the agent's topics state now.
+/// anything (false: it already was so), the agent's topics state now, and whether it was
+/// `scheduled` for when the agent goes idle (then `topicsEnabled` is still the old state).
 public struct AgentTopicsSwitched: Decodable, Sendable, Equatable {
     public let agent: String
     public let changed: Bool
     public let topicsEnabled: Bool
+    /// The agent was working and `when_idle` was set: the switch waits for the turn to end.
+    /// False when absent (older server).
+    public let scheduled: Bool
 
-    public init(agent: String, changed: Bool, topicsEnabled: Bool) {
+    public init(agent: String, changed: Bool, topicsEnabled: Bool, scheduled: Bool = false) {
         self.agent = agent
         self.changed = changed
         self.topicsEnabled = topicsEnabled
+        self.scheduled = scheduled
     }
 
     enum CodingKeys: String, CodingKey {
-        case agent, changed
+        case agent, changed, scheduled
         case topicsEnabled = "topics_enabled"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        agent = try c.decode(String.self, forKey: .agent)
+        changed = try c.decode(Bool.self, forKey: .changed)
+        topicsEnabled = try c.decode(Bool.self, forKey: .topicsEnabled)
+        scheduled = try c.decodeIfPresent(Bool.self, forKey: .scheduled) ?? false
     }
 }
 
@@ -616,6 +636,78 @@ public struct TopicsOrganiseWait: Sendable, Equatable {
         guard proposed || now >= deadline else { return false }
         stop()
         return true
+    }
+}
+
+/// The topics list's refresh rounds. Refreshes that arrive while a list call is in flight
+/// coalesce into one more round. `listedAfterNow` is for a caller that must see the list as
+/// it is now, such as a suggestion's Start opening the topic it just started (herdrup#795).
+/// The round already in flight started before the call and does not count. A failed round
+/// keeps the old list, so it does not count either.
+@MainActor
+public final class TopicsListRounds {
+    /// One list call: true when the server answered (the local list is now that answer).
+    public typealias Fetch = @MainActor () async -> Bool
+    public typealias Sleep = @Sendable (_ seconds: UInt64) async -> Void
+
+    private let sleep: Sleep
+    private var running = false
+    /// A refresh arrived during the round in flight: one more round, with its call.
+    private var again: Fetch?
+    /// Rounds started so far; a round's number is this count when it started.
+    private var started = 0
+    /// The newest round that answered.
+    private var answered = 0
+    /// `listedAfterNow` calls waiting for a round numbered above `after` to end.
+    private var waiters: [(after: Int, resume: CheckedContinuation<Void, Never>)] = []
+
+    public init(sleep: @escaping Sleep = { seconds in try? await Task.sleep(nanoseconds: seconds * 1_000_000_000) }) {
+        self.sleep = sleep
+    }
+
+    /// Brings the list up to date. A call while a round is in flight asks for one more round
+    /// and returns at once, without waiting for it.
+    public func refresh(_ fetch: @escaping Fetch) async {
+        if running {
+            again = fetch
+            return
+        }
+        running = true
+        defer { running = false }
+        var next: Fetch? = fetch
+        while let current = next {
+            again = nil
+            started += 1
+            let round = started
+            if await current() { answered = max(answered, round) }
+            let ended = waiters.filter { $0.after < round }
+            waiters.removeAll { $0.after < round }
+            for waiter in ended { waiter.resume.resume() }
+            next = again
+        }
+    }
+
+    /// True once a list round that started after this call has answered, so the local list
+    /// is at least as new as the call. A failed round is retried after `retrySeconds`, up to
+    /// `attempts` rounds in all. False when none of them answered: the caller cannot tell
+    /// whether something is missing from the list.
+    public func listedAfterNow(attempts: Int = 3, retrySeconds: UInt64 = 1,
+                               _ fetch: @escaping Fetch) async -> Bool {
+        for attempt in 0..<max(attempts, 1) {
+            if attempt > 0 { await sleep(retrySeconds) }
+            if Task.isCancelled { return false }
+            let after = started
+            if running {
+                // The round in flight started before this call: ask for the next one and wait
+                // until it ends.
+                again = fetch
+                await withCheckedContinuation { waiters.append((after, $0)) }
+            } else {
+                await refresh(fetch)
+            }
+            if answered > after { return true }
+        }
+        return false
     }
 }
 

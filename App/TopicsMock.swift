@@ -38,6 +38,23 @@ final class TopicsMock: @unchecked Sendable {
     /// `HERDR_MOCK_TOPICS_SWITCH=1`: the pong advertises `agent_topics_switch`, herdr-app lists
     /// `topics_enabled` (off at launch), and `agent.topics.set_enabled` flips it (owner only).
     static let switchable = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_SWITCH"] != nil
+    /// `HERDR_MOCK_TOPICS_SWITCH_BUSY=1`: herdr-app is working; `HERDR_MOCK_TOPICS_SWITCH_IDLE=1`:
+    /// it is idle. A working (or blocked) agent answers `set_enabled` with `when_idle` as
+    /// `scheduled` and lists `topics_switch_pending` instead of switching.
+    static let switchStatus: String? = {
+        let environment = ProcessInfo.processInfo.environment
+        if environment["HERDR_MOCK_TOPICS_SWITCH_BUSY"] != nil { return "working" }
+        if environment["HERDR_MOCK_TOPICS_SWITCH_IDLE"] != nil { return "idle" }
+        return nil
+    }()
+    /// `HERDR_MOCK_TOPICS_SWITCH_PENDING=1`: herdr-app opens with a pending switch (topics on).
+    private static let switchPendingAtLaunch =
+        ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_SWITCH_PENDING"] != nil
+    /// `HERDR_MOCK_TOPICS_SWITCH_NO_WHEN_IDLE=1`: a herdr before `agent_topics_switch_when_idle`.
+    /// The pong leaves it out, `set_enabled` ignores `when_idle` and switches at once, and
+    /// neither `scheduled` nor `topics_switch_pending` is sent.
+    static let switchWhenIdle =
+        ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_SWITCH_NO_WHEN_IDLE"] == nil
     /// `HERDR_MOCK_TOPICS_SUGGEST_LIST_ONLY=1`: open suggestions are in `agent.topics.list` but
     /// not yet in the Inbox's transcript, as while the Inbox's turn is still running.
     static let listOnly = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_SUGGEST_LIST_ONLY"] != nil
@@ -72,7 +89,9 @@ final class TopicsMock: @unchecked Sendable {
     /// `agent.transcript` unless `HERDR_MOCK_TOPICS_NO_TRANSCRIPT_TOPIC`.
     static var capability: String {
         guard enabled else { return "" }
-        let switchCapability = switchable ? #","agent_topics_switch":true"# : ""
+        let switchCapability = !switchable ? ""
+            : switchWhenIdle ? #","agent_topics_switch":true,"agent_topics_switch_when_idle":true"#
+            : #","agent_topics_switch":true"#
         let suggestCapability = suggests ? #","agent_topic_suggestions":true"# : ""
         let base = transcriptTopic ? #","agent_topics":true,"agent_transcript_topic":true"# : #","agent_topics":true"#
         return base + switchCapability + suggestCapability
@@ -107,6 +126,8 @@ final class TopicsMock: @unchecked Sendable {
     private var organised = false
     /// The Topics switch (`HERDR_MOCK_TOPICS_SWITCH`), off at launch.
     private var topicsEnabled = false
+    /// A switch held for when herdr-app goes idle (`topics_switch_pending`).
+    private var switchPending = TopicsMock.switchPendingAtLaunch
     /// `HERDR_MOCK_TOPICS_TRANSCRIPT_STARTUP=<n>`: the first `n` topic transcript calls answer
     /// `transcript_unsupported`, as a topic whose session is still starting.
     private var startupRefusals = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_TRANSCRIPT_STARTUP"]
@@ -282,10 +303,23 @@ final class TopicsMock: @unchecked Sendable {
                     return ChatMockConversation.error(id: id, code: "guest_forbidden", message: "owner only")
                 }
                 let enabled = params["enabled"] as? Bool ?? false
+                // A working agent with `when_idle` keeps its turn: the switch waits (`scheduled`).
+                // The current state again drops a pending switch; anything else applies at once.
+                if Self.switchWhenIdle, params["when_idle"] as? Bool == true, Self.switchStatus == "working",
+                   enabled != topicsEnabled {
+                    switchPending = true
+                    return ChatMockConversation.encode(id: id, result: [
+                        "type": "agent_topics_switched", "agent": agent, "changed": true,
+                        "topics_enabled": topicsEnabled, "scheduled": true])
+                }
+                switchPending = false
                 let changed = enabled != topicsEnabled
                 topicsEnabled = enabled
-                return ChatMockConversation.encode(id: id, result: [
-                    "type": "agent_topics_switched", "agent": agent, "changed": changed, "topics_enabled": enabled])
+                var result: [String: Any] = ["type": "agent_topics_switched", "agent": agent, "changed": changed,
+                                             "topics_enabled": enabled]
+                // herdr#493 always sends `scheduled`; an older herdr has no such field.
+                if Self.switchWhenIdle { result["scheduled"] = false }
+                return ChatMockConversation.encode(id: id, result: result)
             default:
                 return ChatMockConversation.error(id: id, code: "invalid_request",
                                                   message: "unknown variant `\(method)`")
@@ -319,11 +353,14 @@ final class TopicsMock: @unchecked Sendable {
         }
     }
 
-    /// The Topics switch's state for the agents list (`topics_enabled`); nil without
+    /// The Topics switch's state for the agents list (`topics_enabled`, and
+    /// `topics_switch_pending` only when true, as herdr#493 skips it when false); nil without
     /// `HERDR_MOCK_TOPICS_SWITCH`.
     var topicsEnabledJSON: String {
         guard Self.switchable else { return "" }
-        return lock.withLock { #","topics_enabled":\#(topicsEnabled)"# }
+        return lock.withLock {
+            #","topics_enabled":\#(topicsEnabled)"# + (switchPending ? #","topics_switch_pending":true"# : "")
+        }
     }
 
     /// The Inbox's opening suggestion: the subject began at the mockup's second prompt.

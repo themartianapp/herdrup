@@ -45,10 +45,14 @@ final class TopicSuggestionsTests: XCTestCase {
 
     // MARK: Switch
 
-    /// Long-press herdr-app: Turn on topics, next to Restart agent. It confirms first (it
+    /// Long-press herdr-app (idle): Turn on topics, next to Restart agent. It confirms first (it
     /// restarts the agent), then calls `agent.topics.set_enabled`; the list then offers Turn off.
     func testSwitchConfirmsThenTurnsTopicsOn() {
-        let app = launch("chatview")
+        let app = launch("chatview", ["HERDR_MOCK_TOPICS_SWITCH_IDLE": "1"])
+        // An idle agent sits in the collapsed Idle group.
+        let idle = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Idle")).firstMatch
+        XCTAssertTrue(idle.exists(within: 12))
+        idle.tap()
         let row = any(app, "agent-row-w9:p1")
         XCTAssertTrue(row.exists(within: 12))
         row.press(forDuration: 1.0)
@@ -88,6 +92,118 @@ final class TopicSuggestionsTests: XCTestCase {
         XCTAssertTrue(app.buttons["Restart agent"].exists(within: 5))
         XCTAssertFalse(app.buttons["Turn on topics"].exists, "not an omp agent")
         XCTAssertFalse(app.buttons["Turn off topics"].exists)
+    }
+
+    /// Long-presses herdr-app until `title` is in its menu (the list reloads after a switch).
+    private func menuOffers(_ title: String, row: XCUIElement, in app: XCUIApplication) -> Bool {
+        poll(10, every: 0.5) {
+            row.press(forDuration: 1.0)
+            let shown = app.buttons[title].exists(within: 3)
+            if !shown { app.tap() }
+            return shown
+        }
+    }
+
+    /// herdr-app is working: the confirmation offers to wait for its turn. Switch when it's
+    /// done sends `when_idle`, herdr holds the switch (`scheduled`), and a notice says so; the
+    /// menu then lists the switch as pending.
+    func testBusyAgentSwitchesWhenItIsDone() {
+        let app = launch("chatview", ["HERDR_MOCK_TOPICS_SWITCH_BUSY": "1"])
+        let row = any(app, "agent-row-w9:p1")
+        XCTAssertTrue(row.exists(within: 12))
+        row.press(forDuration: 1.0)
+        let turnOn = app.buttons["Turn on topics"]
+        XCTAssertTrue(turnOn.exists(within: 5))
+        turnOn.tap()
+
+        XCTAssertTrue(app.staticTexts["Turn on topics for herdr-app?"].exists(within: 5), "it confirms first")
+        XCTAssertTrue(app.buttons["Switch now"].exists, "a working agent can still switch at once")
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Stops what it's doing"))
+            .firstMatch.exists, "Switch now says it cuts the turn")
+        XCTAssertFalse(app.buttons["Restart with topics"].exists)
+        shot(app, "topics-switch-busy-confirm")
+        app.buttons["Switch when it's done"].tap()
+
+        let status = any(app, "topics-switch-status")
+        XCTAssertTrue(status.exists(within: 10))
+        XCTAssertTrue(poll(10, every: 0.3) { status.label.contains("Topics will turn on when herdr-app finishes") },
+                      "the notice: \(status.label)")
+        shot(app, "topics-switch-scheduled")
+        XCTAssertTrue(menuOffers("Cancel pending switch", row: row, in: app), "the switch waits for the turn")
+        XCTAssertTrue(app.buttons["Topics switch pending"].exists)
+        XCTAssertFalse(app.buttons["Turn on topics"].exists)
+    }
+
+    /// Switch now sends `when_idle: false`: the mock then switches a working agent at once.
+    func testBusyAgentSwitchNowSwitchesAtOnce() {
+        let app = launch("chatview", ["HERDR_MOCK_TOPICS_SWITCH_BUSY": "1"])
+        let row = any(app, "agent-row-w9:p1")
+        XCTAssertTrue(row.exists(within: 12))
+        row.press(forDuration: 1.0)
+        XCTAssertTrue(app.buttons["Turn on topics"].exists(within: 5))
+        app.buttons["Turn on topics"].tap()
+        let now = app.buttons["Switch now"]
+        XCTAssertTrue(now.exists(within: 5))
+        now.tap()
+
+        let status = any(app, "topics-switch-status")
+        XCTAssertTrue(status.exists(within: 10))
+        XCTAssertTrue(poll(10, every: 0.3) { status.label.contains("Topics are on for herdr-app.") },
+                      "not scheduled: \(status.label)")
+        XCTAssertTrue(menuOffers("Turn off topics", row: row, in: app), "topics went on at once")
+        XCTAssertFalse(app.buttons["Topics switch pending"].exists)
+    }
+
+    /// A pending switch shows as a disabled line with Cancel pending switch, which sends the
+    /// agent's current state and drops it.
+    func testPendingSwitchShowsAndCancels() {
+        let app = launch("chatview", ["HERDR_MOCK_TOPICS_SWITCH_BUSY": "1", "HERDR_MOCK_TOPICS_SWITCH_PENDING": "1"])
+        let row = any(app, "agent-row-w9:p1")
+        XCTAssertTrue(row.exists(within: 12))
+        row.press(forDuration: 1.0)
+        let pending = app.buttons["Topics switch pending"]
+        XCTAssertTrue(pending.exists(within: 5), "the menu says a switch is pending")
+        XCTAssertFalse(pending.isEnabled, "the pending line is not an action")
+        XCTAssertFalse(app.buttons["Turn on topics"].exists)
+        shot(app, "topics-switch-pending-menu")
+        app.buttons["Cancel pending switch"].tap()
+
+        let status = any(app, "topics-switch-status")
+        XCTAssertTrue(status.exists(within: 10))
+        XCTAssertTrue(poll(10, every: 0.3) { status.label.contains("Pending topics switch cancelled for herdr-app.") },
+                      "the result: \(status.label)")
+        XCTAssertTrue(menuOffers("Turn on topics", row: row, in: app), "nothing pending; topics still off")
+        XCTAssertFalse(app.buttons["Topics switch pending"].exists)
+    }
+
+    /// A herdr without `agent_topics_switch_when_idle` ignores `when_idle` and restarts at once:
+    /// a working agent's confirmation offers only Switch now (and Cancel), and nothing is pending.
+    func testBusyAgentOnOlderServerOffersOnlySwitchNow() {
+        let app = launch("chatview", ["HERDR_MOCK_TOPICS_SWITCH_BUSY": "1",
+                                      "HERDR_MOCK_TOPICS_SWITCH_NO_WHEN_IDLE": "1"])
+        let row = any(app, "agent-row-w9:p1")
+        XCTAssertTrue(row.exists(within: 12))
+        row.press(forDuration: 1.0)
+        XCTAssertTrue(app.buttons["Turn on topics"].exists(within: 5))
+        XCTAssertFalse(app.buttons["Topics switch pending"].exists)
+        app.buttons["Turn on topics"].tap()
+
+        let now = app.buttons["Switch now"]
+        XCTAssertTrue(now.exists(within: 5), "a working agent still gets the warning choice")
+        XCTAssertFalse(app.buttons["Switch when it's done"].exists, "an older herdr cannot wait")
+        XCTAssertFalse(app.buttons["Restart with topics"].exists)
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Stops what it's doing"))
+            .firstMatch.exists)
+        shot(app, "topics-switch-busy-old-server")
+        now.tap()
+
+        let status = any(app, "topics-switch-status")
+        XCTAssertTrue(status.exists(within: 10))
+        XCTAssertTrue(poll(10, every: 0.3) { status.label.contains("Topics are on for herdr-app.") },
+                      "switched at once: \(status.label)")
+        XCTAssertTrue(menuOffers("Turn off topics", row: row, in: app))
+        XCTAssertFalse(app.buttons["Topics switch pending"].exists)
+        XCTAssertFalse(app.buttons["Cancel pending switch"].exists)
     }
 
     // MARK: Suggestion in the Inbox

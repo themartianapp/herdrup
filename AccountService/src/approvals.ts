@@ -22,9 +22,12 @@
 //   code   = uint32_be(h[0..4]) mod 10000, 4 digits
 // The user types the browser's code on T, and T approves only on a match. This service never
 // sees the code. It checks the commit at the reveal (T checks it too) and runs each step once,
-// in order, within 10 minutes. T then seals the machine list to B (X25519 between the two
-// verified keys, HKDF-SHA256, AES-256-GCM with seq in the AAD); the envelope is opaque here and
-// goes back only to that browser. Every binary field is unpadded base64url.
+// in order, within 10 minutes. Past those, the first read of the request stores outcome =
+// 'expired' before answering, and every step requires outcome IS NULL, so a reported 'expired'
+// is final: no finish that started earlier commits after it. T then seals the machine list to
+// B (X25519 between the two verified keys, HKDF-SHA256, AES-256-GCM with seq in the AAD); the
+// envelope is opaque here and goes back only to that browser. Every binary field is unpadded
+// base64url.
 //
 // None of this grants anything: grants exist only on the machines, written over SSH by T.
 // browser_access is what T reported, for Devices to show. The first claim of a browser's request
@@ -115,12 +118,26 @@ export interface AccessJson {
 }
 
 /**
+ * Stores the expiry of every live request of the account that is past its 10 minutes
+ * (outcome = 'expired'). Runs first in each batch that reads approval state, so the service
+ * answers from a stored expiry, never from the clock alone. Every step's update requires
+ * outcome IS NULL, so once stored, no step that started earlier (a finish whose nowMs is
+ * before exp_ms, still running) can commit: an 'expired' the service reported is final.
+ */
+function storeExpiry(db: D1Database, accountId: string, nowMs: number): D1PreparedStatement {
+  return db
+    .prepare("UPDATE approval_requests SET outcome = 'expired' WHERE account_id = ? AND outcome IS NULL AND exp_ms <= ?")
+    .bind(accountId, nowMs);
+}
+
+/**
  * What Devices shows for each of the account's browsers, by device id: approved while the
  * reported expiry is ahead, expired after it, waiting while a request is live and nothing was
  * ever reported. A browser with neither has no entry.
  */
 export async function browserAccess(db: D1Database, accountId: string, nowMs: number): Promise<Map<string, AccessJson>> {
-  const [access, waiting] = await db.batch<{ device_id: string; scope?: Scope; expires_ms?: number }>([
+  const [, access, waiting] = await db.batch<{ device_id: string; scope?: Scope; expires_ms?: number }>([
+    storeExpiry(db, accountId, nowMs),
     db.prepare("SELECT device_id, scope, expires_ms FROM browser_access WHERE account_id = ?").bind(accountId),
     db
       .prepare("SELECT browser_device_id AS device_id FROM approval_requests WHERE account_id = ? AND outcome IS NULL AND exp_ms > ?")
@@ -142,7 +159,7 @@ interface RequestRow {
   approver_device_id: string | null;
   nonce_t: string | null;
   nonce_b: string | null;
-  outcome: "approved" | "denied" | null;
+  outcome: "approved" | "denied" | "expired" | null;
   exp_ms: number;
 }
 
@@ -157,19 +174,21 @@ function requestState(row: RequestRow, nowMs: number): RequestState {
 
 const expiresIn = (expMs: number, nowMs: number): number => Math.max(0, Math.ceil((expMs - nowMs) / 1000));
 
-async function findRequest(env: Env, caller: Caller, id: string): Promise<RequestRow | null> {
-  return env.DB.prepare(
-    `SELECT id, browser_device_id, "commit" AS "commit", approver_device_id, nonce_t, nonce_b, outcome, exp_ms
-       FROM approval_requests WHERE id = ? AND account_id = ?`,
-  )
-    .bind(id, caller.principal.accountId)
-    .first<RequestRow>();
+async function findRequest(env: Env, caller: Caller, id: string, nowMs: number): Promise<RequestRow | null> {
+  const [, found] = await env.DB.batch<RequestRow>([
+    storeExpiry(env.DB, caller.principal.accountId, nowMs),
+    env.DB.prepare(
+      `SELECT id, browser_device_id, "commit" AS "commit", approver_device_id, nonce_t, nonce_b, outcome, exp_ms
+         FROM approval_requests WHERE id = ? AND account_id = ?`,
+    ).bind(id, caller.principal.accountId),
+  ]);
+  return found.results[0] ?? null;
 }
 
-/** Why a step can't run on a request that isn't live: it finished, or its 10 minutes are up. */
+/** Why a step can't run on a request that isn't live: its 10 minutes are up, or it finished. */
 function notLive(row: RequestRow, nowMs: number): Response | null {
+  if (row.outcome === "expired" || (row.outcome === null && row.exp_ms <= nowMs)) return errorResponse(410, "expired");
   if (row.outcome !== null) return errorResponse(409, "already_finished");
-  if (row.exp_ms <= nowMs) return errorResponse(410, "expired");
   return null;
 }
 
@@ -205,25 +224,26 @@ export async function handleCreateRequest(request: Request, env: Env, nowMs: num
 export async function handleListRequests(request: Request, env: Env, nowMs: number): Promise<Response> {
   const caller = await openApprovalRequest(request, env, "/v1/approvals", nowMs, "approver");
   if (caller instanceof Response) return caller;
-  const { results } = await env.DB.prepare(
-    `SELECT r.id, r."commit" AS "commit", r.approver_device_id, r.exp_ms,
-            d.id AS device_id, d.device_pub, d.name, d.platform, d.created_ms
-       FROM approval_requests r JOIN devices d ON d.id = r.browser_device_id
-      WHERE r.account_id = ? AND r.outcome IS NULL AND r.exp_ms > ?
-      ORDER BY r.created_ms, r.id`,
-  )
-    .bind(caller.principal.accountId, nowMs)
-    .all<{
-      id: string;
-      commit: string;
-      approver_device_id: string | null;
-      exp_ms: number;
-      device_id: string;
-      device_pub: string;
-      name: string;
-      platform: string;
-      created_ms: number;
-    }>();
+  const [, { results }] = await env.DB.batch<{
+    id: string;
+    commit: string;
+    approver_device_id: string | null;
+    exp_ms: number;
+    device_id: string;
+    device_pub: string;
+    name: string;
+    platform: string;
+    created_ms: number;
+  }>([
+    storeExpiry(env.DB, caller.principal.accountId, nowMs),
+    env.DB.prepare(
+      `SELECT r.id, r."commit" AS "commit", r.approver_device_id, r.exp_ms,
+              d.id AS device_id, d.device_pub, d.name, d.platform, d.created_ms
+         FROM approval_requests r JOIN devices d ON d.id = r.browser_device_id
+        WHERE r.account_id = ? AND r.outcome IS NULL AND r.exp_ms > ?
+        ORDER BY r.created_ms, r.id`,
+    ).bind(caller.principal.accountId, nowMs),
+  ]);
   return json(200, {
     requests: results.map((row) => ({
       id: row.id,
@@ -238,7 +258,7 @@ export async function handleListRequests(request: Request, env: Env, nowMs: numb
 export async function handleGetRequest(request: Request, env: Env, id: string, nowMs: number): Promise<Response> {
   const caller = await openApprovalRequest(request, env, "/v1/approvals/:id", nowMs, "either");
   if (caller instanceof Response) return caller;
-  const row = await findRequest(env, caller, id);
+  const row = await findRequest(env, caller, id, nowMs);
   const isBrowser = caller.device.platform === "web";
   // A browser sees only its own request; any approver of the account sees every request's state.
   if (row === null || (isBrowser && row.browser_device_id !== caller.device.id)) return errorResponse(404, "not_found");
@@ -282,7 +302,7 @@ export async function handleClaim(request: Request, env: Env, id: string, nowMs:
     ).bind(id, caller.device.id, body.nonce_t, nowMs),
   ]);
   if (claimed.results.length > 0) return json(200, { state: "claimed" });
-  const row = await findRequest(env, caller, id);
+  const row = await findRequest(env, caller, id, nowMs);
   if (row === null) return errorResponse(404, "not_found");
   return notLive(row, nowMs) ?? errorResponse(409, "already_claimed");
 }
@@ -294,7 +314,7 @@ export async function handleReveal(request: Request, env: Env, id: string, nowMs
   if (body instanceof Response) return body;
   const nonceB = bytes32(body.nonce_b);
   if (nonceB === null) return errorResponse(400, "bad_request");
-  const row = await findRequest(env, caller, id);
+  const row = await findRequest(env, caller, id, nowMs);
   if (row === null || row.browser_device_id !== caller.device.id) return errorResponse(404, "not_found");
   const stale = notLive(row, nowMs);
   if (stale !== null) return stale;
@@ -396,7 +416,7 @@ export async function handleFinish(request: Request, env: Env, id: string, nowMs
   if (body instanceof Response) return body;
   const report = body.outcome === "approved" ? readReport(body, nowMs) : null;
   if (body.outcome !== "denied" && report === null) return errorResponse(400, "bad_request");
-  const row = await findRequest(env, caller, id);
+  const row = await findRequest(env, caller, id, nowMs);
   // Only the claimant finishes; to anyone else the request doesn't exist.
   if (row === null || row.approver_device_id !== caller.device.id) return errorResponse(404, "not_found");
   const stale = notLive(row, nowMs);
@@ -411,7 +431,10 @@ export async function handleFinish(request: Request, env: Env, id: string, nowMs
     )
       .bind(nowMs + OUTCOME_KEEP_MS, id, caller.device.id, nowMs)
       .first();
-    return denied === null ? errorResponse(409, "already_finished") : json(200, { state: "denied" });
+    if (denied !== null) return json(200, { state: "denied" });
+    // Lost to another finish or to a stored expiry: answer from the row as it is now.
+    const now = await findRequest(env, caller, id, nowMs);
+    return (now === null ? null : notLive(now, nowMs)) ?? errorResponse(409, "already_finished");
   }
 
   // Approval needs the reveal: T checked nonce_b against the commit and the user typed the code.
@@ -446,7 +469,7 @@ export async function handleFinish(request: Request, env: Env, id: string, nowMs
   ]);
   if (results[3].meta.changes === 1) return json(200, { state: "approved" });
   // Lost a race: another finish took the request, it expired, or another envelope got there first.
-  const now = await findRequest(env, caller, id);
+  const now = await findRequest(env, caller, id, nowMs);
   return (now === null ? null : notLive(now, nowMs)) ?? errorResponse(409, "stale_seq");
 }
 

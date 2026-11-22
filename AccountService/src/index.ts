@@ -42,7 +42,7 @@ import { VERSION } from "./version";
  */
 async function features(env: Env): Promise<string[]> {
   const set = (value: string | undefined) => (value?.trim() ?? "").length > 0;
-  const list = ["native_sign_in", "devices", "statements", "sync", "delete", "web_approve"];
+  const list = ["native_sign_in", "devices", "statements", "sync", "delete", "web_approve", "approval_expiry_final"];
   // The iOS client's own Google sign-in (ASWebAuthenticationSession + PKCE), which needs only its client id.
   if (set(env.GOOGLE_IOS_CLIENT_ID)) list.push("native_sign_in_google");
   const webApple = set(env.APPLE_WEB_CLIENT_ID);
