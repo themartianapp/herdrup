@@ -188,6 +188,11 @@ struct GuestPaneView: View {
                             chat.setListedSuggestions(open, requestedAt: requestedAt)
                         }
                         chat.setListedSuggestions(topicsModel.suggestions, requestedAt: .distantPast)
+                        // A started topic that ended before its first turn (gone from the
+                        // list: a guest has no events): back to the Inbox and its suggestion.
+                        topicsModel.onStartFailed = { _ in
+                            if tab == .topics { tab = showsChat ? .chat : .terminal }
+                        }
                     }
                     .task(id: topicsModel.suggestionsServed && availability == .running) {
                         guard topicsModel.suggestionsServed, availability == .running else { return }
