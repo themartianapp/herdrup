@@ -488,6 +488,44 @@ public struct TranscriptAsk: Sendable, Equatable {
     public var isSettled: Bool { answer != nil || formStatus != nil }
 }
 
+/// Where a topic suggestion stands (`TopicSuggestionState`).
+public enum TopicSuggestionState: String, Sendable, Equatable {
+    case open
+    /// A topic was started from it (`topicID`).
+    case accepted
+    case dismissed
+    /// A state this app does not know yet: drawn as nothing.
+    case unknown
+}
+
+/// A `topic_suggestion` entry: the agent suggests a topic and picked the messages that come
+/// along. The user never selects them; the chat only says how many.
+public struct TranscriptTopicSuggestion: Sendable, Equatable {
+    public let title: String
+    /// Why the agent suggests it, in its words.
+    public let reason: String
+    /// The Inbox entries the topic starts with.
+    public let messageIDs: [String]
+    /// How many messages come along (`message_count`, else the ids').
+    public let messageCount: Int
+    public let state: TopicSuggestionState
+    /// The topic started from it, once accepted.
+    public let topicID: String?
+    /// Who accepted or dismissed it: `owner`, or a guest's name.
+    public let by: String?
+
+    public init(title: String, reason: String = "", messageIDs: [String] = [], messageCount: Int? = nil,
+                state: TopicSuggestionState, topicID: String? = nil, by: String? = nil) {
+        self.title = title
+        self.reason = reason
+        self.messageIDs = messageIDs
+        self.messageCount = messageCount ?? messageIDs.count
+        self.state = state
+        self.topicID = topicID
+        self.by = by
+    }
+}
+
 public struct TranscriptEntry: Decodable, Sendable, Equatable, Identifiable {
     public enum Kind: Sendable, Equatable {
         case user(text: String, author: TranscriptAuthor, origin: TranscriptOrigin = .mine)
@@ -501,6 +539,9 @@ public struct TranscriptEntry: Decodable, Sendable, Equatable, Identifiable {
         case ask(TranscriptAsk)
         case turnEnd(status: TranscriptTurnEndStatus, error: String?)
         case summary(text: String)
+        /// The agent suggests starting a topic with messages it picked (`topic_suggestion`). Its
+        /// newest state wins: an `after` page re-sends it under the same id when it changes.
+        case topicSuggestion(TranscriptTopicSuggestion)
         /// A kind this app does not know; ignored by the view (contract: clients MUST
         /// ignore unknown kinds).
         case unknown(String)
@@ -518,11 +559,14 @@ public struct TranscriptEntry: Decodable, Sendable, Equatable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id, kind, text, author, final, tool, intent, status, detail, source, title, from, body
-        case items, questions, answer, error, origin, form
+        case items, questions, answer, error, origin, form, reason, state, by
         case tsMs = "ts_ms"
         case authorName = "author_name"
         case formAnswer = "form_answer"
         case formStatus = "form_status"
+        case messageIDs = "message_ids"
+        case messageCount = "message_count"
+        case topicID = "topic_id"
     }
 
     public init(from decoder: Decoder) throws {
@@ -580,6 +624,18 @@ public struct TranscriptEntry: Decodable, Sendable, Equatable, Identifiable {
             kind = .turnEnd(status: status, error: try c.decodeIfPresent(String.self, forKey: .error))
         case "summary":
             kind = .summary(text: try text())
+        case "topic_suggestion":
+            let ids = (try? c.decodeIfPresent([String].self, forKey: .messageIDs)) ?? nil
+            let count = (try? c.decodeIfPresent(UInt64.self, forKey: .messageCount)) ?? nil
+            kind = .topicSuggestion(TranscriptTopicSuggestion(
+                title: (try? c.decodeIfPresent(String.self, forKey: .title)) ?? "",
+                reason: (try? c.decodeIfPresent(String.self, forKey: .reason)) ?? "",
+                messageIDs: ids ?? [],
+                messageCount: count.map(Int.init) ?? ids?.count ?? 0,
+                state: ((try? c.decodeIfPresent(String.self, forKey: .state)) ?? nil)
+                    .flatMap(TopicSuggestionState.init(rawValue:)) ?? .unknown,
+                topicID: (try? c.decodeIfPresent(String.self, forKey: .topicID)) ?? nil,
+                by: (try? c.decodeIfPresent(String.self, forKey: .by)) ?? nil))
         default:
             kind = .unknown(kindName)
         }

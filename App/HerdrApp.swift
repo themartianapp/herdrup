@@ -2028,6 +2028,13 @@ struct TerminalHomeView: View {
     /// dialog). Set from the agent card's context menu; a restart interrupts a
     /// busy agent's turn, so it is confirmed before firing.
     @State private var restartCandidate: AgentRow?
+    /// A pending Topics switch confirmation (`agent.topics.set_enabled`): the agent, and on or
+    /// off. The switch restarts the agent, so it is confirmed first, like Restart agent.
+    @State private var topicsSwitchCandidate: TopicsSwitchRequest?
+    /// The Topics switch in progress, or how it ended, at the foot of the agents list.
+    @State private var topicsSwitchStatus: TopicsSwitchStatus?
+    /// The daemon has the owner's per-agent Topics switch (ping `agent_topics_switch`).
+    @State private var topicsSwitchSupported = false
     /// A pending "Swap subscription" confirmation: which agent, and the target
     /// account. A swap IS a full restart (kills + --resume) onto a different
     /// credential account, so it interrupts a busy turn exactly like the plain
@@ -2404,6 +2411,19 @@ struct TerminalHomeView: View {
                 try await client.unarchiveAgent(target: target)
             }
         }
+    }
+
+    /// Turns an agent's topics on or off (`agent.topics.set_enabled`), which restarts it: the
+    /// banner at the list's foot shows it working, then how it ended; the list reloads.
+    private func switchTopics(_ request: TopicsSwitchRequest) async {
+        topicsSwitchStatus = .working(request)
+        do {
+            let changed = try await client.agentTopicsSetEnabled(target: request.paneID, enabled: request.enabled)
+            topicsSwitchStatus = .done(request, changed: changed)
+        } catch {
+            topicsSwitchStatus = .failed(request, TopicsSwitchStatus.describe(error))
+        }
+        await load()
     }
 
     /// One daemon action on a roster row: run `op`, then reload the roster. A failure is
@@ -3521,6 +3541,20 @@ struct TerminalHomeView: View {
     @ViewBuilder
     private func agentActions<Content: View>(_ content: Content) -> some View {
         folderActions(content)
+            .overlay(alignment: .bottom) { TopicsSwitchBanner(status: $topicsSwitchStatus) }
+            .confirmationDialog(
+                topicsSwitchCandidate.map { TopicsSwitchRequest.title($0) } ?? "",
+                isPresented: $topicsSwitchCandidate.isPresent(),
+                titleVisibility: .visible,
+                presenting: topicsSwitchCandidate
+            ) { request in
+                Button(request.enabled ? "Restart with topics" : "Restart without topics") {
+                    Task { await switchTopics(request) }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: { request in
+                Text(TopicsSwitchRequest.message(request))
+            }
             .confirmationDialog(
                 "Restart agent?",
                 isPresented: $restartCandidate.isPresent(),
@@ -4458,6 +4492,14 @@ struct TerminalHomeView: View {
             StableMenuItem("Restart agent", systemImage: "arrow.clockwise") {
                 restartCandidate = row
             }
+            // The Topics switch (owner only: guests have no agents list), for omp agents on a
+            // daemon with `agent_topics_switch`. It restarts the agent, so it confirms first.
+            if topicsSwitchSupported, ChatPreference.isOmp(row.info.agent), let enabled = row.info.topicsEnabled {
+                StableMenuItem(enabled ? "Turn off topics" : "Turn on topics", systemImage: "rectangle.stack") {
+                    topicsSwitchCandidate = TopicsSwitchRequest(paneID: row.info.paneID, title: row.title,
+                                                                enabled: !enabled)
+                }
+            }
             // Harness transfer is deliberately not a restart shortcut. It
             // first builds and verifies a native destination transcript,
             // then opens a review sheet whose explicit confirm performs the
@@ -5060,6 +5102,7 @@ struct TerminalHomeView: View {
                     }
                     sessionTransferSupported = capabilities?.agentSessionTransfer == true
                     forgetSupported = capabilities?.agentForget == true
+                    topicsSwitchSupported = capabilities?.agentTopicsSwitch == true
                     avatars.canEdit = capabilities?.agentAvatar == true
                     groups.setSupported(capabilities?.agentGroups == true)
                     // PARSED HERE, IN THE SAME BLOCK THAT MARKS THE CHECK DONE.
@@ -6168,7 +6211,13 @@ struct TerminalPaneContent: View {
                                  ground: Palette.groundMachine,
                                  onOpenTerminal: { setMode(.terminal) },
                                  findRequest: findRequest,
-                                 onFindResult: { index, total, capped in findMatches = (index, total, capped) })
+                                 onFindResult: { index, total, capped in findMatches = (index, total, capped) },
+                                 onOpenTopic: { topicID in
+                                     Task {
+                                         await topicsModel.open(topicID: topicID, client: client)
+                                         setMode(.topics)
+                                     }
+                                 })
                         // A composer keystroke redraws this page; the chat skips it
                         // (`ChatView ==`), so typing never re-evaluates the transcript.
                         .equatable()

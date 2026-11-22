@@ -17,6 +17,22 @@ import UIKit
 @MainActor
 final class TopicsModel: ObservableObject {
     @Published private(set) var topics: [AgentTopic] = []
+    /// The agent's open topic suggestions, oldest first: Organise's proposals and the ones it
+    /// made in the Inbox. Listed ticked above the topics.
+    @Published private(set) var suggestions: [AgentTopicSuggestion] = []
+    /// The agent's omp serves suggestions (`suggestions` on its list) on a server with
+    /// `agent_topic_suggestions`: the list offers Organise.
+    @Published private(set) var suggestionsServed = false
+    /// Proposals the reader unticked; every other one is ticked.
+    @Published private var unticked: Set<String> = []
+    /// Organise was asked and its proposals have not arrived yet.
+    @Published private(set) var organising = false
+    /// What Organise is doing, or why it did not start.
+    @Published private(set) var organiseNote: String?
+    /// Create N topics or Not now is going through the proposals.
+    @Published private(set) var settling = false
+    /// The agent's name, from its list (the proposals' heading).
+    @Published private(set) var agentName = ""
     /// The first list call answered, either way.
     @Published private(set) var loaded = false
     /// The agent answered `agent.topics.list` this session: the page offers Topics.
@@ -144,6 +160,19 @@ final class TopicsModel: ObservableObject {
             let list = try await client.agentTopicsList(target: target)
             let ordered = list.ordered
             if ordered != topics { topics = ordered }
+            if list.agent != agentName { agentName = list.agent }
+            let open = list.suggestions ?? []
+            if open != suggestions {
+                // New proposals arrived: Organise has answered.
+                if organising, open.contains(where: { s in !suggestions.contains { $0.id == s.id } }) {
+                    organising = false
+                    organiseNote = nil
+                }
+                suggestions = open
+                unticked.formIntersection(open.map(\.id))
+            }
+            let served = list.suggestions != nil ? await client.advertisesTopicSuggestions() : false
+            if suggestionsServed != served { suggestionsServed = served }
             if !offered { offered = true }
             let pages = await client.advertisesTopicTranscripts()
             if topicTranscripts != pages { topicTranscripts = pages }
@@ -293,6 +322,79 @@ final class TopicsModel: ObservableObject {
 
     private static let tooLong = "Messages are limited to 32 KB. Send it in parts."
 
+    // MARK: Suggestions and Organise
+
+    /// Asks the agent to propose topics from its Inbox (`agent.topics.organise`). It answers at
+    /// once; the proposals arrive as open suggestions, ticked, at the top of the list.
+    func organise(client: HerdrClient) async {
+        guard !organising else { return }
+        organising = true
+        organiseNote = nil
+        do {
+            let queued = try await client.agentTopicsOrganise(target: target)
+            organiseNote = queued ? "Organise starts when the agent's current turn ends."
+                                  : "The agent is reading the Inbox to propose topics."
+        } catch {
+            organising = false
+            organiseNote = (error as? AgentTopicsError) == .organiseRunning
+                ? "The agent is already organising." : Self.describe(error)
+            return
+        }
+        await refresh(client: client)
+    }
+
+    /// Whether a proposal is ticked (all are, until the reader unticks one).
+    func isTicked(_ suggestionID: String) -> Bool { !unticked.contains(suggestionID) }
+
+    func toggleTick(_ suggestionID: String) {
+        if unticked.contains(suggestionID) { unticked.remove(suggestionID) } else { unticked.insert(suggestionID) }
+    }
+
+    var tickedCount: Int { suggestions.filter { isTicked($0.id) }.count }
+
+    /// Create N topics: starts a topic from each ticked proposal and dismisses the rest. Returns
+    /// why one did not go through, or nil.
+    func createTicked(client: HerdrClient) async -> String? {
+        await settleProposals(client: client, accepting: Set(suggestions.filter { isTicked($0.id) }.map(\.id)))
+    }
+
+    /// Not now: dismisses every proposal.
+    func dismissProposals(client: HerdrClient) async -> String? {
+        await settleProposals(client: client, accepting: [])
+    }
+
+    private func settleProposals(client: HerdrClient, accepting: Set<String>) async -> String? {
+        guard !settling else { return nil }
+        settling = true
+        defer { settling = false }
+        var failure: String?
+        for suggestion in suggestions {
+            do {
+                if accepting.contains(suggestion.id) {
+                    _ = try await client.agentTopicsAcceptSuggestion(target: target, suggestionID: suggestion.id)
+                } else {
+                    try await client.agentTopicsDismissSuggestion(target: target, suggestionID: suggestion.id)
+                }
+            } catch AgentTopicsError.alreadyAccepted, AgentTopicsError.suggestionNotFound {
+                continue   // someone else got there first
+            } catch is CancellationError {
+                return nil
+            } catch {
+                failure = failure ?? Self.describe(error)
+            }
+        }
+        unticked = []
+        await refresh(client: client)
+        return failure
+    }
+
+    /// Opens a topic by id (a suggestion's Start, its "Continued in topic" line): the list is
+    /// brought up to date first, so a topic that just started is there to open.
+    func open(topicID: String, client: HerdrClient) async {
+        if topic(topicID) == nil { await refresh(client: client) }
+        selectedTopicID = topicID
+    }
+
     static func describe(_ error: Error) -> String {
         guard let error = error as? AgentTopicsError else { return "Couldn't reach the agent." }
         switch error {
@@ -302,6 +404,11 @@ final class TopicsModel: ObservableObject {
         case .topicNotFound: return "This topic is gone."
         case .agentNotFound: return "This agent is gone."
         case .unsupported, .notAdvertised: return "This agent has no topics."
+        case .suggestionsNotAdvertised: return "This server doesn't suggest topics."
+        case .suggestionNotFound: return "That suggestion is gone."
+        case .alreadyAccepted: return "Someone already started that topic."
+        case .organiseRunning: return "The agent is already organising."
+        case .topicsDisabled: return "Topics are off for this agent."
         case .other(let api): return api.message
         }
     }
@@ -504,6 +611,21 @@ private struct TopicsList: View {
                     aboutButton
                 }
                 Spacer(minLength: 0)
+                if model.suggestionsServed {
+                    // A plain word in the bar (proposal 3): the agent proposes topics from its Inbox.
+                    Button { Task { await model.organise(client: client) } } label: {
+                        HStack(spacing: 6) {
+                            if model.organising { ProgressView().controlSize(.mini).tint(Palette.textDim) }
+                            Text("Organise").font(Typography.app(14, .semibold))
+                                .foregroundStyle(model.organising ? Palette.textDim : Palette.text)
+                        }
+                        .padding(.horizontal, 6).frame(height: 34)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.organising)
+                    .accessibilityIdentifier("topics-organise")
+                }
                 Button { composing = true } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "square.and.pencil").font(.system(size: 14, weight: .semibold))
@@ -531,10 +653,18 @@ private struct TopicsList: View {
                 .padding(.horizontal, 16).padding(.bottom, 6)
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("topics-problem")
+            } else if let note = model.organiseNote {
+                Text(note).font(Typography.app(12)).foregroundStyle(Palette.textDim).lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16).padding(.bottom, 6)
+                    .accessibilityIdentifier("topics-organise-note")
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     inboxRow
+                    if !model.suggestions.isEmpty && search.isEmpty {
+                        proposals
+                    }
                     ForEach(lines) { line in
                         switch line {
                         case .heading(let title):
@@ -561,6 +691,9 @@ private struct TopicsList: View {
             }
             .scrollDismissesKeyboard(.interactively)
             .accessibilityIdentifier("topics-list")
+            if !model.suggestions.isEmpty {
+                proposalsBar
+            }
         }
         .sheet(isPresented: $composing) {
             NewTopicSheet { title, message in
@@ -604,6 +737,101 @@ private struct TopicsList: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("topics-inbox-row")
+    }
+
+    /// The agent's proposals, in the list itself above the topics (proposal 3): each ticked
+    /// until the reader unticks it, with its message count and the agent's reason. Ticking picks
+    /// topics to create, never messages: the agent picked those.
+    private var proposals: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(model.agentName.isEmpty ? "SUGGESTED BY THE AGENT" : "SUGGESTED BY \(model.agentName.uppercased())")
+                .font(Typography.microLabel).tracking(1)
+                .foregroundStyle(Palette.textFaint)
+                .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 4)
+                .accessibilityIdentifier("topics-proposals-heading")
+            ForEach(model.suggestions) { suggestion in
+                proposalRow(suggestion)
+            }
+        }
+    }
+
+    private func proposalRow(_ suggestion: AgentTopicSuggestion) -> some View {
+        let ticked = model.isTicked(suggestion.id)
+        let title = suggestion.title.isEmpty ? "Untitled topic" : suggestion.title
+        return Button { model.toggleTick(suggestion.id) } label: {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: ticked ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 20, weight: .regular))
+                    .foregroundStyle(ticked ? Palette.text : Palette.textFaint)
+                    .frame(width: 24, height: 24)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text(title).font(Typography.app(15, .semibold))
+                            .foregroundStyle(ticked ? Palette.text : Palette.textDim)
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
+                        if suggestion.messageCount > 0 {
+                            Text(suggestion.messageCount == 1 ? "1 msg" : "\(suggestion.messageCount) msgs")
+                                .font(Typography.machine(11)).foregroundStyle(Palette.textFaint)
+                                .fixedSize()
+                        }
+                    }
+                    if !suggestion.reason.isEmpty {
+                        Text(suggestion.reason).font(Typography.app(13)).foregroundStyle(Palette.textDim)
+                            .lineLimit(2)
+                    }
+                }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(Palette.hairlineQuiet).frame(height: 1).padding(.leading, 52)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(model.settling)
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(ticked ? [.isButton, .isSelected] : .isButton)
+        .accessibilityLabel(title)
+        .accessibilityValue([ticked ? "Ticked" : "Not ticked", suggestion.reason]
+            .filter { !$0.isEmpty }.joined(separator: ", "))
+        .accessibilityIdentifier("topics-proposal-\(suggestion.id)")
+    }
+
+    /// Create N topics / Not now under the list while there are proposals.
+    private var proposalsBar: some View {
+        let count = model.tickedCount
+        return HStack(spacing: 10) {
+            Button {
+                Task { actionNote = await model.dismissProposals(client: client) }
+            } label: {
+                Text("Not now").font(Typography.app(15, .semibold)).foregroundStyle(Palette.text)
+                    .frame(maxWidth: .infinity).frame(height: 44)
+                    .background(Capsule().fill(Palette.surface))
+                    .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("topics-proposals-dismiss")
+            Button {
+                Task { actionNote = await model.createTicked(client: client) }
+            } label: {
+                Text(count == 1 ? "Create 1 topic" : "Create \(count) topics")
+                    .font(Typography.app(15, .semibold)).foregroundStyle(Palette.ground)
+                    .frame(maxWidth: .infinity).frame(height: 44)
+                    .background(Capsule().fill(Palette.text))
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(count == 0)
+            .opacity(count == 0 ? 0.5 : 1)
+            .accessibilityIdentifier("topics-proposals-create")
+        }
+        .disabled(model.settling)
+        .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 12)
+        .background(Palette.groundMachine)
+        .overlay(alignment: .top) { Rectangle().fill(Palette.hairlineQuiet).frame(height: 1) }
     }
 
     private func row(_ topic: AgentTopic) -> some View {

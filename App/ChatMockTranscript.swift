@@ -358,6 +358,12 @@ final class ChatMockConversation: @unchecked Sendable {
             ]
         }
         turns += audience == .owner ? ownerTurns() : guestTurns()
+        // `HERDR_MOCK_TOPICS_SUGGEST`: the agent's topic suggestions close its newest turn, in
+        // their newest state (an `after` page re-sends that turn).
+        if var last = turns.last, let lastMs = last.last?["ts_ms"] as? UInt64 {
+            last += (audience == .owner ? TopicsMock.owner : TopicsMock.guest).suggestionEntries(after: lastMs)
+            turns[turns.count - 1] = last
+        }
         var sent = Set<Int>()
         for item in appended {
             switch item {
@@ -680,7 +686,7 @@ struct ChatMockTransport: HerdrTransport {
         let working = still ? "idle" : "working"
         let status = ChatMockConversation.owner.isAnswered ? working : "blocked"
         return [
-            #"{"pane_id":"\#(paneID)","name":"herdr-app","agent":"omp","agent_status":"\#(status)","cwd":"/root/herdr","terminal_title_stripped":"Merge #305 and update the servers?"}"#,
+            #"{"pane_id":"\#(paneID)","name":"herdr-app","agent":"omp","agent_status":"\#(status)","cwd":"/root/herdr","terminal_title_stripped":"Merge #305 and update the servers?"\#(TopicsMock.owner.topicsEnabledJSON)}"#,
             #"{"pane_id":"w9:p2","terminal_id":"t-keephair","name":"keephair","avatar":{"style":"mascot","mascot":"cub","sha256":null,"updated_unix_ms":1723041000000},"agent":"claude","agent_status":"\#(working)","cwd":"/root/keephair-repo","terminal_title_stripped":"Running the iPad tests"}"#,
             #"{"pane_id":"w9:p3","name":"llm-opt","agent":"omp","agent_status":"done","cwd":"/root/llm-opt","terminal_title_stripped":"Bench results posted"}"#,
         ].joined(separator: ",")

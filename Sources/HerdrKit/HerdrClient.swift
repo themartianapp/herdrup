@@ -2206,6 +2206,71 @@ public actor HerdrClient {
                                  as: AgentTopicResult.self)
     }
 
+    // MARK: Topic suggestions and Organise (`agent_topic_suggestions`)
+
+    /// The server serves topic suggestions and Organise (`agent_topic_suggestions`). From the
+    /// capability cache.
+    public func advertisesTopicSuggestions() async -> Bool {
+        await supports(\.agentTopicSuggestions)
+    }
+
+    /// A suggestion call: refused before sending on a server without `agent_topic_suggestions`.
+    private func suggestionsCall<P: Encodable, R: Decodable>(
+        _ method: String, _ params: P, as type: R.Type
+    ) async throws -> R {
+        guard await supports(\.agentTopicSuggestions) else { throw AgentTopicsError.suggestionsNotAdvertised }
+        return try await topicsCall(method, params, as: type)
+    }
+
+    /// Starts the topic a suggestion proposes (`agent.topics.accept_suggestion`), with the
+    /// messages the agent picked. A suggestion accepted before answers its topic again
+    /// (`alreadyAccepted`).
+    public func agentTopicsAcceptSuggestion(target: String, suggestionID: String) async throws
+        -> AgentTopicSuggestionAccepted {
+        try await suggestionsCall("agent.topics.accept_suggestion",
+                                  AgentTopicSuggestionParams(target: target, suggestionID: suggestionID),
+                                  as: AgentTopicSuggestionAccepted.self)
+    }
+
+    /// Dismisses a suggestion (`agent.topics.dismiss_suggestion`). Returns true when it was
+    /// dismissed before (`already_dismissed`).
+    @discardableResult
+    public func agentTopicsDismissSuggestion(target: String, suggestionID: String) async throws -> Bool {
+        try await suggestionsCall("agent.topics.dismiss_suggestion",
+                                  AgentTopicSuggestionParams(target: target, suggestionID: suggestionID),
+                                  as: AgentTopicSuggestionDismissed.self).alreadyDismissed
+    }
+
+    /// Asks the agent to propose topics from its Inbox (`agent.topics.organise`). Returns at
+    /// once (true: queued behind the running turn); the proposals arrive as open suggestions.
+    @discardableResult
+    public func agentTopicsOrganise(target: String) async throws -> Bool {
+        try await suggestionsCall("agent.topics.organise", AgentTopicsListParams(target: target),
+                                  as: AgentTopicsOrganiseStarted.self).queued
+    }
+
+    // MARK: Topics switch (`agent_topics_switch`)
+
+    /// The server has the owner's per-agent Topics switch (`agent_topics_switch`).
+    public func advertisesTopicsSwitch() async -> Bool {
+        await supports(\.agentTopicsSwitch)
+    }
+
+    /// Turns an omp agent's topics on or off (`agent.topics.set_enabled`): herdr restarts it
+    /// on (or off) the omp build with topics, keeping its conversation and name. Owner only.
+    /// Returns false when it already was so.
+    @discardableResult
+    public func agentTopicsSetEnabled(target: String, enabled: Bool) async throws -> Bool {
+        guard await supports(\.agentTopicsSwitch) else { throw AgentTopicsSwitchError.notAdvertised }
+        do {
+            return try await call("agent.topics.set_enabled",
+                                  AgentTopicsSetEnabledParams(target: target, enabled: enabled),
+                                  as: AgentTopicsSetEnabledResult.self).changed
+        } catch let error as APIError {
+            throw AgentTopicsSwitchError(error)
+        }
+    }
+
     /// Every omp agent's topic changes (`agent.topics.changed`), on its own `events.subscribe`
     /// stream. Owner only: guests have no event stream and poll `agentTopicsList` instead.
     /// Call it only when the server advertises `agent_topics`; an older one refuses the

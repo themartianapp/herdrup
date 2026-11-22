@@ -77,21 +77,65 @@ public struct AgentTopic: Decodable, Sendable, Equatable, Identifiable {
     public var activityUnixMs: UInt64 { max(lastActivityUnixMs, createdUnixMs) }
 }
 
+/// One open topic suggestion, as `agent.topics.list` reports it (`AgentTopicSuggestionInfo`):
+/// the agent proposes starting a topic with some of its Inbox messages, which it picked itself.
+public struct AgentTopicSuggestion: Decodable, Sendable, Equatable, Identifiable {
+    /// `suggestion_id`: what `agent.topics.accept_suggestion` / `dismiss_suggestion` take.
+    public let id: String
+    public let title: String
+    /// Why the agent suggests it, in its words.
+    public let reason: String
+    /// The Inbox entries (`agent.transcript` ids) the topic would start with.
+    public let messageIDs: [String]
+    public let createdUnixMs: UInt64
+
+    public init(id: String, title: String, reason: String = "", messageIDs: [String] = [], createdUnixMs: UInt64 = 0) {
+        self.id = id
+        self.title = title
+        self.reason = reason
+        self.messageIDs = messageIDs
+        self.createdUnixMs = createdUnixMs
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case title, reason
+        case id = "suggestion_id"
+        case messageIDs = "message_ids"
+        case createdUnixMs = "created_unix_ms"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        title = (try? c.decodeIfPresent(String.self, forKey: .title)) ?? ""
+        reason = (try? c.decodeIfPresent(String.self, forKey: .reason)) ?? ""
+        messageIDs = (try? c.decodeIfPresent([String].self, forKey: .messageIDs)) ?? []
+        createdUnixMs = (try? c.decodeIfPresent(UInt64.self, forKey: .createdUnixMs)) ?? 0
+    }
+
+    /// How many earlier messages come along into the topic.
+    public var messageCount: Int { messageIDs.count }
+}
+
 /// Result of `agent.topics.list` (`type: "agent_topics"`): the agent's topics, live from the
 /// agent; empty when it has none (an unreachable agent is an error instead).
 public struct AgentTopicList: Decodable, Sendable, Equatable {
     public let agent: String
     public let paneID: String
     public let topics: [AgentTopic]
+    /// The agent's open topic suggestions, oldest first. Nil when the agent's omp has no
+    /// suggestions (the field is absent), empty when it has none open.
+    public let suggestions: [AgentTopicSuggestion]?
 
-    public init(agent: String, paneID: String, topics: [AgentTopic]) {
+    public init(agent: String, paneID: String, topics: [AgentTopic], suggestions: [AgentTopicSuggestion]? = nil) {
         self.agent = agent
         self.paneID = paneID
         self.topics = topics
+        self.suggestions = suggestions
     }
 
     enum CodingKeys: String, CodingKey {
-        case agent, topics
+        case agent, topics, suggestions
         case paneID = "pane_id"
     }
 
@@ -101,6 +145,8 @@ public struct AgentTopicList: Decodable, Sendable, Equatable {
         paneID = try c.decodeIfPresent(String.self, forKey: .paneID) ?? ""
         // One topic that does not decode is left out rather than failing the list.
         topics = try c.decode([Lossy<AgentTopic>].self, forKey: .topics).compactMap(\.value)
+        let lossy = (try? c.decodeIfPresent([Lossy<AgentTopicSuggestion>].self, forKey: .suggestions)) ?? nil
+        suggestions = lossy?.compactMap(\.value)
     }
 
     /// Topics in the order the Topics view lists them: open ones by last activity, newest
@@ -233,6 +279,100 @@ struct AgentTopicsRenameParams: Encodable, Sendable {
     }
 }
 
+/// `agent.topics.accept_suggestion` / `agent.topics.dismiss_suggestion`
+/// (`AgentTopicSuggestionTarget`). No `message_ids`: the agent picks the messages, the user
+/// never does (owner decision 2026-11-22).
+struct AgentTopicSuggestionParams: Encodable, Sendable {
+    let target: String
+    let suggestionID: String
+
+    enum CodingKeys: String, CodingKey {
+        case target
+        case suggestionID = "suggestion_id"
+    }
+}
+
+/// `agent.topics.set_enabled`: the owner's Topics switch for one omp agent.
+struct AgentTopicsSetEnabledParams: Encodable, Sendable {
+    let target: String
+    let enabled: Bool
+}
+
+// MARK: - Suggestion results
+
+/// `agent.topics.accept_suggestion`: the topic started from the suggestion.
+public struct AgentTopicSuggestionAccepted: Decodable, Sendable, Equatable {
+    public let topicID: String
+    /// The suggestion was accepted before (by anyone): `topicID` is that topic.
+    public let alreadyAccepted: Bool
+
+    public init(topicID: String, alreadyAccepted: Bool = false) {
+        self.topicID = topicID
+        self.alreadyAccepted = alreadyAccepted
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case topic
+        case topicID = "topic_id"
+        case alreadyAccepted = "already_accepted"
+    }
+
+    private struct TopicRef: Decodable {
+        let topicID: String
+        enum CodingKeys: String, CodingKey { case topicID = "topic_id" }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        // herdr answers `topic_id`; `topic` (an id, or a topic with `topic_id`) is read too.
+        if let id = try? c.decode(String.self, forKey: .topicID) {
+            topicID = id
+        } else if let id = try? c.decode(String.self, forKey: .topic) {
+            topicID = id
+        } else {
+            topicID = try c.decode(TopicRef.self, forKey: .topic).topicID
+        }
+        alreadyAccepted = (try? c.decodeIfPresent(Bool.self, forKey: .alreadyAccepted)) ?? false
+    }
+}
+
+/// `agent.topics.dismiss_suggestion`.
+struct AgentTopicSuggestionDismissed: Decodable, Sendable {
+    let alreadyDismissed: Bool
+
+    enum CodingKeys: String, CodingKey { case alreadyDismissed = "already_dismissed" }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        alreadyDismissed = (try? c.decodeIfPresent(Bool.self, forKey: .alreadyDismissed)) ?? false
+    }
+}
+
+/// `agent.topics.organise`: the review turn started at once, or `queued` behind the agent's
+/// running turn. Its proposals arrive later as open suggestions.
+struct AgentTopicsOrganiseStarted: Decodable, Sendable {
+    let queued: Bool
+
+    enum CodingKeys: String, CodingKey { case queued }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        queued = (try? c.decodeIfPresent(Bool.self, forKey: .queued)) ?? false
+    }
+}
+
+/// `agent.topics.set_enabled`: whether the switch changed anything (false: it was already so).
+struct AgentTopicsSetEnabledResult: Decodable, Sendable {
+    let changed: Bool
+
+    enum CodingKeys: String, CodingKey { case changed }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        changed = (try? c.decodeIfPresent(Bool.self, forKey: .changed)) ?? true
+    }
+}
+
 // MARK: - Errors
 
 /// Why an `agent.topics.*` call did not do what it asked. Anything else arrives as `.other`.
@@ -251,6 +391,16 @@ public enum AgentTopicsError: Error, Equatable, Sendable {
     case topicNotFound
     /// `agent_not_found`.
     case agentNotFound
+    /// The server does not advertise `agent_topic_suggestions`: the call was never sent.
+    case suggestionsNotAdvertised
+    /// `suggestion_not_found`.
+    case suggestionNotFound
+    /// `already_accepted`: a dismiss of a suggestion someone already started a topic from.
+    case alreadyAccepted
+    /// `organise_running`: an Organise turn is already running.
+    case organiseRunning
+    /// `topics_disabled`: the agent runs without topics (its Topics switch is off).
+    case topicsDisabled
     case other(APIError)
 
     init(_ error: APIError) {
@@ -261,6 +411,10 @@ public enum AgentTopicsError: Error, Equatable, Sendable {
         case "topic_rejected": self = .rejected(error.message)
         case "topic_not_found": self = .topicNotFound
         case "agent_not_found": self = .agentNotFound
+        case "suggestion_not_found": self = .suggestionNotFound
+        case "already_accepted": self = .alreadyAccepted
+        case "organise_running": self = .organiseRunning
+        case "topics_disabled": self = .topicsDisabled
         default:
             // An older server that cannot even deserialize the method.
             if error.code == "invalid_request",
@@ -270,6 +424,32 @@ public enum AgentTopicsError: Error, Equatable, Sendable {
             } else {
                 self = .other(error)
             }
+        }
+    }
+}
+
+/// Why `agent.topics.set_enabled` did not switch. Anything else (agent.restart's own errors)
+/// arrives as `.other`.
+public enum AgentTopicsSwitchError: Error, Equatable, Sendable {
+    /// The server does not advertise `agent_topics_switch`: the call was never sent.
+    case notAdvertised
+    /// `topics_build_missing`: the server has no omp build with topics configured.
+    case buildMissing
+    /// `not_omp`: only omp agents have topics.
+    case notOmp
+    /// `guest_forbidden`: the switch is the owner's.
+    case guestForbidden
+    /// `agent_directory_unavailable`: the agent's directory is not there to restart in.
+    case directoryUnavailable
+    case other(APIError)
+
+    init(_ error: APIError) {
+        switch error.code {
+        case "topics_build_missing": self = .buildMissing
+        case "not_omp": self = .notOmp
+        case "guest_forbidden": self = .guestForbidden
+        case "agent_directory_unavailable": self = .directoryUnavailable
+        default: self = .other(error)
         }
     }
 }
@@ -394,7 +574,8 @@ extension AgentTopicsError {
     public var isPermanent: Bool {
         switch self {
         case .unsupported, .notAdvertised: return true
-        case .unreachable, .timeout, .rejected, .topicNotFound, .agentNotFound, .other: return false
+        case .unreachable, .timeout, .rejected, .topicNotFound, .agentNotFound, .suggestionsNotAdvertised,
+             .suggestionNotFound, .alreadyAccepted, .organiseRunning, .topicsDisabled, .other: return false
         }
     }
 }

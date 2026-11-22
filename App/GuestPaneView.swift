@@ -170,7 +170,13 @@ struct GuestPaneView: View {
                              agentStatus: agent?.agentStatus, ground: Palette.groundMachine,
                              onOpenTerminal: { tab = .terminal },
                              findRequest: findRequest,
-                             onFindResult: { index, total, capped in findMatches = (index, total, capped) })
+                             onFindResult: { index, total, capped in findMatches = (index, total, capped) },
+                             onOpenTopic: { topicID in
+                                 Task {
+                                     await topicsModel.open(topicID: topicID, client: client)
+                                     tab = .topics
+                                 }
+                             })
                     // Typing redraws this page; the chat skips it (`ChatView ==`).
                     .equatable()
                 }
