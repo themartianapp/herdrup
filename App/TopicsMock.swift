@@ -234,7 +234,8 @@ final class TopicsMock: @unchecked Sendable {
                 let newID = "t-sug-\(created)"
                 let now = Self.now()
                 let suggestion = suggestions[index]
-                topics.append(Topic(id: newID, title: suggestion.title, state: "running", createdMs: now, lastMs: now,
+                // While omp writes the seed summary the new topic is `starting`.
+                topics.append(Topic(id: newID, title: suggestion.title, state: "starting", createdMs: now, lastMs: now,
                                     lastActivity: suggestion.reason,
                                     messages: [(.owner, "\(suggestion.messageIDs.count) earlier messages from the Inbox.", now),
                                                (.agent, suggestion.reason, now + 1)]))
