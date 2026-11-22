@@ -840,6 +840,34 @@ final class ChatViewTests: XCTestCase {
         XCTAssertEqual(ended.label, "Cancelled")
     }
 
+    /// A form the chat cannot fill (no `ask_form`) still offers Dismiss; a refused dismiss
+    /// shows its reason on the card, not nowhere (herdrup#782).
+    func testDismissRefusedOnAReadOnlyFormShowsTheError() {
+        let app = launchForm(["HERDR_MOCK_CHAT_FORM_CAPABILITY": "0", "HERDR_MOCK_CHAT_DISMISS": "1",
+                              "HERDR_MOCK_CHAT_DISMISS_ANSWER": "forbidden"])
+        let dismiss = app.buttons["chat.ask.dismiss"]
+        XCTAssertTrue(dismiss.exists(within: 5), "a read-only form still offers Dismiss")
+        dismiss.tap()
+        let problem = app.staticTexts["chat-ask-problem"]
+        XCTAssertTrue(problem.exists(within: 8), "the refusal shows on the card")
+        XCTAssertEqual(problem.label, "Couldn't dismiss: mock refusal")
+        XCTAssertEqual(app.buttons.matching(identifier: "chat-ask-terminal").count, 1,
+                       "one Answer in Terminal, not a second from the problem")
+    }
+
+    /// The same for a guest whose form needs the Terminal.
+    func testGuestDismissRefusedOnANeedsTerminalFormShowsTheError() {
+        let app = launch("guestchat", ["HERDR_MOCK_CHAT_FORM": "3", "HERDR_MOCK_CHAT_FORM_CAPABILITY": "0",
+                                       "HERDR_MOCK_CHAT_DISMISS": "1", "HERDR_MOCK_CHAT_DISMISS_ANSWER": "forbidden"])
+        XCTAssertTrue(app.descendants(matching: .any)["chat-ask-needs-terminal"].exists(within: 12))
+        let dismiss = app.buttons["chat.ask.dismiss"]
+        XCTAssertTrue(dismiss.exists(within: 5))
+        dismiss.tap()
+        let problem = app.staticTexts["chat-ask-problem"]
+        XCTAssertTrue(problem.exists(within: 8), "the refusal shows on the card")
+        XCTAssertEqual(problem.label, "Couldn't dismiss: mock refusal")
+    }
+
     // MARK: - Guest
 
     /// A shared omp agent on a host serving guests its transcript: the Chat tab, first;

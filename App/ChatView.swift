@@ -2543,6 +2543,13 @@ struct ChatAskCard: View {
             .padding(.top, 10)
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier("chat-ask-waiting")
+            // Dismiss still shows here: its refusal must too (herdrup#782).
+            if let problem {
+                Text(problem.message).font(Typography.app(13 * textScale)).foregroundStyle(Palette.waiting)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 8)
+                    .accessibilityIdentifier("chat-ask-problem")
+            }
         } else if let problem {
             VStack(alignment: .leading, spacing: 8) {
                 Text(problem.message).font(Typography.app(13 * textScale)).foregroundStyle(Palette.waiting)
