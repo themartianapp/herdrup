@@ -177,6 +177,25 @@ final class TopicSuggestionsTests: XCTestCase {
         XCTAssertFalse(any(app, "chat-topic-suggestion-mark-sg-scroll").exists)
     }
 
+    /// omp makes an accept final only once the topic has started; a start that fails puts the
+    /// suggestion back to open. The local "Continued in topic" line must yield to the list: the
+    /// card comes back with Start and Not now.
+    func testASuggestionTheServerReopensComesBackAfterStart() {
+        let app = launch("chatview", ["HERDR_MOCK_TOPICS_SUGGEST_LIST_ONLY": "1",
+                                      "HERDR_MOCK_TOPICS_ACCEPT_REVERTS": "1"])
+        openHerdrApp(app)
+        suggestionCard("sg-scroll", in: app).buttons["chat-topic-suggestion-start"].tap()
+        let chatSwitch = app.buttons["chat-switch-chat"]
+        XCTAssertTrue(chatSwitch.exists(within: 10))
+        if !chatSwitch.isSelected { chatSwitch.tap() }
+        let card = any(app, "chat-topic-suggestion-sg-scroll")
+        XCTAssertTrue(card.exists(within: 15), "the server lists it open again: the card is back")
+        XCTAssertTrue(card.buttons["chat-topic-suggestion-start"].exists, "with Start")
+        XCTAssertTrue(card.buttons["chat-topic-suggestion-dismiss"].exists, "and Not now")
+        XCTAssertFalse(any(app, "chat-topic-continued-sg-scroll").exists, "no stale Continued line")
+        shot(app, "topic-suggestion-reopened")
+    }
+
     // MARK: Organise
 
     /// Organise in the Topics bar: the proposals appear in the list, ticked, above the topics.

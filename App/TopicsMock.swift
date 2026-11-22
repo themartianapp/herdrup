@@ -41,6 +41,10 @@ final class TopicsMock: @unchecked Sendable {
     /// `HERDR_MOCK_TOPICS_SUGGEST_LIST_ONLY=1`: open suggestions are in `agent.topics.list` but
     /// not yet in the Inbox's transcript, as while the Inbox's turn is still running.
     static let listOnly = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_SUGGEST_LIST_ONLY"] != nil
+    /// `HERDR_MOCK_TOPICS_ACCEPT_REVERTS=1`: `accept_suggestion` answers accepted, but the topic
+    /// never starts, so the suggestion stays open in the list (and transcript), as omp puts it
+    /// back when a seeded topic's start fails.
+    static let acceptReverts = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_ACCEPT_REVERTS"] != nil
 
     private struct Suggestion {
         let id: String
@@ -228,6 +232,11 @@ final class TopicsMock: @unchecked Sendable {
                     return ChatMockConversation.encode(id: id, result: [
                         "type": "agent_topic_suggestion_accepted", "agent": agent, "pane_id": paneID,
                         "suggestion_id": suggestionID, "topic_id": topicID, "already_accepted": true])
+                }
+                if Self.acceptReverts {
+                    return ChatMockConversation.encode(id: id, result: [
+                        "type": "agent_topic_suggestion_accepted", "agent": agent, "pane_id": paneID,
+                        "suggestion_id": suggestionID, "topic_id": "t-failed", "already_accepted": false])
                 }
                 // The topic starts with the messages the agent picked (copied, as omp seeds it).
                 created += 1

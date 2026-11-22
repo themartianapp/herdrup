@@ -180,8 +180,13 @@ struct GuestPaneView: View {
                     // Typing redraws this page; the chat skips it (`ChatView ==`).
                     .equatable()
                     // Open suggestions show in the chat from the list, before the transcript has them.
-                    .onChange(of: topicsModel.suggestions, initial: true) { _, open in
-                        chatModel.setListedSuggestions(open)
+                    // Every list answer reaches the chat: the server's state wins over a local line.
+                    .onAppear {
+                        let chat = chatModel
+                        topicsModel.onListed = { open, requestedAt in
+                            chat.setListedSuggestions(open, requestedAt: requestedAt)
+                        }
+                        chat.setListedSuggestions(topicsModel.suggestions, requestedAt: .distantPast)
                     }
                     .task(id: topicsModel.suggestionsServed && availability == .running) {
                         guard topicsModel.suggestionsServed, availability == .running else { return }

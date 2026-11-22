@@ -155,8 +155,14 @@ final class TopicsModel: ObservableObject {
     /// Why the newest list call failed, for discovery; nil after one succeeds.
     private var lastListError: Error?
 
+    /// Every list answer's open suggestions, with when it was asked for (the page's Inbox
+    /// chat). Called for each answer, changed or not, so a suggestion that went back to open
+    /// after a Start is seen even when the list looks the same as before.
+    var onListed: (@MainActor ([AgentTopicSuggestion], Date) -> Void)?
+
     private func refreshOnce(client: HerdrClient) async {
         do {
+            let requestedAt = Date()
             let list = try await client.agentTopicsList(target: target)
             let ordered = list.ordered
             if ordered != topics { topics = ordered }
@@ -171,6 +177,7 @@ final class TopicsModel: ObservableObject {
                 suggestions = open
                 unticked.formIntersection(open.map(\.id))
             }
+            onListed?(open, requestedAt)
             let served = list.suggestions != nil ? await client.advertisesTopicSuggestions() : false
             if suggestionsServed != served { suggestionsServed = served }
             if !offered { offered = true }

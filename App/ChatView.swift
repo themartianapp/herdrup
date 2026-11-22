@@ -464,10 +464,21 @@ final class ChatModel: ObservableObject {
     /// the Inbox's turn ends and then replaces it (same id).
     private var listedSuggestions: [AgentTopicSuggestion] = []
 
-    func setListedSuggestions(_ suggestions: [AgentTopicSuggestion]) {
-        guard answersQuestions, suggestions != listedSuggestions else { return }
+    /// One `agent.topics.list` answer, asked for at `requestedAt`. A list asked for after this
+    /// reader's Start or Not now went through is the server's word: a suggestion it lists open
+    /// is open again (an accepted topic that failed to start goes back to open), and the local
+    /// line yields to the card.
+    func setListedSuggestions(_ suggestions: [AgentTopicSuggestion], requestedAt: Date) {
+        guard answersQuestions else { return }
+        var changed = suggestions != listedSuggestions
         listedSuggestions = suggestions
-        rebuildRows()
+        for suggestion in suggestions {
+            guard let at = settledAt[suggestion.id], at < requestedAt else { continue }
+            settledSuggestions[suggestion.id] = nil
+            settledAt[suggestion.id] = nil
+            changed = true
+        }
+        if changed { rebuildRows() }
     }
 
     private func rebuildRows() {
@@ -478,6 +489,8 @@ final class ChatModel: ObservableObject {
     /// Suggestions this reader started or set aside, by id, shown compactly at once; the
     /// transcript's entry (same id) replaces each when it arrives.
     private var settledSuggestions: [String: TranscriptTopicSuggestion] = [:]
+    /// When each local line was recorded: after its call returned.
+    private var settledAt: [String: Date] = [:]
 
     private func settleLocally(_ id: String, state: TopicSuggestionState, topicID: String?) {
         let known = listedSuggestions.first { $0.id == id }.map {
@@ -490,8 +503,8 @@ final class ChatModel: ObservableObject {
         settledSuggestions[id] = TranscriptTopicSuggestion(title: known.title, reason: known.reason,
                                                            messageIDs: known.messageIDs, state: state,
                                                            topicID: topicID, by: "owner")
+        settledAt[id] = Date()
         rebuildRows()
-        rowIndex = Dictionary(rows.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
     /// Republishes the store. Each value is assigned only when it changed: an equal

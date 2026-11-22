@@ -6223,8 +6223,14 @@ struct TerminalPaneContent: View {
                         .equatable()
                         // An open suggestion shows in the Inbox as soon as the list (or its
                         // `agent.topics.changed`) has it, before the transcript entry lands.
-                        .onChange(of: topicsModel.suggestions, initial: true) { _, open in
-                            chatModel.setListedSuggestions(open)
+                        // Every list answer reaches the chat, so the server's state for a
+                        // suggestion always wins over a local Start / Not now line.
+                        .onAppear {
+                            let chat = chatModel
+                            topicsModel.onListed = { open, requestedAt in
+                                chat.setListedSuggestions(open, requestedAt: requestedAt)
+                            }
+                            chat.setListedSuggestions(topicsModel.suggestions, requestedAt: .distantPast)
                         }
                         .task(id: topicsModel.suggestionsServed) {
                             guard topicsModel.suggestionsServed else { return }
