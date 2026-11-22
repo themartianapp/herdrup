@@ -78,6 +78,16 @@ final class TopicsModel: ObservableObject {
         return TopicsDiscoveryBackoff.delays
     }
 
+    /// DEBUG: the UI tests' `HERDR_MOCK_TOPICS_POLL_SECONDS` shortens the list poll (the mocks
+    /// have no topics event stream), so a list change lands inside a test.
+    static var mockPollSeconds: UInt64? {
+        #if DEBUG
+        return ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_POLL_SECONDS"].flatMap(UInt64.init)
+        #else
+        return nil
+        #endif
+    }
+
     init(target: String) {
         self.target = target
     }
@@ -219,7 +229,7 @@ final class TopicsModel: ObservableObject {
 
     private func poll(client: HerdrClient) async {
         while !Task.isCancelled {
-            let seconds = eventsLive ? Self.backstopSeconds : Self.pollSeconds
+            let seconds = Self.mockPollSeconds ?? (eventsLive ? Self.backstopSeconds : Self.pollSeconds)
             try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
             guard !Task.isCancelled else { return }
             await refresh(client: client)
@@ -396,10 +406,15 @@ final class TopicsModel: ObservableObject {
     }
 
     /// Opens a topic by id (a suggestion's Start, its "Continued in topic" line): the list is
-    /// brought up to date first, so a topic that just started is there to open.
-    func open(topicID: String, client: HerdrClient) async {
+    /// brought up to date first, so a topic that just started is there to open. False when the
+    /// list does not have it (a start that failed puts the suggestion back to open): the caller
+    /// stays where it is.
+    @discardableResult
+    func open(topicID: String, client: HerdrClient) async -> Bool {
         if topic(topicID) == nil { await refresh(client: client) }
+        guard topic(topicID) != nil else { return false }
         selectedTopicID = topicID
+        return true
     }
 
     static func describe(_ error: Error) -> String {

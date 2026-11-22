@@ -178,22 +178,41 @@ final class TopicSuggestionsTests: XCTestCase {
     }
 
     /// omp makes an accept final only once the topic has started; a start that fails puts the
-    /// suggestion back to open. The local "Continued in topic" line must yield to the list: the
-    /// card comes back with Start and Not now.
+    /// suggestion back to open. The reader stays on the Inbox chat (there is no topic to open),
+    /// and the local "Continued in topic" line yields to the list: the mounted chat redraws the
+    /// card with Start and Not now (herdrup#790).
     func testASuggestionTheServerReopensComesBackAfterStart() {
         let app = launch("chatview", ["HERDR_MOCK_TOPICS_SUGGEST_LIST_ONLY": "1",
-                                      "HERDR_MOCK_TOPICS_ACCEPT_REVERTS": "1"])
+                                      "HERDR_MOCK_TOPICS_ACCEPT_REVERTS": "1",
+                                      "HERDR_MOCK_TOPICS_POLL_SECONDS": "2"])
         openHerdrApp(app)
         suggestionCard("sg-scroll", in: app).buttons["chat-topic-suggestion-start"].tap()
-        let chatSwitch = app.buttons["chat-switch-chat"]
-        XCTAssertTrue(chatSwitch.exists(within: 10))
-        if !chatSwitch.isSelected { chatSwitch.tap() }
         let card = any(app, "chat-topic-suggestion-sg-scroll")
-        XCTAssertTrue(card.exists(within: 15), "the server lists it open again: the card is back")
-        XCTAssertTrue(card.buttons["chat-topic-suggestion-start"].exists, "with Start")
-        XCTAssertTrue(card.buttons["chat-topic-suggestion-dismiss"].exists, "and Not now")
-        XCTAssertFalse(any(app, "chat-topic-continued-sg-scroll").exists, "no stale Continued line")
+        XCTAssertTrue(poll(15, every: 0.3) {
+            card.exists && card.buttons["chat-topic-suggestion-start"].exists
+                && !any(app, "chat-topic-continued-sg-scroll").exists
+        }, "the server lists it open again: the card is back on the chat that stayed open")
+        XCTAssertTrue(card.buttons["chat-topic-suggestion-dismiss"].exists, "with Not now")
+        XCTAssertFalse(app.staticTexts["topic-chat-title"].exists, "no topic opened")
+        XCTAssertFalse(any(app, "topics-view").exists, "the reader never left the Inbox chat")
         shot(app, "topic-suggestion-reopened")
+    }
+
+    /// herdrup#790: a suggestion that arrives only through the topics list, while the Inbox chat
+    /// stays open, draws its card without the reader leaving or touching the chat.
+    func testAListOnlySuggestionAppearsOnAnOpenInboxChat() {
+        let app = launch("chatview", ["HERDR_MOCK_TOPICS_SUGGEST_LIST_ONLY": "1",
+                                      "HERDR_MOCK_TOPICS_SUGGEST_AFTER": "8",
+                                      "HERDR_MOCK_TOPICS_POLL_SECONDS": "2"])
+        openHerdrApp(app)
+        XCTAssertTrue(app.descendants(matching: .any)["chat-reply"].firstMatch.exists(within: 12),
+                      "the Inbox chat is open")
+        let card = any(app, "chat-topic-suggestion-sg-scroll")
+        XCTAssertFalse(card.exists, "no suggestion yet")
+        XCTAssertTrue(card.exists(within: 25), "the list's new suggestion is drawn on the open chat")
+        XCTAssertTrue(any(app, "chat-topic-suggestion-count").label.contains("12 earlier messages come along"))
+        XCTAssertFalse(any(app, "topics-view").exists, "the reader never left the Inbox chat")
+        shot(app, "topic-suggestion-arrives-on-open-chat")
     }
 
     // MARK: Organise

@@ -6214,8 +6214,9 @@ struct TerminalPaneContent: View {
                                  onFindResult: { index, total, capped in findMatches = (index, total, capped) },
                                  onOpenTopic: { topicID in
                                      Task {
-                                         await topicsModel.open(topicID: topicID, client: client)
-                                         setMode(.topics)
+                                         if await topicsModel.open(topicID: topicID, client: client) {
+                                             setMode(.topics)
+                                         }
                                      }
                                  })
                         // A composer keystroke redraws this page; the chat skips it
