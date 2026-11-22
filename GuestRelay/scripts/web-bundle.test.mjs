@@ -1,14 +1,16 @@
 // node --test: the bundle check passes on public/web as committed, and fails on each way a
-// copy can drift from its manifest. Runs in Node, not workerd: it reads the file tree.
+// copy can drift from its manifest; public/_headers allows exactly the relays in relays.json.
+// Runs in Node, not workerd: it reads the file tree.
 import assert from "node:assert/strict";
 import { appendFileSync, cpSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { checkWebBundle } from "./web-bundle.mjs";
+import { checkRelayHeaders, checkWebBundle, relaySources, withRelaySources } from "./web-bundle.mjs";
 
 const WEB = fileURLToPath(new URL("../public/web", import.meta.url));
+const HEADERS = fileURLToPath(new URL("../public/_headers", import.meta.url));
 let copy;
 
 beforeEach(() => {
@@ -46,4 +48,70 @@ test("a manifest without a clean source commit fails the check", () => {
   assert.deepEqual(checkWebBundle(copy), ["manifest.json: built from a dirty tree"]);
   writeFileSync(join(copy, "manifest.json"), JSON.stringify({ ...manifest, sourceCommit: "main" }));
   assert.deepEqual(checkWebBundle(copy), ["manifest.json: sourceCommit is not a commit SHA"]);
+});
+
+test("public/_headers allows exactly the relays in relays.json", () => {
+  assert.deepEqual(checkRelayHeaders(WEB, HEADERS), []);
+});
+
+test("a relay added to relays.json fails the check until _headers is rewritten", () => {
+  const relays = JSON.parse(readFileSync(join(copy, "relays.json"), "utf8"));
+  writeFileSync(join(copy, "relays.json"), JSON.stringify([...relays, "https://relay.example.com"]));
+  assert.deepEqual(checkRelayHeaders(copy, HEADERS), [
+    "_headers: the /web/* connect-src wss:// sources differ from relays.json (run with --write-headers)",
+  ]);
+
+  const headers = join(copy, "_headers");
+  writeFileSync(headers, withRelaySources(readFileSync(HEADERS, "utf8"), relaySources(copy)));
+  assert.deepEqual(checkRelayHeaders(copy, headers), []);
+  const lines = readFileSync(headers, "utf8").split("\n");
+  const policy = lines.slice(lines.indexOf("/web/*")).find((line) => line.includes("connect-src"));
+  const connect = policy.split(";").find((directive) => directive.trim().startsWith("connect-src"));
+  assert.deepEqual(connect.trim().split(" "), [
+    "connect-src",
+    "'self'",
+    ...relays.map((relay) => relay.replace("https://", "wss://")),
+    "wss://relay.example.com",
+    "https://accounts.herdrup.app",
+  ]);
+});
+
+test("a relay removed from relays.json leaves _headers allowing it, which fails the check", () => {
+  const relays = JSON.parse(readFileSync(join(copy, "relays.json"), "utf8"));
+  writeFileSync(join(copy, "relays.json"), JSON.stringify(relays.slice(0, 1)));
+  assert.equal(checkRelayHeaders(copy, HEADERS).length, 1);
+});
+
+test("relays.json must list https origins of one exact host only", () => {
+  const bad = [
+    [],
+    ["wss://guest.herdrup.app"],
+    ["https://guest.herdrup.app/"],
+    ["https://guest.herdrup.app/x"],
+    [7],
+    ["https://*"],
+    ["https://*.evil.example"],
+    ["https://*:8443"],
+    ["https://guest.herdrup.app:8443"],
+    ["https://192.0.2.1"],
+    ["https://[::1]"],
+    ["https://localhost"],
+  ];
+  for (const relays of bad) {
+    writeFileSync(join(copy, "relays.json"), JSON.stringify(relays));
+    assert.throws(() => relaySources(copy), /^Error: relays\.json: /, JSON.stringify(relays));
+  }
+});
+
+test("a wss source in any case outside relays.json fails the check and is removed on rewrite", () => {
+  const headers = readFileSync(HEADERS, "utf8").replace(
+    "wss://guest.herdrup.themartian.app",
+    "wss://guest.herdrup.themartian.app WSS://evil.example",
+  );
+  const path = join(copy, "_headers");
+  writeFileSync(path, headers);
+  assert.equal(checkRelayHeaders(WEB, path).length, 1);
+  const rewritten = withRelaySources(headers, relaySources(WEB));
+  assert.ok(!/evil\.example/i.test(rewritten));
+  assert.equal(rewritten, readFileSync(HEADERS, "utf8"));
 });
