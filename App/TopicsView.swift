@@ -445,6 +445,7 @@ private struct TopicsList: View {
     @State private var search = ""
     @FocusState private var searchFocused: Bool
     @State private var composing = false
+    @State private var showingAbout = false
     @State private var renaming: AgentTopic?
     @State private var renameTitle = ""
     @State private var actionNote: String?
@@ -498,7 +499,10 @@ private struct TopicsList: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                Text("Topics").font(Typography.app(17, .semibold)).foregroundStyle(Palette.text)
+                HStack(spacing: 6) {
+                    Text("Topics").font(Typography.app(17, .semibold)).foregroundStyle(Palette.text)
+                    aboutButton
+                }
                 Spacer(minLength: 0)
                 Button { composing = true } label: {
                     HStack(spacing: 6) {
@@ -656,6 +660,77 @@ private struct TopicsList: View {
                 }
             }
         }
+    }
+}
+
+extension TopicsList {
+    /// The "i" after the heading: what topics are. A bottom sheet on iPhone, a popover
+    /// pointing at it on iPad. 44 pt to tap, laid out at the icon's size.
+    private var aboutButton: some View {
+        Button { showingAbout = true } label: {
+            Image(systemName: "info.circle").font(.system(size: 17))
+                .foregroundStyle(Palette.textDim)
+                .frame(width: 44, height: 44, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.vertical, -5)
+        .accessibilityLabel("About topics")
+        .accessibilityIdentifier("topics.about")
+        .popover(isPresented: $showingAbout, arrowEdge: .top) {
+            AboutTopicsView()
+                .frame(idealWidth: 380, idealHeight: 560)
+                .presentationCompactAdaptation(.sheet)
+                .presentationDetents([.medium, .large])
+        }
+    }
+}
+
+/// "About topics": what a topic is, the Inbox, starting, parallel work and closing.
+private struct AboutTopicsView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    /// Heading, then its text.
+    private static let sections: [[String]] = [
+        ["One subject each",
+         "Topics are separate conversations with the same agent, one per subject (for example \"Q4 board pack\"). Each keeps its own history, so subjects don't mix."],
+        ["The Inbox",
+         "The Inbox is the agent's main conversation. Messages from outside (other agents, Gram, reviews) arrive there. Replies to something a topic started go back to that topic."],
+        ["Starting a topic",
+         "Tap New topic and give it a title and a first message. Topics are not created automatically. The short summary under each topic is written automatically after each reply."],
+        ["Working in parallel",
+         "Several topics can work at the same time. A topic can look at another topic's conversation, and the Inbox knows what every topic is doing."],
+        ["Closing",
+         "Closing a topic keeps everything: it writes a closing note, and you can reopen it later. Nothing is deleted."],
+    ]
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    ForEach(Self.sections, id: \.self) { section in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(section[0]).font(Typography.app(15, .semibold)).foregroundStyle(Palette.text)
+                            Text(section[1]).font(Typography.app(14)).foregroundStyle(Palette.textDim)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .background(Palette.ground.ignoresSafeArea())
+            .navigationTitle("About topics")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                        .accessibilityIdentifier("topics-about-done")
+                }
+            }
+        }
+        .accessibilityIdentifier("topics-about-sheet")
     }
 }
 
