@@ -1327,8 +1327,8 @@ struct ChatView: View {
             answering: askID != nil && model.answeringAskID == askID,
             problem: askID != nil && model.answerProblem?.askID == askID ? model.answerProblem : nil,
             answersRefused: model.answersRefused,
-            formsSupported: model.formsSupported, formDraft: formDraft,
             suggestionBusy: suggestionBusy, suggestionProblem: suggestionProblem,
+            formsSupported: model.formsSupported, formDraft: formDraft,
             hits: hits, query: hits.isEmpty ? "" : searchKey.query,
             selectedHitID: hits.isEmpty ? nil : selectedSearchHit,
             actions: actions)
