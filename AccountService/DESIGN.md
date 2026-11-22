@@ -1032,12 +1032,13 @@ relay.ts and crash.ts.
 | `SYNC_WRITE_LIMIT` (6984) | account id | 30 / 60 s | `POST /v1/sync` |
 | `ENROL_LIMIT` (6985) | account id | 10 / 60 s | Challenge and enrol |
 | `DELETE_IP_LIMIT` (6986) | IP | 5 / 60 s | Delete, Apple notifications |
+| `APPROVAL_LIMIT` (6987) | account id | 30 / 60 s | Every browser-approval route (§12) |
 
 Fixed caps:
 
 - 20 devices and 1 MB / 2,000 sync items per account; host cap of 10 devices per share.
 - Body caps through `readCapped`: auth 8 KB, enrol 2 KB, statements 4 KB, sync 256 KB,
-  Apple notification 8 KB.
+  Apple notification 8 KB, approval steps 4 KB, approval finish and envelopes 24 KB.
 - New accounts can't come from nowhere: each needs a fresh provider-signed token, and
   `AUTH_IP_LIMIT` bounds the rate.
 
@@ -1053,7 +1054,8 @@ Logging copies the relay's rule:
 ship separately from the Worker, so an app offers a feature only when the live Worker lists it.
 The names are a stable contract:
 
-- `native_sign_in`, `devices`, `statements`, `sync` and `delete` are always listed.
+- `native_sign_in`, `devices`, `statements`, `sync`, `delete` and `web_approve` (browser
+  approval, §12) are always listed.
 - `native_sign_in_google` is listed when `GOOGLE_IOS_CLIENT_ID` is set. It tells the iOS app it
   may offer native Google sign-in (ASWebAuthenticationSession with PKCE against the iOS client,
   then `POST /v1/auth/google`), which needs no client secret. `web_sign_in_google` doesn't cover
@@ -1231,3 +1233,132 @@ recommended defaults he accepted.
 10. **D1 location:** EU jurisdiction (`--jurisdiction eu`), fixed at creation.
 11. **Host-key pins:** not synced; they stay device-local trust on first use.
 12. **Services ID identifier:** `com.jerryfane.herdr.signin`.
+
+---
+
+## 12. Browser approval for owner access (approve-v1, 22 Nov)
+
+Built from the web owner access wire plan (`herdrup-accounts-mockups/web-owner/WIRE-PLAN.md`
+§2, approved 22 Nov, with the owner's decisions and clarifications at its end). This is step A1:
+the account service's side. Code: `src/approvals.ts`, migration `0006_browser_access.sql`.
+
+### 12.1 What the service is, and isn't
+
+A browser (a device with platform `web`, enrolled with `POST /v1/devices` as before) asks one of
+the account's other devices, the approver, to let it reach the owner's machines. The approver
+writes a grant on each machine over SSH (`owner_access.add` in herdr). The service is a
+**mailbox and a display cache, never authority**: it can't create or widen a grant, and the
+state Devices shows (`waiting` / `approved` / `expired`) is only what the approver reported.
+Machines bind each grant to the browser's Noise key **and** a fresh statement for the account,
+so removing the browser from Devices ends its access on every online machine within about 11
+minutes (§12.4).
+
+### 12.2 Commit, then reveal
+
+B is the browser's X25519 device key, T the approver's. Byte strings are fixed-length; labels
+are ASCII followed by `0x00`; every binary field on the wire is **unpadded base64url** (a
+32-byte value is exactly 43 characters, canonical).
+
+```
+commit = SHA-256("herdrup-approve-v1|commit" ‖ 0x00 ‖ B ‖ nonce_b)
+h      = SHA-256("herdrup-approve-v1|sas"    ‖ 0x00 ‖ B ‖ T ‖ nonce_b ‖ nonce_t)
+code   = uint32_be(h[0..4]) mod 10000, 4 digits, zero-padded
+```
+
+1. B makes `nonce_b` and posts `commit` (`POST /v1/approvals`). It shows no code yet.
+2. T lists requests (`GET /v1/approvals`), makes `nonce_t` and claims one
+   (`POST /v1/approvals/<id>/claim`). The service records T from the session's device row,
+   never from the body.
+3. B reads T's key and `nonce_t` (`GET /v1/approvals/<id>`), then reveals `nonce_b`
+   (`…/reveal`). The service checks it opens the commit; a mismatch is `400 reveal_mismatch` and
+   ends the request (`denied`). B shows the code.
+4. T reads `nonce_b` (only the claimant gets it), checks the commit itself, and computes the code.
+5. The user **types** the browser's 4 digits on T (owner decision 3, 22 Nov). T approves only on
+   a match and finishes (`…/finish`) with the scope and expiry it granted and the sealed machine
+   list (§12.3), or denies.
+
+Neither side can steer the code after it sees the other's randomness, so a service that swaps B
+or T makes the two codes match with probability 10⁻⁴ per attempt, and each attempt needs a
+person to type a code. What the service enforces for that argument:
+
+- each step runs once, in order (claim → reveal → finish), guarded in the updating statement:
+  a second claim is `409 already_claimed`, a second reveal `409 already_revealed`, a second
+  finish `409 already_finished`; a reveal before the claim is `409 not_claimed`; approval before
+  the reveal is `409 not_revealed`;
+- only the claimant finishes; a browser sees only its own request; another account's devices
+  see nothing (`404`);
+- a browser can't claim (`403 not_an_approver`) and an approver can't ask (`403 not_a_browser`);
+- a request lives 10 minutes (`410 expired` after), and a new request replaces the browser's
+  live one (one per browser);
+- `APPROVAL_LIMIT` (30 / 60 s per account, every route, on top of `ACCOUNT_LIMIT`) and at most
+  10 requests per account per hour (`429 too_many_requests`), counted in fixed hour windows per
+  browser and summed over the account in the inserting statement.
+
+The finished request stays readable for 10 minutes (`approved` or `denied`), so both sides
+learn the outcome. The row is kept until its hour window ends, so the cap still counts it; the
+hourly cron deletes it after both.
+
+### 12.3 The sealed machine list
+
+```
+ikm    = X25519(t, B) = X25519(b, T)          (abort if all zero)
+k      = HKDF-SHA256(ikm, salt = B ‖ T, info = "herdrup-approve-v1|envelope", 32)
+aad    = "herdrup-approve-v1|envelope" ‖ 0x00 ‖ B ‖ T ‖ uint64_be(seq)
+sealed = b64url(iv(12) ‖ AES-256-GCM(k, iv, aad, json))
+```
+
+The service stores `sealed` as sent (at most 16 KB, at least iv and tag) in `browser_envelopes`,
+one per (browser, approver key), at most 20 per browser, and returns it only to that browser
+(`GET /v1/browsers/self`). `seq` only grows per approver (`409 stale_seq`). Renewals and machine
+changes come with `PUT /v1/browsers/<id>/envelope` from an approver whose envelope the browser
+already holds (`403 not_approver` otherwise: another device runs the code flow first).
+
+Each write of a report is one D1 batch (one transaction), and the access Devices shows moves
+only with the envelope. For `finish`, the batch is the single-use gate on the request, the
+envelope, the access, the request's `approved` mark and the withdrawal's removal. Each
+statement after the gate runs only when the one before it changed a row (`changes() = 1`). A
+failure anywhere leaves the request `revealed`, so the approver can retry. A report that loses
+the seq race changes nothing, the shown access included.
+
+`test/vectors/approve-v1.json` is herdrup-desktop's vector (`internal/account/testdata/approve-v1-local.json`
+on its `accounts/web-approve` branch, from the RFC 7748 §6.1 keys). `test/approvals.test.ts`
+regenerates it in TypeScript from the same inputs and asserts the file byte for byte (commit
+`lX5iWjsh…`, code `7218`, an envelope sealed at seq 7).
+
+### 12.4 Removal and withdrawals
+
+Device removal is unchanged (owner decision 5, 22 Nov): any signed-in device, browsers
+included, removes any device. Removing a browser deletes its sessions, request, access and
+envelopes (`ON DELETE CASCADE`).
+
+The first claim of a browser's request marks its device row (`devices.approval_claimed_ms`),
+in the claim's own batch: from then on its approver may have written grants for the key. The
+mark is independent of the request row. A replacement request (which clears the claim) doesn't
+clear it, and neither does removing the approver (which deletes the request). When a marked
+browser is removed, the same batch records a **withdrawal** of its key for 35 days, longer than
+any grant, with herdr's fingerprint (`SHA256:xxxx·xxxx·xxxx·xxxx`).
+
+**One spelling per key.** Enrolment accepts a device key only in canonical unpadded base64url:
+43 characters whose re-encoding is the input (`400 bad_request` otherwise). Each 32-byte key
+has four base64url spellings (the last character's two unused bits). Without this, a removed
+browser could enrol its withdrawn key again under another spelling and get statements. Every
+stored key (`devices`, and from them `withdrawals` and `browser_envelopes`) is therefore
+canonical, so comparing the strings compares the keys.
+
+- Approvers read `GET /v1/withdrawals` and remove the key's grants from their machines.
+- **No statement is issued for a withdrawn key on the account** (`403 device_withdrawn`),
+  even after the browser signs in and enrols the same key again (a stolen browser profile may
+  hold a live Google or Apple login). A removed device already gets none (`403 device_removed`).
+  Statements are what the machines check, so this is what ends access everywhere.
+- An approval by code of that key, on the device it enrolled again, clears the withdrawal.
+
+### 12.5 Data
+
+| Table | Holds |
+|---|---|
+| `approval_requests` | one row per browser: commit, approver, nonces, outcome, expiry, the hour window's count |
+| `browser_access` | the latest scope and expiry an approver reported |
+| `browser_envelopes` | the sealed envelopes, opaque |
+| `withdrawals` | removed browsers' keys and fingerprints, 35 days |
+
+All four carry `account_id` and are in `ACCOUNT_TABLES`, so account deletion sweeps them.

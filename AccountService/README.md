@@ -30,12 +30,21 @@ own deploys, so a bug or rollback here can't drop a guest session.
 | `POST /v1/apple/notifications` | `{payload: <Apple's JWS>}` | 204 |
 | `POST /v1/devices/challenge` | bearer | `{challenge_id, server_pub, salt, account_id, expires_in}`: 60 s, one use |
 | `POST /v1/devices` | bearer; `{challenge_id, device_pub, mac, name, platform}` | 201 `{device}` (200 when the key is already the account's) |
-| `GET /v1/devices` | bearer | `{devices: [{id, name, platform, device_pub, created_ms, current}]}` |
+| `GET /v1/devices` | bearer | `{devices: [{id, name, platform, device_pub, created_ms, current, access?}]}`; a browser's `access` is `{state: "waiting"\|"approved"\|"expired", scope?, expires_ms?}` |
 | `PATCH /v1/devices/<id>` | bearer; `{name}` | `{device}` |
-| `DELETE /v1/devices/<id>` | bearer | 204; that device's sessions end |
+| `DELETE /v1/devices/<id>` | bearer | 204; that device's sessions end. Any device of the account may remove any other. A browser that had owner access leaves a withdrawal |
 | `POST /v1/statements` | bearer; `{hosts: [host_id, … ≤ 50]}` | `{statements: [{host, jws}], exp}` |
 | `GET /v1/sync?since=<rev>`, `GET /v1/sync?cursor=<cursor>` | bearer | `{rev, changes: [item, … ≤ 500], more, cursor?}`; `410 reset_required` |
 | `POST /v1/sync` | bearer; `{changes: [{collection, id, base_rev?, deleted?, body?}, … ≤ 100]}` | `{rev, applied: [{collection, id, rev}], conflicts: [{collection, id, server}]}` |
+| `POST /v1/approvals` | bearer, browser; `{commit}` | 201 `{id, expires_in: 600}`; replaces the browser's request; `403 not_a_browser`, `429 too_many_requests` |
+| `GET /v1/approvals` | bearer, approver | `{requests: [{id, browser: {device_id, device_pub, name, platform, created_ms}, commit, claimed: "no"\|"you"\|"other", expires_in}]}` |
+| `POST /v1/approvals/<id>/claim` | bearer, approver; `{nonce_t}` | `{state: "claimed"}`; `409 already_claimed` |
+| `GET /v1/approvals/<id>` | bearer, the browser or an approver | `{state: "waiting"\|"claimed"\|"revealed"\|"denied"\|"approved"\|"expired", expires_in, approver?: {device_pub, name}, nonce_t?, nonce_b?}` |
+| `POST /v1/approvals/<id>/reveal` | bearer, the browser that asked; `{nonce_b}` | `{state: "revealed"}`; `409 not_claimed`, `400 reveal_mismatch` (the request ends) |
+| `POST /v1/approvals/<id>/finish` | bearer, the claimant; `{outcome: "approved", scope, expires_ms, seq, sealed}` or `{outcome: "denied"}` | `{state}`; `409 not_revealed`, `409 stale_seq` |
+| `PUT /v1/browsers/<device_id>/envelope` | bearer, an approver the browser verified; `{scope, expires_ms, seq, sealed}` | `{seq}`; `403 not_approver`, `409 stale_seq` |
+| `GET /v1/browsers/self` | bearer, browser | `{access?: {state, scope?, expires_ms?}, envelopes: [{approver_pub, seq, sealed}]}` |
+| `GET /v1/withdrawals` | bearer, approver | `{withdrawals: [{device_pub, fingerprint, created_ms}]}` |
 | `GET /.well-known/jwks.json` | | `{keys, revoked_kids}`, `Cache-Control: public, max-age=3600` |
 
 `platform` is one of `ios`, `ipados`, `macos`, `windows`, `linux`, `web`. Errors are
@@ -47,7 +56,7 @@ something else.
 
 | Feature | Listed when |
 |---|---|
-| `native_sign_in`, `devices`, `statements`, `sync`, `delete` | always (this build) |
+| `native_sign_in`, `devices`, `statements`, `sync`, `delete`, `web_approve` | always (this build); `web_approve` is the browser approval (approve-v1) |
 | `native_sign_in_google` | `GOOGLE_IOS_CLIENT_ID` is set: the iOS app may offer its own Google sign-in (ASWebAuthenticationSession + PKCE against the iOS client), which needs no secret |
 | `web_sign_in_apple` | `APPLE_WEB_CLIENT_ID` is set |
 | `web_sign_in_google` | `GOOGLE_WEB_CLIENT_ID` and `GOOGLE_WEB_CLIENT_SECRET` are both set |
@@ -98,8 +107,10 @@ dropped unread. Then:
   that cookie; the refresh token itself never reaches the page. The cookie counts only on
   requests with `Origin: https://guest.herdrup.app`.
 
-CORS allows exactly that origin, with credentials, on the endpoints the page calls: health,
-refresh, signout, account, devices, statements, sync. It never allows `*`. Without
+CORS allows exactly that origin, with credentials, on the calls the page makes (by route and
+method): health, refresh, signout, account, devices, statements, sync, and the browser's side of
+approval (`POST /v1/approvals`, `GET /v1/approvals/<id>`, `…/reveal`, `GET /v1/browsers/self`;
+not the approver's list, claim, finish, envelope or withdrawals). It never allows `*`. Without
 `GOOGLE_WEB_CLIENT_SECRET`, the Google web flow answers `503 provider_not_configured`, and
 Apple's still works.
 
@@ -113,7 +124,9 @@ mk  = HKDF-SHA256(ikm = k, salt, info = "herdrup account enrol v1", 32 bytes)
 mac = HMAC-SHA256(mk, "herdrup-enrol-v1|" + account_id + "|" + device_pub + "|" + challenge_id)
 ```
 
-All values are unpadded base64url. `test/vectors/enrol-v1.json` pins this for the app, desktop
+All values are unpadded base64url, and `device_pub` must be canonical (43 characters whose
+re-encoding is the input; any other spelling of the same 32 bytes is `400 bad_request`), so a key
+has one spelling everywhere. `test/vectors/enrol-v1.json` pins this for the app, desktop
 and web clients. A session enrols one device, once, so a stolen access token can't bind the
 thief's key; a key belongs to one account at a time (`409 device_in_other_account`); an account
 has at most 20 devices (`403 too_many_devices`). Removing a device ends the sessions bound to it.
@@ -127,6 +140,44 @@ account id and host id), so hosts can't tell they share a guest; host ids are ne
 `/.well-known/jwks.json`, check `aud` against their own host id, `dev` against the Noise key and
 the times with 60 s skew. `test/vectors/statement-v1.json` holds golden statements for herdr's
 tests. A removed device gets no new statements, so its access ends within 10 minutes.
+
+**Browser approval** (protocol `approve-v1`; DESIGN.md §12). A browser (a device with platform
+`web`) asks one of the account's other devices, the approver, to let it reach the owner's
+machines. Each side commits before it learns the other's randomness, and both compute a 4-digit
+code over both keys, which the user types on the approver:
+
+```
+commit = SHA-256("herdrup-approve-v1|commit" ‖ 0x00 ‖ B ‖ nonce_b)
+h      = SHA-256("herdrup-approve-v1|sas"    ‖ 0x00 ‖ B ‖ T ‖ nonce_b ‖ nonce_t)
+code   = uint32_be(h[0..4]) mod 10000, 4 digits, zero-padded
+```
+
+1. The browser posts `commit` (no code shown yet).
+2. The approver claims the request with `nonce_t`; the service records the approver from the
+   session's device, never from the body.
+3. The browser reads `T` and `nonce_t`, then reveals `nonce_b`; the service refuses (and ends
+   the request) when it doesn't open the commit. The browser shows the code.
+4. The approver reads `nonce_b`, checks the commit itself, and approves only when the typed code
+   matches. It writes the grants on each machine over SSH and finishes with the machine list
+   sealed to the browser (X25519 between the two keys, HKDF-SHA256, AES-256-GCM with `seq` in the
+   AAD), plus the scope and expiry it granted.
+
+Every binary field is unpadded base64url. Each step runs once, in order, within 10 minutes; a
+new request replaces the browser's live one. The service never sees the code, stores the
+envelope as sent and returns it only to that browser (`GET /v1/browsers/self`), and accepts an
+envelope only with a higher `seq` per approver. A finish (or envelope) is one D1 batch: a
+failure leaves the request as it was, so the approver can retry, and the shown access changes
+only with the envelope. It can't grant anything: grants exist only on
+the machines, and the `access` state Devices shows is what the approver reported.
+`test/vectors/approve-v1.json` is herdrup-desktop's vector (`internal/account/testdata/approve-v1-local.json`),
+which the tests regenerate byte for byte.
+
+The first claim of a browser's request marks its device (an approver may write grants from then
+on); a later request or the approver's removal doesn't clear the mark. Removing a marked browser
+records a **withdrawal** of its key
+for 35 days: approvers read `GET /v1/withdrawals` and remove its grants from their machines, and
+no statement is issued for that key on the account meanwhile (`403 device_withdrawn`), even if the
+browser signs in and enrols again, until an approver approves it again by code.
 
 **Sync.** An item is `{collection, id, rev, updated_ms, deleted, body}`. The collections are
 `hosts`, `prompts`, `settings` (one item per key), `agent_prefs` and `shares`. Each has an
@@ -155,7 +206,8 @@ travel in.
 **Deletion.** The app confirms with a fresh sign-in, with the same provider and a fresh nonce.
 The ID token must belong to the session's own account (`403 wrong_account`). Then every row of
 the account goes in one D1 batch: sync items, devices, sessions and their spent refresh tokens,
-challenges, pending web-sign-in handoffs, identities and the account. Every token of the account fails from then on, and no
+challenges, pending web-sign-in handoffs, approval requests, browser access, envelopes and
+withdrawals, identities and the account. Every token of the account fails from then on, and no
 statement is issued again.
 
 The desktop never holds an ID token, so it confirms in the browser instead (DESIGN.md §6.6). It
@@ -188,6 +240,9 @@ covers every table the migrations create.
   last statement. Host ids and statements are never stored.
 - **Sync:** the allowlisted fields of each synced item (DESIGN.md §5), its revision and the time
   the server stored it, plus tombstones of deleted items for 90 days. Item bodies are never logged.
+- **Browser approval:** each browser's request (commit, nonces, approver) for up to an hour, the
+  scope and expiry an approver reported, the sealed envelopes (ciphertext the service can't
+  open), and the key and fingerprint of a removed browser for 35 days.
 - **Email:** Apple is asked for nothing. Google's email is read from the ID token and handed back
   once as `display_hint`, then dropped. In the desktop's web sign-in it waits up to 2 minutes
   for the handoff, sealed under a key only the `herdrup://` code opens, so D1 never holds it
@@ -202,6 +257,8 @@ covers every table the migrations create.
 - **Retention:** spent nonces, spent refresh tokens and enrolment challenges go at their own
   expiry, sessions when their refresh token expires, sync tombstones after 90 days, and accounts
   not seen for 24 months, with their identities, sessions, devices and sync items (hourly cron).
+  Approval requests go an hour after they start (10 minutes after they finish), withdrawals after
+  35 days, and a browser's access and envelopes with the device.
   Deleting the account (in the app, or Apple's revoke notification) removes all of it at once;
   Apple's tokens are never stored.
   D1 Time Travel keeps point-in-time history for 7 days on Workers Free (30 on Paid).
@@ -216,9 +273,11 @@ covers every table the migrations create.
 | `ENROL_LIMIT` | account id | 10 / 60 s | device challenge and enrolment, on top of `ACCOUNT_LIMIT` |
 | `SYNC_WRITE_LIMIT` | account id | 30 / 60 s | `POST /v1/sync`, on top of `ACCOUNT_LIMIT` |
 | `DELETE_IP_LIMIT` | `CF-Connecting-IP` | 5 / 60 s | account deletion and Apple notifications; checked before any other work |
+| `APPROVAL_LIMIT` | account id | 30 / 60 s | every approval route (`/v1/approvals…`, `/v1/browsers/…`, `/v1/withdrawals`), on top of `ACCOUNT_LIMIT`. Also at most 10 approval requests per account per hour (`429 too_many_requests`) and 20 envelopes per browser |
 
 Bodies are capped at 8 KB for sign-in, deletion and Apple notifications, 2 KB for devices, 4 KB
-for statements and 256 KB for sync pushes; ID tokens at 4 KB; 50 hosts per statement call.
+for statements and approval steps, 24 KB for `finish` and envelopes (a sealed envelope at most
+16 KB) and 256 KB for sync pushes; ID tokens at 4 KB; 50 hosts per statement call.
 
 ## Configuration
 
@@ -305,6 +364,16 @@ For step 5's Worker part:
 
 For the desktop's web deletion: apply the migrations (`0005_web_delete.sql`), then deploy. No new
 secret, var or binding.
+
+For browser approval (approve-v1): apply the migrations (`0006_browser_access.sql`), then
+deploy. It adds the `APPROVAL_LIMIT` binding (namespace `6987`) and needs no secret or var.
+From this build on, enrolment refuses a non-canonical `device_pub`. Before deploying, check that
+no stored key is non-canonical (the answer should be `0`); if any are, decide what to do with
+them before rewriting rows:
+
+```sh
+npx wrangler d1 execute herdrup-accounts --remote --command "SELECT COUNT(*) FROM devices WHERE length(device_pub) <> 43 OR substr(device_pub, 43, 1) NOT IN ('A','E','I','M','Q','U','Y','c','g','k','o','s','w','0','4','8')"
+```
 
 ### Rotate the statement key
 

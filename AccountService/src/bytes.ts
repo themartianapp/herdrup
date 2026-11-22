@@ -15,6 +15,17 @@ export function fromB64url(text: string): Uint8Array | null {
   return Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
 }
 
+/**
+ * 32 bytes (a device key, nonce or commit) from canonical unpadded base64url: exactly 43
+ * characters whose re-encoding is the input. Base64url has 4 spellings of the same 32 bytes (the
+ * last character's two unused bits), so a key is only ever stored and compared in this one.
+ */
+export function bytes32(value: unknown): Uint8Array | null {
+  if (typeof value !== "string" || value.length !== 43) return null;
+  const bytes = fromB64url(value);
+  return bytes !== null && b64url(bytes) === value ? bytes : null;
+}
+
 export function randomB64url(byteLength: number): string {
   return b64url(crypto.getRandomValues(new Uint8Array(byteLength)));
 }

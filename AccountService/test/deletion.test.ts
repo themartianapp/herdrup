@@ -120,6 +120,7 @@ async function populate(who: Identity): Promise<{ first: Session; second: Sessio
   const second = await signIn(who);
   expect(second.accountId).toBe(first.accountId);
   const deviceId = randomB64url(16);
+  const browserId = randomB64url(16);
   await env.DB.batch([
     env.DB.prepare("INSERT INTO devices (id, account_id, device_pub, name, platform, created_ms) VALUES (?, ?, ?, 'Phone', 'ios', ?)").bind(
       deviceId,
@@ -137,6 +138,33 @@ async function populate(who: Identity): Promise<{ first: Session; second: Sessio
       `INSERT INTO delete_handoffs (code_hash, account_id, session_id, provider, subject_hash, client_id, handoff_challenge, apple_code, exp_ms)
        VALUES (?, ?, ?, 'apple', 'x', 'com.jerryfane.herdr.signin', ?, NULL, ?)`,
     ).bind(randomB64url(32), first.accountId, first.access.split(".")[1], randomB64url(32), Date.now() + 300_000),
+    // A browser approved by the phone, with its envelope, a claimed request and a withdrawal of
+    // an earlier browser (test/approvals.test.ts runs the real flow).
+    env.DB.prepare("INSERT INTO devices (id, account_id, device_pub, name, platform, created_ms) VALUES (?, ?, ?, 'Chrome', 'web', ?)").bind(
+      browserId,
+      first.accountId,
+      randomB64url(32),
+      Date.now(),
+    ),
+    env.DB.prepare(
+      `INSERT INTO approval_requests (id, account_id, browser_device_id, "commit", approver_device_id, nonce_t, created_ms, exp_ms, starts, starts_ms)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?4, ?6, ?6 + 600000, 1, ?6)`,
+    ).bind(randomB64url(16), first.accountId, browserId, randomB64url(32), deviceId, Date.now()),
+    env.DB.prepare(
+      "INSERT INTO browser_access (device_id, account_id, scope, expires_ms, approved_ms, updated_ms) VALUES (?1, ?2, 'chat', ?3 + 86400000, ?3, ?3)",
+    ).bind(browserId, first.accountId, Date.now()),
+    env.DB.prepare("INSERT INTO browser_envelopes (device_id, approver_pub, account_id, seq, sealed, updated_ms) VALUES (?, ?, ?, 1, ?, ?)").bind(
+      browserId,
+      randomB64url(32),
+      first.accountId,
+      randomB64url(40),
+      Date.now(),
+    ),
+    env.DB.prepare("INSERT INTO withdrawals (account_id, device_pub, fingerprint, created_ms, exp_ms) VALUES (?1, ?2, 'SHA256:0000·0000·0000·0000', ?3, ?3 + 1000)").bind(
+      first.accountId,
+      randomB64url(32),
+      Date.now(),
+    ),
   ]);
   // Two deletion tickets: one left pending, one taken by its browser start into a pending web flow.
   const ticket = async () => {

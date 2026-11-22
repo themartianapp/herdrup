@@ -69,6 +69,14 @@ name = "SYNC_WRITE_LIMIT"
 namespace_id = "6984"
 simple = { limit = 30, period = 60 }
 
+# Keyed by account id, on top of ACCOUNT_LIMIT: every browser-approval route (src/approvals.ts:
+# /v1/approvals…, /v1/browsers/…, /v1/withdrawals). Both sides poll a request every 2 s for a
+# minute, then every 5 s.
+[[ratelimits]]
+name = "APPROVAL_LIMIT"
+namespace_id = "6987"
+simple = { limit = 30, period = 60 }
+
 # Keyed by CF-Connecting-IP and checked before any other work: account deletion and Apple's
 # server-to-server notifications.
 [[ratelimits]]
@@ -77,8 +85,8 @@ namespace_id = "6986"
 simple = { limit = 5, period = 60 }
 
 # Hourly cleanup (src/cleanup.ts): spent nonces and refresh tokens, enrolment challenges and
-# sessions past their expiry, sync tombstones older than 90 days, and accounts not seen for 24
-# months.
+# sessions past their expiry, approval requests and withdrawals past theirs, sync tombstones
+# older than 90 days, and accounts not seen for 24 months.
 [triggers]
 crons = ["17 * * * *"]
 

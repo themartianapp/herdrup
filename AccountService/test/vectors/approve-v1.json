@@ -1,0 +1,14 @@
+{
+ "source": "node:crypto, WIRE-PLAN approve-v1 (RFC 7748 6.1 keys)",
+ "browser_priv": "dwdtCnMYpX08FsFyUbJmRd9ML4frwJkqsXf7pR25LCo",
+ "approver_priv": "XasIfmJKikt54X-Lg4AO5m87sSkmGLb9HC-LJ_-I4Os",
+ "browser_pub": "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",
+ "approver_pub": "3p7bfXt9wbTTW2HC7OQ1Nz-DQ8hbeGdNrfx-FG-IK08",
+ "nonce_b": "ERERERERERERERERERERERERERERERERERERERERERE",
+ "nonce_t": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI",
+ "commit": "lX5iWjshMvp96y1vhYBUzOu6x8K6Tr3fLSCEOT4xekk",
+ "code": "7218",
+ "seq": 7,
+ "envelope_json": "{\"v\":1,\"seq\":7,\"machines\":[{\"label\":\"dev2306\"}]}",
+ "sealed": "MzMzMzMzMzMzMzMz8DVUx4SfA2hNrbozbsz20xSdflLmwHvDKT6cJp3oXcKFH1J5X8myTWcvIPMVQ_jopAmtlm4n9y8el8c8BmWX9w"
+}
