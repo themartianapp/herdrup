@@ -635,6 +635,8 @@ struct ChatMockTransport: HerdrTransport {
             return #"{"id":"\#(id)","result":{"type":"pong","version":"0.9.4","protocol":22,"capabilities":{"agent_transcript":true,"agent_answer":true,"agent_avatar":true\#(turnOrigin)\#(ChatMockAskForm.capability)\#(TopicsMock.capability)}}}"#
         case "agent.list":
             return AgentAvatarMockServer.overlay(#"{"id":"\#(id)","result":{"type":"agent_list","agents":[\#(Self.agentsJSON)]}}"#)
+        case "agent.get" where params["target"] as? String == Self.paneID || params["target"] as? String == "herdr-app":
+            return #"{"id":"\#(id)","result":{"type":"agent_info","agent":\#(Self.herdrAppJSON)}}"#
         case "agent.transcript":
             let target = params["target"] as? String
             // `HERDR_MOCK_TOPICS`: herdr-app's topics, each its own conversation.
@@ -673,6 +675,12 @@ struct ChatMockTransport: HerdrTransport {
     }
 
     func stream(_ requestLine: String) -> AsyncThrowingStream<String, Error> {
+        // `HERDR_MOCK_TOPICS_SWITCH_APPLY_AFTER`: the all-panes status stream herdr-app's held
+        // Topics switch is applied on (see `TopicsMock.agentStatusStream`).
+        if requestLine.contains(#""id":"herdrkit:events.subscribe:agent-status""#),
+           let stream = TopicsMock.owner.agentStatusStream(paneID: Self.paneID) {
+            return stream
+        }
         // `HERDR_MOCK_TOPICS_START_FAILS`: herdr-app's `agent.topics.changed` (start_failed).
         if TopicsMock.enabled, TopicsMock.startFailsAfter != nil,
            requestLine.contains("herdrkit:events.subscribe:agent-topics") {
@@ -689,13 +697,20 @@ struct ChatMockTransport: HerdrTransport {
     /// second omp agent, as in the iPad mockup's sidebar.
     private static var agentsJSON: String {
         let working = still ? "idle" : "working"
-        // `HERDR_MOCK_TOPICS_SWITCH_BUSY` / `_IDLE`: herdr-app's status for the switch's wait-or-now choice.
-        let status = TopicsMock.switchStatus ?? (ChatMockConversation.owner.isAnswered ? working : "blocked")
         return [
-            #"{"pane_id":"\#(paneID)","name":"herdr-app","agent":"omp","agent_status":"\#(status)","cwd":"/root/herdr","terminal_title_stripped":"Merge #305 and update the servers?"\#(TopicsMock.owner.topicsEnabledJSON)}"#,
+            herdrAppJSON,
             #"{"pane_id":"w9:p2","terminal_id":"t-keephair","name":"keephair","avatar":{"style":"mascot","mascot":"cub","sha256":null,"updated_unix_ms":1723041000000},"agent":"claude","agent_status":"\#(working)","cwd":"/root/keephair-repo","terminal_title_stripped":"Running the iPad tests"}"#,
             #"{"pane_id":"w9:p3","name":"llm-opt","agent":"omp","agent_status":"done","cwd":"/root/llm-opt","terminal_title_stripped":"Bench results posted"}"#,
         ].joined(separator: ",")
+    }
+
+    /// herdr-app's row, for `agent.list` and `agent.get`.
+    private static var herdrAppJSON: String {
+        let working = still ? "idle" : "working"
+        // `HERDR_MOCK_TOPICS_SWITCH_BUSY` / `_IDLE`: herdr-app's status for the switch's wait-or-now
+        // choice (idle once a held switch was applied).
+        let status = TopicsMock.owner.switchAgentStatus ?? (ChatMockConversation.owner.isAnswered ? working : "blocked")
+        return #"{"pane_id":"\#(paneID)","name":"herdr-app","agent":"omp","agent_status":"\#(status)","cwd":"/root/herdr","terminal_title_stripped":"Merge #305 and update the servers?"\#(TopicsMock.owner.topicsEnabledJSON)}"#
     }
 }
 #endif

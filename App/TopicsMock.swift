@@ -55,6 +55,17 @@ final class TopicsMock: @unchecked Sendable {
     /// neither `scheduled` nor `topics_switch_pending` is sent.
     static let switchWhenIdle =
         ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_SWITCH_NO_WHEN_IDLE"] == nil
+    /// `HERDR_MOCK_TOPICS_SWITCH_APPLY_AFTER=<seconds>`: the pong advertises `events_v2`, and that
+    /// long after the app opens its all-panes status stream herdr-app goes idle and herdr applies
+    /// the held switch, as herdr#493 does: topics flip, `topics_switch_pending` clears, and the
+    /// stream carries the idle status (which says nothing of topics). While the stream is open
+    /// the app re-fetches agent.list only every 30 s, so the row is stale until it asks.
+    static let applyAfter = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_SWITCH_APPLY_AFTER"]
+        .flatMap(Double.init)
+    /// `HERDR_MOCK_TOPICS_SWITCH_APPLY_SILENT=1`: with `_APPLY_AFTER`, the stream does not carry
+    /// the idle status either (as when the menu was already open), so only a fresh read shows it.
+    private static let applySilently =
+        ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_SWITCH_APPLY_SILENT"] != nil
     /// `HERDR_MOCK_TOPICS_SUGGEST_LIST_ONLY=1`: open suggestions are in `agent.topics.list` but
     /// not yet in the Inbox's transcript, as while the Inbox's turn is still running.
     static let listOnly = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_SUGGEST_LIST_ONLY"] != nil
@@ -104,7 +115,8 @@ final class TopicsMock: @unchecked Sendable {
             : #","agent_topics_switch":true"#
         let suggestCapability = suggests ? #","agent_topic_suggestions":true"# : ""
         let base = transcriptTopic ? #","agent_topics":true,"agent_transcript_topic":true"# : #","agent_topics":true"#
-        return base + switchCapability + suggestCapability
+        let eventsCapability = applyAfter == nil ? "" : #","events_v2":true"#
+        return base + switchCapability + suggestCapability + eventsCapability
     }
 
     /// Who wrote a message: the owner (the written history), the one reading this mock (the
@@ -138,6 +150,8 @@ final class TopicsMock: @unchecked Sendable {
     private var topicsEnabled = false
     /// A switch held for when herdr-app goes idle (`topics_switch_pending`).
     private var switchPending = TopicsMock.switchPendingAtLaunch
+    /// herdr-app went idle and herdr applied the held switch (`HERDR_MOCK_TOPICS_SWITCH_APPLY_AFTER`).
+    private var appliedAtIdle = false
     /// `HERDR_MOCK_TOPICS_TRANSCRIPT_STARTUP=<n>`: the first `n` topic transcript calls answer
     /// `transcript_unsupported`, as a topic whose session is still starting.
     private var startupRefusals = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_TRANSCRIPT_STARTUP"]
@@ -366,7 +380,7 @@ final class TopicsMock: @unchecked Sendable {
                 let enabled = params["enabled"] as? Bool ?? false
                 // A working agent with `when_idle` keeps its turn: the switch waits (`scheduled`).
                 // The current state again drops a pending switch; anything else applies at once.
-                if Self.switchWhenIdle, params["when_idle"] as? Bool == true, Self.switchStatus == "working",
+                if Self.switchWhenIdle, params["when_idle"] as? Bool == true, currentSwitchStatus == "working",
                    enabled != topicsEnabled {
                     switchPending = true
                     return ChatMockConversation.encode(id: id, result: [
@@ -421,6 +435,50 @@ final class TopicsMock: @unchecked Sendable {
         guard Self.switchable else { return "" }
         return lock.withLock {
             #","topics_enabled":\#(topicsEnabled)"# + (switchPending ? #","topics_switch_pending":true"# : "")
+        }
+    }
+
+    /// herdr-app's status for the switch tests (`HERDR_MOCK_TOPICS_SWITCH_BUSY` / `_IDLE`),
+    /// idle once a held switch was applied; nil leaves the chat mock's own status.
+    var switchAgentStatus: String? { lock.withLock { currentSwitchStatus } }
+
+    private var currentSwitchStatus: String? { appliedAtIdle ? "idle" : Self.switchStatus }
+
+    /// The all-panes status stream (`events.subscribe`, `events_v2`) under
+    /// `HERDR_MOCK_TOPICS_SWITCH_APPLY_AFTER`, else nil: acknowledged, a heartbeat every 15 s,
+    /// and after the delay herdr-app goes idle with its held switch applied, which the stream
+    /// reports as a status change only (none under `_APPLY_SILENT`).
+    func agentStatusStream(paneID: String) -> AsyncThrowingStream<String, Error>? {
+        guard let delay = Self.applyAfter else { return nil }
+        return AsyncThrowingStream { continuation in
+            continuation.yield(#"{"id":"herdrkit:events.subscribe:agent-status","result":{"type":"subscription_started"}}"#)
+            let task = Task {
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled else { return }
+                self.applyHeldSwitch()
+                var seq = 1
+                if !Self.applySilently {
+                    let workspace = paneID.split(separator: ":").first.map(String.init) ?? paneID
+                    continuation.yield(#"{"seq":\#(seq),"event":"pane.agent_status_changed","data":{"pane_id":"\#(paneID)","workspace_id":"\#(workspace)","agent_status":"idle","agent":"omp"}}"#)
+                }
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(15))
+                    seq += 1
+                    continuation.yield(#"{"control":"heartbeat","seq":\#(seq)}"#)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// herdr-app goes idle: herdr applies the switch it held and clears `topics_switch_pending`.
+    private func applyHeldSwitch() {
+        lock.withLock {
+            if switchPending {
+                topicsEnabled.toggle()
+                switchPending = false
+            }
+            appliedAtIdle = true
         }
     }
 

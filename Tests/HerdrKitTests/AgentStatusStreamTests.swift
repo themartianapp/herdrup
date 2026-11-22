@@ -274,6 +274,34 @@ final class AgentStatusStreamTests: XCTestCase {
         XCTAssertEqual(agents.effect(of: .heartbeat(seq: 5), receivedAt: at), .ignore)
     }
 
+    /// herdrup#802: herdr applies a held Topics switch when the agent goes idle and clears
+    /// `topics_switch_pending`, which no status or turn event carries. An event for a row with
+    /// a pending switch patches it and reloads agent.list, so the menu stops offering Cancel.
+    func testEventForARowWithAPendingTopicsSwitchAlsoReloads() throws {
+        let agents = try decodeAgents(#"""
+        [{"pane_id":"w1:p1","agent":"omp","agent_status":"working","topics_enabled":false,"topics_switch_pending":true},
+         {"pane_id":"w1:p2","agent":"omp","agent_status":"working","topics_enabled":false}]
+        """#)
+        let at = Date(timeIntervalSince1970: 50)
+        let idle = AgentStatusStreamLine.statusChanged(AgentStatusChange(
+            seq: 1, paneID: "w1:p1", workspaceID: "w1", agentStatus: "idle"))
+        guard case .patchAndReload(let rows) = agents.effect(of: idle, receivedAt: at) else {
+            return XCTFail("a pending switch's row must reload: \(agents.effect(of: idle, receivedAt: at))")
+        }
+        XCTAssertEqual(rows.first?.agentStatus, "idle", "the status still shows at once")
+        let turn = try AgentStatusStreamLine.decode(
+            #"{"seq":2,"event":"pane.turn_completed","data":{"pane":{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"idle","focused":false},"turn":3,"turn_epoch":1}}"#)
+        guard case .patchAndReload = agents.effect(of: turn, receivedAt: at) else {
+            return XCTFail("a turn event reloads it too")
+        }
+
+        let other = AgentStatusStreamLine.statusChanged(AgentStatusChange(
+            seq: 3, paneID: "w1:p2", workspaceID: "w1", agentStatus: "idle"))
+        guard case .patch = agents.effect(of: other, receivedAt: at) else {
+            return XCTFail("a row without a pending switch is only patched")
+        }
+    }
+
     /// The all-panes stream also reports panes agent.list never lists: a plain
     /// shell whose title changes, or a pane whose agent quit. Those must not
     /// reload, and repeated events for one unlisted agent pane reload once per
@@ -289,7 +317,7 @@ final class AgentStatusStreamTests: XCTestCase {
             case .reload: reloads += 1
             case .reloadForUnlistedPane(let pane):
                 if gate.request(pane, at: t0 + .seconds(offset)) { reloads += 1 }
-            case .patch, .ignore: break
+            case .patch, .patchAndReload, .ignore: break
             }
         }
 

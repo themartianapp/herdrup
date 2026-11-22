@@ -2424,7 +2424,25 @@ struct TerminalHomeView: View {
         do {
             let result = try await client.agentTopicsSetEnabled(target: request.paneID, enabled: request.enabled,
                                                                 whenIdle: whenIdle)
-            topicsSwitchStatus = result.scheduled ? .scheduled(request) : .done(request, changed: result.changed)
+            topicsSwitchStatus = TopicsSwitchStatus(request, result)
+        } catch {
+            topicsSwitchStatus = .failed(request, TopicsSwitchStatus.describe(error))
+        }
+        await load()
+    }
+
+    /// Cancel pending switch: HerdrKit reads the agent fresh and sends the cancel only while
+    /// herdr still holds the switch, since the listed row can be stale (herdrup#802). If herdr
+    /// already applied it, nothing is sent and the banner says so; the list reloads either way.
+    private func cancelPendingTopicsSwitch(_ request: TopicsSwitchRequest) async {
+        topicsSwitchStatus = .working(request)
+        do {
+            switch try await client.agentTopicsCancelPendingSwitch(target: request.paneID) {
+            case .answered(let result):
+                topicsSwitchStatus = TopicsSwitchStatus(request, result)
+            case .notPending(let topicsEnabled):
+                topicsSwitchStatus = .noLongerPending(request, topicsEnabled: topicsEnabled)
+            }
         } catch {
             topicsSwitchStatus = .failed(request, TopicsSwitchStatus.describe(error))
         }
@@ -4519,11 +4537,12 @@ struct TerminalHomeView: View {
             if topicsSwitchSupported, ChatPreference.isOmp(row.info.agent), let enabled = row.info.topicsEnabled {
                 if topicsSwitchWhenIdleSupported, row.info.isTopicsSwitchPending {
                     StableMenuItem(disabled: "Topics switch pending", systemImage: "clock")
-                    // The agent's current state again: herdr drops the switch it was holding.
+                    // HerdrKit checks the server still holds the switch, then sends the agent's
+                    // current state, which herdr reads as dropping it.
                     StableMenuItem("Cancel pending switch", systemImage: "xmark.circle") {
                         let request = TopicsSwitchRequest(paneID: row.info.paneID, title: row.title,
                                                           enabled: enabled, cancelsPending: true)
-                        Task { await switchTopics(request, whenIdle: false) }
+                        Task { await cancelPendingTopicsSwitch(request) }
                     }
                 } else {
                     StableMenuItem(enabled ? "Turn off topics" : "Turn on topics", systemImage: "rectangle.stack") {
@@ -5309,6 +5328,10 @@ struct TerminalHomeView: View {
         switch effect {
         case .patch(let patched):
             receiveRoster(agents: patched, accounts: latest.accounts)
+        case .patchAndReload(let patched):
+            // A pending Topics switch: herdr may have applied it, which only agent.list shows.
+            receiveRoster(agents: patched, accounts: latest.accounts)
+            requestRosterReload()
         case .reload:
             requestRosterReload()
         case .reloadForUnlistedPane(let pane):

@@ -256,9 +256,17 @@ extension Array where Element == AgentInfo {
     /// has not seen yet, or ignore it. The all-panes stream also reports panes
     /// without an agent (a plain shell's title changing, a pane whose agent quit);
     /// `agent.list` never lists those, so they are ignored.
+    ///
+    /// A row with a pending Topics switch (`topics_switch_pending`) is patched and then
+    /// reloaded: herdr applies the held switch when the agent goes idle, and clears the
+    /// pending flag and changes `topics_enabled`, which no status or turn event carries
+    /// (herdrup#802). Until the reload the row would keep offering Cancel pending switch.
     public func effect(of line: AgentStatusStreamLine, receivedAt: Date) -> AgentRosterStreamEffect {
         guard let update = line.liveUpdate else { return line.requiresRosterReload ? .reload : .ignore }
-        if let patched = applying(update, receivedAt: receivedAt) { return .patch(patched) }
+        if let patched = applying(update, receivedAt: receivedAt) {
+            let pending = contains { $0.paneID == update.paneID && $0.isTopicsSwitchPending }
+            return pending ? .patchAndReload(patched) : .patch(patched)
+        }
         guard !update.paneID.isEmpty, update.agent != nil else { return .ignore }
         return .reloadForUnlistedPane(update.paneID)
     }
@@ -267,6 +275,8 @@ extension Array where Element == AgentInfo {
 /// See `[AgentInfo].effect(of:receivedAt:)`.
 public enum AgentRosterStreamEffect: Sendable, Equatable {
     case patch([AgentInfo])
+    /// Patch, then reload `agent.list`: the row has state the event cannot update.
+    case patchAndReload([AgentInfo])
     case reload
     /// Reload, subject to `UnlistedPaneReloads`.
     case reloadForUnlistedPane(String)

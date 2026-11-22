@@ -34,11 +34,21 @@ struct TopicsSwitchRequest: Equatable {
 /// The switch at work, or how it ended.
 enum TopicsSwitchStatus: Equatable {
     case working(TopicsSwitchRequest)
-    /// `changed` false: it already was so.
+    /// `changed` false: it already was so (for a cancel: herdr dropped the pending switch).
     case done(TopicsSwitchRequest, changed: Bool)
     /// herdr holds the switch until the agent finishes its turn (`scheduled`).
     case scheduled(TopicsSwitchRequest)
+    /// Cancel pending switch found nothing pending: herdr had already applied (or dropped)
+    /// it, so nothing was sent. `topicsEnabled` is the agent's state now.
+    case noLongerPending(TopicsSwitchRequest, topicsEnabled: Bool?)
     case failed(TopicsSwitchRequest, String)
+
+    /// How `agent.topics.set_enabled` answered `request`. A cancel sends the agent's current
+    /// state, so `changed: false, scheduled: false` is herdr dropping the pending switch;
+    /// `changed: true` means the agent did switch (to `request.enabled`), and is said so.
+    init(_ request: TopicsSwitchRequest, _ result: AgentTopicsSwitched) {
+        self = result.scheduled ? .scheduled(request) : .done(request, changed: result.changed)
+    }
 
     var text: String {
         switch self {
@@ -47,12 +57,15 @@ enum TopicsSwitchStatus: Equatable {
             return request.enabled ? "Restarting \(request.title) with topics…"
                                    : "Restarting \(request.title) without topics…"
         case .done(let request, let changed):
-            if request.cancelsPending { return "Pending topics switch cancelled for \(request.title)." }
+            if request.cancelsPending, !changed { return "Pending topics switch cancelled for \(request.title)." }
             if !changed { return request.enabled ? "Topics were already on for \(request.title)."
                                                  : "Topics were already off for \(request.title)." }
             return request.enabled ? "Topics are on for \(request.title)." : "Topics are off for \(request.title)."
         case .scheduled(let request):
             return "Topics will turn \(request.enabled ? "on" : "off") when \(request.title) finishes"
+        case .noLongerPending(let request, let topicsEnabled):
+            guard let topicsEnabled else { return "No topics switch is pending for \(request.title) any more." }
+            return "The topics switch for \(request.title) already happened: topics are \(topicsEnabled ? "on" : "off")."
         case .failed(let request, let why):
             if request.cancelsPending { return "Couldn't cancel the pending switch: " + why }
             return (request.enabled ? "Couldn't turn on topics: " : "Couldn't turn off topics: ") + why
