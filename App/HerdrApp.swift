@@ -6221,6 +6221,15 @@ struct TerminalPaneContent: View {
                         // A composer keystroke redraws this page; the chat skips it
                         // (`ChatView ==`), so typing never re-evaluates the transcript.
                         .equatable()
+                        // An open suggestion shows in the Inbox as soon as the list (or its
+                        // `agent.topics.changed`) has it, before the transcript entry lands.
+                        .onChange(of: topicsModel.suggestions, initial: true) { _, open in
+                            chatModel.setListedSuggestions(open)
+                        }
+                        .task(id: topicsModel.suggestionsServed) {
+                            guard topicsModel.suggestionsServed else { return }
+                            await topicsModel.follow(client: client, eventsPaneID: paneID)
+                        }
                     }
                 }
                 // Topics brings its own composer (a topic's chat sends to that topic only),

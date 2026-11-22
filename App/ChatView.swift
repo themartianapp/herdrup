@@ -457,6 +457,22 @@ final class ChatModel: ObservableObject {
         }
     }
 
+    /// Open suggestions as `agent.topics.list` reports them (the page's `TopicsModel`). One
+    /// shows in the chat at once; its `topic_suggestion` entry reaches the transcript only after
+    /// the Inbox's turn ends and then replaces it (same id).
+    private var listedSuggestions: [AgentTopicSuggestion] = []
+
+    func setListedSuggestions(_ suggestions: [AgentTopicSuggestion]) {
+        guard answersQuestions, suggestions != listedSuggestions else { return }
+        listedSuggestions = suggestions
+        rebuildRows()
+    }
+
+    private func rebuildRows() {
+        rows = ChatRow.rows(turns: turns, outgoing: outgoing, listed: listedSuggestions)
+        rowIndex = Dictionary(rows.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
     /// Republishes the store. Each value is assigned only when it changed: an equal
     /// assignment still sends `objectWillChange`, which redraws the whole chat.
     private func sync() {
@@ -464,10 +480,7 @@ final class ChatModel: ObservableObject {
         let outgoingChanged = store.outbox.messages != outgoing
         if turnsChanged { turns = store.turns }
         if outgoingChanged { outgoing = store.outbox.messages }
-        if turnsChanged || outgoingChanged {
-            rows = ChatRow.rows(turns: turns, outgoing: outgoing)
-            rowIndex = Dictionary(rows.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
-        }
+        if turnsChanged || outgoingChanged { rebuildRows() }
         assign(\.working, store.working)
         assign(\.sessionModel, store.model)
         assign(\.currentPlan, store.currentPlan)
@@ -574,15 +587,27 @@ private enum ChatRow: Identifiable, Equatable {
         }
     }
 
-    static func rows(turns: [TranscriptTurn], outgoing: [TranscriptOutgoingMessage]) -> [ChatRow] {
+    /// `listed`: open suggestions from `agent.topics.list`, drawn at the end of the chat until
+    /// their transcript entry (same id) arrives and takes over.
+    static func rows(turns: [TranscriptTurn], outgoing: [TranscriptOutgoingMessage],
+                     listed: [AgentTopicSuggestion] = []) -> [ChatRow] {
+        var inTranscript = Set<String>()
+        var open: [(id: String, suggestion: TranscriptTopicSuggestion)] = []
+        for turn in turns {
+            for case .topicSuggestion(let id, let suggestion) in turn.items {
+                inTranscript.insert(id)
+                if suggestion.state == .open { open.append((id, suggestion)) }
+            }
+        }
+        let pending = listed.filter { !inTranscript.contains($0.id) }.map {
+            (id: $0.id, suggestion: TranscriptTopicSuggestion(title: $0.title, reason: $0.reason,
+                                                              messageIDs: $0.messageIDs, state: .open))
+        }
         // Each open suggestion marks the first message the agent picked for it.
         var marks: [String: ChatRow] = [:]
-        for turn in turns {
-            for case .topicSuggestion(let id, let suggestion) in turn.items
-            where suggestion.state == .open {
-                guard let first = suggestion.messageIDs.first, marks[first] == nil else { continue }
-                marks[first] = .mark(suggestionID: id, title: suggestion.title)
-            }
+        for (id, suggestion) in open + pending {
+            guard let first = suggestion.messageIDs.first, marks[first] == nil else { continue }
+            marks[first] = .mark(suggestionID: id, title: suggestion.title)
         }
         var rows: [ChatRow] = []
         var previousMs: UInt64?
@@ -601,6 +626,7 @@ private enum ChatRow: Identifiable, Equatable {
                 rows.append(.item(item))
             }
         }
+        rows += pending.map { .item(.topicSuggestion(id: $0.id, $0.suggestion)) }
         rows.append(contentsOf: outgoing.map(ChatRow.outgoing))
         return rows
     }

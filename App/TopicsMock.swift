@@ -38,6 +38,9 @@ final class TopicsMock: @unchecked Sendable {
     /// `HERDR_MOCK_TOPICS_SWITCH=1`: the pong advertises `agent_topics_switch`, herdr-app lists
     /// `topics_enabled` (off at launch), and `agent.topics.set_enabled` flips it (owner only).
     static let switchable = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_SWITCH"] != nil
+    /// `HERDR_MOCK_TOPICS_SUGGEST_LIST_ONLY=1`: open suggestions are in `agent.topics.list` but
+    /// not yet in the Inbox's transcript, as while the Inbox's turn is still running.
+    static let listOnly = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_SUGGEST_LIST_ONLY"] != nil
 
     private struct Suggestion {
         let id: String
@@ -278,6 +281,22 @@ final class TopicsMock: @unchecked Sendable {
     /// stamped from `ms` on: herdr re-sends an entry under its id when it changes.
     func suggestionEntries(after ms: UInt64) -> [[String: Any]] {
         guard Self.enabled, Self.suggests else { return [] }
+        if Self.listOnly { return lock.withLock { suggestions.filter { $0.state != "open" }.map(Self.entry) } }
+        return entries(ms: ms)
+    }
+
+    private static func entry(_ suggestion: Suggestion) -> [String: Any] {
+        var entry: [String: Any] = [
+            "id": suggestion.id, "ts_ms": now(), "kind": "topic_suggestion",
+            "title": suggestion.title, "reason": suggestion.reason, "message_ids": suggestion.messageIDs,
+            "message_count": suggestion.messageIDs.count, "state": suggestion.state,
+        ]
+        if let topicID = suggestion.topicID { entry["topic_id"] = topicID }
+        if let by = suggestion.by { entry["by"] = by }
+        return entry
+    }
+
+    private func entries(ms: UInt64) -> [[String: Any]] {
         return lock.withLock {
             suggestions.enumerated().map { index, suggestion in
                 var entry: [String: Any] = [

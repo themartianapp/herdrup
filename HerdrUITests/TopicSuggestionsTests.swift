@@ -138,6 +138,22 @@ final class TopicSuggestionsTests: XCTestCase {
         shot(app, "topic-suggestion-dismissed")
     }
 
+    /// The fork lists an open suggestion (and sends `agent.topics.changed`) at once, but its
+    /// transcript entry lands only after the Inbox's turn ends: the card shows from the list.
+    func testSuggestionShowsFromTheListBeforeTheTranscriptHasIt() {
+        let app = launch("chatview", ["HERDR_MOCK_TOPICS_SUGGEST_LIST_ONLY": "1"])
+        openHerdrApp(app)
+        let card = suggestionCard("sg-scroll", in: app)
+        XCTAssertTrue(any(app, "chat-topic-suggestion-count").label.contains("12 earlier messages come along"))
+        XCTAssertTrue(any(app, "chat-topic-suggestion-mark-sg-scroll").exists, "the marker comes from the list too")
+        card.buttons["chat-topic-suggestion-start"].tap()
+        let title = app.staticTexts["topic-chat-title"].firstMatch
+        XCTAssertTrue(poll(10, every: 0.3) { title.exists && title.label == "Terminal scrollback" })
+        let status = app.descendants(matching: .any)["topic-status-t-sug-1"].firstMatch
+        XCTAssertTrue(status.exists(within: 5), "the new topic shows its status")
+        XCTAssertTrue(status.label.contains("Starting"), "a seeding topic is starting: \(status.label)")
+    }
+
     // MARK: Organise
 
     /// Organise in the Topics bar: the proposals appear in the list, ticked, above the topics.

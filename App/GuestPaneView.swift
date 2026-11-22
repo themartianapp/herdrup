@@ -179,6 +179,14 @@ struct GuestPaneView: View {
                              })
                     // Typing redraws this page; the chat skips it (`ChatView ==`).
                     .equatable()
+                    // Open suggestions show in the chat from the list, before the transcript has them.
+                    .onChange(of: topicsModel.suggestions, initial: true) { _, open in
+                        chatModel.setListedSuggestions(open)
+                    }
+                    .task(id: topicsModel.suggestionsServed && availability == .running) {
+                        guard topicsModel.suggestionsServed, availability == .running else { return }
+                        await topicsModel.follow(client: client, eventsPaneID: nil)
+                    }
                 }
                 // Topics brings its own composer (a topic's chat sends to that topic only), so
                 // it covers the page's composer too: drawn down over the bottom block, which
