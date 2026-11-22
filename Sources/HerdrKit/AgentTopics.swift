@@ -601,6 +601,48 @@ public final class TopicsDiscoveryLoop {
     }
 }
 
+/// How long Organise shows as running. `agent.topics.organise` only says the turn was
+/// queued, and nothing reports its end. Organise is over when a proposal arrives that was
+/// not open when it was asked, or after `timeout` (3 minutes). A turn that proposes nothing,
+/// or only proposes again what is already open, therefore ends too (herdrup#797).
+public struct TopicsOrganiseWait: Sendable, Equatable {
+    public static let defaultTimeout: TimeInterval = 180
+
+    public let timeout: TimeInterval
+    /// When Organise was asked; nil when it is not running.
+    public private(set) var startedAt: Date?
+    /// The open suggestions when it was asked.
+    private var known: Set<String> = []
+
+    public init(timeout: TimeInterval = TopicsOrganiseWait.defaultTimeout) {
+        self.timeout = timeout
+    }
+
+    public var isRunning: Bool { startedAt != nil }
+    /// When it ends without a proposal.
+    public var deadline: Date? { startedAt?.addingTimeInterval(timeout) }
+
+    public mutating func start(at now: Date, open ids: [String]) {
+        startedAt = now
+        known = Set(ids)
+    }
+
+    public mutating func stop() {
+        startedAt = nil
+        known = []
+    }
+
+    /// Checks a list answer (its open suggestion ids), or the clock alone (`open` nil).
+    /// True when Organise has just ended, and then it has stopped.
+    public mutating func end(open ids: [String]?, now: Date) -> Bool {
+        guard let deadline else { return false }
+        let proposed = ids?.contains { !known.contains($0) } ?? false
+        guard proposed || now >= deadline else { return false }
+        stop()
+        return true
+    }
+}
+
 /// The topics list's refresh rounds. Refreshes that arrive while a list call is in flight
 /// coalesce into one more round. `listedAfterNow` is for a caller that must see the list as
 /// it is now, such as a suggestion's Start opening the topic it just started (herdrup#795).
