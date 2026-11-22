@@ -52,9 +52,16 @@ export function checkWebBundle(dir) {
   return problems;
 }
 
+/** One lowercase DNS name of two or more labels: no wildcard, IP literal or port. */
+const RELAY_HOST = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+/** A CSP source that allows WebSockets over TLS. CSP schemes are case-insensitive. */
+const isWssSource = (word) => /^wss:/i.test(word);
+
 /**
  * The WebSocket sources the /web/* policy must allow: the https origins in dir/relays.json,
- * Desktop's one list of relays, as wss:// origins in the same order.
+ * Desktop's one list of relays, as wss:// origins in the same order. Each must be one exact
+ * host: a CSP host-source with `*` would allow every host or subdomain.
  * @param {string} dir
  * @returns {string[]}
  */
@@ -65,17 +72,17 @@ export function relaySources(dir) {
   }
   return relays.map((relay) => {
     const url = typeof relay === "string" ? URL.parse(relay) : null;
-    if (url === null || url.protocol !== "https:" || url.origin !== relay) {
-      throw new Error(`relays.json: ${JSON.stringify(relay)} is not an https origin`);
+    if (url === null || url.protocol !== "https:" || url.origin !== relay || url.port !== "" || !RELAY_HOST.test(url.hostname)) {
+      throw new Error(`relays.json: ${JSON.stringify(relay)} is not an https origin of one exact host`);
     }
-    return `wss://${url.host}`;
+    return `wss://${url.hostname}`;
   });
 }
 
 /**
  * headers (a Cloudflare _headers file) with the connect-src of the /web/* block's
- * Content-Security-Policy allowing exactly sources as its wss:// sources. Every other source and
- * directive is kept; the new sources take the place of the first wss:// one.
+ * Content-Security-Policy allowing exactly sources as its wss:// sources (any case). Every other
+ * source and directive is kept; the new sources take the place of the first wss:// one.
  * @param {string} headers
  * @param {string[]} sources
  * @returns {string}
@@ -93,11 +100,11 @@ export function withRelaySources(headers, sources) {
   let found = false;
   const directives = policy.split(";").map((directive) => {
     const words = directive.trim().split(/\s+/);
-    if (words[0] !== "connect-src") return directive.trim();
+    if (words[0].toLowerCase() !== "connect-src") return directive.trim();
     found = true;
     const rest = words.slice(1);
-    const first = rest.findIndex((word) => word.startsWith("wss:"));
-    const kept = rest.filter((word) => !word.startsWith("wss:"));
+    const first = rest.findIndex(isWssSource);
+    const kept = rest.filter((word) => !isWssSource(word));
     kept.splice(first < 0 ? kept.length : first, 0, ...sources);
     return ["connect-src", ...kept].join(" ");
   });

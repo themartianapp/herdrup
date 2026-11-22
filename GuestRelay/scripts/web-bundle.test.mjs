@@ -82,9 +82,36 @@ test("a relay removed from relays.json leaves _headers allowing it, which fails 
   assert.equal(checkRelayHeaders(copy, HEADERS).length, 1);
 });
 
-test("relays.json must list https origins only", () => {
-  for (const bad of [[], ["wss://guest.herdrup.app"], ["https://guest.herdrup.app/"], ["https://guest.herdrup.app/x"], [7]]) {
-    writeFileSync(join(copy, "relays.json"), JSON.stringify(bad));
-    assert.throws(() => relaySources(copy), /^Error: relays\.json: /);
+test("relays.json must list https origins of one exact host only", () => {
+  const bad = [
+    [],
+    ["wss://guest.herdrup.app"],
+    ["https://guest.herdrup.app/"],
+    ["https://guest.herdrup.app/x"],
+    [7],
+    ["https://*"],
+    ["https://*.evil.example"],
+    ["https://*:8443"],
+    ["https://guest.herdrup.app:8443"],
+    ["https://192.0.2.1"],
+    ["https://[::1]"],
+    ["https://localhost"],
+  ];
+  for (const relays of bad) {
+    writeFileSync(join(copy, "relays.json"), JSON.stringify(relays));
+    assert.throws(() => relaySources(copy), /^Error: relays\.json: /, JSON.stringify(relays));
   }
+});
+
+test("a wss source in any case outside relays.json fails the check and is removed on rewrite", () => {
+  const headers = readFileSync(HEADERS, "utf8").replace(
+    "wss://guest.herdrup.themartian.app",
+    "wss://guest.herdrup.themartian.app WSS://evil.example",
+  );
+  const path = join(copy, "_headers");
+  writeFileSync(path, headers);
+  assert.equal(checkRelayHeaders(WEB, path).length, 1);
+  const rewritten = withRelaySources(headers, relaySources(WEB));
+  assert.ok(!/evil\.example/i.test(rewritten));
+  assert.equal(rewritten, readFileSync(HEADERS, "utf8"));
 });
