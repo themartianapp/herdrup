@@ -107,9 +107,10 @@ dropped unread. Then:
   that cookie; the refresh token itself never reaches the page. The cookie counts only on
   requests with `Origin: https://guest.herdrup.app`.
 
-CORS allows exactly that origin, with credentials, on the endpoints the page calls: health,
-refresh, signout, account, devices, statements, sync, and the browser's side of approval
-(`POST /v1/approvals`, `GET /v1/approvals/<id>`, `…/reveal`, `GET /v1/browsers/self`). It never allows `*`. Without
+CORS allows exactly that origin, with credentials, on the calls the page makes (by route and
+method): health, refresh, signout, account, devices, statements, sync, and the browser's side of
+approval (`POST /v1/approvals`, `GET /v1/approvals/<id>`, `…/reveal`, `GET /v1/browsers/self`;
+not the approver's list, claim, finish, envelope or withdrawals). It never allows `*`. Without
 `GOOGLE_WEB_CLIENT_SECRET`, the Google web flow answers `503 provider_not_configured`, and
 Apple's still works.
 
@@ -123,7 +124,9 @@ mk  = HKDF-SHA256(ikm = k, salt, info = "herdrup account enrol v1", 32 bytes)
 mac = HMAC-SHA256(mk, "herdrup-enrol-v1|" + account_id + "|" + device_pub + "|" + challenge_id)
 ```
 
-All values are unpadded base64url. `test/vectors/enrol-v1.json` pins this for the app, desktop
+All values are unpadded base64url, and `device_pub` must be canonical (43 characters whose
+re-encoding is the input; any other spelling of the same 32 bytes is `400 bad_request`), so a key
+has one spelling everywhere. `test/vectors/enrol-v1.json` pins this for the app, desktop
 and web clients. A session enrols one device, once, so a stolen access token can't bind the
 thief's key; a key belongs to one account at a time (`409 device_in_other_account`); an account
 has at most 20 devices (`403 too_many_devices`). Removing a device ends the sessions bound to it.
@@ -162,12 +165,16 @@ code   = uint32_be(h[0..4]) mod 10000, 4 digits, zero-padded
 Every binary field is unpadded base64url. Each step runs once, in order, within 10 minutes; a
 new request replaces the browser's live one. The service never sees the code, stores the
 envelope as sent and returns it only to that browser (`GET /v1/browsers/self`), and accepts an
-envelope only with a higher `seq` per approver. It can't grant anything: grants exist only on
+envelope only with a higher `seq` per approver. A finish (or envelope) is one D1 batch: a
+failure leaves the request as it was, so the approver can retry, and the shown access changes
+only with the envelope. It can't grant anything: grants exist only on
 the machines, and the `access` state Devices shows is what the approver reported.
 `test/vectors/approve-v1.json` is herdrup-desktop's vector (`internal/account/testdata/approve-v1-local.json`),
 which the tests regenerate byte for byte.
 
-Removing a browser that had access (or a claimed request) records a **withdrawal** of its key
+The first claim of a browser's request marks its device (an approver may write grants from then
+on); a later request or the approver's removal doesn't clear the mark. Removing a marked browser
+records a **withdrawal** of its key
 for 35 days: approvers read `GET /v1/withdrawals` and remove its grants from their machines, and
 no statement is issued for that key on the account meanwhile (`403 device_withdrawn`), even if the
 browser signs in and enrols again, until an approver approves it again by code.
@@ -360,6 +367,13 @@ secret, var or binding.
 
 For browser approval (approve-v1): apply the migrations (`0006_browser_access.sql`), then
 deploy. It adds the `APPROVAL_LIMIT` binding (namespace `6987`) and needs no secret or var.
+From this build on, enrolment refuses a non-canonical `device_pub`. Before deploying, check that
+no stored key is non-canonical (the answer should be `0`); if any are, decide what to do with
+them before rewriting rows:
+
+```sh
+npx wrangler d1 execute herdrup-accounts --remote --command "SELECT COUNT(*) FROM devices WHERE length(device_pub) <> 43 OR substr(device_pub, 43, 1) NOT IN ('A','E','I','M','Q','U','Y','c','g','k','o','s','w','0','4','8')"
+```
 
 ### Rotate the statement key
 

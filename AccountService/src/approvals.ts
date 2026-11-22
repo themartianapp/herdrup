@@ -27,10 +27,12 @@
 // goes back only to that browser. Every binary field is unpadded base64url.
 //
 // None of this grants anything: grants exist only on the machines, written over SSH by T.
-// browser_access is what T reported, for Devices to show. A browser removed from Devices that
-// had access leaves a withdrawal (35 days): approvers sweep its grants, and no statement is
-// issued for its key on this account meanwhile (src/statements.ts).
-import { b64url, fromB64url, hex, randomB64url, utf8 } from "./bytes";
+// browser_access is what T reported, for Devices to show. The first claim of a browser's request
+// marks its device row (devices.approval_claimed_ms): from then on T may have written grants for
+// its key. Removing a marked browser leaves a withdrawal (35 days): approvers sweep its grants,
+// and no statement is issued for its key on this account meanwhile (src/statements.ts). Keys are
+// canonical base64url everywhere (src/bytes.ts bytes32), so string equality is key equality.
+import { b64url, bytes32, fromB64url, hex, randomB64url, utf8 } from "./bytes";
 import { openAccountRequest } from "./auth";
 import type { Env } from "./env";
 import { errorResponse, json, readJsonObject, type Endpoint } from "./http";
@@ -53,13 +55,6 @@ export const MAX_SEALED_LENGTH = 16 * 1024;
 const MIN_SEALED_BYTES = 28;
 const SCOPES = ["chat", "terminal"] as const;
 type Scope = (typeof SCOPES)[number];
-
-/** 32 bytes as canonical unpadded base64url (43 characters), or null. */
-export function bytes32(value: unknown): Uint8Array | null {
-  if (typeof value !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value)) return null;
-  const bytes = fromB64url(value);
-  return bytes !== null && b64url(bytes) === value ? bytes : null;
-}
 
 function concat(...parts: Uint8Array[]): Uint8Array {
   const out = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
@@ -272,14 +267,21 @@ export async function handleClaim(request: Request, env: Env, id: string, nowMs:
   const body = await readJsonObject(request, MAX_APPROVAL_BODY_BYTES);
   if (body instanceof Response) return body;
   if (bytes32(body.nonce_t) === null) return errorResponse(400, "bad_request");
-  const claimed = await env.DB.prepare(
-    `UPDATE approval_requests SET approver_device_id = ?1, nonce_t = ?2
-      WHERE id = ?3 AND account_id = ?4 AND approver_device_id IS NULL AND outcome IS NULL AND exp_ms > ?5
-     RETURNING id`,
-  )
-    .bind(caller.device.id, body.nonce_t, id, caller.principal.accountId, nowMs)
-    .first();
-  if (claimed !== null) return json(200, { state: "claimed" });
+  // One batch: the claim, and the browser's mark that an approver may now write grants for its
+  // key. The mark lives on the browser's device row, so neither a replacement request nor the
+  // approver's removal clears it; only removing the browser does, turning it into a withdrawal.
+  const [claimed] = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE approval_requests SET approver_device_id = ?1, nonce_t = ?2
+        WHERE id = ?3 AND account_id = ?4 AND approver_device_id IS NULL AND outcome IS NULL AND exp_ms > ?5
+       RETURNING id`,
+    ).bind(caller.device.id, body.nonce_t, id, caller.principal.accountId, nowMs),
+    env.DB.prepare(
+      `UPDATE devices SET approval_claimed_ms = COALESCE(approval_claimed_ms, ?4)
+        WHERE id = (SELECT browser_device_id FROM approval_requests WHERE id = ?1 AND approver_device_id = ?2 AND nonce_t = ?3)`,
+    ).bind(id, caller.device.id, body.nonce_t, nowMs),
+  ]);
+  if (claimed.results.length > 0) return json(200, { state: "claimed" });
   const row = await findRequest(env, caller, id);
   if (row === null) return errorResponse(404, "not_found");
   return notLive(row, nowMs) ?? errorResponse(409, "already_claimed");
@@ -348,22 +350,42 @@ async function envelopeSlot(env: Env, browserId: string, approverPub: string): P
   return row ?? { seq: null, others: 0 };
 }
 
-/** Writes the reported access and the envelope (only over a lower seq, and under the per-browser cap). */
-function storeReport(env: Env, accountId: string, browserId: string, approverPub: string, report: Report, nowMs: number): D1PreparedStatement[] {
+/**
+ * The statements that store an approver's report, for one batch that starts with `gate`: the
+ * envelope (only over a lower seq, and under the per-browser cap), then the reported access. D1
+ * runs a batch as one transaction, in order. Each statement after `gate` runs only when the one
+ * just before it changed a row (`changes() = 1`), so there is no envelope unless the gate held,
+ * and no access unless the envelope advanced. Statements a caller appends follow the same rule.
+ */
+export function reportStatements(
+  db: D1Database,
+  gate: D1PreparedStatement,
+  accountId: string,
+  browserId: string,
+  approverPub: string,
+  report: Report,
+  nowMs: number,
+): D1PreparedStatement[] {
   return [
-    env.DB.prepare(
-      `INSERT INTO browser_access (device_id, account_id, scope, expires_ms, approved_ms, updated_ms)
-       SELECT ?1, ?2, ?3, ?4, ?5, ?5 WHERE EXISTS (SELECT 1 FROM devices WHERE id = ?1 AND account_id = ?2)
-       ON CONFLICT (device_id) DO UPDATE SET scope = excluded.scope, expires_ms = excluded.expires_ms, updated_ms = excluded.updated_ms`,
-    ).bind(browserId, accountId, report.scope, report.expiresMs, nowMs),
-    env.DB.prepare(
-      `INSERT INTO browser_envelopes (device_id, approver_pub, account_id, seq, sealed, updated_ms)
-       SELECT ?1, ?2, ?3, ?4, ?5, ?6
-        WHERE EXISTS (SELECT 1 FROM devices WHERE id = ?1 AND account_id = ?3)
-          AND (SELECT COUNT(*) FROM browser_envelopes WHERE device_id = ?1 AND approver_pub <> ?2) < ?7
-       ON CONFLICT (device_id, approver_pub) DO UPDATE SET seq = excluded.seq, sealed = excluded.sealed, updated_ms = excluded.updated_ms
-        WHERE excluded.seq > browser_envelopes.seq`,
-    ).bind(browserId, approverPub, accountId, report.seq, report.sealed, nowMs, MAX_ENVELOPES),
+    gate,
+    db
+      .prepare(
+        `INSERT INTO browser_envelopes (device_id, approver_pub, account_id, seq, sealed, updated_ms)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6
+          WHERE changes() = 1
+            AND EXISTS (SELECT 1 FROM devices WHERE id = ?1 AND account_id = ?3)
+            AND (SELECT COUNT(*) FROM browser_envelopes WHERE device_id = ?1 AND approver_pub <> ?2) < ?7
+         ON CONFLICT (device_id, approver_pub) DO UPDATE SET seq = excluded.seq, sealed = excluded.sealed, updated_ms = excluded.updated_ms
+          WHERE excluded.seq > browser_envelopes.seq`,
+      )
+      .bind(browserId, approverPub, accountId, report.seq, report.sealed, nowMs, MAX_ENVELOPES),
+    db
+      .prepare(
+        `INSERT INTO browser_access (device_id, account_id, scope, expires_ms, approved_ms, updated_ms)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?5 WHERE changes() = 1
+         ON CONFLICT (device_id) DO UPDATE SET scope = excluded.scope, expires_ms = excluded.expires_ms, updated_ms = excluded.updated_ms`,
+      )
+      .bind(browserId, accountId, report.scope, report.expiresMs, nowMs),
   ];
 }
 
@@ -397,24 +419,35 @@ export async function handleFinish(request: Request, env: Env, id: string, nowMs
   const slot = await envelopeSlot(env, row.browser_device_id, caller.device.device_pub);
   if (slot.seq !== null && report.seq <= slot.seq) return errorResponse(409, "stale_seq");
   if (slot.seq === null && slot.others >= MAX_ENVELOPES) return errorResponse(403, "too_many_envelopes");
-  // The single-use gate: of two finishes, one takes the request.
-  const finished = await env.DB.prepare(
-    `UPDATE approval_requests SET outcome = 'approved', exp_ms = ?1
-      WHERE id = ?2 AND approver_device_id = ?3 AND nonce_b IS NOT NULL AND outcome IS NULL AND exp_ms > ?4
-     RETURNING id`,
-  )
-    .bind(nowMs + OUTCOME_KEEP_MS, id, caller.device.id, nowMs)
-    .first();
-  if (finished === null) return errorResponse(409, "already_finished");
-  await env.DB.batch([
-    ...storeReport(env, accountId, row.browser_device_id, caller.device.device_pub, report, nowMs),
-    // Approved again by code: a withdrawal of this key from an earlier removal no longer holds.
-    env.DB.prepare("DELETE FROM withdrawals WHERE account_id = ? AND device_pub = (SELECT device_pub FROM devices WHERE id = ?)").bind(
+  // One batch, so a failure anywhere leaves the request revealed and a retry works. The gate is
+  // the single-use check (of two finishes, one passes it), the envelope and access follow it, and
+  // the request is marked approved only once both are written.
+  const live = `id = ?1 AND approver_device_id = ?2 AND nonce_b IS NOT NULL AND outcome IS NULL AND exp_ms > ?3`;
+  const results = await env.DB.batch([
+    ...reportStatements(
+      env.DB,
+      env.DB.prepare(`UPDATE approval_requests SET exp_ms = exp_ms WHERE ${live}`).bind(id, caller.device.id, nowMs),
       accountId,
       row.browser_device_id,
+      caller.device.device_pub,
+      report,
+      nowMs,
     ),
+    env.DB.prepare(`UPDATE approval_requests SET outcome = 'approved', exp_ms = ?4 WHERE changes() = 1 AND ${live}`).bind(
+      id,
+      caller.device.id,
+      nowMs,
+      nowMs + OUTCOME_KEEP_MS,
+    ),
+    // Approved again by code: a withdrawal of this key from an earlier removal no longer holds.
+    env.DB.prepare(
+      "DELETE FROM withdrawals WHERE changes() = 1 AND account_id = ? AND device_pub = (SELECT device_pub FROM devices WHERE id = ?)",
+    ).bind(accountId, row.browser_device_id),
   ]);
-  return json(200, { state: "approved" });
+  if (results[3].meta.changes === 1) return json(200, { state: "approved" });
+  // Lost a race: another finish took the request, it expired, or another envelope got there first.
+  const now = await findRequest(env, caller, id);
+  return (now === null ? null : notLive(now, nowMs)) ?? errorResponse(409, "stale_seq");
 }
 
 export async function handlePutEnvelope(request: Request, env: Env, browserId: string, nowMs: number): Promise<Response> {
@@ -434,8 +467,10 @@ export async function handlePutEnvelope(request: Request, env: Env, browserId: s
   const slot = await envelopeSlot(env, browserId, caller.device.device_pub);
   if (slot.seq === null) return errorResponse(403, "not_approver");
   if (report.seq <= slot.seq) return errorResponse(409, "stale_seq");
-  const [, envelope] = await env.DB.batch(storeReport(env, accountId, browserId, caller.device.device_pub, report, nowMs));
-  return envelope.meta.changes > 0 ? json(200, { seq: report.seq }) : errorResponse(409, "stale_seq");
+  // The gate repeats the approver check inside the batch.
+  const gate = env.DB.prepare("UPDATE browser_envelopes SET seq = seq WHERE device_id = ? AND approver_pub = ?").bind(browserId, caller.device.device_pub);
+  const [, envelope] = await env.DB.batch(reportStatements(env.DB, gate, accountId, browserId, caller.device.device_pub, report, nowMs));
+  return envelope.meta.changes === 1 ? json(200, { seq: report.seq }) : errorResponse(409, "stale_seq");
 }
 
 export async function handleBrowserSelf(request: Request, env: Env, nowMs: number): Promise<Response> {
@@ -460,9 +495,9 @@ export async function handleWithdrawals(request: Request, env: Env, nowMs: numbe
 }
 
 /**
- * The statement that records a withdrawal when browser `deviceId` is removed, if it had access
- * or a claimed request (its approver may already have written grants). Runs in the removal's
- * batch, before the device row goes.
+ * The statement that records a withdrawal when browser `deviceId` is removed, if a request of it
+ * was ever claimed (devices.approval_claimed_ms): its approver may already have written grants.
+ * Runs in the removal's batch, before the device row goes.
  */
 export async function withdrawal(db: D1Database, accountId: string, deviceId: string, devicePub: string, nowMs: number): Promise<D1PreparedStatement | null> {
   const pub = fromB64url(devicePub);
@@ -471,9 +506,7 @@ export async function withdrawal(db: D1Database, accountId: string, deviceId: st
     .prepare(
       `INSERT INTO withdrawals (account_id, device_pub, fingerprint, created_ms, exp_ms)
        SELECT ?1, ?2, ?3, ?4, ?5
-        WHERE EXISTS (SELECT 1 FROM devices WHERE id = ?6 AND account_id = ?1)
-          AND (EXISTS (SELECT 1 FROM browser_access WHERE device_id = ?6)
-               OR EXISTS (SELECT 1 FROM approval_requests WHERE browser_device_id = ?6 AND approver_device_id IS NOT NULL))
+        WHERE EXISTS (SELECT 1 FROM devices WHERE id = ?6 AND account_id = ?1 AND approval_claimed_ms IS NOT NULL)
        ON CONFLICT (account_id, device_pub) DO UPDATE SET created_ms = excluded.created_ms, exp_ms = excluded.exp_ms`,
     )
     .bind(accountId, devicePub, await fingerprint(pub), nowMs, nowMs + WITHDRAWAL_TTL_MS, deviceId);

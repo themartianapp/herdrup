@@ -1313,6 +1313,13 @@ one per (browser, approver key), at most 20 per browser, and returns it only to 
 changes come with `PUT /v1/browsers/<id>/envelope` from an approver whose envelope the browser
 already holds (`403 not_approver` otherwise: another device runs the code flow first).
 
+Each write of a report is one D1 batch (one transaction), and the access Devices shows moves
+only with the envelope. For `finish`, the batch is the single-use gate on the request, the
+envelope, the access, the request's `approved` mark and the withdrawal's removal. Each
+statement after the gate runs only when the one before it changed a row (`changes() = 1`). A
+failure anywhere leaves the request `revealed`, so the approver can retry. A report that loses
+the seq race changes nothing, the shown access included.
+
 `test/vectors/approve-v1.json` is herdrup-desktop's vector (`internal/account/testdata/approve-v1-local.json`
 on its `accounts/web-approve` branch, from the RFC 7748 §6.1 keys). `test/approvals.test.ts`
 regenerates it in TypeScript from the same inputs and asserts the file byte for byte (commit
@@ -1322,9 +1329,21 @@ regenerates it in TypeScript from the same inputs and asserts the file byte for 
 
 Device removal is unchanged (owner decision 5, 22 Nov): any signed-in device, browsers
 included, removes any device. Removing a browser deletes its sessions, request, access and
-envelopes (`ON DELETE CASCADE`). When it had access or a claimed request (its approver may
-already have written grants), the same batch records a **withdrawal** of its key for 35 days,
-longer than any grant, with herdr's fingerprint (`SHA256:xxxx·xxxx·xxxx·xxxx`).
+envelopes (`ON DELETE CASCADE`).
+
+The first claim of a browser's request marks its device row (`devices.approval_claimed_ms`),
+in the claim's own batch: from then on its approver may have written grants for the key. The
+mark is independent of the request row. A replacement request (which clears the claim) doesn't
+clear it, and neither does removing the approver (which deletes the request). When a marked
+browser is removed, the same batch records a **withdrawal** of its key for 35 days, longer than
+any grant, with herdr's fingerprint (`SHA256:xxxx·xxxx·xxxx·xxxx`).
+
+**One spelling per key.** Enrolment accepts a device key only in canonical unpadded base64url:
+43 characters whose re-encoding is the input (`400 bad_request` otherwise). Each 32-byte key
+has four base64url spellings (the last character's two unused bits). Without this, a removed
+browser could enrol its withdrawn key again under another spelling and get statements. Every
+stored key (`devices`, and from them `withdrawals` and `browser_envelopes`) is therefore
+canonical, so comparing the strings compares the keys.
 
 - Approvers read `GET /v1/withdrawals` and remove the key's grants from their machines.
 - **No statement is issued for a withdrawn key on the account** (`403 device_withdrawn`),

@@ -1,7 +1,7 @@
 import { SELF, env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { findOrCreateAccount } from "../src/auth";
-import { approveCommit, fingerprint, MAX_REQUESTS_PER_HOUR } from "../src/approvals";
+import { approveCommit, fingerprint, MAX_REQUESTS_PER_HOUR, reportStatements } from "../src/approvals";
 import { b64url, fromB64url, hex, randomB64url } from "../src/bytes";
 import { cleanup } from "../src/cleanup";
 import { enrolMac, x25519 } from "../src/devices";
@@ -25,6 +25,7 @@ beforeAll(async () => {
   env.STATEMENT_KID_A = "test-a";
   env.STATEMENT_ACTIVE = "A";
 });
+
 interface Party {
   accountId: string;
   access: string;
@@ -47,26 +48,29 @@ async function rejection(response: Response): Promise<{ status: number; error: s
   return { status: response.status, ...(await response.json<{ error: string }>()) };
 }
 
-/** A new session on `accountId` that enrols `key` (fresh unless given) as a device of `platform`. */
-async function party(platform: Platform, accountId?: string, key?: X25519Key): Promise<Party> {
-  const account = accountId ?? (await newAccount());
-  const tokens = await openSession(env.DB, account, platform, Date.now());
-  const session = { access: tokens.access_token };
-  const deviceKey = key ?? (await x25519Key());
-  const pub = b64url(deviceKey.pub);
+/** Enrols `key` on `session` as the client does, sending `spelling` as device_pub (its canonical one unless given). */
+async function enrol(session: { access: string }, platform: Platform, key: X25519Key, spelling = b64url(key.pub)): Promise<Response> {
   const issued = await (await call("POST", "/v1/devices/challenge", session)).json<{
     challenge_id: string;
     server_pub: string;
     salt: string;
     account_id: string;
   }>();
-  const shared = await x25519(deviceKey.privateKey, fromB64url(issued.server_pub)!);
-  const mac = await enrolMac(shared!, fromB64url(issued.salt)!, issued.account_id, pub, issued.challenge_id);
+  const shared = await x25519(key.privateKey, fromB64url(issued.server_pub)!);
+  const mac = await enrolMac(shared!, fromB64url(issued.salt)!, issued.account_id, spelling, issued.challenge_id);
   const name = platform === "web" ? "Chrome on macOS" : "Jerry's MacBook";
-  const response = await call("POST", "/v1/devices", session, { challenge_id: issued.challenge_id, device_pub: pub, mac, name, platform });
+  return call("POST", "/v1/devices", session, { challenge_id: issued.challenge_id, device_pub: spelling, mac, name, platform });
+}
+
+/** A new session on `accountId` that enrols `key` (fresh unless given) as a device of `platform`. */
+async function party(platform: Platform, accountId?: string, key?: X25519Key): Promise<Party> {
+  const account = accountId ?? (await newAccount());
+  const tokens = await openSession(env.DB, account, platform, Date.now());
+  const deviceKey = key ?? (await x25519Key());
+  const response = await enrol({ access: tokens.access_token }, platform, deviceKey);
   expect(response.status).toBe(201);
   const { device } = await response.json<{ device: { id: string } }>();
-  return { accountId: account, access: tokens.access_token, key: deviceKey, pub, id: device.id };
+  return { accountId: account, access: tokens.access_token, key: deviceKey, pub: b64url(deviceKey.pub), id: device.id };
 }
 
 const nonce = () => crypto.getRandomValues(new Uint8Array(32));
@@ -503,6 +507,97 @@ describe("browser approval", () => {
     ]);
   });
 
+  it("withdraws a browser whose claimed request was replaced, or whose approver was removed, before it went", async () => {
+    const withdrawn = async (caller: Party) =>
+      (await (await call("GET", "/v1/withdrawals", caller)).json<{ withdrawals: { device_pub: string }[] }>()).withdrawals.map((w) => w.device_pub);
+
+    // Claimed, then the browser asks again: the new request has no approver, the claim still counts.
+    const approver = await party("macos");
+    const replaced = await party("web", approver.accountId);
+    await claimed(replaced, approver);
+    expect((await call("POST", "/v1/approvals", replaced, { commit: b64url(nonce()) })).status).toBe(201);
+    expect((await call("DELETE", `/v1/devices/${replaced.id}`, approver)).status).toBe(204);
+    expect(await withdrawn(approver)).toEqual([replaced.pub]);
+    const again = await party("web", approver.accountId, replaced.key);
+    expect(await rejection(await call("POST", "/v1/statements", again, { hosts: [randomB64url(16)] }))).toEqual({ status: 403, error: "device_withdrawn" });
+
+    // Claimed, then the approver is removed (by the browser itself: any device removes any
+    // other), which deletes the request; then the browser is removed.
+    const first = await party("linux");
+    const keeper = await party("ios", first.accountId);
+    const orphaned = await party("web", first.accountId);
+    await claimed(orphaned, first);
+    expect((await call("DELETE", `/v1/devices/${first.id}`, orphaned)).status).toBe(204);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM approval_requests WHERE browser_device_id = ?").bind(orphaned.id).first("n")).toBe(0);
+    expect((await call("DELETE", `/v1/devices/${orphaned.id}`, keeper)).status).toBe(204);
+    expect(await withdrawn(keeper)).toEqual([orphaned.pub]);
+    const back = await party("web", first.accountId, orphaned.key);
+    expect(await statementStatus(back)).toBe(403);
+  });
+
+  it("refuses a non-canonical spelling of a device key, so the withdrawal block can't be dodged", async () => {
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    // The last of 43 characters carries 4 bits and 2 unused ones: the next letter spells the same 32 bytes.
+    const respell = (pub: string) => pub.slice(0, 42) + alphabet[alphabet.indexOf(pub[42]) + 1];
+    const approver = await party("macos");
+    const browser = await party("web", approver.accountId);
+    const flipped = respell(browser.pub);
+    expect(flipped).not.toBe(browser.pub);
+    expect(fromB64url(flipped)).toEqual(fromB64url(browser.pub));
+
+    await approved(browser, approver);
+    expect((await call("DELETE", `/v1/devices/${browser.id}`, approver)).status).toBe(204);
+    const session = { access: (await openSession(env.DB, approver.accountId, "web", Date.now())).access_token };
+    expect(await rejection(await enrol(session, "web", browser.key, flipped))).toEqual({ status: 400, error: "bad_request" });
+    expect(await rejection(await call("POST", "/v1/statements", session, { hosts: [randomB64url(16)] }))).toEqual({ status: 403, error: "device_required" });
+    // The canonical spelling enrols, and is still withdrawn.
+    expect((await enrol(session, "web", browser.key)).status).toBe(201);
+    expect(await rejection(await call("POST", "/v1/statements", session, { hosts: [randomB64url(16)] }))).toEqual({ status: 403, error: "device_withdrawn" });
+
+    // Any key, withdrawn or not: one spelling only.
+    const fresh = await x25519Key();
+    const other = { access: (await openSession(env.DB, approver.accountId, "ios", Date.now())).access_token };
+    expect((await enrol(other, "ios", fresh, respell(b64url(fresh.pub)))).status).toBe(400);
+  });
+
+  it("rolls a failed finish back whole, so the approver can retry it", async () => {
+    const approver = await party("macos");
+    const browser = await party("web", approver.accountId);
+    const pending = await revealed(browser, approver);
+    const body = { outcome: "approved", ...(await report(browser, approver, 1)) };
+    // The access write fails after the envelope write, inside the batch.
+    await env.DB.prepare("CREATE TRIGGER fail_access BEFORE INSERT ON browser_access BEGIN SELECT RAISE(ABORT, 'injected'); END").run();
+    try {
+      expect(await rejection(await call("POST", `/v1/approvals/${pending.id}/finish`, approver, body))).toEqual({ status: 500, error: "internal_error" });
+    } finally {
+      await env.DB.prepare("DROP TRIGGER fail_access").run();
+    }
+    expect((await getRequest(approver, pending.id)).state).toBe("revealed");
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM browser_envelopes WHERE device_id = ?").bind(browser.id).first("n")).toBe(0);
+    expect((await call("POST", `/v1/approvals/${pending.id}/finish`, approver, body)).status).toBe(200);
+    expect((await getRequest(browser, pending.id)).state).toBe("approved");
+    expect(await deviceAccess(approver, browser.id)).toMatchObject({ state: "approved", scope: "terminal" });
+  });
+
+  it("writes the reported access only when the envelope advances", async () => {
+    const approver = await party("macos");
+    const browser = await party("web", approver.accountId);
+    await approved(browser, approver);
+    const before = await deviceAccess(approver, browser.id);
+    // A report that loses the seq race after the handler's own check: the batch runs, the
+    // envelope doesn't move, and neither does the access Devices shows.
+    const gate = env.DB.prepare("UPDATE browser_envelopes SET seq = seq WHERE device_id = ? AND approver_pub = ?").bind(browser.id, approver.pub);
+    const stale = { scope: "chat" as const, expiresMs: Date.now() + DAY_MS, seq: 1, sealed: await sealEnvelope(approver.key, browser.key.pub, 1, ENVELOPE) };
+    const results = await env.DB.batch(reportStatements(env.DB, gate, approver.accountId, browser.id, approver.pub, stale, Date.now()));
+    expect(results.map((result) => result.meta.changes)).toEqual([1, 0, 0]);
+    expect(await deviceAccess(approver, browser.id)).toEqual(before);
+    // And a gate that doesn't hold writes nothing at all.
+    const closed = env.DB.prepare("UPDATE browser_envelopes SET seq = seq WHERE device_id = ? AND approver_pub = ?").bind(browser.id, randomB64url(32));
+    const ahead = { ...stale, seq: 2 };
+    expect((await env.DB.batch(reportStatements(env.DB, closed, approver.accountId, browser.id, approver.pub, ahead, Date.now()))).map((r) => r.meta.changes)).toEqual([0, 0, 0]);
+    expect(await env.DB.prepare("SELECT seq FROM browser_envelopes WHERE device_id = ?").bind(browser.id).first("seq")).toBe(1);
+  });
+
   it("rate-limits every approval route per account (APPROVAL_LIMIT) and caps requests per hour", async () => {
     const approver = await party("macos");
     const browser = await party("web", approver.accountId);
@@ -548,12 +643,18 @@ describe("browser approval", () => {
       expect(response.headers.get("Access-Control-Allow-Origin")).toBe(env.WEB_ORIGIN);
     }
     for (const [path, method] of [
+      ["/v1/approvals", "GET"],
       [`/v1/approvals/${id}/claim`, "POST"],
       [`/v1/approvals/${id}/finish`, "POST"],
       [`/v1/browsers/${id}/envelope`, "PUT"],
       ["/v1/withdrawals", "GET"],
     ]) {
-      expect((await preflight(path, method)).headers.get("Access-Control-Allow-Origin"), path).toBeNull();
+      expect((await preflight(path, method)).headers.get("Access-Control-Allow-Origin"), `${method} ${path}`).toBeNull();
     }
+    // The approver list answers the web guest's origin without CORS headers.
+    const approver = await party("macos");
+    const listed = await call("GET", "/v1/approvals", approver, undefined, { Origin: env.WEB_ORIGIN });
+    expect(listed.status).toBe(200);
+    expect(listed.headers.get("Access-Control-Allow-Origin")).toBeNull();
   });
 });

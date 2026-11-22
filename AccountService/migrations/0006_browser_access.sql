@@ -63,10 +63,16 @@ CREATE TABLE browser_envelopes (
 
 CREATE INDEX browser_envelopes_account ON browser_envelopes (account_id);
 
--- A browser that had owner access (or a claimed request) and was removed from Devices, for 35
--- days, longer than any grant: approvers sweep its grants from their machines, and no
+-- When a request of this browser was first claimed: from then on its approver may have written
+-- grants for the browser's key on machines. On the device row, so neither a replacement request
+-- (which clears the claim) nor the approver's removal (which deletes the request) loses it.
+ALTER TABLE devices ADD COLUMN approval_claimed_ms INTEGER;
+
+-- A browser whose request was ever claimed (approval_claimed_ms set), removed from Devices, for
+-- 35 days, longer than any grant: approvers sweep its grants from their machines, and no
 -- statement is issued for its key on this account meanwhile, even if it signs in and enrols
--- again, until an approver approves it again. fingerprint is herdr's ("SHA256:xxxx·…").
+-- again, until an approver approves it again. device_pub is the canonical base64url every
+-- devices row holds (enrolment refuses any other spelling). fingerprint is herdr's ("SHA256:xxxx·…").
 CREATE TABLE withdrawals (
   account_id TEXT NOT NULL REFERENCES accounts (id) ON DELETE CASCADE,
   device_pub TEXT NOT NULL,

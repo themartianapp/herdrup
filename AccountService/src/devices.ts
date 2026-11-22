@@ -16,11 +16,13 @@
 //   mk  = HKDF-SHA256(ikm = k, salt, info = "herdrup account enrol v1", 32 bytes)
 //   mac = HMAC-SHA256(mk, "herdrup-enrol-v1|" account_id "|" device_pub "|" challenge_id)
 // with device_pub, server_pub, salt and mac in unpadded base64url. The Worker computes the same
-// k as X25519(e, D). test/vectors/enrol-v1.json pins the algorithm for every client.
+// k as X25519(e, D). test/vectors/enrol-v1.json pins the algorithm for every client. device_pub
+// must be canonical (src/bytes.ts bytes32), so a key has one spelling: UNIQUE, the withdrawal
+// block and every other key comparison work on that string.
 //
 // A session enrols one device, once: its device is fixed after that, so a stolen access token
 // can't bind the thief's own key to the account. A key belongs to one account at a time.
-import { b64url, fromB64url, randomB64url, sameString, utf8 } from "./bytes";
+import { b64url, bytes32, fromB64url, randomB64url, sameString, utf8 } from "./bytes";
 import { browserAccess, withdrawal, type AccessJson } from "./approvals";
 import { openAccountRequest } from "./auth";
 import type { Env } from "./env";
@@ -33,7 +35,6 @@ export const MAX_DEVICE_BODY_BYTES = 2048;
 export const MAX_NAME_LENGTH = 64;
 export const ENROL_INFO = "herdrup account enrol v1";
 export const ENROL_MESSAGE_PREFIX = "herdrup-enrol-v1|";
-const KEY_B64 = /^[A-Za-z0-9_-]{43}$/;
 const ID = /^[A-Za-z0-9_-]{22}$/;
 const MAC = /^[A-Za-z0-9_-]{43}$/;
 
@@ -124,11 +125,12 @@ export async function handleEnrol(request: Request, env: Env, nowMs: number): Pr
   if (body instanceof Response) return body;
   const { challenge_id: challengeId, device_pub: devicePub, mac, platform } = body;
   const name = deviceName(body.name);
+  const devicePubBytes = bytes32(devicePub);
   if (
     typeof challengeId !== "string" ||
     !ID.test(challengeId) ||
     typeof devicePub !== "string" ||
-    !KEY_B64.test(devicePub) ||
+    devicePubBytes === null ||
     typeof mac !== "string" ||
     !MAC.test(mac) ||
     name === null ||
@@ -144,10 +146,9 @@ export async function handleEnrol(request: Request, env: Env, nowMs: number): Pr
     .bind(challengeId, principal.sessionId, nowMs)
     .first<{ server_pkcs8: string; salt: string }>();
   if (challenge === null) return errorResponse(400, "challenge_invalid");
-  const devicePubBytes = fromB64url(devicePub);
   const serverPkcs8 = fromB64url(challenge.server_pkcs8);
   const salt = fromB64url(challenge.salt);
-  if (devicePubBytes === null || serverPkcs8 === null || salt === null) return errorResponse(400, "bad_request");
+  if (serverPkcs8 === null || salt === null) return errorResponse(400, "bad_request");
   const serverKey = await crypto.subtle.importKey("pkcs8", serverPkcs8, { name: "X25519" }, false, ["deriveBits"]);
   const shared = await x25519(serverKey, devicePubBytes);
   if (shared === null) return errorResponse(400, "invalid_device_key");

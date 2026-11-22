@@ -111,32 +111,35 @@ function resolve(pathname: string): { route: Route; id: string } | undefined {
 }
 
 /**
- * The endpoints the web guest's page calls: CORS for WEB_ORIGIN only (src/browser.ts). Health is
- * one: the page reads its features to decide whether to offer sign-in. The approval routes a
- * browser calls are too; the approver's (claim, finish, envelope, withdrawals) are not.
+ * The calls the web guest's page makes, by route and method: CORS for WEB_ORIGIN only
+ * (src/browser.ts). Health is one: the page reads its features to decide whether to offer
+ * sign-in. Of the approval routes, only the browser's side is (create, read, reveal, self); the
+ * approver's (list, claim, finish, envelope, withdrawals) is not.
  */
-const WEB_GUEST_ENDPOINTS: ReadonlySet<RoutedEndpoint> = new Set([
-  "/v1/health",
-  "/v1/auth/refresh",
-  "/v1/auth/signout",
-  "/v1/account",
-  "/v1/devices/challenge",
-  "/v1/devices",
-  "/v1/devices/:id",
-  "/v1/statements",
-  "/v1/sync",
-  "/v1/approvals",
-  "/v1/approvals/:id",
-  "/v1/approvals/:id/reveal",
-  "/v1/browsers/self",
-]);
+const WEB_GUEST_CALLS: Partial<Record<RoutedEndpoint, string[]>> = {
+  "/v1/health": ["GET"],
+  "/v1/auth/refresh": ["POST"],
+  "/v1/auth/signout": ["POST"],
+  "/v1/account": ["GET"],
+  "/v1/devices/challenge": ["POST"],
+  "/v1/devices": ["GET", "POST"],
+  "/v1/devices/:id": ["PATCH", "DELETE"],
+  "/v1/statements": ["POST"],
+  "/v1/sync": ["GET", "POST"],
+  "/v1/approvals": ["POST"],
+  "/v1/approvals/:id": ["GET"],
+  "/v1/approvals/:id/reveal": ["POST"],
+  "/v1/browsers/self": ["GET"],
+};
 
-/** handleRequest, with CORS preflights and headers on the web guest's endpoints. */
+/** handleRequest, with CORS preflights and headers on the web guest's calls. */
 async function serve(request: Request, env: Env): Promise<Response> {
   const route = resolve(new URL(request.url).pathname)?.route;
-  if (route === undefined || !WEB_GUEST_ENDPOINTS.has(route.endpoint)) return handleRequest(request, env);
-  if (request.method === "OPTIONS") return preflight(request, env, route.methods);
+  const methods = route === undefined ? undefined : WEB_GUEST_CALLS[route.endpoint];
+  if (methods === undefined) return handleRequest(request, env);
+  if (request.method === "OPTIONS") return preflight(request, env, methods);
   const response = await handleRequest(request, env);
+  if (!methods.includes(request.method)) return response;
   for (const [name, value] of Object.entries(corsHeaders(request, env))) response.headers.set(name, value);
   return response;
 }
