@@ -77,7 +77,7 @@ final class TopicSuggestionsTests: XCTestCase {
         XCTAssertTrue(poll(10, every: 0.5) {
             row.press(forDuration: 1.0)
             let off = app.buttons["Turn off topics"].exists(within: 3)
-            if !off { app.tap() }
+            if !off { dismissMenu(of: row, in: app) }
             return off
         }, "the call went through: the agent now lists topics on")
     }
@@ -99,9 +99,23 @@ final class TopicSuggestionsTests: XCTestCase {
         poll(10, every: 0.5) {
             row.press(forDuration: 1.0)
             let shown = app.buttons[title].exists(within: 3)
-            if !shown { app.tap() }
+            if !shown { dismissMenu(of: row, in: app) }
             return shown
         }
+    }
+
+    /// Closes `row`'s open long-press menu with a tap on the dimmed backdrop, on the far side of
+    /// the row from the menu. `app.tap()` taps mid-screen, where the menu's items are: on macserve
+    /// (#805, j_8267f6fa) it chose Restart agent, whose confirmation then stayed over the list.
+    private func dismissMenu(of row: XCUIElement, in app: XCUIApplication) {
+        let restart = app.buttons["Restart agent"]   // in every agent's menu
+        guard restart.exists else { return }
+        let screen = app.frame, lifted = row.frame
+        let y = restart.frame.midY > lifted.midY
+            ? (screen.minY + lifted.minY) / 2       // the menu is below the row: tap above it
+            : (lifted.maxY + screen.maxY) / 2       // the menu is above the row: tap below it
+        app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: screen.midX, dy: y)).tap()
+        XCTAssertTrue(restart.gone(within: 3), "the menu closed without choosing an item")
     }
 
     /// herdr-app is working: the confirmation offers to wait for its turn. Switch when it's
@@ -224,7 +238,7 @@ final class TopicSuggestionsTests: XCTestCase {
         XCTAssertTrue(row.exists(within: 12))
         row.press(forDuration: 1.0)
         XCTAssertTrue(app.buttons["Topics switch pending"].exists(within: 5), "pending while it works")
-        app.tap()
+        dismissMenu(of: row, in: app)
 
         XCTAssertTrue(poll(20, every: 0.3) { !row.exists }, "it goes idle, into the collapsed Idle group")
         openIdleGroup(app)
