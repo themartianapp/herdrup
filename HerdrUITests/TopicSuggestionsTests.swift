@@ -10,9 +10,12 @@ final class TopicSuggestionsTests: XCTestCase {
 
     override func setUp() { continueAfterFailure = false }
 
-    private func launch(_ mock: String, _ environment: [String: String] = [:]) -> XCUIApplication {
-        let base = ["HERDR_STEADY_CARET": "1", "HERDR_MOCK_STILL": "1", "HERDR_MOCK_TOPICS": "1",
+    /// `still: false` keeps working agents working: keephair (Claude) is listed outside the
+    /// collapsed Idle group only while it works, as in `ChatViewTests.testClaudeAgentHasNoSwitch`.
+    private func launch(_ mock: String, _ environment: [String: String] = [:], still: Bool = true) -> XCUIApplication {
+        var base = ["HERDR_STEADY_CARET": "1", "HERDR_MOCK_TOPICS": "1",
                     "HERDR_MOCK_TOPICS_SUGGEST": "1", "HERDR_MOCK_TOPICS_SWITCH": "1"]
+        if still { base["HERDR_MOCK_STILL"] = "1" }
         return XCUIApplication.launched(mock: mock, environment: base.merging(environment) { _, new in new })
     }
 
@@ -75,9 +78,10 @@ final class TopicSuggestionsTests: XCTestCase {
         }, "the call went through: the agent now lists topics on")
     }
 
-    /// Only omp agents get the switch: keephair is Claude.
+    /// Only omp agents get the switch: keephair is Claude. It must be working to be listed
+    /// outside the collapsed Idle group, so this launch is not still.
     func testSwitchIsOnlyForOmpAgents() {
-        let app = launch("chatview")
+        let app = launch("chatview", still: false)
         let row = any(app, "agent-row-w9:p2")
         XCTAssertTrue(row.exists(within: 12))
         row.press(forDuration: 1.0)
