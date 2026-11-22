@@ -2,6 +2,16 @@ import Foundation
 import Security
 import HerdrKit
 
+/// What the account screens show about who is signed in, kept beside the session so it survives a
+/// relaunch: Google's `display_hint` (the account email). Device-local, never synced, never sent
+/// anywhere; deleted whenever the session ends.
+protocol AccountHintStore {
+    func loadDisplayHint() throws -> String?
+    func saveDisplayHint(_ hint: String) throws
+    /// Succeeds when the hint is gone, including when there was none.
+    func deleteDisplayHint() throws
+}
+
 /// The HerdrUp account's refresh token in the Keychain (DESIGN #698 §2.5): service
 /// `dev.herdr.account`, account `refresh`, readable after the first unlock on this device only,
 /// never synchronizable, in the access group `$(AppIdentifierPrefix)com.jerryfane.herdr`. The
@@ -9,7 +19,10 @@ import HerdrKit
 /// `KeychainCredentialStore` and `KeychainGuestKeyStore`: every OSStatus is checked, the value
 /// is updated in place, and a locked or failing Keychain throws rather than reading as "signed
 /// out", which would drop a session that still exists.
-struct KeychainAccountTokenStore: AccountTokenStore {
+///
+/// The display hint (`AccountHintStore`) is a second item in the same service with the same
+/// attributes, account `display-hint`.
+struct KeychainAccountTokenStore: AccountTokenStore, AccountHintStore {
     struct Failure: Error, CustomStringConvertible {
         let status: OSStatus
         var description: String { "the Keychain refused the HerdrUp account's sign-in (\(status))" }
@@ -17,6 +30,7 @@ struct KeychainAccountTokenStore: AccountTokenStore {
 
     var service = "dev.herdr.account"
     var account = "refresh"
+    var hintAccount = "display-hint"
     /// `HerdrKeychainAccessGroup` in Info.plist, which xcodegen fills with
     /// `$(AppIdentifierPrefix)com.jerryfane.herdr` (project.yml). An unsigned simulator build
     /// has no prefix; there the group is left out, and the item lands in the app's default
@@ -29,7 +43,7 @@ struct KeychainAccountTokenStore: AccountTokenStore {
         return group
     }
 
-    private var base: [String: Any] {
+    private func base(_ account: String) -> [String: Any] {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -40,35 +54,54 @@ struct KeychainAccountTokenStore: AccountTokenStore {
         return query
     }
 
-    func loadRefreshToken() throws -> String? {
-        var query = base
+    func loadRefreshToken() throws -> String? { try load(account) }
+    func saveRefreshToken(_ token: String) throws { try save(token, account) }
+    func deleteRefreshToken() throws { try delete(account) }
+
+    func loadDisplayHint() throws -> String? { try load(hintAccount) }
+    func saveDisplayHint(_ hint: String) throws { try save(hint, hintAccount) }
+    func deleteDisplayHint() throws { try delete(hintAccount) }
+
+    private func load(_ account: String) throws -> String? {
+        var query = base(account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = item as? Data else { throw Failure(status: status) }
-        guard let token = String(data: data, encoding: .utf8), !token.isEmpty else { return nil }
-        return token
+        guard let text = String(data: data, encoding: .utf8), !text.isEmpty else { return nil }
+        return text
     }
 
-    func saveRefreshToken(_ token: String) throws {
-        let value = Data(token.utf8)
-        let updated = SecItemUpdate(base as CFDictionary, [kSecValueData as String: value] as CFDictionary)
+    private func save(_ text: String, _ account: String) throws {
+        let value = Data(text.utf8)
+        let updated = SecItemUpdate(base(account) as CFDictionary, [kSecValueData as String: value] as CFDictionary)
         if updated == errSecSuccess { return }
         guard updated == errSecItemNotFound else { throw Failure(status: updated) }
-        var add = base
+        var add = base(account)
         add[kSecValueData as String] = value
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let added = SecItemAdd(add as CFDictionary, nil)
         guard added == errSecSuccess else { throw Failure(status: added) }
     }
 
-    func deleteRefreshToken() throws {
-        let status = SecItemDelete(base as CFDictionary)
+    private func delete(_ account: String) throws {
+        let status = SecItemDelete(base(account) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw Failure(status: status) }
     }
 }
+
+#if DEBUG
+/// The display hint in memory, for screenshot mocks and UI tests (no Keychain there).
+final class InMemoryAccountHintStore: AccountHintStore {
+    private var hint: String?
+    init(hint: String?) { self.hint = hint }
+    func loadDisplayHint() throws -> String? { hint }
+    func saveDisplayHint(_ hint: String) throws { self.hint = hint }
+    func deleteDisplayHint() throws { hint = nil }
+}
+#endif
 
 /// `SyncEngine`'s state as one JSON file in Application Support (`HerdrUp Account/sync-state.json`):
 /// the pull revision, this device's copy of the account's items and the changes not yet pushed.

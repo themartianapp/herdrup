@@ -17,6 +17,14 @@ import SwiftUI
 /// - `HERDR_MOCK_ACCOUNT_ENROL`: `device_in_other_account` or `too_many_devices` refuses the
 ///   enrolment with that code.
 /// - `HERDR_MOCK_ACCOUNT_MANUAL_REVOKE=1`: deletion answers `manual_revoke: true`.
+/// - `HERDR_MOCK_ACCOUNT_STORED_HINT`: the display hint already stored beside the session from an
+///   earlier launch (Google's `display_hint`), as a relaunch finds it. The app restores it with
+///   a stored session and deletes it without one. The root's `fixture-stored-hint` element
+///   reads the stored value back ("none" when there is none).
+/// - `HERDR_MOCK_ACCOUNT_PROFILE_ONLY=1`: the profile is stored but the refresh token isn't (a
+///   sign-out killed half-way), which is signed out.
+/// - `HERDR_MOCK_ACCOUNT_SYNC_OFFLINE=1`: sync can't reach the service (a quiet failure), so
+///   the account needs attention.
 /// - Saved machines on this device: the `-dev.herdr.savedHosts.v1` launch argument
 ///   (SavedHostMissingSecretTests' pattern); mock runs never write the saved list.
 ///
@@ -36,6 +44,10 @@ final class MockAccountService: AccountProviderSignIn, @unchecked Sendable {
     let tokenStore: InMemoryAccountTokenStore
     let defaults: UserDefaults
     let server = MockAccountServer()
+    /// The display hint beside the session, seeded from `HERDR_MOCK_ACCOUNT_STORED_HINT`.
+    let hintStore: InMemoryAccountHintStore
+    /// `HERDR_MOCK_ACCOUNT_SYNC_OFFLINE=1`.
+    let syncOffline: Bool
 
     private init() {
         let env = ProcessInfo.processInfo.environment
@@ -46,13 +58,20 @@ final class MockAccountService: AccountProviderSignIn, @unchecked Sendable {
         client = AccountClient(baseURL: URL(string: "https://accounts.mock.herdrup.invalid")!,
                                session: URLSession(configuration: config))
         let signedIn = env["HERDR_MOCK_ACCOUNT_SIGNED_IN"] == "1"
+        hintStore = InMemoryAccountHintStore(hint: env["HERDR_MOCK_ACCOUNT_STORED_HINT"])
+        syncOffline = env["HERDR_MOCK_ACCOUNT_SYNC_OFFLINE"] == "1"
         tokenStore = InMemoryAccountTokenStore(refreshToken: signedIn ? "r1.mock-session.fixture-refresh" : nil)
         let suite = "herdr.mock.account"
         defaults = UserDefaults(suiteName: suite) ?? .standard
         defaults.removePersistentDomain(forName: suite)
+        // `HERDR_MOCK_ACCOUNT_PROFILE_ONLY=1`: what a kill mid-sign-out leaves, the profile (and
+        // perhaps a hint) still stored but the refresh token already deleted.
+        let profileOnly = env["HERDR_MOCK_ACCOUNT_PROFILE_ONLY"] == "1"
         if signedIn {
             server.signedIn = true
             server.enrolCurrent(name: "Mock iPhone", platform: "ios", devicePub: "fixture-device-pub")
+        }
+        if signedIn || profileOnly {
             defaults.set(try? JSONEncoder().encode(AccountProfile(provider: .apple, appleUserID: nil)),
                          forKey: "account.profile.v1")
             defaults.set(true, forKey: "account.onboarding.done")
@@ -225,6 +244,10 @@ final class MockAccountURLProtocol: URLProtocol {
     override func startLoading() {
         guard let url = request.url else { return }
         let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        if MockAccountService.shared.syncOffline, (components?.path ?? url.path) == "/v1/sync" {
+            client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
+            return
+        }
         let body = request.httpBody ?? request.httpBodyStream.map(Self.read)
         let (status, object) = MockAccountService.shared.server.answer(
             method: request.httpMethod ?? "GET", path: components?.path ?? url.path,
@@ -262,11 +285,21 @@ struct AccountMockRoot: View {
     var body: some View {
         AccountOnboardingGate {
             ConnectView { _ in }
-                .overlay(alignment: .topTrailing) {
+                // Bottom trailing: the logo row's trailing edge is the account avatar's.
+                .overlay(alignment: .bottomTrailing) {
                     Button("Settings") { showSettings = true }
                         .accessibilityIdentifier("fixture-open-settings")
                         .buttonStyle(.bordered)
-                        .padding(.top, 8).padding(.trailing, 20)
+                        .padding(.bottom, 8).padding(.trailing, 20)
+                }
+                .overlay(alignment: .bottomLeading) {
+                    // What the hint store holds, for the tests (re-read whenever the account
+                    // changes, since this view observes it).
+                    Color.clear.frame(width: 1, height: 1)
+                        .accessibilityElement()
+                        .accessibilityIdentifier("fixture-stored-hint")
+                        .accessibilityLabel((try? MockAccountService.shared.hintStore.loadDisplayHint()).flatMap { $0 } ?? "none")
+                        .id(account.signedIn)
                 }
         }
         .sheet(isPresented: $showSettings) {
