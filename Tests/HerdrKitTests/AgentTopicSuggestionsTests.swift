@@ -128,8 +128,10 @@ final class AgentTopicSuggestionsTests: XCTestCase {
 
     func testDismissAndOrganiseEncodeAndDecode() async throws {
         let (client, transport) = makeClient([
-            "agent.topics.dismiss_suggestion": #"{"id":"x","result":{"suggestion_id":"s1","already_dismissed":true}}"#,
-            "agent.topics.organise": #"{"id":"x","result":{"agent":"enyo","pane_id":"w1:p1","queued":true,"text":""}}"#,
+            "agent.topics.dismiss_suggestion":
+                #"{"id":"x","result":{"type":"agent_topic_suggestion_dismissed","agent":"enyo","pane_id":"w1:p1","suggestion_id":"s1","already_dismissed":true}}"#,
+            "agent.topics.organise":
+                #"{"id":"x","result":{"type":"agent_topics_organise_started","agent":"enyo","pane_id":"w1:p1","queued":true}}"#,
         ])
         let already = try await client.agentTopicsDismissSuggestion(target: "w1:p1", suggestionID: "s1")
         XCTAssertTrue(already)
@@ -171,6 +173,7 @@ final class AgentTopicSuggestionsTests: XCTestCase {
         let cases: [(String, AgentTopicsError)] = [
             ("suggestion_not_found", .suggestionNotFound), ("already_accepted", .alreadyAccepted),
             ("organise_running", .organiseRunning), ("topics_disabled", .topicsDisabled),
+            ("invalid_message_ids", .invalidMessageIDs), ("topic_rejected", .rejected("no")),
         ]
         for (code, expected) in cases {
             let (client, _) = makeClient(["agent.topics.dismiss_suggestion": RecordingTransport.errorReply(code: code, message: "no")])
@@ -181,6 +184,15 @@ final class AgentTopicSuggestionsTests: XCTestCase {
                 XCTAssertEqual(error as? AgentTopicsError, expected, code)
                 XCTAssertFalse(expected.isPermanent, "\(code) does not stop discovery")
             }
+        }
+        // An omp without suggestions answers these methods `topics_unsupported`.
+        let (unsupported, _) = makeClient(["agent.topics.organise":
+            RecordingTransport.errorReply(code: "topics_unsupported", message: "no")])
+        do {
+            try await unsupported.agentTopicsOrganise(target: "w1:p1")
+            XCTFail("topics_unsupported")
+        } catch {
+            XCTAssertEqual(error as? AgentTopicsError, .unsupported)
         }
     }
 
@@ -278,5 +290,22 @@ final class AgentTopicSuggestionsTests: XCTestCase {
         XCTAssertEqual(id, "sg1")
         XCTAssertEqual(accepted.state, .accepted)
         XCTAssertEqual(accepted.topicID, "t9")
+    }
+
+    // MARK: Events
+
+    /// The suggestion reasons of `agent.topics.changed` (underscores), with `suggestion_id` and
+    /// an empty `topic_id`.
+    func testTopicsChangedDecodesTheSuggestionReasons() throws {
+        for (raw, reason) in [("suggested", AgentTopicChangeReason.suggested),
+                              ("suggestion_accepted", .suggestionAccepted),
+                              ("suggestion_dismissed", .suggestionDismissed)] {
+            let line = #"{"seq":7,"event":"agent_topics_changed","data":{"type":"agent_topics_changed","pane_id":"w1:p1","workspace_id":"w1","agent":"enyo","topic_id":"","suggestion_id":"s1","reason":"\#(raw)"}}"#
+            XCTAssertEqual(try AgentTopicsStreamLine.decode(line), .changed(AgentTopicsChange(
+                paneID: "w1:p1", workspaceID: "w1", agent: "enyo", topicID: "", reason: reason, suggestionID: "s1")), raw)
+        }
+        let hyphen = #"{"event":"agent_topics_changed","data":{"pane_id":"w1:p1","topic_id":"","suggestion_id":"s1","reason":"suggestion-accepted"}}"#
+        guard case .changed(let change) = try AgentTopicsStreamLine.decode(hyphen) else { return XCTFail() }
+        XCTAssertEqual(change.reason, .unknown, "only the underscore spelling is the contract")
     }
 }

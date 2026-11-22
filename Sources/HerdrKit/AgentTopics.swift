@@ -408,6 +408,8 @@ public enum AgentTopicsError: Error, Equatable, Sendable {
     case organiseRunning
     /// `topics_disabled`: the agent runs without topics (its Topics switch is off).
     case topicsDisabled
+    /// `invalid_message_ids`: the agent's picked messages are not in its conversation.
+    case invalidMessageIDs
     case other(APIError)
 
     init(_ error: APIError) {
@@ -422,6 +424,7 @@ public enum AgentTopicsError: Error, Equatable, Sendable {
         case "already_accepted": self = .alreadyAccepted
         case "organise_running": self = .organiseRunning
         case "topics_disabled": self = .topicsDisabled
+        case "invalid_message_ids": self = .invalidMessageIDs
         default:
             // An older server that cannot even deserialize the method.
             if error.code == "invalid_request",
@@ -582,7 +585,8 @@ extension AgentTopicsError {
         switch self {
         case .unsupported, .notAdvertised: return true
         case .unreachable, .timeout, .rejected, .topicNotFound, .agentNotFound, .suggestionsNotAdvertised,
-             .suggestionNotFound, .alreadyAccepted, .organiseRunning, .topicsDisabled, .other: return false
+             .suggestionNotFound, .alreadyAccepted, .organiseRunning, .topicsDisabled, .invalidMessageIDs,
+             .other: return false
         }
     }
 }
@@ -595,6 +599,11 @@ public enum AgentTopicChangeReason: String, Sendable, Equatable, Decodable {
     case turnStarted = "turn_started"
     case turnSettled = "turn_settled"
     case closed, reopened, retitled
+    /// A topic suggestion opened, was accepted or dismissed: `suggestionID` names it and
+    /// `topicID` is empty.
+    case suggested
+    case suggestionAccepted = "suggestion_accepted"
+    case suggestionDismissed = "suggestion_dismissed"
     /// The agent restored the topic with its session (startup, session switch).
     case restored
     /// A reason this client does not know yet.
@@ -612,16 +621,20 @@ public struct AgentTopicsChange: Decodable, Sendable, Equatable {
     public let paneID: String
     public let workspaceID: String?
     public let agent: String?
+    /// Empty for the suggestion reasons.
     public let topicID: String
     public let reason: AgentTopicChangeReason
+    /// The suggestion a `suggested` / `suggestion_accepted` / `suggestion_dismissed` names.
+    public let suggestionID: String?
 
     public init(paneID: String, workspaceID: String? = nil, agent: String? = nil, topicID: String,
-                reason: AgentTopicChangeReason) {
+                reason: AgentTopicChangeReason, suggestionID: String? = nil) {
         self.paneID = paneID
         self.workspaceID = workspaceID
         self.agent = agent
         self.topicID = topicID
         self.reason = reason
+        self.suggestionID = suggestionID
     }
 
     enum CodingKeys: String, CodingKey {
@@ -629,15 +642,17 @@ public struct AgentTopicsChange: Decodable, Sendable, Equatable {
         case paneID = "pane_id"
         case workspaceID = "workspace_id"
         case topicID = "topic_id"
+        case suggestionID = "suggestion_id"
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         paneID = try c.decode(String.self, forKey: .paneID)
-        topicID = try c.decode(String.self, forKey: .topicID)
+        topicID = (try? c.decodeIfPresent(String.self, forKey: .topicID)) ?? ""
         workspaceID = try? c.decodeIfPresent(String.self, forKey: .workspaceID)
         agent = try? c.decodeIfPresent(String.self, forKey: .agent)
         reason = (try? c.decodeIfPresent(AgentTopicChangeReason.self, forKey: .reason)) ?? .unknown
+        suggestionID = (try? c.decodeIfPresent(String.self, forKey: .suggestionID)) ?? nil
     }
 }
 

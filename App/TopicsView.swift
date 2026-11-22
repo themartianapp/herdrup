@@ -409,6 +409,7 @@ final class TopicsModel: ObservableObject {
         case .alreadyAccepted: return "Someone already started that topic."
         case .organiseRunning: return "The agent is already organising."
         case .topicsDisabled: return "Topics are off for this agent."
+        case .invalidMessageIDs: return "The agent's picked messages are no longer in its conversation."
         case .other(let api): return api.message
         }
     }
