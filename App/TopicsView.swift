@@ -31,6 +31,11 @@ final class TopicsModel: ObservableObject {
     @Published private(set) var organiseNote: String?
     /// Create N topics or Not now is going through the proposals.
     @Published private(set) var settling = false
+    /// Organise's end: a new proposal, or 3 minutes after it was asked, since nothing reports
+    /// a turn that proposed nothing (herdrup#797).
+    private var organiseWait = TopicsOrganiseWait(timeout: TopicsModel.organiseTimeout)
+    /// Ends Organise at its deadline when no list comes.
+    private var organiseExpiry: Task<Void, Never>?
     /// The agent's name, from its list (the proposals' heading).
     @Published private(set) var agentName = ""
     /// The first list call answered, either way.
@@ -178,12 +183,9 @@ final class TopicsModel: ObservableObject {
             if ordered != topics { topics = ordered }
             if list.agent != agentName { agentName = list.agent }
             let open = list.suggestions ?? []
+            // New proposals arrived: Organise has answered.
+            if organiseWait.end(open: open.map(\.id), now: Date()) { finishOrganise() }
             if open != suggestions {
-                // New proposals arrived: Organise has answered.
-                if organising, open.contains(where: { s in !suggestions.contains { $0.id == s.id } }) {
-                    organising = false
-                    organiseNote = nil
-                }
                 suggestions = open
                 unticked.formIntersection(open.map(\.id))
             }
@@ -218,6 +220,8 @@ final class TopicsModel: ObservableObject {
     /// Keeps the list current while Topics is on screen: the owner's `agent.topics.changed`
     /// events for this pane with a slow backstop poll; a guest (`eventsPaneID` nil) polls.
     func follow(client: HerdrClient, eventsPaneID: String?) async {
+        // Back on Topics after Organise's deadline: no stale spinner, even without a list.
+        checkOrganiseClock()
         await refresh(client: client)
         await withTaskGroup(of: Void.self) { group in
             if let eventsPaneID {
@@ -342,22 +346,59 @@ final class TopicsModel: ObservableObject {
     // MARK: Suggestions and Organise
 
     /// Asks the agent to propose topics from its Inbox (`agent.topics.organise`). It answers at
-    /// once; the proposals arrive as open suggestions, ticked, at the top of the list.
+    /// once; the proposals arrive as open suggestions, ticked, at the top of the list. Nothing
+    /// reports a turn that proposed nothing: Organise shows as running until a new proposal
+    /// or for 3 minutes (`TopicsOrganiseWait`).
     func organise(client: HerdrClient) async {
         guard !organising else { return }
         organising = true
         organiseNote = nil
+        organiseWait.start(at: Date(), open: suggestions.map(\.id))
         do {
             let queued = try await client.agentTopicsOrganise(target: target)
             organiseNote = queued ? "Organise starts when the agent's current turn ends."
                                   : "The agent is reading the Inbox to propose topics."
         } catch {
+            organiseWait.stop()
             organising = false
             organiseNote = (error as? AgentTopicsError) == .organiseRunning
                 ? "The agent is already organising." : Self.describe(error)
             return
         }
+        // Proposals came in while the call was answering: Organise is already over.
+        guard organiseWait.isRunning else {
+            organiseNote = nil
+            return
+        }
+        let seconds = organiseWait.timeout
+        organiseExpiry?.cancel()
+        organiseExpiry = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64((seconds + 0.5) * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.checkOrganiseClock()
+        }
         await refresh(client: client)
+    }
+
+    /// Organise's deadline passed with no new proposal: it is over.
+    private func checkOrganiseClock() {
+        if organiseWait.end(open: nil, now: Date()) { finishOrganise() }
+    }
+
+    private func finishOrganise() {
+        organiseExpiry?.cancel()
+        organiseExpiry = nil
+        organising = false
+        organiseNote = nil
+    }
+
+    /// Organise's timeout. DEBUG: the UI tests' `HERDR_MOCK_TOPICS_ORGANISE_SECONDS` shortens it.
+    static var organiseTimeout: TimeInterval {
+        #if DEBUG
+        if let seconds = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_ORGANISE_SECONDS"]
+            .flatMap(TimeInterval.init) { return seconds }
+        #endif
+        return TopicsOrganiseWait.defaultTimeout
     }
 
     /// Whether a proposal is ticked (all are, until the reader unticks one).
