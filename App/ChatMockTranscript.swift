@@ -673,7 +673,12 @@ struct ChatMockTransport: HerdrTransport {
     }
 
     func stream(_ requestLine: String) -> AsyncThrowingStream<String, Error> {
-        base.stream(requestLine)
+        // `HERDR_MOCK_TOPICS_START_FAILS`: herdr-app's `agent.topics.changed` (start_failed).
+        if TopicsMock.enabled, TopicsMock.startFailsAfter != nil,
+           requestLine.contains("herdrkit:events.subscribe:agent-topics") {
+            return TopicsMock.owner.topicEvents()
+        }
+        return base.stream(requestLine)
     }
 
     /// `HERDR_MOCK_STILL=1`: no agent reads working. A working row's spinner animates
