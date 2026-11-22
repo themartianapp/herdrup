@@ -1300,6 +1300,16 @@ person to type a code. What the service enforces for that argument:
   once the expiry is stored, and writes no envelope or access. The apps may treat a reported
   `expired` as final once health lists `approval_expiry_final` (migration
   `0007_approval_expiry.sql` lets `outcome` hold it);
+- **a request read says when its outcome is stored.** Health and a later read may reach
+  different Worker versions during a gradual rollout, and a Worker from before
+  `approval_expiry_final` reports an expiry from the clock without storing it. So
+  `GET /v1/approvals/<id>` adds `"outcome_stored": true` whenever the row, read after the stored
+  expiry, has an outcome (`expired`, `approved` or `denied`), and omits it while the request is
+  pending. Only a Worker that stores the expiry sends it, so a client treats a state as final
+  only from a read that carries it. Other answers don't need it: claim and reveal report pending
+  states; a finish's `200` is the write itself and its `410 expired` says that finish wrote
+  nothing; `GET /v1/browsers/self` and Devices report a browser's reported access (from
+  `browser_access`), not a request's outcome, and a stored expiry only drops `waiting` there;
 - `APPROVAL_LIMIT` (30 / 60 s per account, every route, on top of `ACCOUNT_LIMIT`) and at most
   10 requests per account per hour (`429 too_many_requests`), counted in fixed hour windows per
   browser and summed over the account in the inserting statement.

@@ -78,6 +78,7 @@ const nonce = () => crypto.getRandomValues(new Uint8Array(32));
 interface RequestState {
   state: string;
   expires_in: number;
+  outcome_stored?: true;
   approver?: { device_pub: string; name: string };
   nonce_t?: string;
   nonce_b?: string;
@@ -310,6 +311,7 @@ describe("browser approval", () => {
     expect(await getRequest(browser, pending.id)).toEqual({
       state: "denied",
       expires_in: expect.any(Number),
+      outcome_stored: true,
       approver: { device_pub: approver.pub, name: "Jerry's MacBook" },
     });
     expect((await call("POST", `/v1/approvals/${pending.id}/finish`, approver, { outcome: "approved", ...(await report(browser, approver, 1)) })).status).toBe(409);
@@ -461,6 +463,72 @@ describe("browser approval", () => {
       expect(await rejection(late)).toEqual({ status: 410, error: "expired" });
       expect(await outcome(pending.id)).toBe("expired");
       expect((await getRequest(browser, pending.id)).state).toBe("expired");
+    });
+  });
+
+  // The fence for a single read: health can hit a new Worker while this read hits an old one
+  // that reports an expiry from the clock. Only a Worker that stores the outcome sends the flag.
+  describe("a request read says when its outcome is stored", () => {
+    const stored = async (caller: Party, id: string) => {
+      const seen = await getRequest(caller, id);
+      return { state: seen.state, outcome_stored: seen.outcome_stored };
+    };
+
+    it("sends outcome_stored with an expiry it stored", async () => {
+      const approver = await party("macos");
+      const browser = await party("web", approver.accountId);
+      const pending = await claimed(browser, approver);
+      await env.DB.prepare("UPDATE approval_requests SET exp_ms = ? WHERE id = ?").bind(Date.now() - 1, pending.id).run();
+      // The clock alone says expired here; the read stores it first, then answers from the row.
+      expect(await env.DB.prepare("SELECT outcome FROM approval_requests WHERE id = ?").bind(pending.id).first("outcome")).toBeNull();
+      expect(await stored(browser, pending.id)).toEqual({ state: "expired", outcome_stored: true });
+      expect(await stored(approver, pending.id)).toEqual({ state: "expired", outcome_stored: true });
+    });
+
+    it("sends outcome_stored with approved and denied", async () => {
+      const approver = await party("macos");
+      const browser = await party("web", approver.accountId);
+      const toApprove = await revealed(browser, approver);
+      const approve = await call("POST", `/v1/approvals/${toApprove.id}/finish`, approver, { outcome: "approved", ...(await report(browser, approver, 1)) });
+      expect(approve.status).toBe(200);
+      expect(await stored(browser, toApprove.id)).toEqual({ state: "approved", outcome_stored: true });
+      expect(await stored(approver, toApprove.id)).toEqual({ state: "approved", outcome_stored: true });
+
+      const toDeny = await claimed(browser, approver);
+      expect((await call("POST", `/v1/approvals/${toDeny.id}/finish`, approver, { outcome: "denied" })).status).toBe(200);
+      expect(await stored(browser, toDeny.id)).toEqual({ state: "denied", outcome_stored: true });
+      expect(await stored(approver, toDeny.id)).toEqual({ state: "denied", outcome_stored: true });
+    });
+
+    it("never sends outcome_stored while a request is pending, only once it is finished", async () => {
+      const approver = await party("macos");
+      const browser = await party("web", approver.accountId);
+      const nonceB = nonce();
+      const { id } = await (await call("POST", "/v1/approvals", browser, { commit: b64url(await approveCommit(browser.key.pub, nonceB)) })).json<{ id: string }>();
+      const states: [string, boolean][] = [];
+      const look = async () => {
+        for (const caller of [browser, approver]) {
+          const seen = await getRequest(caller, id);
+          states.push([seen.state, "outcome_stored" in seen]);
+        }
+      };
+      await look();
+      expect((await call("POST", `/v1/approvals/${id}/claim`, approver, { nonce_t: b64url(nonce()) })).status).toBe(200);
+      await look();
+      expect((await call("POST", `/v1/approvals/${id}/reveal`, browser, { nonce_b: b64url(nonceB) })).status).toBe(200);
+      await look();
+      expect((await call("POST", `/v1/approvals/${id}/finish`, approver, { outcome: "denied" })).status).toBe(200);
+      await look();
+      expect(states).toEqual([
+        ["waiting", false],
+        ["waiting", false],
+        ["claimed", false],
+        ["claimed", false],
+        ["revealed", false],
+        ["revealed", false],
+        ["denied", true],
+        ["denied", true],
+      ]);
     });
   });
 

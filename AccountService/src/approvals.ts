@@ -3,7 +3,7 @@
 //   POST /v1/approvals                    browser   {commit} → 201 {id, expires_in}
 //   GET  /v1/approvals                    approver  → {requests: [{id, browser, commit, claimed, expires_in}]}
 //   POST /v1/approvals/<id>/claim         approver  {nonce_t} → {state: "claimed"}
-//   GET  /v1/approvals/<id>               either    → {state, expires_in, approver?, nonce_t?, nonce_b?}
+//   GET  /v1/approvals/<id>               either    → {state, expires_in, outcome_stored?, approver?, nonce_t?, nonce_b?}
 //   POST /v1/approvals/<id>/reveal        browser   {nonce_b} → {state: "revealed"}
 //   POST /v1/approvals/<id>/finish        claimant  {outcome: "approved", scope, expires_ms, seq, sealed}
 //                                                   | {outcome: "denied"} → {state}
@@ -274,6 +274,10 @@ export async function handleGetRequest(request: Request, env: Env, id: string, n
   return json(200, {
     state,
     expires_in: expiresIn(row.exp_ms, nowMs),
+    // Read after storeExpiry: true only when the outcome is in the row, so this Worker vouches
+    // that the state is final. A Worker without storeExpiry reports an expiry from the clock and
+    // never sends it, so a client can't be fooled by health and this read hitting two versions.
+    ...(row.outcome === null ? {} : { outcome_stored: true }),
     ...(approver === null ? {} : { approver: { device_pub: approver.device_pub, name: approver.name } }),
     // nonce_t goes to the two parties; nonce_b only to the claimant, and only while live.
     ...(live && (isBrowser || isClaimant) ? { nonce_t: row.nonce_t } : {}),
