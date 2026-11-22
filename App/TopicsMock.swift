@@ -282,19 +282,9 @@ final class TopicsMock: @unchecked Sendable {
     /// stamped from `ms` on: herdr re-sends an entry under its id when it changes.
     func suggestionEntries(after ms: UInt64) -> [[String: Any]] {
         guard Self.enabled, Self.suggests else { return [] }
-        if Self.listOnly { return lock.withLock { suggestions.filter { $0.state != "open" }.map(Self.entry) } }
+        // The Inbox's turn never ends here: no suggestion entry reaches the transcript.
+        if Self.listOnly { return [] }
         return entries(ms: ms)
-    }
-
-    private static func entry(_ suggestion: Suggestion) -> [String: Any] {
-        var entry: [String: Any] = [
-            "id": suggestion.id, "ts_ms": now(), "kind": "topic_suggestion",
-            "title": suggestion.title, "reason": suggestion.reason, "message_ids": suggestion.messageIDs,
-            "message_count": suggestion.messageIDs.count, "state": suggestion.state,
-        ]
-        if let topicID = suggestion.topicID { entry["topic_id"] = topicID }
-        if let by = suggestion.by { entry["by"] = by }
-        return entry
     }
 
     private func entries(ms: UInt64) -> [[String: Any]] {

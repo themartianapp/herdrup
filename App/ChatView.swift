@@ -337,6 +337,7 @@ final class ChatModel: ObservableObject {
         var topicID: String?
         do {
             topicID = try await client.agentTopicsAcceptSuggestion(target: target, suggestionID: suggestionID).topicID
+            settleLocally(suggestionID, state: .accepted, topicID: topicID)
         } catch is CancellationError {
             return nil
         } catch {
@@ -355,6 +356,7 @@ final class ChatModel: ObservableObject {
         defer { suggestionBusyID = nil }
         do {
             try await client.agentTopicsDismissSuggestion(target: target, suggestionID: suggestionID)
+            settleLocally(suggestionID, state: .dismissed, topicID: nil)
         } catch is CancellationError {
             return
         } catch {
@@ -469,7 +471,26 @@ final class ChatModel: ObservableObject {
     }
 
     private func rebuildRows() {
-        rows = ChatRow.rows(turns: turns, outgoing: outgoing, listed: listedSuggestions)
+        rows = ChatRow.rows(turns: turns, outgoing: outgoing, listed: listedSuggestions, settled: settledSuggestions)
+        rowIndex = Dictionary(rows.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// Suggestions this reader started or set aside, by id, shown compactly at once; the
+    /// transcript's entry (same id) replaces each when it arrives.
+    private var settledSuggestions: [String: TranscriptTopicSuggestion] = [:]
+
+    private func settleLocally(_ id: String, state: TopicSuggestionState, topicID: String?) {
+        let known = listedSuggestions.first { $0.id == id }.map {
+            TranscriptTopicSuggestion(title: $0.title, reason: $0.reason, messageIDs: $0.messageIDs, state: .open)
+        } ?? turns.lazy.flatMap(\.items).compactMap { item -> TranscriptTopicSuggestion? in
+            if case .topicSuggestion(let itemID, let s) = item, itemID == id { return s }
+            return nil
+        }.first
+        guard let known else { return }
+        settledSuggestions[id] = TranscriptTopicSuggestion(title: known.title, reason: known.reason,
+                                                           messageIDs: known.messageIDs, state: state,
+                                                           topicID: topicID, by: "owner")
+        rebuildRows()
         rowIndex = Dictionary(rows.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
@@ -590,7 +611,8 @@ private enum ChatRow: Identifiable, Equatable {
     /// `listed`: open suggestions from `agent.topics.list`, drawn at the end of the chat until
     /// their transcript entry (same id) arrives and takes over.
     static func rows(turns: [TranscriptTurn], outgoing: [TranscriptOutgoingMessage],
-                     listed: [AgentTopicSuggestion] = []) -> [ChatRow] {
+                     listed: [AgentTopicSuggestion] = [],
+                     settled: [String: TranscriptTopicSuggestion] = [:]) -> [ChatRow] {
         var inTranscript = Set<String>()
         var open: [(id: String, suggestion: TranscriptTopicSuggestion)] = []
         for turn in turns {
@@ -599,10 +621,11 @@ private enum ChatRow: Identifiable, Equatable {
                 if suggestion.state == .open { open.append((id, suggestion)) }
             }
         }
-        let pending = listed.filter { !inTranscript.contains($0.id) }.map {
+        let pending = listed.filter { !inTranscript.contains($0.id) && settled[$0.id] == nil }.map {
             (id: $0.id, suggestion: TranscriptTopicSuggestion(title: $0.title, reason: $0.reason,
                                                               messageIDs: $0.messageIDs, state: .open))
         }
+        let local = settled.filter { !inTranscript.contains($0.key) }.sorted { $0.key < $1.key }
         // Each open suggestion marks the first message the agent picked for it.
         var marks: [String: ChatRow] = [:]
         for (id, suggestion) in open + pending {
@@ -626,6 +649,7 @@ private enum ChatRow: Identifiable, Equatable {
                 rows.append(.item(item))
             }
         }
+        rows += local.map { .item(.topicSuggestion(id: $0.key, $0.value)) }
         rows += pending.map { .item(.topicSuggestion(id: $0.id, $0.suggestion)) }
         rows.append(contentsOf: outgoing.map(ChatRow.outgoing))
         return rows

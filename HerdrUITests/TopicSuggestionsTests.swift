@@ -152,6 +152,25 @@ final class TopicSuggestionsTests: XCTestCase {
         let status = app.descendants(matching: .any)["topic-status-t-sug-1"].firstMatch
         XCTAssertTrue(status.exists(within: 5), "the new topic shows its status")
         XCTAssertTrue(status.label.contains("Starting"), "a seeding topic is starting: \(status.label)")
+
+        // Back in the Inbox the transcript still has no entry: the line is the app's own.
+        app.buttons["chat-switch-chat"].tap()
+        let note = any(app, "chat-topic-continued-sg-scroll")
+        XCTAssertTrue(note.exists(within: 10), "Continued in topic shows at once, before the transcript has it")
+        XCTAssertTrue(note.label.contains("Terminal scrollback"), note.label)
+        XCTAssertFalse(any(app, "chat-topic-suggestion-sg-scroll").exists, "no card any more")
+    }
+
+    /// Not now on a suggestion only the list has: the compact line shows at once.
+    func testNotNowOnAListOnlySuggestionShowsTheLineAtOnce() {
+        let app = launch("chatview", ["HERDR_MOCK_TOPICS_SUGGEST_LIST_ONLY": "1"])
+        openHerdrApp(app)
+        suggestionCard("sg-scroll", in: app).buttons["chat-topic-suggestion-dismiss"].tap()
+        let line = any(app, "chat-topic-suggestion-dismissed-sg-scroll")
+        XCTAssertTrue(line.exists(within: 10), "the Not now line shows before the transcript entry arrives")
+        XCTAssertTrue(line.label.contains("Terminal scrollback"), line.label)
+        XCTAssertFalse(any(app, "chat-topic-suggestion-sg-scroll").exists)
+        XCTAssertFalse(any(app, "chat-topic-suggestion-mark-sg-scroll").exists)
     }
 
     // MARK: Organise
