@@ -52,18 +52,21 @@ final class AgentTopicSuggestionsTests: XCTestCase {
     // MARK: Switch
 
     func testSetEnabledEncodesAndDecodes() async throws {
-        let (client, transport) = makeClient(["agent.topics.set_enabled": #"{"id":"x","result":{"changed":true}}"#])
-        let changed = try await client.agentTopicsSetEnabled(target: "w1:p1", enabled: true)
-        XCTAssertTrue(changed)
+        let (client, transport) = makeClient(["agent.topics.set_enabled":
+            #"{"id":"x","result":{"type":"agent_topics_switched","agent":"enyo","changed":true,"topics_enabled":true}}"#])
+        let result = try await client.agentTopicsSetEnabled(target: "w1:p1", enabled: true)
+        XCTAssertEqual(result, AgentTopicsSwitched(agent: "enyo", changed: true, topicsEnabled: true))
         let last = try transport.last()
         XCTAssertEqual(last.method, "agent.topics.set_enabled")
         XCTAssertEqual(last.params["target"] as? String, "w1:p1")
         XCTAssertEqual(last.params["enabled"] as? Bool, true)
         XCTAssertEqual(Set(last.params.keys), ["target", "enabled"])
 
-        let (offClient, offTransport) = makeClient(["agent.topics.set_enabled": #"{"id":"x","result":{"changed":false}}"#])
-        let offChanged = try await offClient.agentTopicsSetEnabled(target: "enyo", enabled: false)
-        XCTAssertFalse(offChanged, "already off")
+        let (offClient, offTransport) = makeClient(["agent.topics.set_enabled":
+            #"{"id":"x","result":{"type":"agent_topics_switched","agent":"enyo","changed":false,"topics_enabled":false}}"#])
+        let off = try await offClient.agentTopicsSetEnabled(target: "enyo", enabled: false)
+        XCTAssertFalse(off.changed, "already off")
+        XCTAssertFalse(off.topicsEnabled)
         XCTAssertEqual(try offTransport.last().params["enabled"] as? Bool, false)
     }
 

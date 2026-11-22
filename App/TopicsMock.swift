@@ -268,7 +268,7 @@ final class TopicsMock: @unchecked Sendable {
                 let changed = enabled != topicsEnabled
                 topicsEnabled = enabled
                 return ChatMockConversation.encode(id: id, result: [
-                    "type": "agent_topics_switched", "agent": agent, "pane_id": paneID, "changed": changed])
+                    "type": "agent_topics_switched", "agent": agent, "changed": changed, "topics_enabled": enabled])
             default:
                 return ChatMockConversation.error(id: id, code: "invalid_request",
                                                   message: "unknown variant `\(method)`")

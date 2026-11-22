@@ -2418,8 +2418,8 @@ struct TerminalHomeView: View {
     private func switchTopics(_ request: TopicsSwitchRequest) async {
         topicsSwitchStatus = .working(request)
         do {
-            let changed = try await client.agentTopicsSetEnabled(target: request.paneID, enabled: request.enabled)
-            topicsSwitchStatus = .done(request, changed: changed)
+            let result = try await client.agentTopicsSetEnabled(target: request.paneID, enabled: request.enabled)
+            topicsSwitchStatus = .done(request, changed: result.changed)
         } catch {
             topicsSwitchStatus = .failed(request, TopicsSwitchStatus.describe(error))
         }

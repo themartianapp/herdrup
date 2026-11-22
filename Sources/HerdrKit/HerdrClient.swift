@@ -2258,14 +2258,14 @@ public actor HerdrClient {
 
     /// Turns an omp agent's topics on or off (`agent.topics.set_enabled`): herdr restarts it
     /// on (or off) the omp build with topics, keeping its conversation and name. Owner only.
-    /// Returns false when it already was so.
+    /// Returns `changed` (false when it already was so) and the agent's `topics_enabled` now.
     @discardableResult
-    public func agentTopicsSetEnabled(target: String, enabled: Bool) async throws -> Bool {
+    public func agentTopicsSetEnabled(target: String, enabled: Bool) async throws -> AgentTopicsSwitched {
         guard await supports(\.agentTopicsSwitch) else { throw AgentTopicsSwitchError.notAdvertised }
         do {
             return try await call("agent.topics.set_enabled",
                                   AgentTopicsSetEnabledParams(target: target, enabled: enabled),
-                                  as: AgentTopicsSetEnabledResult.self).changed
+                                  as: AgentTopicsSwitched.self)
         } catch let error as APIError {
             throw AgentTopicsSwitchError(error)
         }

@@ -361,15 +361,22 @@ struct AgentTopicsOrganiseStarted: Decodable, Sendable {
     }
 }
 
-/// `agent.topics.set_enabled`: whether the switch changed anything (false: it was already so).
-struct AgentTopicsSetEnabledResult: Decodable, Sendable {
-    let changed: Bool
+/// `agent.topics.set_enabled` (`type: "agent_topics_switched"`): whether the switch changed
+/// anything (false: it already was so), and the agent's topics state now.
+public struct AgentTopicsSwitched: Decodable, Sendable, Equatable {
+    public let agent: String
+    public let changed: Bool
+    public let topicsEnabled: Bool
 
-    enum CodingKeys: String, CodingKey { case changed }
+    public init(agent: String, changed: Bool, topicsEnabled: Bool) {
+        self.agent = agent
+        self.changed = changed
+        self.topicsEnabled = topicsEnabled
+    }
 
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        changed = (try? c.decodeIfPresent(Bool.self, forKey: .changed)) ?? true
+    enum CodingKeys: String, CodingKey {
+        case agent, changed
+        case topicsEnabled = "topics_enabled"
     }
 }
 
