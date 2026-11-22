@@ -1,5 +1,5 @@
 {
- "sourceCommit": "9da84ac72fa449bb935276d325b2755fd8134623",
+ "sourceCommit": "827b9e9af175da44362c6e364dc6514803a24811",
  "sourceDirty": false,
  "buildCommand": "bun install --frozen-lockfile && bun run build:guest-web",
  "files": {
@@ -18,14 +18,18 @@
   "assets/arrow-up-DLWa3vLV.svg": "361aa9f9c52a759bf598faf6ed38ccd426f949f541d662c65b5b5d868fa76980",
   "assets/bell-BxOl9zTL.svg": "439b02c746ff59945b6175c6d327113ca3f7a729a43d5bcafb278a0f11ee34b5",
   "assets/bell-slash-DErL00sV.svg": "d5c7ee0acf3ea46fe7d821dd1816f3d9e2c4aecce6b040722e877b72c85a8d3e",
+  "assets/chat-text-C-6e0hAp.svg": "5de6ebfd6180b1795e755656ac3b863d1b61ab284f3924c0b960cd50c9268f25",
+  "assets/check-circle-fill-gRIfEn3j.svg": "9a065618c3b939e554240051eeb463f3264b71b75bafb70b02fe1c83b7fab649",
+  "assets/circle-ByZ6o_WC.svg": "4aaa8e07fc1bbaa341774c2094d8609c24a8cca62f7496f98f076207d2fe335f",
   "assets/circle-bold-BsM6irvh.svg": "f379b4d00604bc0f55a57d857a158cdd0e41529f372c643b70c41f82aad3ec51",
   "assets/envelope-C6fNIEBn.svg": "1cacf2964607ad27bcb6c55117e5c7275cfb3c206f799b720f095b63965efdc4",
   "assets/file-text-CmjDRSMN.svg": "b504cf8370b6b91ad12f3c56d3116360510fa22c41da90c57f2e83d10d9d8d7e",
-  "assets/index-C93VTIbX.css": "2029f71e2c4995159f09d2949c59248cd2b4b79cc9d0571cc1ce77ddd40d7660",
-  "assets/index-DHXdSUnV.js": "70e003e2ff9544073921fa4a40e58b6bc6ea378a1f7247cbf5449ca745a16436",
+  "assets/index-BxNFwz1s.css": "29cc57b3253c481b8c00f3f818f8754cd7104b3eb121efc7440500298fa2e9bf",
+  "assets/index-D6OI2gQI.js": "c32f84dbed89323bb2200188eeebf29e1150cf30401f48ac388adba8ef41b2d9",
   "assets/info-C9QkPWf7.svg": "438a1f319d53d86e840af73fb7b1d224c9224a437b9fa449a4e2cb45a82a3552",
   "assets/lightbulb-DXlfS_UP.svg": "b61e4d9685a1d74e579a7dbbe0d5222bdf8dcdcaf5b67825a17ff45363e4fadd",
   "assets/pause-circle-bold-rWraIRIc.svg": "99c30171f421d268c4b679e3eb91740c82c2d51d4e0b2706f8d9e6d05fca768a",
+  "assets/stack-tcdOqXBd.svg": "a742c53b1c02acdcf241b8cede50e1f97259d3a5ef437d81350965abfe86b337",
   "assets/stop-circle-bold-SxHvkHqM.svg": "713ef57ca9503deb22bda9ddcbfac578afa08effd37a21c3ff3e34b59f4ba740",
   "assets/warning-circle-bold-BacoJXMq.svg": "b5357f2aabe69897a2d7b70379c6334086a3c32ccce27d85108f9f15d570fc2f",
   "fonts/Geist-OFL.txt": "1781d2806a07d91c4edf4740b88449fab7d0eadad53f7c351b94cd4d4eb8c00f",
@@ -60,7 +64,7 @@
   "herdrup/mascots/squib.svg": "87a2f2684bb008d5513cc321d89af08b180f175b9cacff8a6fc23a4f6cba19ea",
   "herdrup/mascots/tri.svg": "7a73d23792fd1d8e67bead1f2b9d2f067f6bebddc2146d0ae5d835e5266c5755",
   "herdrup/mascots/zag.svg": "06619463ac8ef2a5e6b7af5810f7651272139973c5d64448ef04da1643f35290",
-  "index.html": "057716485717374fd9d3dbb9a81dbe9419d7991380c4edcaf7e647b2139ab54d",
+  "index.html": "b5f554992ad93d16497555d3724eabd3ed3852a0999d723bd3d44a6bfda0b20a",
   "mermaid/Mermaid-LICENSE.txt": "ec9fb67dcb25eccc416ed56e1aab819222c805a2a4bfe4cb19e7556bf2ffde80",
   "mermaid/mermaid.min.js": "581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8"
  }
