@@ -57,8 +57,9 @@ final class TopicsModel: ObservableObject {
     /// One conversation per topic (`TranscriptStore` keyed per agent and topic), kept while
     /// the page lives, so going back to a topic draws what was loaded at once.
     private var chats: [String: ChatModel] = [:]
-    private var refreshing = false
-    private var refreshAgain = false
+    /// The list's refresh rounds: coalesced refreshes, and Start's wait for a list that
+    /// started after the accept (herdrup#795).
+    private let rounds = TopicsListRounds()
     /// The owner's `agent.topics.changed` stream is running; the poll is only a backstop then.
     private var eventsLive = false
 
@@ -150,16 +151,7 @@ final class TopicsModel: ObservableObject {
 
     /// Brings the list up to date. Concurrent calls coalesce into one more round.
     func refresh(client: HerdrClient) async {
-        if refreshing {
-            refreshAgain = true
-            return
-        }
-        refreshing = true
-        defer { refreshing = false }
-        repeat {
-            refreshAgain = false
-            await refreshOnce(client: client)
-        } while refreshAgain
+        await rounds.refresh { [weak self] in await self?.refreshOnce(client: client) ?? false }
     }
 
     /// Why the newest list call failed, for discovery; nil after one succeeds.
@@ -170,7 +162,10 @@ final class TopicsModel: ObservableObject {
     /// after a Start is seen even when the list looks the same as before.
     var onListed: (@MainActor ([AgentTopicSuggestion], Date) -> Void)?
 
-    private func refreshOnce(client: HerdrClient) async {
+    /// One list call; true when the server answered.
+    @discardableResult
+    private func refreshOnce(client: HerdrClient) async -> Bool {
+        var answered = false
         do {
             let requestedAt = Date()
             let list = try await client.agentTopicsList(target: target)
@@ -196,8 +191,9 @@ final class TopicsModel: ObservableObject {
             refused = false
             lastListError = nil
             if problem != nil { problem = nil }
+            answered = true
         } catch is CancellationError {
-            return
+            return false
         } catch let error as AgentTopicsError {
             lastListError = error
             if error.isPermanent {
@@ -213,6 +209,7 @@ final class TopicsModel: ObservableObject {
             problem = Self.describe(error)
         }
         if !loaded { loaded = true }
+        return answered
     }
 
     /// Keeps the list current while Topics is on screen: the owner's `agent.topics.changed`
@@ -405,13 +402,19 @@ final class TopicsModel: ObservableObject {
         return failure
     }
 
-    /// Opens a topic by id (a suggestion's Start, its "Continued in topic" line): the list is
-    /// brought up to date first, so a topic that just started is there to open. False when the
-    /// list does not have it (a start that failed puts the suggestion back to open): the caller
-    /// stays where it is.
+    /// Opens a topic by id (a suggestion's Start, its "Continued in topic" line). A topic not
+    /// in the list yet waits for a list that started after this call and answered: the round
+    /// already in flight may predate the accept, and a failed list keeps the old one
+    /// (herdrup#795). False when that list does not have it (a start that failed puts the
+    /// suggestion back to open), or when no list answered: the caller stays where it is.
     @discardableResult
     func open(topicID: String, client: HerdrClient) async -> Bool {
-        if topic(topicID) == nil { await refresh(client: client) }
+        if topic(topicID) == nil {
+            let listed = await rounds.listedAfterNow { [weak self] in
+                await self?.refreshOnce(client: client) ?? false
+            }
+            guard listed else { return false }
+        }
         guard topic(topicID) != nil else { return false }
         selectedTopicID = topicID
         return true

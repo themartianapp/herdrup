@@ -577,6 +577,78 @@ public final class TopicsDiscoveryLoop {
     }
 }
 
+/// The topics list's refresh rounds. Refreshes that arrive while a list call is in flight
+/// coalesce into one more round. `listedAfterNow` is for a caller that must see the list as
+/// it is now, such as a suggestion's Start opening the topic it just started (herdrup#795).
+/// The round already in flight started before the call and does not count. A failed round
+/// keeps the old list, so it does not count either.
+@MainActor
+public final class TopicsListRounds {
+    /// One list call: true when the server answered (the local list is now that answer).
+    public typealias Fetch = @MainActor () async -> Bool
+    public typealias Sleep = @Sendable (_ seconds: UInt64) async -> Void
+
+    private let sleep: Sleep
+    private var running = false
+    /// A refresh arrived during the round in flight: one more round, with its call.
+    private var again: Fetch?
+    /// Rounds started so far; a round's number is this count when it started.
+    private var started = 0
+    /// The newest round that answered.
+    private var answered = 0
+    /// `listedAfterNow` calls waiting for a round numbered above `after` to end.
+    private var waiters: [(after: Int, resume: CheckedContinuation<Void, Never>)] = []
+
+    public init(sleep: @escaping Sleep = { seconds in try? await Task.sleep(nanoseconds: seconds * 1_000_000_000) }) {
+        self.sleep = sleep
+    }
+
+    /// Brings the list up to date. A call while a round is in flight asks for one more round
+    /// and returns at once, without waiting for it.
+    public func refresh(_ fetch: @escaping Fetch) async {
+        if running {
+            again = fetch
+            return
+        }
+        running = true
+        defer { running = false }
+        var next: Fetch? = fetch
+        while let current = next {
+            again = nil
+            started += 1
+            let round = started
+            if await current() { answered = max(answered, round) }
+            let ended = waiters.filter { $0.after < round }
+            waiters.removeAll { $0.after < round }
+            for waiter in ended { waiter.resume.resume() }
+            next = again
+        }
+    }
+
+    /// True once a list round that started after this call has answered, so the local list
+    /// is at least as new as the call. A failed round is retried after `retrySeconds`, up to
+    /// `attempts` rounds in all. False when none of them answered: the caller cannot tell
+    /// whether something is missing from the list.
+    public func listedAfterNow(attempts: Int = 3, retrySeconds: UInt64 = 1,
+                               _ fetch: @escaping Fetch) async -> Bool {
+        for attempt in 0..<max(attempts, 1) {
+            if attempt > 0 { await sleep(retrySeconds) }
+            if Task.isCancelled { return false }
+            let after = started
+            if running {
+                // The round in flight started before this call: ask for the next one and wait
+                // until it ends.
+                again = fetch
+                await withCheckedContinuation { waiters.append((after, $0)) }
+            } else {
+                await refresh(fetch)
+            }
+            if answered > after { return true }
+        }
+        return false
+    }
+}
+
 extension AgentTopicsError {
     /// The agent will not offer topics for the rest of this page's life: `topics_unsupported`
     /// or a server without `agent_topics`. Anything else may pass, `agent_not_found` too: a
