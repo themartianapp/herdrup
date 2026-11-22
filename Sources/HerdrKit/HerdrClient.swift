@@ -2273,6 +2273,27 @@ public actor HerdrClient {
         }
     }
 
+    /// Drops the Topics switch herdr holds for when `target` goes idle ("Cancel pending
+    /// switch"). The listed row can be stale: herdr applies the held switch at idle, and a
+    /// status event does not carry the cleared `topics_switch_pending` (herdrup#802). Sending
+    /// the row's old `topics_enabled` then would switch the agent straight back. So the agent
+    /// is read fresh (`agent.get`) first, and the cancel (`set_enabled` with its current
+    /// state, which herdr reads as "drop the pending switch") goes out only while that still
+    /// shows a pending switch. `when_idle` stays on, so a lost race never cuts a turn.
+    public func agentTopicsCancelPendingSwitch(target: String) async throws -> AgentTopicsPendingCancel {
+        guard await supports(\.agentTopicsSwitch) else { throw AgentTopicsSwitchError.notAdvertised }
+        let fresh: AgentInfo
+        do {
+            fresh = try await call("agent.get", AgentGetParams(target: target), as: AgentInfoResult.self).agent
+        } catch let error as APIError {
+            throw AgentTopicsSwitchError(error)
+        }
+        guard fresh.isTopicsSwitchPending, let enabled = fresh.topicsEnabled else {
+            return .notPending(topicsEnabled: fresh.topicsEnabled)
+        }
+        return .answered(try await agentTopicsSetEnabled(target: target, enabled: enabled, whenIdle: true))
+    }
+
     /// Every omp agent's topic changes (`agent.topics.changed`), on its own `events.subscribe`
     /// stream. Owner only: guests have no event stream and poll `agentTopicsList` instead.
     /// Call it only when the server advertises `agent_topics`; an older one refuses the

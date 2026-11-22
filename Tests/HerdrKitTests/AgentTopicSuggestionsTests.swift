@@ -103,6 +103,46 @@ final class AgentTopicSuggestionsTests: XCTestCase {
         XCTAssertTrue(applied.topicsEnabled)
     }
 
+    /// herdrup#802: Cancel pending switch reads the agent fresh first. Still pending: it sends
+    /// the current state (with `when_idle`), which herdr reads as the cancel.
+    func testCancelPendingSwitchSendsWhileTheServerStillHoldsIt() async throws {
+        let (client, transport) = makeClient([
+            "agent.get": #"{"id":"x","result":{"type":"agent_info","agent":{"pane_id":"w1:p1","agent":"omp","agent_status":"working","topics_enabled":false,"topics_switch_pending":true}}}"#,
+            "agent.topics.set_enabled": #"{"id":"x","result":{"type":"agent_topics_switched","agent":"enyo","changed":false,"topics_enabled":false,"scheduled":false}}"#,
+        ])
+        let outcome = try await client.agentTopicsCancelPendingSwitch(target: "w1:p1")
+        XCTAssertEqual(outcome, .answered(AgentTopicsSwitched(agent: "enyo", changed: false, topicsEnabled: false)))
+        let methods = transport.requests.map(\.method).filter { $0 != "ping" }
+        XCTAssertEqual(methods, ["agent.get", "agent.topics.set_enabled"], "read fresh, then cancel")
+        let get = try XCTUnwrap(transport.requests.first { $0.method == "agent.get" })
+        XCTAssertEqual(get.params["target"] as? String, "w1:p1")
+        let cancel = try transport.last()
+        XCTAssertEqual(cancel.params["enabled"] as? Bool, false, "the agent's current state")
+        XCTAssertEqual(cancel.params["when_idle"] as? Bool, true, "a lost race never cuts a turn")
+    }
+
+    /// herdrup#802: herdr already applied the held switch (the listed row is stale): nothing is
+    /// sent, so the agent is not switched straight back.
+    func testCancelPendingSwitchSendsNothingOnceTheSwitchWasApplied() async throws {
+        let (client, transport) = makeClient([
+            "agent.get": #"{"id":"x","result":{"type":"agent_info","agent":{"pane_id":"w1:p1","agent":"omp","agent_status":"idle","topics_enabled":true}}}"#,
+            "agent.topics.set_enabled": #"{"id":"x","result":{"type":"agent_topics_switched","agent":"enyo","changed":true,"topics_enabled":false,"scheduled":false}}"#,
+        ])
+        let outcome = try await client.agentTopicsCancelPendingSwitch(target: "w1:p1")
+        XCTAssertEqual(outcome, .notPending(topicsEnabled: true))
+        XCTAssertFalse(transport.requests.contains { $0.method == "agent.topics.set_enabled" },
+                       "no switch back")
+
+        let (old, oldTransport) = makeClient([:], pong: Self.pongTopicsOnly)
+        do {
+            _ = try await old.agentTopicsCancelPendingSwitch(target: "w1:p1")
+            XCTFail("refused before sending")
+        } catch {
+            XCTAssertEqual(error as? AgentTopicsSwitchError, .notAdvertised)
+        }
+        XCTAssertEqual(oldTransport.requests.map(\.method).filter { $0 != "ping" }, [])
+    }
+
     func testSetEnabledNeedsTheCapabilityAndTypesItsErrors() async throws {
         let (old, oldTransport) = makeClient([:], pong: Self.pongTopicsOnly)
         do {

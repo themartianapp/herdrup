@@ -305,6 +305,22 @@ struct AgentTopicsSetEnabledParams: Encodable, Sendable {
     }
 }
 
+/// `agent.get`: one agent as the server has it now.
+struct AgentGetParams: Encodable, Sendable {
+    let target: String
+}
+
+/// How "Cancel pending switch" ended (`HerdrClient.agentTopicsCancelPendingSwitch`).
+public enum AgentTopicsPendingCancel: Sendable, Equatable {
+    /// The agent still had a pending switch, so the cancel went out; herdr's answer.
+    /// `changed: false, scheduled: false` is the cancel; anything else means the switch
+    /// went through before the cancel reached herdr.
+    case answered(AgentTopicsSwitched)
+    /// Nothing was pending any more (herdr already applied or dropped it), so nothing was
+    /// sent. `topicsEnabled` is the agent's state now.
+    case notPending(topicsEnabled: Bool?)
+}
+
 // MARK: - Suggestion results
 
 /// `agent.topics.accept_suggestion`: the topic started from the suggestion.
