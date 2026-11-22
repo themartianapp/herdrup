@@ -161,6 +161,11 @@ final class TopicsModel: ObservableObject {
     /// chat). Called for each answer, changed or not, so a suggestion that went back to open
     /// after a Start is seen even when the list looks the same as before.
     var onListed: (@MainActor ([AgentTopicSuggestion], Date) -> Void)?
+    /// A topic a Start opened ended before its first turn (`start_failed`) while the reader was
+    /// on it: the page goes back to the Inbox, where the suggestion shows open again.
+    var onStartFailed: (@MainActor (String) -> Void)?
+    /// Topics whose start failed (`start_failed`): never opened by a late Start.
+    private var failedStarts: Set<String> = []
 
     /// One list call; true when the server answered.
     @discardableResult
@@ -242,6 +247,7 @@ final class TopicsModel: ObservableObject {
                     case .started:
                         eventsLive = true
                     case .changed(let change) where change.paneID == paneID:
+                        if change.reason == .startFailed { startFailed(topicID: change.topicID) }
                         await refresh(client: client)
                     default:
                         break
@@ -420,6 +426,27 @@ final class TopicsModel: ObservableObject {
         return true
     }
 
+    /// Opens the topic a suggestion's Start (or its "Continued in topic" line) names, unless
+    /// that topic's start failed (`start_failed`): then the caller stays on the Inbox.
+    func openStarted(topicID: String, client: HerdrClient) async -> Bool {
+        guard await open(topicID: topicID, client: client) else { return false }
+        guard !failedStarts.contains(topicID) else {
+            selectedTopicID = nil
+            return false
+        }
+        return true
+    }
+
+    /// `start_failed`: the topic ended before its first turn and the suggestion is open again
+    /// (the agent writes its own note into the Inbox). A reader on that topic leaves it.
+    private func startFailed(topicID: String) {
+        guard !topicID.isEmpty else { return }
+        failedStarts.insert(topicID)
+        guard selectedTopicID == topicID else { return }
+        selectedTopicID = nil
+        onStartFailed?(topicID)
+    }
+
     static func describe(_ error: Error) -> String {
         guard let error = error as? AgentTopicsError else { return "Couldn't reach the agent." }
         switch error {
@@ -433,6 +460,8 @@ final class TopicsModel: ObservableObject {
         case .suggestionNotFound: return "That suggestion is gone."
         case .alreadyAccepted: return "Someone already started that topic."
         case .organiseRunning: return "The agent is already organising."
+        case .seedTooLarge:
+            return "The earlier messages are too long to copy into a new topic. Try again, or start the topic without them."
         case .topicsDisabled: return "Topics are off for this agent."
         case .invalidMessageIDs: return "The agent's picked messages are no longer in its conversation."
         case .other(let api): return api.message

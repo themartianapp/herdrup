@@ -331,6 +331,43 @@ final class TopicSuggestionsTests: XCTestCase {
         shot(app, "topic-suggestion-arrives-on-open-chat")
     }
 
+    // MARK: herdr#494
+
+    /// `seed_too_large`: the earlier messages are too big to copy into a new topic. No topic
+    /// starts; the card says so plainly and keeps Start, so it can be tried again.
+    func testSeedTooLargeKeepsTheCardWithStart() {
+        let app = launch("chatview", ["HERDR_MOCK_TOPICS_SEED_TOO_LARGE": "1"])
+        openHerdrApp(app)
+        let card = suggestionCard("sg-scroll", in: app)
+        card.buttons["chat-topic-suggestion-start"].tap()
+        let problem = any(app, "chat-topic-suggestion-problem")
+        XCTAssertTrue(problem.exists(within: 10), "the card says why")
+        XCTAssertTrue(problem.label.contains("too long to copy into a new topic"), problem.label)
+        let start = card.buttons["chat-topic-suggestion-start"]
+        XCTAssertTrue(poll(5, every: 0.3) { start.exists && start.isEnabled }, "Start stays, for another try")
+        XCTAssertFalse(app.staticTexts["topic-chat-title"].exists, "no topic opened")
+        XCTAssertFalse(any(app, "chat-topic-continued-sg-scroll").exists, "no Continued line")
+        shot(app, "topic-suggestion-seed-too-large")
+    }
+
+    /// `start_failed`: Start opened the new topic, then it ended before its first turn. The
+    /// reader is taken back to the Inbox, where the suggestion shows open again.
+    func testStartFailedReturnsToTheInboxWithTheSuggestionOpen() {
+        let app = launch("chatview", ["HERDR_MOCK_TOPICS_START_FAILS": "4"])
+        openHerdrApp(app)
+        suggestionCard("sg-scroll", in: app).buttons["chat-topic-suggestion-start"].tap()
+        let title = app.staticTexts["topic-chat-title"].firstMatch
+        XCTAssertTrue(poll(10, every: 0.3) { title.exists && title.label == "Terminal scrollback" },
+                      "Start opens the new topic")
+        let card = any(app, "chat-topic-suggestion-sg-scroll")
+        XCTAssertTrue(poll(20, every: 0.3) {
+            card.exists && card.buttons["chat-topic-suggestion-start"].exists
+        }, "start_failed: back on the Inbox, the suggestion open again")
+        XCTAssertTrue(app.buttons["chat-switch-chat"].isSelected, "on the Inbox chat")
+        XCTAssertFalse(any(app, "chat-topic-continued-sg-scroll").exists, "no stale Continued line")
+        shot(app, "topic-suggestion-start-failed")
+    }
+
     // MARK: Organise
 
     /// Organise in the Topics bar: the proposals appear in the list, ticked, above the topics.
