@@ -73,6 +73,16 @@ final class TopicsMock: @unchecked Sendable {
     /// never starts, so the suggestion stays open in the list (and transcript), as omp puts it
     /// back when a seeded topic's start fails.
     static let acceptReverts = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_ACCEPT_REVERTS"] != nil
+    /// `HERDR_MOCK_TOPICS_SEED_TOO_LARGE=1`: `accept_suggestion` answers `seed_too_large` (the
+    /// earlier messages are too big to copy, even trimmed); no topic starts and the suggestion
+    /// stays open (herdr#494).
+    static let seedTooLarge = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_SEED_TOO_LARGE"] != nil
+    /// `HERDR_MOCK_TOPICS_START_FAILS=<seconds>`: `accept_suggestion` starts the topic, then that
+    /// long after the topic ends before its first turn: it leaves the list, the suggestion is
+    /// open again, and the owner's `agent.topics.changed` stream (served only under this flag)
+    /// sends `start_failed` (herdr#494).
+    static let startFailsAfter = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_START_FAILS"]
+        .flatMap(Double.init)
     /// `HERDR_MOCK_TOPICS_SUGGEST_AFTER=<seconds>`: the list carries no open suggestion until
     /// that long after the mock starts, as an agent that suggests a topic while the reader is
     /// already in its Inbox.
@@ -178,7 +188,53 @@ final class TopicsMock: @unchecked Sendable {
         if method == "agent.topics.send", Self.sendDelay > 0 {
             try? await Task.sleep(for: .seconds(Self.sendDelay))
         }
-        return answer(method: method, id: id, params: params)
+        let reply = answer(method: method, id: id, params: params)
+        if let seconds = Self.startFailsAfter,
+           let failing = lock.withLock({ () -> (topic: String, suggestion: String)? in
+               defer { startToFail = nil }
+               return startToFail
+           }) {
+            Task {
+                try? await Task.sleep(for: .seconds(seconds))
+                self.failStart(topicID: failing.topic, suggestionID: failing.suggestion)
+            }
+        }
+        return reply
+    }
+
+    /// The topic a Start under `HERDR_MOCK_TOPICS_START_FAILS` just started.
+    private var startToFail: (topic: String, suggestion: String)?
+    /// The owner's `agent.topics.changed` subscribers (`HERDR_MOCK_TOPICS_START_FAILS`).
+    private var subscribers: [UUID: AsyncThrowingStream<String, Error>.Continuation] = [:]
+
+    /// The owner's `agent.topics.changed` subscription: acknowledged, then `start_failed`
+    /// whenever a started topic fails (`HERDR_MOCK_TOPICS_START_FAILS`). Never finishes.
+    func topicEvents() -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.yield(#"{"id":"herdrkit:events.subscribe:agent-topics","result":{"type":"subscription_started"}}"#)
+            let key = UUID()
+            lock.withLock { subscribers[key] = continuation }
+            continuation.onTermination = { [weak self] _ in
+                guard let self else { return }
+                self.lock.withLock { self.subscribers[key] = nil }
+            }
+        }
+    }
+
+    /// The started topic ends before its first turn: gone from the list, its suggestion open
+    /// again, and `start_failed` to every subscriber.
+    private func failStart(topicID: String, suggestionID: String) {
+        let listeners = lock.withLock { () -> [AsyncThrowingStream<String, Error>.Continuation] in
+            topics.removeAll { $0.id == topicID }
+            if let index = suggestions.firstIndex(where: { $0.id == suggestionID }) {
+                suggestions[index].state = "open"
+                suggestions[index].topicID = nil
+                suggestions[index].by = nil
+            }
+            return Array(subscribers.values)
+        }
+        let event = #"{"event":"agent_topics_changed","data":{"type":"agent_topics_changed","pane_id":"\#(paneID)","agent":"\#(agent)","topic_id":"\#(topicID)","suggestion_id":"\#(suggestionID)","reason":"start_failed","code":"seed_failed"}}"#
+        for listener in listeners { listener.yield(event) }
     }
 
     private func answer(method: String, id: String, params: [String: Any]) -> String {
@@ -281,6 +337,10 @@ final class TopicsMock: @unchecked Sendable {
                         "type": "agent_topic_suggestion_accepted", "agent": agent, "pane_id": paneID,
                         "suggestion_id": suggestionID, "topic_id": "t-failed", "already_accepted": false])
                 }
+                if Self.seedTooLarge {
+                    return ChatMockConversation.error(id: id, code: "seed_too_large",
+                                                      message: "the seed is too large even after trimming")
+                }
                 // The topic starts with the messages the agent picked (copied, as omp seeds it).
                 created += 1
                 let newID = "t-sug-\(created)"
@@ -294,6 +354,7 @@ final class TopicsMock: @unchecked Sendable {
                 suggestions[index].state = "accepted"
                 suggestions[index].topicID = newID
                 suggestions[index].by = by
+                if Self.startFailsAfter != nil { startToFail = (newID, suggestionID) }
                 return ChatMockConversation.encode(id: id, result: [
                     "type": "agent_topic_suggestion_accepted", "agent": agent, "pane_id": paneID,
                     "suggestion_id": suggestionID, "topic_id": newID, "already_accepted": false])

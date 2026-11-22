@@ -681,6 +681,11 @@ struct ChatMockTransport: HerdrTransport {
            let stream = TopicsMock.owner.agentStatusStream(paneID: Self.paneID) {
             return stream
         }
+        // `HERDR_MOCK_TOPICS_START_FAILS`: herdr-app's `agent.topics.changed` (start_failed).
+        if TopicsMock.enabled, TopicsMock.startFailsAfter != nil,
+           requestLine.contains("herdrkit:events.subscribe:agent-topics") {
+            return TopicsMock.owner.topicEvents()
+        }
         return base.stream(requestLine)
     }
 

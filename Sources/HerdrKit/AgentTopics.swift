@@ -442,6 +442,9 @@ public enum AgentTopicsError: Error, Equatable, Sendable {
     case alreadyAccepted
     /// `organise_running`: an Organise turn is already running.
     case organiseRunning
+    /// `seed_too_large`: the earlier messages are too big to copy into a new topic, even
+    /// trimmed. No topic started and the suggestion stays open: Start may be tried again.
+    case seedTooLarge
     /// `topics_disabled`: the agent runs without topics (its Topics switch is off).
     case topicsDisabled
     /// `invalid_message_ids`: the agent's picked messages are not in its conversation.
@@ -459,6 +462,7 @@ public enum AgentTopicsError: Error, Equatable, Sendable {
         case "suggestion_not_found": self = .suggestionNotFound
         case "already_accepted": self = .alreadyAccepted
         case "organise_running": self = .organiseRunning
+        case "seed_too_large": self = .seedTooLarge
         case "topics_disabled": self = .topicsDisabled
         case "invalid_message_ids": self = .invalidMessageIDs
         default:
@@ -613,6 +617,48 @@ public final class TopicsDiscoveryLoop {
     }
 }
 
+/// How long Organise shows as running. `agent.topics.organise` only says the turn was
+/// queued, and nothing reports its end. Organise is over when a proposal arrives that was
+/// not open when it was asked, or after `timeout` (3 minutes). A turn that proposes nothing,
+/// or only proposes again what is already open, therefore ends too (herdrup#797).
+public struct TopicsOrganiseWait: Sendable, Equatable {
+    public static let defaultTimeout: TimeInterval = 180
+
+    public let timeout: TimeInterval
+    /// When Organise was asked; nil when it is not running.
+    public private(set) var startedAt: Date?
+    /// The open suggestions when it was asked.
+    private var known: Set<String> = []
+
+    public init(timeout: TimeInterval = TopicsOrganiseWait.defaultTimeout) {
+        self.timeout = timeout
+    }
+
+    public var isRunning: Bool { startedAt != nil }
+    /// When it ends without a proposal.
+    public var deadline: Date? { startedAt?.addingTimeInterval(timeout) }
+
+    public mutating func start(at now: Date, open ids: [String]) {
+        startedAt = now
+        known = Set(ids)
+    }
+
+    public mutating func stop() {
+        startedAt = nil
+        known = []
+    }
+
+    /// Checks a list answer (its open suggestion ids), or the clock alone (`open` nil).
+    /// True when Organise has just ended, and then it has stopped.
+    public mutating func end(open ids: [String]?, now: Date) -> Bool {
+        guard let deadline else { return false }
+        let proposed = ids?.contains { !known.contains($0) } ?? false
+        guard proposed || now >= deadline else { return false }
+        stop()
+        return true
+    }
+}
+
 /// The topics list's refresh rounds. Refreshes that arrive while a list call is in flight
 /// coalesce into one more round. `listedAfterNow` is for a caller that must see the list as
 /// it is now, such as a suggestion's Start opening the topic it just started (herdrup#795).
@@ -693,7 +739,7 @@ extension AgentTopicsError {
         switch self {
         case .unsupported, .notAdvertised: return true
         case .unreachable, .timeout, .rejected, .topicNotFound, .agentNotFound, .suggestionsNotAdvertised,
-             .suggestionNotFound, .alreadyAccepted, .organiseRunning, .topicsDisabled, .invalidMessageIDs,
+             .suggestionNotFound, .alreadyAccepted, .organiseRunning, .seedTooLarge, .topicsDisabled, .invalidMessageIDs,
              .other: return false
         }
     }
@@ -714,6 +760,9 @@ public enum AgentTopicChangeReason: String, Sendable, Equatable, Decodable {
     case suggestionDismissed = "suggestion_dismissed"
     /// The agent restored the topic with its session (startup, session switch).
     case restored
+    /// A Start that answered accepted, but the topic ended before its first turn: `topicID`
+    /// names it, `suggestionID` the suggestion (open again), `code` why when the agent says.
+    case startFailed = "start_failed"
     /// A reason this client does not know yet.
     case unknown
 
@@ -732,21 +781,25 @@ public struct AgentTopicsChange: Decodable, Sendable, Equatable {
     /// Empty for the suggestion reasons.
     public let topicID: String
     public let reason: AgentTopicChangeReason
-    /// The suggestion a `suggested` / `suggestion_accepted` / `suggestion_dismissed` names.
+    /// The suggestion a `suggested` / `suggestion_accepted` / `suggestion_dismissed` /
+    /// `start_failed` names.
     public let suggestionID: String?
+    /// Why a `start_failed` topic ended, when the agent says (a machine code).
+    public let code: String?
 
     public init(paneID: String, workspaceID: String? = nil, agent: String? = nil, topicID: String,
-                reason: AgentTopicChangeReason, suggestionID: String? = nil) {
+                reason: AgentTopicChangeReason, suggestionID: String? = nil, code: String? = nil) {
         self.paneID = paneID
         self.workspaceID = workspaceID
         self.agent = agent
         self.topicID = topicID
         self.reason = reason
         self.suggestionID = suggestionID
+        self.code = code
     }
 
     enum CodingKeys: String, CodingKey {
-        case agent, reason
+        case agent, reason, code
         case paneID = "pane_id"
         case workspaceID = "workspace_id"
         case topicID = "topic_id"
@@ -761,6 +814,7 @@ public struct AgentTopicsChange: Decodable, Sendable, Equatable {
         agent = try? c.decodeIfPresent(String.self, forKey: .agent)
         reason = (try? c.decodeIfPresent(AgentTopicChangeReason.self, forKey: .reason)) ?? .unknown
         suggestionID = (try? c.decodeIfPresent(String.self, forKey: .suggestionID)) ?? nil
+        code = (try? c.decodeIfPresent(String.self, forKey: .code)) ?? nil
     }
 }
 

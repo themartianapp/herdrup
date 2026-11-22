@@ -6271,7 +6271,7 @@ struct TerminalPaneContent: View {
                                  onFindResult: { index, total, capped in findMatches = (index, total, capped) },
                                  onOpenTopic: { topicID in
                                      Task {
-                                         if await topicsModel.open(topicID: topicID, client: client) {
+                                         if await topicsModel.openStarted(topicID: topicID, client: client) {
                                              setMode(.topics)
                                          }
                                      }
@@ -6292,6 +6292,11 @@ struct TerminalPaneContent: View {
                         }
                         .task(id: topicsModel.suggestionsServed) {
                             guard topicsModel.suggestionsServed else { return }
+                            // A started topic that ended before its first turn: back to
+                            // the Inbox, where its suggestion shows open again.
+                            topicsModel.onStartFailed = { _ in
+                                if mode == .topics { setMode(.chat) }
+                            }
                             await topicsModel.follow(client: client, eventsPaneID: paneID)
                         }
                     }

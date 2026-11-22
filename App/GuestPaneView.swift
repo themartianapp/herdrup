@@ -173,7 +173,7 @@ struct GuestPaneView: View {
                              onFindResult: { index, total, capped in findMatches = (index, total, capped) },
                              onOpenTopic: { topicID in
                                  Task {
-                                     if await topicsModel.open(topicID: topicID, client: client) {
+                                     if await topicsModel.openStarted(topicID: topicID, client: client) {
                                          tab = .topics
                                      }
                                  }

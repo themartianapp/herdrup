@@ -381,4 +381,53 @@ final class AgentTopicSuggestionsTests: XCTestCase {
         guard case .changed(let change) = try AgentTopicsStreamLine.decode(hyphen) else { return XCTFail() }
         XCTAssertEqual(change.reason, .unknown, "only the underscore spelling is the contract")
     }
+
+    // MARK: herdr#494
+
+    /// `seed_too_large` from Start (owner or guest): its own case, not a refusal that stops
+    /// discovery; the suggestion stays open, so Start may be tried again.
+    func testAcceptDecodesSeedTooLarge() async throws {
+        let (client, transport) = makeClient(["agent.topics.accept_suggestion":
+            RecordingTransport.errorReply(code: "seed_too_large", message: "seed is 900 KiB after trimming")])
+        do {
+            _ = try await client.agentTopicsAcceptSuggestion(target: "w1:p1", suggestionID: "s1")
+            XCTFail("seed_too_large throws")
+        } catch {
+            XCTAssertEqual(error as? AgentTopicsError, .seedTooLarge)
+            XCTAssertFalse(AgentTopicsError.seedTooLarge.isPermanent)
+        }
+        XCTAssertEqual(transport.requests.map(\.method), ["ping", "agent.topics.accept_suggestion"])
+    }
+
+    /// A Start code this client does not know keeps the server's code and text (`.other`),
+    /// next to the known one; a `start_failed` code it does not know arrives as written.
+    func testUnknownStartCodesFallBackToTheServersText() async throws {
+        for (code, expected) in [("seed_too_large", AgentTopicsError.seedTooLarge),
+                                 ("seed_unreadable", .other(APIError(code: "seed_unreadable", message: "server text")))] {
+            let (client, _) = makeClient(["agent.topics.accept_suggestion":
+                RecordingTransport.errorReply(code: code, message: "server text")])
+            do {
+                _ = try await client.agentTopicsAcceptSuggestion(target: "w1:p1", suggestionID: "s1")
+                XCTFail(code)
+            } catch {
+                XCTAssertEqual(error as? AgentTopicsError, expected, code)
+            }
+        }
+        let line = #"{"event":"agent_topics_changed","data":{"pane_id":"w1:p1","topic_id":"t7","suggestion_id":"s1","reason":"start_failed","code":"something_new"}}"#
+        guard case .changed(let change) = try AgentTopicsStreamLine.decode(line) else { return XCTFail() }
+        XCTAssertEqual(change.code, "something_new")
+    }
+
+    /// `start_failed`: Start answered accepted, but the topic ended before its first turn. It
+    /// names the topic and the suggestion (open again), with an optional code.
+    func testTopicsChangedDecodesStartFailed() throws {
+        let line = #"{"seq":9,"event":"agent_topics_changed","data":{"type":"agent_topics_changed","pane_id":"w1:p1","workspace_id":"w1","agent":"enyo","topic_id":"t7","suggestion_id":"s1","reason":"start_failed","code":"seed_too_large"}}"#
+        XCTAssertEqual(try AgentTopicsStreamLine.decode(line), .changed(AgentTopicsChange(
+            paneID: "w1:p1", workspaceID: "w1", agent: "enyo", topicID: "t7", reason: .startFailed,
+            suggestionID: "s1", code: "seed_too_large")))
+        let bare = #"{"event":"agent_topics_changed","data":{"pane_id":"w1:p1","topic_id":"t7","suggestion_id":"s1","reason":"start_failed"}}"#
+        guard case .changed(let change) = try AgentTopicsStreamLine.decode(bare) else { return XCTFail() }
+        XCTAssertEqual(change.reason, .startFailed)
+        XCTAssertNil(change.code, "the code is optional")
+    }
 }
