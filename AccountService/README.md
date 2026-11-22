@@ -39,7 +39,7 @@ own deploys, so a bug or rollback here can't drop a guest session.
 | `POST /v1/approvals` | bearer, browser; `{commit}` | 201 `{id, expires_in: 600}`; replaces the browser's request; `403 not_a_browser`, `429 too_many_requests` |
 | `GET /v1/approvals` | bearer, approver | `{requests: [{id, browser: {device_id, device_pub, name, platform, created_ms}, commit, claimed: "no"\|"you"\|"other", expires_in}]}` |
 | `POST /v1/approvals/<id>/claim` | bearer, approver; `{nonce_t}` | `{state: "claimed"}`; `409 already_claimed` |
-| `GET /v1/approvals/<id>` | bearer, the browser or an approver | `{state: "waiting"\|"claimed"\|"revealed"\|"denied"\|"approved"\|"expired", expires_in, approver?: {device_pub, name}, nonce_t?, nonce_b?}` |
+| `GET /v1/approvals/<id>` | bearer, the browser or an approver | `{state: "waiting"\|"claimed"\|"revealed"\|"denied"\|"approved"\|"expired", expires_in, approver?: {device_pub, name}, nonce_t?, nonce_b?}`; `expired` is stored before it is answered, so it is final |
 | `POST /v1/approvals/<id>/reveal` | bearer, the browser that asked; `{nonce_b}` | `{state: "revealed"}`; `409 not_claimed`, `400 reveal_mismatch` (the request ends) |
 | `POST /v1/approvals/<id>/finish` | bearer, the claimant; `{outcome: "approved", scope, expires_ms, seq, sealed}` or `{outcome: "denied"}` | `{state}`; `409 not_revealed`, `409 stale_seq` |
 | `PUT /v1/browsers/<device_id>/envelope` | bearer, an approver the browser verified; `{scope, expires_ms, seq, sealed}` | `{seq}`; `403 not_approver`, `409 stale_seq` |
@@ -56,7 +56,7 @@ something else.
 
 | Feature | Listed when |
 |---|---|
-| `native_sign_in`, `devices`, `statements`, `sync`, `delete`, `web_approve` | always (this build); `web_approve` is the browser approval (approve-v1) |
+| `native_sign_in`, `devices`, `statements`, `sync`, `delete`, `web_approve`, `approval_expiry_final` | always (this build); `web_approve` is the browser approval (approve-v1); `approval_expiry_final` says a reported `expired` is stored and final: no finish that started earlier commits after it |
 | `native_sign_in_google` | `GOOGLE_IOS_CLIENT_ID` is set: the iOS app may offer its own Google sign-in (ASWebAuthenticationSession + PKCE against the iOS client), which needs no secret |
 | `web_sign_in_apple` | `APPLE_WEB_CLIENT_ID` is set |
 | `web_sign_in_google` | `GOOGLE_WEB_CLIENT_ID` and `GOOGLE_WEB_CLIENT_SECRET` are both set |
@@ -374,6 +374,11 @@ them before rewriting rows:
 ```sh
 npx wrangler d1 execute herdrup-accounts --remote --command "SELECT COUNT(*) FROM devices WHERE length(device_pub) <> 43 OR substr(device_pub, 43, 1) NOT IN ('A','E','I','M','Q','U','Y','c','g','k','o','s','w','0','4','8')"
 ```
+
+For the stored approval expiry (`approval_expiry_final`): apply the migrations
+(`0007_approval_expiry.sql`, which rebuilds `approval_requests` with the same rows so
+`outcome` may be `expired`), then deploy. No new secret, var or binding. The migration also works
+with the previous build, so apply it first.
 
 ### Rotate the statement key
 
