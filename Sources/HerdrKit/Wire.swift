@@ -376,6 +376,13 @@ public struct AgentInfo: Decodable, Equatable, Sendable, Identifiable {
     /// `agent_topics_switch`): true when it runs on the omp build with topics. Absent on older
     /// servers and for agents that are not omp.
     public let topicsEnabled: Bool?
+    /// A Topics switch the owner asked for while the agent was working
+    /// (`agent.topics.set_enabled` with `when_idle`): herdr applies it when the agent next goes
+    /// idle. Absent on older servers; read it through `isTopicsSwitchPending`.
+    public let topicsSwitchPending: Bool?
+
+    /// A scheduled Topics switch waits for the agent to finish (false when absent).
+    public var isTopicsSwitchPending: Bool { topicsSwitchPending == true }
 
     /// Stable list identity. A LIVE agent is keyed on its pane id, which is unique
     /// and stable while it runs. An ARCHIVED agent has NO pane — the server empties
@@ -474,6 +481,7 @@ public struct AgentInfo: Decodable, Equatable, Sendable, Identifiable {
         case guestRunning = "guest_running"
         case topicSessions = "topic_sessions"
         case topicsEnabled = "topics_enabled"
+        case topicsSwitchPending = "topics_switch_pending"
     }
 }
 

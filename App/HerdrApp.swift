@@ -2415,11 +2415,14 @@ struct TerminalHomeView: View {
 
     /// Turns an agent's topics on or off (`agent.topics.set_enabled`), which restarts it: the
     /// banner at the list's foot shows it working, then how it ended; the list reloads.
-    private func switchTopics(_ request: TopicsSwitchRequest) async {
+    /// `whenIdle`: a working agent finishes its turn first; herdr holds the switch (`scheduled`)
+    /// and lists it as `topics_switch_pending` until the agent goes idle.
+    private func switchTopics(_ request: TopicsSwitchRequest, whenIdle: Bool) async {
         topicsSwitchStatus = .working(request)
         do {
-            let result = try await client.agentTopicsSetEnabled(target: request.paneID, enabled: request.enabled)
-            topicsSwitchStatus = .done(request, changed: result.changed)
+            let result = try await client.agentTopicsSetEnabled(target: request.paneID, enabled: request.enabled,
+                                                                whenIdle: whenIdle)
+            topicsSwitchStatus = result.scheduled ? .scheduled(request) : .done(request, changed: result.changed)
         } catch {
             topicsSwitchStatus = .failed(request, TopicsSwitchStatus.describe(error))
         }
@@ -3548,8 +3551,20 @@ struct TerminalHomeView: View {
                 titleVisibility: .visible,
                 presenting: topicsSwitchCandidate
             ) { request in
-                Button(request.enabled ? "Restart with topics" : "Restart without topics") {
-                    Task { await switchTopics(request) }
+                if request.busy {
+                    // The agent is working: by default herdr waits for its turn to end.
+                    Button("Switch when it's done") {
+                        Task { await switchTopics(request, whenIdle: true) }
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    Button("Switch now", role: .destructive) {
+                        Task { await switchTopics(request, whenIdle: false) }
+                    }
+                } else {
+                    // Idle: `when_idle` is harmless and covers the agent starting a turn meanwhile.
+                    Button(request.enabled ? "Restart with topics" : "Restart without topics") {
+                        Task { await switchTopics(request, whenIdle: true) }
+                    }
                 }
                 Button("Cancel", role: .cancel) {}
             } message: { request in
@@ -4493,11 +4508,23 @@ struct TerminalHomeView: View {
                 restartCandidate = row
             }
             // The Topics switch (owner only: guests have no agents list), for omp agents on a
-            // daemon with `agent_topics_switch`. It restarts the agent, so it confirms first.
+            // daemon with `agent_topics_switch`. It restarts the agent, so it confirms first; a
+            // working agent can keep its turn and switch when it goes idle (herdr holds it).
             if topicsSwitchSupported, ChatPreference.isOmp(row.info.agent), let enabled = row.info.topicsEnabled {
-                StableMenuItem(enabled ? "Turn off topics" : "Turn on topics", systemImage: "rectangle.stack") {
-                    topicsSwitchCandidate = TopicsSwitchRequest(paneID: row.info.paneID, title: row.title,
-                                                                enabled: !enabled)
+                if row.info.isTopicsSwitchPending {
+                    StableMenuItem(disabled: "Topics switch pending", systemImage: "clock")
+                    // The agent's current state again: herdr drops the switch it was holding.
+                    StableMenuItem("Cancel pending switch", systemImage: "xmark.circle") {
+                        let request = TopicsSwitchRequest(paneID: row.info.paneID, title: row.title,
+                                                          enabled: enabled, cancelsPending: true)
+                        Task { await switchTopics(request, whenIdle: false) }
+                    }
+                } else {
+                    StableMenuItem(enabled ? "Turn off topics" : "Turn on topics", systemImage: "rectangle.stack") {
+                        topicsSwitchCandidate = TopicsSwitchRequest(paneID: row.info.paneID, title: row.title,
+                                                                    enabled: !enabled,
+                                                                    busy: row.info.isWorking || row.info.agentStatus == "blocked")
+                    }
                 }
             }
             // Harness transfer is deliberately not a restart shortcut. It

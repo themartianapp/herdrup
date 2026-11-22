@@ -47,6 +47,18 @@ final class AgentTopicSuggestionsTests: XCTestCase {
                    {"pane_id":"w1:p3","agent":"claude"}]}
         """#.utf8))
         XCTAssertEqual(wrap.agents.map(\.topicsEnabled), [true, false, nil])
+        XCTAssertEqual(wrap.agents.map(\.isTopicsSwitchPending), [false, false, false], "absent: not pending")
+    }
+
+    func testAgentInfoReadsTopicsSwitchPending() throws {
+        struct Wrap: Decodable { let agents: [AgentInfo] }
+        let wrap = try JSONDecoder().decode(Wrap.self, from: Data(#"""
+        {"agents":[{"pane_id":"w1:p1","agent":"omp","agent_status":"working","topics_enabled":false,"topics_switch_pending":true},
+                   {"pane_id":"w1:p2","agent":"omp","topics_enabled":true,"topics_switch_pending":false},
+                   {"pane_id":"w1:p3","agent":"omp","topics_enabled":true}]}
+        """#.utf8))
+        XCTAssertEqual(wrap.agents.map(\.isTopicsSwitchPending), [true, false, false])
+        XCTAssertEqual(wrap.agents.map(\.topicsSwitchPending), [true, false, nil])
     }
 
     // MARK: Switch
@@ -60,7 +72,9 @@ final class AgentTopicSuggestionsTests: XCTestCase {
         XCTAssertEqual(last.method, "agent.topics.set_enabled")
         XCTAssertEqual(last.params["target"] as? String, "w1:p1")
         XCTAssertEqual(last.params["enabled"] as? Bool, true)
-        XCTAssertEqual(Set(last.params.keys), ["target", "enabled"])
+        XCTAssertEqual(last.params["when_idle"] as? Bool, false, "switch now by default")
+        XCTAssertEqual(Set(last.params.keys), ["target", "enabled", "when_idle"])
+        XCTAssertFalse(result.scheduled, "absent scheduled reads as false")
 
         let (offClient, offTransport) = makeClient(["agent.topics.set_enabled":
             #"{"id":"x","result":{"type":"agent_topics_switched","agent":"enyo","changed":false,"topics_enabled":false}}"#])
@@ -68,6 +82,20 @@ final class AgentTopicSuggestionsTests: XCTestCase {
         XCTAssertFalse(off.changed, "already off")
         XCTAssertFalse(off.topicsEnabled)
         XCTAssertEqual(try offTransport.last().params["enabled"] as? Bool, false)
+    }
+
+    func testSetEnabledWhenIdleSendsTheFlagAndDecodesScheduled() async throws {
+        let (client, transport) = makeClient(["agent.topics.set_enabled":
+            #"{"id":"x","result":{"type":"agent_topics_switched","agent":"enyo","changed":true,"topics_enabled":false,"scheduled":true}}"#])
+        let result = try await client.agentTopicsSetEnabled(target: "w1:p1", enabled: true, whenIdle: true)
+        XCTAssertEqual(result, AgentTopicsSwitched(agent: "enyo", changed: true, topicsEnabled: false, scheduled: true))
+        XCTAssertEqual(try transport.last().params["when_idle"] as? Bool, true)
+
+        let (now, _) = makeClient(["agent.topics.set_enabled":
+            #"{"id":"x","result":{"type":"agent_topics_switched","agent":"enyo","changed":true,"topics_enabled":true,"scheduled":false}}"#])
+        let applied = try await now.agentTopicsSetEnabled(target: "w1:p1", enabled: true, whenIdle: true)
+        XCTAssertFalse(applied.scheduled, "an idle agent switches at once")
+        XCTAssertTrue(applied.topicsEnabled)
     }
 
     func testSetEnabledNeedsTheCapabilityAndTypesItsErrors() async throws {

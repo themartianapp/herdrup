@@ -292,10 +292,17 @@ struct AgentTopicSuggestionParams: Encodable, Sendable {
     }
 }
 
-/// `agent.topics.set_enabled`: the owner's Topics switch for one omp agent.
+/// `agent.topics.set_enabled`: the owner's Topics switch for one omp agent. `when_idle`: if the
+/// agent is working, herdr applies the switch when it next goes idle instead of cutting the turn.
 struct AgentTopicsSetEnabledParams: Encodable, Sendable {
     let target: String
     let enabled: Bool
+    let whenIdle: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case target, enabled
+        case whenIdle = "when_idle"
+    }
 }
 
 // MARK: - Suggestion results
@@ -362,21 +369,34 @@ struct AgentTopicsOrganiseStarted: Decodable, Sendable {
 }
 
 /// `agent.topics.set_enabled` (`type: "agent_topics_switched"`): whether the switch changed
-/// anything (false: it already was so), and the agent's topics state now.
+/// anything (false: it already was so), the agent's topics state now, and whether it was
+/// `scheduled` for when the agent goes idle (then `topicsEnabled` is still the old state).
 public struct AgentTopicsSwitched: Decodable, Sendable, Equatable {
     public let agent: String
     public let changed: Bool
     public let topicsEnabled: Bool
+    /// The agent was working and `when_idle` was set: the switch waits for the turn to end.
+    /// False when absent (older server).
+    public let scheduled: Bool
 
-    public init(agent: String, changed: Bool, topicsEnabled: Bool) {
+    public init(agent: String, changed: Bool, topicsEnabled: Bool, scheduled: Bool = false) {
         self.agent = agent
         self.changed = changed
         self.topicsEnabled = topicsEnabled
+        self.scheduled = scheduled
     }
 
     enum CodingKeys: String, CodingKey {
-        case agent, changed
+        case agent, changed, scheduled
         case topicsEnabled = "topics_enabled"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        agent = try c.decode(String.self, forKey: .agent)
+        changed = try c.decode(Bool.self, forKey: .changed)
+        topicsEnabled = try c.decode(Bool.self, forKey: .topicsEnabled)
+        scheduled = try c.decodeIfPresent(Bool.self, forKey: .scheduled) ?? false
     }
 }
 

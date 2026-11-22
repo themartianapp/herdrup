@@ -36,6 +36,8 @@ struct StableMenuItem {
     let title: String
     let systemImage: String
     let destructive: Bool
+    /// A greyed-out line that states something (a `.disabled` UIAction); it does nothing.
+    let disabled: Bool
     let kind: Kind
 
     /// A menu item; `role: .destructive` draws it red, as a SwiftUI Button's role.
@@ -44,7 +46,17 @@ struct StableMenuItem {
         self.title = title
         self.systemImage = systemImage
         destructive = role == .destructive
+        disabled = false
         kind = .action(action)
+    }
+
+    /// A disabled line: shown greyed out, never chosen, and left out of the Actions rotor.
+    init(disabled title: String, systemImage: String) {
+        self.title = title
+        self.systemImage = systemImage
+        destructive = false
+        disabled = true
+        kind = .action {}
     }
 
     /// A submenu, as a SwiftUI `Menu` inside a context menu.
@@ -53,6 +65,7 @@ struct StableMenuItem {
         self.title = title
         self.systemImage = systemImage
         destructive = false
+        disabled = false
         kind = .submenu(items())
     }
 }
@@ -128,6 +141,7 @@ private struct StableContextMenu: ViewModifier {
         -> [(title: String, action: () -> Void)] {
         items.flatMap { item -> [(title: String, action: () -> Void)] in
             let title = prefix.isEmpty ? item.title : "\(prefix), \(item.title)"
+            if item.disabled { return [] }
             switch item.kind {
             case .action(let action): return [(title, action)]
             case .submenu(let children): return flattened(children, prefix: title)
@@ -308,7 +322,7 @@ final class StableMenuHost: NSObject, UIContextMenuInteractionDelegate {
         switch item.kind {
         case .action(let opened):
             return UIAction(title: item.title, image: image,
-                            attributes: item.destructive ? .destructive : []) { [weak anchor] _ in
+                            attributes: item.destructive ? .destructive : item.disabled ? .disabled : []) { [weak anchor] _ in
                 (anchor?.model.currentAction(at: path) ?? opened)()
             }
         case .submenu(let children):
