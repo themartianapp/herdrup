@@ -1,13 +1,15 @@
 import XCTest
 @testable import HerdrKit
 
-/// herdrup#795: a suggestion's Start opens its topic only after a list that started after the
-/// accept has answered. A list already in flight, or a failed one, does not mean the topic
+/// herdrup#795, #806, #807: a suggestion's Start opens its topic as soon as any list has it.
+/// It gives up only when a list that started after the accept answered without it, or the
+/// bounded rounds failed. A list already in flight, or a failed one, does not mean the topic
 /// is absent.
 @MainActor
 final class TopicsListRoundsTests: XCTestCase {
     /// A server and the page's list. `fetch` reads the server when the call starts, like a
     /// list request, and replaces the local list only when it answers.
+    @MainActor
     private final class Bench {
         var server: [String] = []
         var local: [String] = []
@@ -18,6 +20,14 @@ final class TopicsListRoundsTests: XCTestCase {
         var holding: Set<Int> = []
         private var held: CheckedContinuation<Void, Never>?
         var isHolding: Bool { held != nil }
+        /// Runs once during the next backoff sleep: the follow or the poll refreshing then.
+        var duringBackoff: (@MainActor () async -> Void)?
+
+        func backoff() async {
+            let run = duringBackoff
+            duringBackoff = nil
+            await run?()
+        }
 
         func fetch() async -> Bool {
             calls += 1
@@ -42,11 +52,9 @@ final class TopicsListRoundsTests: XCTestCase {
         func sleep(_ seconds: UInt64) { lock.withLock { recorded.append(seconds) } }
     }
 
-    /// As `TopicsModel.open`: a topic not in the list waits for a list from after the call.
+    /// What `TopicsModel.open` decides: the real `waitUntilListed`, with the topic as listed.
     private func open(_ id: String, rounds: TopicsListRounds, bench: Bench) async -> Bool {
-        if bench.local.contains(id) { return true }
-        guard await rounds.listedAfterNow({ await bench.fetch() }) else { return false }
-        return bench.local.contains(id)
+        await rounds.waitUntilListed(isListed: { bench.local.contains(id) }) { await bench.fetch() }
     }
 
     private func settle(until done: () -> Bool) async {
@@ -121,5 +129,61 @@ final class TopicsListRoundsTests: XCTestCase {
         bench.release()
         await first.value
         XCTAssertEqual(bench.calls, 2, "one more round for both")
+    }
+
+    /// herdrup#807: a counted round fails; during the backoff the poll starts a list and it
+    /// answers. That list is from after the call: it counts, and nothing is fetched again.
+    func testAnAnswerDuringTheBackoffCountsWithoutAnotherFetch() async {
+        let bench = Bench()
+        let rounds = TopicsListRounds(sleep: { _ in await bench.backoff() })
+        bench.server = ["t-scroll"]
+        bench.failing = [1]
+        bench.duringBackoff = { await rounds.refresh { await bench.fetch() } }
+        let opened = await open("t-scroll", rounds: rounds, bench: bench)
+        XCTAssertTrue(opened)
+        XCTAssertEqual(bench.calls, 2, "the backoff's list answered: no third list")
+    }
+
+    /// herdrup#807 with #791: the backoff's list answers without the topic (the start failed):
+    /// Start stays on the Inbox at once, without another list.
+    func testABackoffAnswerWithoutTheTopicStaysPutWithoutAnotherFetch() async {
+        let bench = Bench()
+        let rounds = TopicsListRounds(sleep: { _ in await bench.backoff() })
+        bench.failing = [1]
+        bench.duringBackoff = { await rounds.refresh { await bench.fetch() } }
+        let opened = await open("t-failed", rounds: rounds, bench: bench)
+        XCTAssertFalse(opened)
+        XCTAssertEqual(bench.calls, 2)
+    }
+
+    /// herdrup#806: the round in flight (started before the call, so not counted) answers
+    /// with the topic while the counted rounds fail: Start opens it.
+    func testATopicListedByTheRoundInFlightOpensWhileCountedRoundsFail() async {
+        let bench = Bench()
+        let rounds = TopicsListRounds(sleep: { _ in })
+        bench.server = ["t-scroll"]
+        bench.holding = [1]
+        bench.failing = [2, 3, 4]
+        let inFlight = Task { await rounds.refresh { await bench.fetch() } }
+        await settle { bench.isHolding }
+        let opening = Task { await self.open("t-scroll", rounds: rounds, bench: bench) }
+        await settle { false }
+        bench.release()
+        let opened = await opening.value
+        await inFlight.value
+        XCTAssertTrue(opened, "the list has the topic: Start opens it")
+        XCTAssertEqual(bench.calls, 2, "no more lists once it is there")
+    }
+
+    /// herdrup#806: a counted round fails; during the backoff the follow or the poll lists the
+    /// topic, and the later counted rounds fail: Start opens it.
+    func testAPollThatListsTheTopicDuringTheBackoffOpens() async {
+        let bench = Bench()
+        let rounds = TopicsListRounds(sleep: { _ in await bench.backoff() })
+        bench.server = ["t-scroll"]
+        bench.failing = [1, 3, 4, 5]
+        bench.duringBackoff = { await rounds.refresh { await bench.fetch() } }
+        let opened = await open("t-scroll", rounds: rounds, bench: bench)
+        XCTAssertTrue(opened, "the list has the topic: Start opens it")
     }
 }
