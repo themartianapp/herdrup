@@ -169,6 +169,29 @@ final class TopicsTests: XCTestCase {
         XCTAssertTrue(row("t-new-1", in: app).exists(within: 8), "the list has the new topic")
     }
 
+    /// The "i" after the Topics heading opens "About topics" (a sheet on iPhone, a popover
+    /// on iPad); Done closes it.
+    func testAboutTopicsOpensAndCloses() {
+        let app = launch("chatview")
+        openHerdrApp(app)
+        _ = openTopics(app)
+        let about = app.buttons["topics.about"]
+        XCTAssertTrue(about.exists(within: 8), "the Topics heading has an info button")
+        XCTAssertEqual(about.label, "About topics")
+        XCTAssertGreaterThanOrEqual(about.frame.width, 44, "a 44 pt target")
+        XCTAssertGreaterThanOrEqual(about.frame.height, 44, "a 44 pt target")
+        about.tap()
+        let title = app.staticTexts["About topics"].firstMatch
+        XCTAssertTrue(title.exists(within: 6), "About topics opens")
+        XCTAssertTrue(app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS %@", "Nothing is deleted.")).firstMatch.exists,
+            "the whole explanation is there")
+        attach(app, "topics-about")
+        app.buttons["topics-about-done"].tap()
+        XCTAssertTrue(title.waitForNonExistence(timeout: 6), "Done closes it")
+        XCTAssertTrue(app.otherElements["topics-view"].firstMatch.exists, "back on the list")
+    }
+
     /// Close and Reopen from a row's menu; Rename from it too.
     func testCloseReopenAndRenameFromTheRowMenu() {
         let app = launch("chatview")
