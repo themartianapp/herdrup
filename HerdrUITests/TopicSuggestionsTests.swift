@@ -206,6 +206,64 @@ final class TopicSuggestionsTests: XCTestCase {
         XCTAssertFalse(app.buttons["Cancel pending switch"].exists)
     }
 
+    /// The collapsed Idle group, opened; herdr-app is listed there once it is idle.
+    private func openIdleGroup(_ app: XCUIApplication) {
+        let idle = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Idle")).firstMatch
+        XCTAssertTrue(idle.exists(within: 10))
+        idle.tap()
+    }
+
+    /// herdrup#802: herdr applies the held switch when herdr-app goes idle. The status event
+    /// says nothing of topics, and with the event stream open agent.list is re-fetched only
+    /// every 30 s, so the app reloads the row itself: its menu offers Turn off topics, and no
+    /// longer Cancel pending switch (which would switch the agent straight back).
+    func testAppliedPendingSwitchLeavesTheMenuWhenTheAgentGoesIdle() {
+        let app = launch("chatview", ["HERDR_MOCK_TOPICS_SWITCH_BUSY": "1", "HERDR_MOCK_TOPICS_SWITCH_PENDING": "1",
+                                      "HERDR_MOCK_TOPICS_SWITCH_APPLY_AFTER": "8"])
+        let row = any(app, "agent-row-w9:p1")
+        XCTAssertTrue(row.exists(within: 12))
+        row.press(forDuration: 1.0)
+        XCTAssertTrue(app.buttons["Topics switch pending"].exists(within: 5), "pending while it works")
+        app.tap()
+
+        XCTAssertTrue(poll(20, every: 0.3) { !row.exists }, "it goes idle, into the collapsed Idle group")
+        openIdleGroup(app)
+        XCTAssertTrue(row.exists(within: 5))
+        row.press(forDuration: 1.0)
+        XCTAssertTrue(app.buttons["Turn off topics"].exists(within: 5), "herdr applied it: topics are on")
+        XCTAssertFalse(app.buttons["Cancel pending switch"].exists, "nothing is pending any more")
+        XCTAssertFalse(app.buttons["Topics switch pending"].exists)
+        shot(app, "topics-switch-applied-at-idle")
+    }
+
+    /// herdrup#802: herdr applied the held switch and nothing told the app yet, so the row
+    /// still offers Cancel pending switch. Cancel reads the agent first and sends nothing: the
+    /// banner says the switch already happened, and topics stay on.
+    func testCancelAfterTheSwitchWasAppliedSendsNothing() {
+        let app = launch("chatview", ["HERDR_MOCK_TOPICS_SWITCH_BUSY": "1", "HERDR_MOCK_TOPICS_SWITCH_PENDING": "1",
+                                      "HERDR_MOCK_TOPICS_SWITCH_APPLY_AFTER": "4",
+                                      "HERDR_MOCK_TOPICS_SWITCH_APPLY_SILENT": "1"])
+        let row = any(app, "agent-row-w9:p1")
+        XCTAssertTrue(row.exists(within: 12))
+        // herdr applies the switch with no event; the next list is ~30 s away.
+        Thread.sleep(forTimeInterval: 6)
+        row.press(forDuration: 1.0)
+        let cancel = app.buttons["Cancel pending switch"]
+        XCTAssertTrue(cancel.exists(within: 5), "the listed row is stale")
+        cancel.tap()
+
+        let status = any(app, "topics-switch-status")
+        XCTAssertTrue(status.exists(within: 10))
+        XCTAssertTrue(poll(10, every: 0.3) {
+            status.label.contains("The topics switch for herdr-app already happened: topics are on.")
+        }, "nothing sent: \(status.label)")
+        shot(app, "topics-switch-cancel-after-apply")
+        XCTAssertTrue(poll(10, every: 0.3) { !row.exists }, "the reload lists it idle")
+        openIdleGroup(app)
+        XCTAssertTrue(menuOffers("Turn off topics", row: row, in: app), "topics stayed on: no switch back")
+        XCTAssertFalse(app.buttons["Cancel pending switch"].exists)
+    }
+
     // MARK: Suggestion in the Inbox
 
     /// The Inbox marks where the subject began and asks at the suggestion: title, reason, how
