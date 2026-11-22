@@ -6289,14 +6289,15 @@ struct TerminalPaneContent: View {
                                 chat.setListedSuggestions(open, requestedAt: requestedAt)
                             }
                             chat.setListedSuggestions(topicsModel.suggestions, requestedAt: .distantPast)
-                        }
-                        .task(id: topicsModel.suggestionsServed) {
-                            guard topicsModel.suggestionsServed else { return }
-                            // A started topic that ended before its first turn: back to
-                            // the Inbox, where its suggestion shows open again.
+                            // A started topic that ended before its first turn (`start_failed`,
+                            // or gone from a list, which Topics' own follow keeps refreshing):
+                            // back to the Inbox, where its suggestion shows open again.
                             topicsModel.onStartFailed = { _ in
                                 if mode == .topics { setMode(.chat) }
                             }
+                        }
+                        .task(id: topicsModel.suggestionsServed) {
+                            guard topicsModel.suggestionsServed else { return }
                             await topicsModel.follow(client: client, eventsPaneID: paneID)
                         }
                     }

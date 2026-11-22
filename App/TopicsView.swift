@@ -166,11 +166,12 @@ final class TopicsModel: ObservableObject {
     /// chat). Called for each answer, changed or not, so a suggestion that went back to open
     /// after a Start is seen even when the list looks the same as before.
     var onListed: (@MainActor ([AgentTopicSuggestion], Date) -> Void)?
-    /// A topic a Start opened ended before its first turn (`start_failed`) while the reader was
-    /// on it: the page goes back to the Inbox, where the suggestion shows open again.
+    /// A topic a Start opened ended before its first turn while the reader was on it
+    /// (`start_failed`, or gone from a list): the page goes back to the Inbox, where the
+    /// suggestion shows open again.
     var onStartFailed: (@MainActor (String) -> Void)?
-    /// Topics whose start failed (`start_failed`): never opened by a late Start.
-    private var failedStarts: Set<String> = []
+    /// The topics Start opened, and those that failed to start (herdrup#811).
+    private var startWatch = TopicsStartWatch()
 
     /// One list call; true when the server answered.
     @discardableResult
@@ -181,6 +182,12 @@ final class TopicsModel: ObservableObject {
             let list = try await client.agentTopicsList(target: target)
             let ordered = list.ordered
             if ordered != topics { topics = ordered }
+            // A topic Start opened that the list no longer has ended before its first turn,
+            // even when `start_failed` never reached this page (a guest; the owner between
+            // subscriptions).
+            if let ended = startWatch.endedSelection(selected: selectedTopicID, listed: ordered.map(\.id)) {
+                leaveFailedStart(ended)
+            }
             if list.agent != agentName { agentName = list.agent }
             let open = list.suggestions ?? []
             // New proposals arrived: Organise has answered.
@@ -469,19 +476,23 @@ final class TopicsModel: ObservableObject {
     /// that topic's start failed (`start_failed`): then the caller stays on the Inbox.
     func openStarted(topicID: String, client: HerdrClient) async -> Bool {
         guard await open(topicID: topicID, client: client) else { return false }
-        guard !failedStarts.contains(topicID) else {
+        guard !startWatch.hasFailed(topicID) else {
             selectedTopicID = nil
             return false
         }
+        startWatch.didOpen(topicID)
         return true
     }
 
     /// `start_failed`: the topic ended before its first turn and the suggestion is open again
     /// (the agent writes its own note into the Inbox). A reader on that topic leaves it.
     private func startFailed(topicID: String) {
-        guard !topicID.isEmpty else { return }
-        failedStarts.insert(topicID)
-        guard selectedTopicID == topicID else { return }
+        startWatch.didFail(topicID)
+        guard !topicID.isEmpty, selectedTopicID == topicID else { return }
+        leaveFailedStart(topicID)
+    }
+
+    private func leaveFailedStart(_ topicID: String) {
         selectedTopicID = nil
         onStartFailed?(topicID)
     }
