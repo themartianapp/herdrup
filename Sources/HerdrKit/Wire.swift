@@ -376,6 +376,13 @@ public struct AgentInfo: Decodable, Equatable, Sendable, Identifiable {
     /// `agent_topics_switch`): true when it runs on the omp build with topics. Absent on older
     /// servers and for agents that are not omp.
     public let topicsEnabled: Bool?
+    /// A Topics switch the owner asked for while the agent was working
+    /// (`agent.topics.set_enabled` with `when_idle`): herdr applies it when the agent next goes
+    /// idle. Absent on older servers; read it through `isTopicsSwitchPending`.
+    public let topicsSwitchPending: Bool?
+
+    /// A scheduled Topics switch waits for the agent to finish (false when absent).
+    public var isTopicsSwitchPending: Bool { topicsSwitchPending == true }
 
     /// Stable list identity. A LIVE agent is keyed on its pane id, which is unique
     /// and stable while it runs. An ARCHIVED agent has NO pane — the server empties
@@ -474,6 +481,7 @@ public struct AgentInfo: Decodable, Equatable, Sendable, Identifiable {
         case guestRunning = "guest_running"
         case topicSessions = "topic_sessions"
         case topicsEnabled = "topics_enabled"
+        case topicsSwitchPending = "topics_switch_pending"
     }
 }
 
@@ -1206,6 +1214,10 @@ public struct ServerCapabilities: Decodable, Equatable, Sendable {
     /// `agent.topics.set_enabled` and `topics_enabled` on omp agents: the owner's per-agent
     /// Topics switch, which restarts the agent on (or off) the omp build with topics.
     public let agentTopicsSwitch: Bool
+    /// `agent.topics.set_enabled` honours `when_idle` (a working agent's switch waits for it to
+    /// go idle) and agents list `topics_switch_pending`. An older herdr ignores `when_idle` and
+    /// restarts at once, so the app offers waiting only when this is true.
+    public let agentTopicsSwitchWhenIdle: Bool
     /// `agent.topics.accept_suggestion` / `dismiss_suggestion` / `organise`, `suggestions` on
     /// `agent.topics.list` and `topic_suggestion` entries on `agent.transcript`.
     public let agentTopicSuggestions: Bool
@@ -1230,6 +1242,7 @@ public struct ServerCapabilities: Decodable, Equatable, Sendable {
         case agentTopics = "agent_topics"
         case agentTranscriptTopic = "agent_transcript_topic"
         case agentTopicsSwitch = "agent_topics_switch"
+        case agentTopicsSwitchWhenIdle = "agent_topics_switch_when_idle"
         case agentTopicSuggestions = "agent_topic_suggestions"
     }
 
@@ -1257,6 +1270,7 @@ public struct ServerCapabilities: Decodable, Equatable, Sendable {
         agentTopics = try c.decodeIfPresent(Bool.self, forKey: .agentTopics) ?? false
         agentTranscriptTopic = try c.decodeIfPresent(Bool.self, forKey: .agentTranscriptTopic) ?? false
         agentTopicsSwitch = try c.decodeIfPresent(Bool.self, forKey: .agentTopicsSwitch) ?? false
+        agentTopicsSwitchWhenIdle = try c.decodeIfPresent(Bool.self, forKey: .agentTopicsSwitchWhenIdle) ?? false
         agentTopicSuggestions = try c.decodeIfPresent(Bool.self, forKey: .agentTopicSuggestions) ?? false
     }
 }

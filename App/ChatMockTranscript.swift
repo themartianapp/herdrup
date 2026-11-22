@@ -684,7 +684,8 @@ struct ChatMockTransport: HerdrTransport {
     /// second omp agent, as in the iPad mockup's sidebar.
     private static var agentsJSON: String {
         let working = still ? "idle" : "working"
-        let status = ChatMockConversation.owner.isAnswered ? working : "blocked"
+        // `HERDR_MOCK_TOPICS_SWITCH_BUSY` / `_IDLE`: herdr-app's status for the switch's wait-or-now choice.
+        let status = TopicsMock.switchStatus ?? (ChatMockConversation.owner.isAnswered ? working : "blocked")
         return [
             #"{"pane_id":"\#(paneID)","name":"herdr-app","agent":"omp","agent_status":"\#(status)","cwd":"/root/herdr","terminal_title_stripped":"Merge #305 and update the servers?"\#(TopicsMock.owner.topicsEnabledJSON)}"#,
             #"{"pane_id":"w9:p2","terminal_id":"t-keephair","name":"keephair","avatar":{"style":"mascot","mascot":"cub","sha256":null,"updated_unix_ms":1723041000000},"agent":"claude","agent_status":"\#(working)","cwd":"/root/keephair-repo","terminal_title_stripped":"Running the iPad tests"}"#,
