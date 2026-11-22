@@ -170,9 +170,28 @@ struct GuestPaneView: View {
                              agentStatus: agent?.agentStatus, ground: Palette.groundMachine,
                              onOpenTerminal: { tab = .terminal },
                              findRequest: findRequest,
-                             onFindResult: { index, total, capped in findMatches = (index, total, capped) })
+                             onFindResult: { index, total, capped in findMatches = (index, total, capped) },
+                             onOpenTopic: { topicID in
+                                 Task {
+                                     await topicsModel.open(topicID: topicID, client: client)
+                                     tab = .topics
+                                 }
+                             })
                     // Typing redraws this page; the chat skips it (`ChatView ==`).
                     .equatable()
+                    // Open suggestions show in the chat from the list, before the transcript has them.
+                    // Every list answer reaches the chat: the server's state wins over a local line.
+                    .onAppear {
+                        let chat = chatModel
+                        topicsModel.onListed = { open, requestedAt in
+                            chat.setListedSuggestions(open, requestedAt: requestedAt)
+                        }
+                        chat.setListedSuggestions(topicsModel.suggestions, requestedAt: .distantPast)
+                    }
+                    .task(id: topicsModel.suggestionsServed && availability == .running) {
+                        guard topicsModel.suggestionsServed, availability == .running else { return }
+                        await topicsModel.follow(client: client, eventsPaneID: nil)
+                    }
                 }
                 // Topics brings its own composer (a topic's chat sends to that topic only), so
                 // it covers the page's composer too: drawn down over the bottom block, which

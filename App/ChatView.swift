@@ -29,6 +29,12 @@ struct ChatAnswerProblem: Equatable {
     let offersTerminal: Bool
 }
 
+/// Why a topic suggestion's Start or Not now did not land, shown on its card.
+struct ChatSuggestionProblem: Equatable {
+    let suggestionID: String
+    let message: String
+}
+
 /// The Chat view's state for SwiftUI: HerdrKit's `TranscriptStore` republished, plus the
 /// in-flight answer. Owned by the page (not the `ChatView`), so switching to the Terminal
 /// and back keeps what was loaded.
@@ -62,6 +68,9 @@ final class ChatModel: ObservableObject {
     @Published private(set) var olderFailed = false
     @Published private(set) var answeringAskID: String?
     @Published private(set) var answerProblem: ChatAnswerProblem?
+    /// The topic suggestion whose Start or Not now is on its way.
+    @Published private(set) var suggestionBusyID: String?
+    @Published private(set) var suggestionProblem: ChatSuggestionProblem?
     /// The guest's host keeps answers for the owner (a host older than guest answers): it
     /// withheld `answerable` from a question the buttons could answer, or refused a guest's
     /// `agent.answer` or `agent.answer_form` (`guest_forbidden`). A refused menu key is no
@@ -315,6 +324,48 @@ final class ChatModel: ObservableObject {
         await store.refresh(client: client)
     }
 
+    // MARK: Topic suggestions
+
+    /// Start: the agent starts the suggested topic with the messages it picked
+    /// (`agent.topics.accept_suggestion`). Returns the topic's id, to open it; nil when it did
+    /// not start (the reason is on the card). Someone else's earlier Start opens that topic.
+    func acceptSuggestion(client: HerdrClient, suggestionID: String) async -> String? {
+        guard suggestionBusyID == nil, answersQuestions else { return nil }
+        suggestionBusyID = suggestionID
+        suggestionProblem = nil
+        defer { suggestionBusyID = nil }
+        var topicID: String?
+        do {
+            topicID = try await client.agentTopicsAcceptSuggestion(target: target, suggestionID: suggestionID).topicID
+            settleLocally(suggestionID, state: .accepted, topicID: topicID)
+        } catch is CancellationError {
+            return nil
+        } catch {
+            suggestionProblem = ChatSuggestionProblem(suggestionID: suggestionID,
+                                                      message: "Couldn't start it: " + TopicsModel.describe(error))
+        }
+        await store.refresh(client: client)
+        return topicID
+    }
+
+    /// Not now (`agent.topics.dismiss_suggestion`): the card turns into one quiet line.
+    func dismissSuggestion(client: HerdrClient, suggestionID: String) async {
+        guard suggestionBusyID == nil, answersQuestions else { return }
+        suggestionBusyID = suggestionID
+        suggestionProblem = nil
+        defer { suggestionBusyID = nil }
+        do {
+            try await client.agentTopicsDismissSuggestion(target: target, suggestionID: suggestionID)
+            settleLocally(suggestionID, state: .dismissed, topicID: nil)
+        } catch is CancellationError {
+            return
+        } catch {
+            suggestionProblem = ChatSuggestionProblem(suggestionID: suggestionID,
+                                                      message: "Couldn't set it aside: " + TopicsModel.describe(error))
+        }
+        await store.refresh(client: client)
+    }
+
     /// Keeps the chat current while it is on screen: the agent's own events where the
     /// server sends them (owner), a 3 s poll while a send waits to show up in the
     /// transcript or while omp works, and a slow poll otherwise as a backstop for a missed
@@ -408,6 +459,54 @@ final class ChatModel: ObservableObject {
         }
     }
 
+    /// Open suggestions as `agent.topics.list` reports them (the page's `TopicsModel`). One
+    /// shows in the chat at once; its `topic_suggestion` entry reaches the transcript only after
+    /// the Inbox's turn ends and then replaces it (same id).
+    private var listedSuggestions: [AgentTopicSuggestion] = []
+
+    /// One `agent.topics.list` answer, asked for at `requestedAt`. A list asked for after this
+    /// reader's Start or Not now went through is the server's word: a suggestion it lists open
+    /// is open again (an accepted topic that failed to start goes back to open), and the local
+    /// line yields to the card.
+    func setListedSuggestions(_ suggestions: [AgentTopicSuggestion], requestedAt: Date) {
+        guard answersQuestions else { return }
+        var changed = suggestions != listedSuggestions
+        listedSuggestions = suggestions
+        for suggestion in suggestions {
+            guard let at = settledAt[suggestion.id], at < requestedAt else { continue }
+            settledSuggestions[suggestion.id] = nil
+            settledAt[suggestion.id] = nil
+            changed = true
+        }
+        if changed { rebuildRows() }
+    }
+
+    private func rebuildRows() {
+        rows = ChatRow.rows(turns: turns, outgoing: outgoing, listed: listedSuggestions, settled: settledSuggestions)
+        rowIndex = Dictionary(rows.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// Suggestions this reader started or set aside, by id, shown compactly at once; the
+    /// transcript's entry (same id) replaces each when it arrives.
+    private var settledSuggestions: [String: TranscriptTopicSuggestion] = [:]
+    /// When each local line was recorded: after its call returned.
+    private var settledAt: [String: Date] = [:]
+
+    private func settleLocally(_ id: String, state: TopicSuggestionState, topicID: String?) {
+        let known = listedSuggestions.first { $0.id == id }.map {
+            TranscriptTopicSuggestion(title: $0.title, reason: $0.reason, messageIDs: $0.messageIDs, state: .open)
+        } ?? turns.lazy.flatMap(\.items).compactMap { item -> TranscriptTopicSuggestion? in
+            if case .topicSuggestion(let itemID, let s) = item, itemID == id { return s }
+            return nil
+        }.first
+        guard let known else { return }
+        settledSuggestions[id] = TranscriptTopicSuggestion(title: known.title, reason: known.reason,
+                                                           messageIDs: known.messageIDs, state: state,
+                                                           topicID: topicID, by: "owner")
+        settledAt[id] = Date()
+        rebuildRows()
+    }
+
     /// Republishes the store. Each value is assigned only when it changed: an equal
     /// assignment still sends `objectWillChange`, which redraws the whole chat.
     private func sync() {
@@ -415,10 +514,7 @@ final class ChatModel: ObservableObject {
         let outgoingChanged = store.outbox.messages != outgoing
         if turnsChanged { turns = store.turns }
         if outgoingChanged { outgoing = store.outbox.messages }
-        if turnsChanged || outgoingChanged {
-            rows = ChatRow.rows(turns: turns, outgoing: outgoing)
-            rowIndex = Dictionary(rows.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
-        }
+        if turnsChanged || outgoingChanged { rebuildRows() }
         assign(\.working, store.working)
         assign(\.sessionModel, store.model)
         assign(\.currentPlan, store.currentPlan)
@@ -512,6 +608,8 @@ private enum ChatRow: Identifiable, Equatable {
     case prompt(ChatPrompt)
     case item(TranscriptItem)
     case outgoing(TranscriptOutgoingMessage)
+    /// Where an open topic suggestion's subject began: a quiet line before its first message.
+    case mark(suggestionID: String, title: String)
 
     var id: String {
         switch self {
@@ -519,10 +617,34 @@ private enum ChatRow: Identifiable, Equatable {
         case .prompt(let prompt): return "prompt:" + prompt.id
         case .item(let item): return "item:" + item.id
         case .outgoing(let message): return "outgoing:" + message.id
+        case .mark(let suggestionID, _): return "mark:" + suggestionID
         }
     }
 
-    static func rows(turns: [TranscriptTurn], outgoing: [TranscriptOutgoingMessage]) -> [ChatRow] {
+    /// `listed`: open suggestions from `agent.topics.list`, drawn at the end of the chat until
+    /// their transcript entry (same id) arrives and takes over.
+    static func rows(turns: [TranscriptTurn], outgoing: [TranscriptOutgoingMessage],
+                     listed: [AgentTopicSuggestion] = [],
+                     settled: [String: TranscriptTopicSuggestion] = [:]) -> [ChatRow] {
+        var inTranscript = Set<String>()
+        var open: [(id: String, suggestion: TranscriptTopicSuggestion)] = []
+        for turn in turns {
+            for case .topicSuggestion(let id, let suggestion) in turn.items {
+                inTranscript.insert(id)
+                if suggestion.state == .open { open.append((id, suggestion)) }
+            }
+        }
+        let pending = listed.filter { !inTranscript.contains($0.id) && settled[$0.id] == nil }.map {
+            (id: $0.id, suggestion: TranscriptTopicSuggestion(title: $0.title, reason: $0.reason,
+                                                              messageIDs: $0.messageIDs, state: .open))
+        }
+        let local = settled.filter { !inTranscript.contains($0.key) }.sorted { $0.key < $1.key }
+        // Each open suggestion marks the first message the agent picked for it.
+        var marks: [String: ChatRow] = [:]
+        for (id, suggestion) in open + pending {
+            guard let first = suggestion.messageIDs.first, marks[first] == nil else { continue }
+            marks[first] = .mark(suggestionID: id, title: suggestion.title)
+        }
         var rows: [ChatRow] = []
         var previousMs: UInt64?
         for turn in turns {
@@ -531,11 +653,17 @@ private enum ChatRow: Identifiable, Equatable {
                     rows.append(.day(id: turn.id, ms: turn.startMs))
                 }
                 previousMs = turn.startMs
+                if let mark = marks[turn.id] { rows.append(mark) }
                 rows.append(.prompt(ChatPrompt(id: turn.id, text: turn.promptText ?? "", author: turn.promptAuthor,
                                                attachment: turn.attachmentPrompt)))
             }
-            for item in turn.items { rows.append(.item(item)) }
+            for item in turn.items {
+                if let mark = marks[item.id] { rows.append(mark) }
+                rows.append(.item(item))
+            }
         }
+        rows += local.map { .item(.topicSuggestion(id: $0.key, $0.value)) }
+        rows += pending.map { .item(.topicSuggestion(id: $0.id, $0.suggestion)) }
         rows.append(contentsOf: outgoing.map(ChatRow.outgoing))
         return rows
     }
@@ -554,7 +682,7 @@ private enum ChatRow: Identifiable, Equatable {
     /// The row's searchable text before markdown is stripped (`plainSearchText`).
     var searchSource: String {
         switch self {
-        case .day: return ""
+        case .day, .mark: return ""
         case .prompt(let prompt):
             if let bundle = prompt.attachment {
                 return ([bundle.caption] + bundle.files.map(\.name)).joined(separator: "\n")
@@ -579,6 +707,7 @@ private enum ChatRow: Identifiable, Equatable {
                 }
                 return lines.joined(separator: "\n")
             case .turnFailed(_, _, let error): return error ?? ""
+            case .topicSuggestion(_, let suggestion): return suggestion.title + "\n" + suggestion.reason
             }
         }
     }
@@ -723,6 +852,9 @@ struct ChatView: View {
     var findRequest: FindRequest? = nil
     /// `(index, total, capped)`: `capped` when the matches stop at `TranscriptSearch.matchCap`.
     var onFindResult: (Int, Int, Bool) -> Void = { _, _, _ in }
+    /// Opens one of the agent's topics by id (the page switches to Topics with it open): a
+    /// suggestion's Start and its "Continued in topic" line. Nil where no topic can be opened.
+    var onOpenTopic: ((String) -> Void)? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(ChatTextSize.storageKey) private var chatFontSize = ChatTextSize.defaultPoints
@@ -1197,11 +1329,18 @@ struct ChatView: View {
            !form.fields.isEmpty {
             formDraft = model.formDraft(askID: id, form: form)
         }
+        var suggestionBusy = false
+        var suggestionProblem: String?
+        if case .item(.topicSuggestion(let id, _)) = row {
+            suggestionBusy = model.suggestionBusyID == id
+            suggestionProblem = model.suggestionProblem?.suggestionID == id ? model.suggestionProblem?.message : nil
+        }
         return ChatRowView(
             row: row, viewer: viewer, client: client, expanded: keys, recorded: recorded,
             answering: askID != nil && model.answeringAskID == askID,
             problem: askID != nil && model.answerProblem?.askID == askID ? model.answerProblem : nil,
             answersRefused: model.answersRefused,
+            suggestionBusy: suggestionBusy, suggestionProblem: suggestionProblem,
             formsSupported: model.formsSupported, formDraft: formDraft,
             hits: hits, query: hits.isEmpty ? "" : searchKey.query,
             selectedHitID: hits.isEmpty ? nil : selectedSearchHit,
@@ -1239,7 +1378,15 @@ struct ChatView: View {
                 model.presentation.sheet = nil
                 onOpenTerminal()
             },
-            selectText: { text in model.presentation.sheet = .selectText(text) })
+            selectText: { text in model.presentation.sheet = .selectText(text) },
+            startSuggestion: { id in
+                Task {
+                    guard let topicID = await model.acceptSuggestion(client: client, suggestionID: id) else { return }
+                    onOpenTopic?(topicID)
+                }
+            },
+            dismissSuggestion: { id in Task { await model.dismissSuggestion(client: client, suggestionID: id) } },
+            openTopic: onOpenTopic)
     }
 
     /// A form's review is open and asked to be shown from its top (`ChatFormReveal`). A card
@@ -1974,6 +2121,12 @@ private struct ChatRowActions {
     let canAnswer: Bool
     let openTerminal: () -> Void
     let selectText: (ChatSelectableText) -> Void
+    /// A topic suggestion's Start (`agent.topics.accept_suggestion`, then the topic opens).
+    let startSuggestion: (_ suggestionID: String) -> Void
+    /// A topic suggestion's Not now (`agent.topics.dismiss_suggestion`).
+    let dismissSuggestion: (_ suggestionID: String) -> Void
+    /// Opens a topic by id; nil where this chat cannot open topics.
+    let openTopic: ((String) -> Void)?
 }
 
 /// One line of the chat list, drawn from its inputs alone. `Equatable` over everything it
@@ -1993,6 +2146,9 @@ private struct ChatRowView: View, Equatable {
     let problem: ChatAnswerProblem?
     /// The guest's host refused guest answers: the question waits for the owner.
     let answersRefused: Bool
+    /// A topic suggestion row's Start or Not now is on its way, or why it did not land.
+    let suggestionBusy: Bool
+    let suggestionProblem: String?
     /// The server's `ask_form` (nil until known), and a pending form's draft.
     let formsSupported: Bool?
     let formDraft: AskFormDraft?
@@ -2017,6 +2173,8 @@ private struct ChatRowView: View, Equatable {
             && lhs.answering == rhs.answering
             && lhs.problem == rhs.problem
             && lhs.answersRefused == rhs.answersRefused
+            && lhs.suggestionBusy == rhs.suggestionBusy
+            && lhs.suggestionProblem == rhs.suggestionProblem
             && lhs.formsSupported == rhs.formsSupported
             && lhs.formDraft === rhs.formDraft
             && lhs.hits == rhs.hits
@@ -2057,6 +2215,8 @@ private struct ChatRowView: View, Equatable {
             itemView(item)
         case .outgoing(let message):
             outgoingBubble(message)
+        case .mark(let suggestionID, let title):
+            ChatTopicSuggestionMark(suggestionID: suggestionID, title: title)
         }
     }
 
@@ -2113,6 +2273,12 @@ private struct ChatRowView: View, Equatable {
             }
             .padding(.vertical, 4)
             .accessibilityIdentifier("chat-summary")
+        case .topicSuggestion(let id, let suggestion):
+            ChatTopicSuggestionCard(id: id, suggestion: suggestion, busy: suggestionBusy, problem: suggestionProblem,
+                                    interactive: actions.canAnswer,
+                                    onStart: { actions.startSuggestion(id) },
+                                    onDismiss: { actions.dismissSuggestion(id) },
+                                    onOpenTopic: actions.openTopic)
         }
     }
 

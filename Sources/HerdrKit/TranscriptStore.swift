@@ -42,12 +42,14 @@ public enum TranscriptItem: Identifiable, Sendable, Equatable {
     /// Only failed or interrupted turns are kept; a normal end draws nothing.
     case turnFailed(id: String, status: TranscriptTurnEndStatus, error: String?)
     case summary(id: String, text: String)
+    /// A topic the agent suggests (open), or one taken up or set aside (drawn compactly).
+    case topicSuggestion(id: String, TranscriptTopicSuggestion)
 
     public var id: String {
         switch self {
         case .work(let work): return work.id
         case .reply(let id, _, _), .note(let id, _, _), .plan(let id, _), .ask(let id, _, _),
-             .turnFailed(let id, _, _), .summary(let id, _):
+             .turnFailed(let id, _, _), .summary(let id, _), .topicSuggestion(let id, _):
             return id
         }
     }
@@ -167,6 +169,10 @@ public enum TranscriptGrouping {
                 if let turn = current { turns.append(turn) }
                 current = TranscriptTurn(id: entry.id, prompt: nil, items: [.summary(id: entry.id, text: text)],
                                          startMs: entry.tsMs)
+            case .topicSuggestion(let suggestion):
+                // A state this app does not know draws nothing.
+                guard suggestion.state != .unknown else { continue }
+                append(.topicSuggestion(id: entry.id, suggestion), entry)
             case .unknown:
                 continue
             }

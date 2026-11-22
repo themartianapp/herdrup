@@ -372,6 +372,10 @@ public struct AgentInfo: Decodable, Equatable, Sendable, Identifiable {
     /// reached. Absent or nil on older servers and for agents without topics. Elements decode
     /// leniently (`AgentTopicSession` never throws), so an odd value cannot fail the list.
     public let topicSessions: [AgentTopicSession]?
+    /// An omp agent's Topics switch (`agent.topics.set_enabled`, servers advertising
+    /// `agent_topics_switch`): true when it runs on the omp build with topics. Absent on older
+    /// servers and for agents that are not omp.
+    public let topicsEnabled: Bool?
 
     /// Stable list identity. A LIVE agent is keyed on its pane id, which is unique
     /// and stable while it runs. An ARCHIVED agent has NO pane — the server empties
@@ -469,6 +473,7 @@ public struct AgentInfo: Decodable, Equatable, Sendable, Identifiable {
         case gramReachable = "gram_reachable"
         case guestRunning = "guest_running"
         case topicSessions = "topic_sessions"
+        case topicsEnabled = "topics_enabled"
     }
 }
 
@@ -1198,6 +1203,12 @@ public struct ServerCapabilities: Decodable, Equatable, Sendable {
     /// it ignores the param and would answer with the agent's own conversation, so no request
     /// sends `topic` unless this is true (herdrup#757).
     public let agentTranscriptTopic: Bool
+    /// `agent.topics.set_enabled` and `topics_enabled` on omp agents: the owner's per-agent
+    /// Topics switch, which restarts the agent on (or off) the omp build with topics.
+    public let agentTopicsSwitch: Bool
+    /// `agent.topics.accept_suggestion` / `dismiss_suggestion` / `organise`, `suggestions` on
+    /// `agent.topics.list` and `topic_suggestion` entries on `agent.transcript`.
+    public let agentTopicSuggestions: Bool
 
     enum CodingKeys: String, CodingKey {
         case liveHandoff = "live_handoff"
@@ -1218,6 +1229,8 @@ public struct ServerCapabilities: Decodable, Equatable, Sendable {
         case askForm = "ask_form"
         case agentTopics = "agent_topics"
         case agentTranscriptTopic = "agent_transcript_topic"
+        case agentTopicsSwitch = "agent_topics_switch"
+        case agentTopicSuggestions = "agent_topic_suggestions"
     }
 
     public init(from decoder: Decoder) throws {
@@ -1243,6 +1256,8 @@ public struct ServerCapabilities: Decodable, Equatable, Sendable {
         askForm = try c.decodeIfPresent(Bool.self, forKey: .askForm) ?? false
         agentTopics = try c.decodeIfPresent(Bool.self, forKey: .agentTopics) ?? false
         agentTranscriptTopic = try c.decodeIfPresent(Bool.self, forKey: .agentTranscriptTopic) ?? false
+        agentTopicsSwitch = try c.decodeIfPresent(Bool.self, forKey: .agentTopicsSwitch) ?? false
+        agentTopicSuggestions = try c.decodeIfPresent(Bool.self, forKey: .agentTopicSuggestions) ?? false
     }
 }
 
