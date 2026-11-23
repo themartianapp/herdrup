@@ -348,6 +348,12 @@ final class ChatModel: ObservableObject {
         return topicID
     }
 
+    /// Dismiss on the couldn't-start note under a suggestion card: the note goes; the
+    /// suggestion stays open, so Start can be tried again.
+    func clearSuggestionProblem() {
+        suggestionProblem = nil
+    }
+
     /// Not now (`agent.topics.dismiss_suggestion`): the card turns into one quiet line.
     func dismissSuggestion(client: HerdrClient, suggestionID: String) async {
         guard suggestionBusyID == nil, answersQuestions else { return }
@@ -1395,6 +1401,7 @@ struct ChatView: View {
                 }
             },
             dismissSuggestion: { id in Task { await model.dismissSuggestion(client: client, suggestionID: id) } },
+            clearSuggestionProblem: { model.clearSuggestionProblem() },
             openTopic: onOpenTopic)
     }
 
@@ -2134,6 +2141,8 @@ private struct ChatRowActions {
     let startSuggestion: (_ suggestionID: String) -> Void
     /// A topic suggestion's Not now (`agent.topics.dismiss_suggestion`).
     let dismissSuggestion: (_ suggestionID: String) -> Void
+    /// Dismiss on the note under a suggestion that could not start.
+    let clearSuggestionProblem: () -> Void
     /// Opens a topic by id; nil where this chat cannot open topics.
     let openTopic: ((String) -> Void)?
 }
@@ -2287,6 +2296,7 @@ private struct ChatRowView: View, Equatable {
                                     interactive: actions.canAnswer,
                                     onStart: { actions.startSuggestion(id) },
                                     onDismiss: { actions.dismissSuggestion(id) },
+                                    onDismissProblem: actions.clearSuggestionProblem,
                                     onOpenTopic: actions.openTopic)
         }
     }

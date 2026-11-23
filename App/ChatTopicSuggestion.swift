@@ -44,6 +44,8 @@ struct ChatTopicSuggestionCard: View {
     let interactive: Bool
     let onStart: () -> Void
     let onDismiss: () -> Void
+    /// Dismiss on the couldn't-start note: the note goes, the suggestion stays open.
+    let onDismissProblem: () -> Void
     /// Opens a topic by id; nil where topics cannot be opened from this chat.
     let onOpenTopic: ((String) -> Void)?
 
@@ -65,86 +67,107 @@ struct ChatTopicSuggestionCard: View {
         }
     }
 
+    /// A plain card ("Topics · A, revised"): the question, the agent's reason, how many earlier
+    /// messages come along, then "Not now" as a word and "Start" as the one filled button. A
+    /// start that failed leaves one line under it with a red dot and "Dismiss".
     private var openCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            (Text("New subject? Start a topic: ") + Text(title).font(Typography.app(15 * textScale, .semibold)))
-                .font(Typography.app(15 * textScale))
-                .foregroundStyle(Palette.text)
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier("chat-topic-suggestion-title")
-            if !suggestion.reason.isEmpty {
-                Text(suggestion.reason)
-                    .font(Typography.app(13.5 * textScale)).foregroundStyle(Palette.textDim)
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 6) {
+                (Text("New subject? Start a topic: ") + Text(title).font(Typography.app(15 * textScale, .semibold)))
+                    .font(Typography.app(15 * textScale))
+                    .foregroundStyle(Palette.text)
+                    .lineSpacing(3)
                     .fixedSize(horizontal: false, vertical: true)
-            }
-            if suggestion.messageCount > 0 {
-                HStack(spacing: 6) {
-                    Image(systemName: "text.bubble").font(.system(size: 12, weight: .medium))
+                    .accessibilityIdentifier("chat-topic-suggestion-title")
+                if !suggestion.reason.isEmpty {
+                    Text(suggestion.reason)
+                        .font(Typography.app(14 * textScale)).foregroundStyle(Palette.textDim)
+                        .lineSpacing(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if suggestion.messageCount > 0 {
                     Text(Self.carried(suggestion.messageCount)).font(Typography.app(13 * textScale))
+                        .foregroundStyle(Palette.textFaint)
+                        .accessibilityIdentifier("chat-topic-suggestion-count")
                 }
-                .foregroundStyle(Palette.textFaint)
-                .accessibilityElement(children: .combine)
-                .accessibilityIdentifier("chat-topic-suggestion-count")
+                if interactive {
+                    HStack(spacing: 18) {
+                        Spacer(minLength: 0)
+                        Button(action: onDismiss) {
+                            Text("Not now").font(Typography.app(14 * textScale, .medium))
+                                .foregroundStyle(Palette.textDim)
+                                .frame(minHeight: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(busy)
+                        .opacity(busy ? 0.5 : 1)
+                        .accessibilityIdentifier("chat-topic-suggestion-dismiss")
+                        Button(action: onStart) {
+                            Text("Start").font(Typography.app(14 * textScale, .semibold))
+                                .foregroundStyle(Palette.ground)
+                                .padding(.horizontal, 16).frame(height: 32)
+                                .background(RoundedRectangle(cornerRadius: 8).fill(Palette.text))
+                                .frame(minHeight: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(busy)
+                        .opacity(busy ? 0.5 : 1)
+                        .accessibilityIdentifier("chat-topic-suggestion-start")
+                    }
+                    .padding(.top, -2).padding(.bottom, -6)
+                }
             }
+            .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Palette.surface))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Palette.hairline, lineWidth: 1))
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("chat-topic-suggestion-\(id)")
             if let problem {
-                HStack(spacing: 6) {
-                    Circle().fill(Palette.died).frame(width: 6, height: 6)
-                    Text(problem).font(Typography.app(12.5 * textScale)).foregroundStyle(Palette.textDim)
-                }
-                .accessibilityElement(children: .combine)
+                problemNote(problem)
+            }
+        }
+    }
+
+    /// "<why it couldn't start>   Dismiss": one line, the one red dot, no card.
+    private func problemNote(_ problem: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Circle().fill(Palette.died).frame(width: 6, height: 6)
+                .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 2 }
+            Text(problem).font(Typography.app(14 * textScale)).foregroundStyle(Palette.textDim)
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityIdentifier("chat-topic-suggestion-problem")
+            Button(action: onDismissProblem) {
+                Text("Dismiss").font(Typography.app(14 * textScale, .medium)).foregroundStyle(Palette.text)
+                    .padding(.leading, 12)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
             }
-            if interactive {
-                HStack(spacing: 8) {
-                    Spacer(minLength: 0)
-                    button("Not now", primary: false, id: "chat-topic-suggestion-dismiss", action: onDismiss)
-                    button("Start", primary: true, id: "chat-topic-suggestion-start", action: onStart)
-                }
-                .padding(.top, 2)
-            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("chat-topic-suggestion-problem-dismiss")
         }
-        .padding(.horizontal, 14).padding(.vertical, 12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AskFormStyle.card)
+        .padding(.top, -12).padding(.bottom, -12)
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("chat-topic-suggestion-\(id)")
     }
 
-    private func button(_ label: String, primary: Bool, id: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(label).font(Typography.app(14 * textScale, .semibold))
-                .foregroundStyle(primary ? Palette.ground : Palette.text)
-                .padding(.horizontal, 16).frame(minHeight: 36)
-                .background(Capsule().fill(primary ? Palette.text : Palette.surfaceRaised))
-                .overlay(Capsule().strokeBorder(primary ? Color.clear : Palette.hairline, lineWidth: 1))
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .disabled(busy)
-        .opacity(busy ? 0.5 : 1)
-        .accessibilityIdentifier(id)
-    }
-
-    /// "Continued in topic <title>": a small neutral chip; tapping it opens the topic.
+    /// "Continued in topic <title>": a centred line with the title underlined as a link;
+    /// tapping it opens the topic.
     @ViewBuilder
     private var continued: some View {
-        let label = HStack(spacing: 6) {
-            Image(systemName: "rectangle.stack").font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Palette.textDim)
-            (Text("Continued in topic ") + Text(title).font(Typography.app(13 * textScale, .semibold)))
-                .font(Typography.app(13 * textScale)).foregroundStyle(Palette.textDim)
-                .lineLimit(1)
-            if onOpenTopic != nil, suggestion.topicID != nil {
-                Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Palette.textFaint)
-            }
-        }
-        .padding(.horizontal, 12).frame(minHeight: 30)
-        .background(Capsule().fill(Palette.surface))
-        .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
-        .frame(maxWidth: .infinity)
+        let linked = onOpenTopic != nil && suggestion.topicID != nil
+        let label = (Text("Continued in topic ")
+            + Text(title).font(Typography.app(13.5 * textScale, .medium)).foregroundColor(Palette.text)
+                .underline(linked, color: Palette.hairline))
+            .font(Typography.app(13.5 * textScale)).foregroundStyle(Palette.textDim)
+            .lineLimit(1)
+            .frame(minHeight: 30)
+            .frame(maxWidth: .infinity)
         if let onOpenTopic, let topicID = suggestion.topicID {
-            Button { onOpenTopic(topicID) } label: { label.contentShape(Capsule()) }
+            Button { onOpenTopic(topicID) } label: { label.contentShape(Rectangle()) }
                 .buttonStyle(.plain)
                 .accessibilityElement(children: .combine)
                 .accessibilityAddTraits(.isButton)

@@ -62,8 +62,8 @@ enum ChatPreference {
 
 /// The owner page's `Chat | Terminal` switch, `Topics | Chat | Terminal` for an omp agent with
 /// topics, `Topics | Terminal` for one whose own transcript is refused: a small centred
-/// capsule under the header (13 pt semibold segments, 26 tall, in a 1 pt hairline capsule), as
-/// in the mockup.
+/// rounded control under the header ("Topics · A, revised": 13 pt medium segments, 28 tall,
+/// on `surface` with no hairline; the chosen one raised with a soft shadow).
 struct ChatTerminalSwitch: View {
     /// The mode the page shows (already resolved: never a mode the switch does not offer).
     @Binding var mode: ChatPreference.Mode
@@ -82,9 +82,8 @@ struct ChatTerminalSwitch: View {
             }
             segment("Terminal", selected: mode == .terminal, id: "chat-switch-terminal") { mode = .terminal }
         }
-        .padding(3)
-        .background(Capsule().fill(Palette.surface))
-        .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+        .padding(2)
+        .background(RoundedRectangle(cornerRadius: 9).fill(Palette.surface))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("chat-switch")
     }
@@ -92,12 +91,13 @@ struct ChatTerminalSwitch: View {
     private func segment(_ title: String, selected: Bool, id: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
-                .font(Typography.app(13, .semibold))
+                .font(Typography.app(13, .medium))
                 .foregroundStyle(selected ? Palette.text : Palette.textDim)
-                .padding(.horizontal, 16)
-                .frame(height: (26 * Typography.scale).rounded())
-                .background(Capsule().fill(selected ? Palette.surfaceRaised : Color.clear))
-                .contentShape(Capsule())
+                .padding(.horizontal, 18)
+                .frame(height: (28 * Typography.scale).rounded())
+                .background(RoundedRectangle(cornerRadius: 7).fill(selected ? Palette.surfaceRaised : Color.clear)
+                    .shadow(color: .black.opacity(selected ? 0.35 : 0), radius: 1, y: 1))
+                .contentShape(RoundedRectangle(cornerRadius: 7))
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? .isSelected : [])

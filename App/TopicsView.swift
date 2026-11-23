@@ -96,6 +96,27 @@ final class TopicsModel: ObservableObject {
 
     init(target: String) {
         self.target = target
+        columnHidden = Self.restoresColumn && UserDefaults.standard.bool(forKey: Self.columnHiddenKey(target))
+    }
+
+    /// iPad: the topics column is folded away (the "Topics" toggle, ⌥⌘T), remembered per agent.
+    @Published var columnHidden = false {
+        didSet {
+            guard columnHidden != oldValue else { return }
+            UserDefaults.standard.set(columnHidden, forKey: Self.columnHiddenKey(target))
+        }
+    }
+
+    private static func columnHiddenKey(_ target: String) -> String { "topics.columnHidden." + target }
+
+    /// DEBUG: a screenshot mock (every UI test) opens with the column showing, whatever an
+    /// earlier run on the same simulator folded, so each test starts from the same page.
+    private static var restoresColumn: Bool {
+        #if DEBUG
+        return ProcessInfo.processInfo.environment["HERDR_SCREENSHOT_MOCK"] == nil
+        #else
+        return true
+        #endif
     }
 
     func topic(_ id: String?) -> AgentTopic? {
@@ -521,12 +542,13 @@ final class TopicsModel: ObservableObject {
 
 // MARK: - Status
 
-/// A topic's status as the list and the chat header draw it: a neutral pill with one small
-/// coloured dot, or plain text for a closed topic. Never a coloured card or row.
-struct TopicStatusPill: View {
+/// A topic's status as plain muted text ("Working", "Idle · 1 queued", "Closed"), with one
+/// small dot only while it works (owner pick "Topics · A, revised": no pills, badges or chips).
+struct TopicStatusText: View {
     let topic: AgentTopic
+    var size: CGFloat = 13
 
-    /// The status as words ("Working", "Closed · 2 queued"), nil for a state this app does not
+    /// The status as words ("Working", "Idle · 2 queued"), nil for a state this app does not
     /// know. Also the topic row's accessibility value.
     static func text(for topic: AgentTopic) -> String? {
         let label: String
@@ -541,35 +563,73 @@ struct TopicStatusPill: View {
         return topic.queued > 0 ? "\(label) · \(topic.queued) queued" : label
     }
 
-    private var dot: Color? {
-        switch topic.state {
-        case .starting, .running: return Palette.working
-        case .idle: return Palette.done
-        case .dead: return Palette.died
-        case .closed, .unknown: return nil
-        }
-    }
-
     var body: some View {
         if let text = Self.text(for: topic) {
-            if let dot {
-                HStack(spacing: 5) {
-                    Circle().fill(dot).frame(width: 6, height: 6)
-                    Text(text).font(Typography.app(11, .medium)).foregroundStyle(Palette.textDim)
+            HStack(spacing: 5) {
+                // The one dot the owner kept for topics: working (or starting its first turn).
+                if topic.state.isWorking {
+                    Circle().fill(Palette.working).frame(width: 6, height: 6)
                 }
-                .padding(.horizontal, 8).frame(height: 20)
-                .background(Capsule().fill(Palette.surface))
-                .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
-                .fixedSize()
-                .accessibilityElement(children: .combine)
-                .accessibilityIdentifier("topic-status-\(topic.id)")
-            } else {
-                Text(text).font(Typography.app(11, .medium)).foregroundStyle(Palette.textFaint)
-                    .fixedSize()
-                    .accessibilityIdentifier("topic-status-\(topic.id)")
+                Text(text).font(Typography.app(size)).foregroundStyle(Palette.textDim).lineLimit(1)
             }
+            .fixedSize()
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("topic-status-\(topic.id)")
         }
     }
+}
+
+/// The faint "·" between a status and what follows it.
+private struct TopicsSeparator: View {
+    var size: CGFloat = 13
+
+    var body: some View {
+        Text("·").font(Typography.app(size)).foregroundStyle(Palette.textFaint)
+            .padding(.horizontal, 5)
+            .accessibilityHidden(true)
+    }
+}
+
+/// The 1 × 18 pt rule between the header's parts ("‹ Inbox" | the title).
+private struct TopicsHeaderRule: View {
+    var body: some View {
+        Rectangle().fill(Palette.hairline).frame(width: 1, height: 18)
+    }
+}
+
+/// iPad, column folded: "Topics" with its ⌥⌘T hint at the left of the header brings it back.
+private struct TopicsColumnShowButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Text("Topics").font(Typography.app(14, .medium)).foregroundStyle(Palette.text)
+                Text("⌥⌘T").font(Typography.app(12)).tracking(0.5).foregroundStyle(Palette.textFaint)
+            }
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Show topics")
+        .accessibilityIdentifier("topics-column-show")
+    }
+}
+
+/// The design's sizes (topics-A-v2): iPad's column, and iPhone's list screen (`compact`).
+private struct TopicsMetrics {
+    let compact: Bool
+
+    var headHeight: CGFloat { compact ? 52 : 50 }
+    var heading: Font { compact ? Typography.app(28, .bold) : Typography.app(15, .semibold) }
+    var searchHeight: CGFloat { compact ? 36 : 32 }
+    var searchFont: CGFloat { compact ? 16 : 14 }
+    var searchRadius: CGFloat { compact ? 10 : 8 }
+    var rowTitle: CGFloat { compact ? 16 : 14.5 }
+    var rowLine: CGFloat { compact ? 14 : 13 }
+    var rowTime: CGFloat { compact ? 14 : 12.5 }
+    var section: CGFloat { compact ? 14 : 12.5 }
+    var sectionTop: CGFloat { compact ? 16 : 14 }
 }
 
 // MARK: - The Topics view
@@ -595,30 +655,49 @@ struct TopicsPane: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.scenePhase) private var scenePhase
 
+    /// iPad: the topics column's width in the design.
+    static let columnWidth: CGFloat = 300
+
     var body: some View {
         Group {
             if sizeClass == .regular {
                 HStack(spacing: 0) {
-                    TopicsList(client: client, model: model, inboxPreview: inboxPreview,
-                               highlightsSelection: true, onOpenInbox: onOpenInbox)
-                        .frame(width: 340)
-                    Rectangle().fill(Palette.hairlineQuiet).frame(width: 1)
+                    // Folded, the column is gone entirely; "Topics ⌥⌘T" in the header brings it back.
+                    if !model.columnHidden {
+                        TopicsList(client: client, model: model, inboxPreview: inboxPreview,
+                                   highlightsSelection: true, compact: false,
+                                   onOpenInbox: onOpenInbox, onToggleColumn: toggleColumn)
+                            .frame(width: Self.columnWidth)
+                        Rectangle().fill(Palette.hairlineQuiet).frame(width: 1)
+                    }
                     if let topic = model.topic(model.selectedTopicID) {
-                        chat(topic, showsBack: false)
+                        chat(topic, compact: false)
                     } else {
-                        Text(model.topics.isEmpty ? "Start a topic to give the agent a new line of work."
-                                                  : "Choose a topic.")
-                            .font(Typography.app(14)).foregroundStyle(Palette.textDim)
-                            .multilineTextAlignment(.center).padding(24)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .accessibilityIdentifier("topics-placeholder")
+                        VStack(spacing: 0) {
+                            if model.columnHidden {
+                                HStack(spacing: 12) {
+                                    TopicsColumnShowButton(action: toggleColumn)
+                                    Spacer(minLength: 0)
+                                }
+                                .frame(height: 48).padding(.horizontal, 16)
+                                .overlay(alignment: .bottom) { Rectangle().fill(Palette.hairlineQuiet).frame(height: 1) }
+                            }
+                            Text(model.topics.isEmpty ? "Start a topic to give the agent a new line of work."
+                                                      : "Choose a topic.")
+                                .font(Typography.app(14)).foregroundStyle(Palette.textDim)
+                                .multilineTextAlignment(.center).padding(24)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .accessibilityIdentifier("topics-placeholder")
+                        }
                     }
                 }
+                .background { columnShortcut }
             } else if let topic = model.topic(model.selectedTopicID) {
-                chat(topic, showsBack: true)
+                chat(topic, compact: true)
             } else {
                 TopicsList(client: client, model: model, inboxPreview: inboxPreview,
-                           highlightsSelection: false, onOpenInbox: onOpenInbox)
+                           highlightsSelection: false, compact: true,
+                           onOpenInbox: onOpenInbox, onToggleColumn: nil)
             }
         }
         .background(Palette.groundMachine)
@@ -634,25 +713,44 @@ struct TopicsPane: View {
         }
     }
 
+    private func toggleColumn() {
+        model.columnHidden.toggle()
+    }
+
+    /// ⌥⌘T folds and unfolds the column from a hardware keyboard, either way.
+    private var columnShortcut: some View {
+        Button(action: toggleColumn) { Text("") }
+            .keyboardShortcut("t", modifiers: [.command, .option])
+            .opacity(0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+
     @ViewBuilder
-    private func chat(_ topic: AgentTopic, showsBack: Bool) -> some View {
+    private func chat(_ topic: AgentTopic, compact: Bool) -> some View {
         TopicChat(client: client, model: model, chat: model.chatModel(for: topic.id), topic: topic,
                   viewer: viewer, eventsPaneID: eventsPaneID,
-                  isActive: isActive && scenePhase.mountsChat, live: live, showsBack: showsBack,
+                  isActive: isActive && scenePhase.mountsChat, live: live, showsBack: compact,
+                  onOpenInbox: onOpenInbox,
+                  onShowColumn: !compact && model.columnHidden ? toggleColumn : nil,
                   onOpenTerminal: onOpenTerminal)
             .id(topic.id)
     }
 }
 
-/// The topics column: New topic, search, the Inbox pinned first, then the topics by last
-/// activity in day sections, and the closed ones last.
+/// The topics column: Organise and New topic, search, the Inbox pinned first, then the topics
+/// by last activity in day sections, and the closed ones last.
 private struct TopicsList: View {
     let client: HerdrClient
     @ObservedObject var model: TopicsModel
     let inboxPreview: String?
-    /// iPad: the open topic's row is filled `surfaceRaised`, as the app's sidebars do.
+    /// iPad: the open topic's row is filled `surfaceRaised`, rounded, as the design draws it.
     let highlightsSelection: Bool
+    /// iPhone: the list is its own screen, with a large "Topics" heading.
+    let compact: Bool
     let onOpenInbox: () -> Void
+    /// iPad: the column's toggle (it folds the column away); nil on iPhone.
+    let onToggleColumn: (() -> Void)?
 
     @State private var search = ""
     @FocusState private var searchFocused: Bool
@@ -661,6 +759,8 @@ private struct TopicsList: View {
     @State private var renaming: AgentTopic?
     @State private var renameTitle = ""
     @State private var actionNote: String?
+
+    private var metrics: TopicsMetrics { TopicsMetrics(compact: compact) }
 
     private var shown: [AgentTopic] {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -684,9 +784,14 @@ private struct TopicsList: View {
             case .topic(let topic): return "topic:" + topic.id
             }
         }
+
+        var topicID: String? {
+            if case .topic(let topic) = self { return topic.id }
+            return nil
+        }
     }
 
-    /// Open topics by day (Today, This week, Earlier), then Closed.
+    /// Open topics by day (Today, This week, Earlier), then Closed: sentence-case labels.
     private var lines: [Line] {
         let calendar = Calendar.current
         let now = GramDates.clockNow()
@@ -708,47 +813,24 @@ private struct TopicsList: View {
             .flatMap { title, topics in [Line.heading(title)] + topics.map(Line.topic) }
     }
 
+    private func isSelected(_ topicID: String?) -> Bool {
+        highlightsSelection && topicID != nil && model.selectedTopicID == topicID
+    }
+
+    /// The hairline above a topic row: only between two rows, and never touching the
+    /// selected row's rounded fill.
+    private func ruled(_ index: Int, in lines: [Line]) -> Bool {
+        guard index > 0, let current = lines[index].topicID, let previous = lines[index - 1].topicID else {
+            return false
+        }
+        return !isSelected(current) && !isSelected(previous)
+    }
+
     var body: some View {
+        let lines = self.lines
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                HStack(spacing: 6) {
-                    Text("Topics").font(Typography.app(17, .semibold)).foregroundStyle(Palette.text)
-                    aboutButton
-                }
-                Spacer(minLength: 0)
-                if model.suggestionsServed {
-                    // A plain word in the bar (proposal 3): the agent proposes topics from its Inbox.
-                    Button { Task { await model.organise(client: client) } } label: {
-                        HStack(spacing: 6) {
-                            if model.organising { ProgressView().controlSize(.mini).tint(Palette.textDim) }
-                            Text("Organise").font(Typography.app(14, .semibold))
-                                .foregroundStyle(model.organising ? Palette.textDim : Palette.text)
-                        }
-                        .padding(.horizontal, 6).frame(height: 34)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(model.organising)
-                    .accessibilityIdentifier("topics-organise")
-                }
-                Button { composing = true } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "square.and.pencil").font(.system(size: 14, weight: .semibold))
-                        Text("New topic").font(Typography.app(14, .semibold))
-                    }
-                    .foregroundStyle(Palette.text)
-                    .padding(.horizontal, 12).frame(height: 34)
-                    .background(Capsule().fill(Palette.surface))
-                    .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
-                    .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("topics-new")
-            }
-            .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 10)
-            InlineSearchField(placeholder: "Search topics", text: $search, focus: $searchFocused,
-                              identifierPrefix: "topics-search")
-                .padding(.horizontal, 16).padding(.bottom, 8)
+            head
+            searchField
             if let note = actionNote ?? model.problem {
                 HStack(spacing: 6) {
                     Circle().fill(Palette.died).frame(width: 6, height: 6)
@@ -770,28 +852,28 @@ private struct TopicsList: View {
                     if !model.suggestions.isEmpty && search.isEmpty {
                         proposals
                     }
-                    ForEach(lines) { line in
+                    ForEach(Array(lines.enumerated()), id: \.element.id) { index, line in
                         switch line {
                         case .heading(let title):
-                            Text(title.uppercased())
-                                .font(Typography.microLabel).tracking(1)
-                                .foregroundStyle(Palette.textFaint)
-                                .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 4)
+                            sectionLabel(title)
                         case .topic(let topic):
-                            row(topic)
+                            row(topic, ruled: ruled(index, in: lines))
                         }
                     }
                     if model.loaded && model.topics.isEmpty && model.problem == nil {
                         Text("No topics yet. A topic is a lasting line of work with its own conversation.")
                             .font(Typography.app(13)).foregroundStyle(Palette.textDim)
-                            .padding(.horizontal, 16).padding(.top, 16)
+                            .padding(.horizontal, 10).padding(.top, 16)
                             .accessibilityIdentifier("topics-empty")
                     } else if !search.isEmpty && shown.isEmpty {
                         Text("No topic matches.")
                             .font(Typography.app(13)).foregroundStyle(Palette.textDim)
-                            .padding(.horizontal, 16).padding(.top, 16)
+                            .padding(.horizontal, 10).padding(.top, 16)
                     }
+                    aboutButton
+                        .padding(.top, 12)
                 }
+                .padding(.horizontal, 8)
                 .padding(.bottom, 24)
             }
             .scrollDismissesKeyboard(.interactively)
@@ -819,25 +901,88 @@ private struct TopicsList: View {
         }
     }
 
-    /// The agent's own conversation, pinned first: it opens the page's Chat view.
+    /// [column toggle] Topics … Organise  New topic: the toggle is the column's one icon; the
+    /// actions are plain words.
+    private var head: some View {
+        HStack(spacing: 14) {
+            if let onToggleColumn {
+                Button(action: onToggleColumn) {
+                    Image(systemName: "sidebar.left").font(.system(size: 16, weight: .regular))
+                        .foregroundStyle(Palette.textDim)
+                        .frame(width: 32, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Hide topics")
+                .accessibilityIdentifier("topics-column-toggle")
+            }
+            Text("Topics").font(metrics.heading).foregroundStyle(Palette.text)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityAddTraits(.isHeader)
+            if model.suggestionsServed {
+                // The agent proposes topics from its Inbox (proposal 3).
+                Button { Task { await model.organise(client: client) } } label: {
+                    HStack(spacing: 6) {
+                        if model.organising { ProgressView().controlSize(.mini).tint(Palette.textDim) }
+                        Text("Organise").font(Typography.app(14, .medium))
+                            .foregroundStyle(model.organising ? Palette.textDim : Palette.text)
+                    }
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(model.organising)
+                .accessibilityIdentifier("topics-organise")
+            }
+            Button { composing = true } label: {
+                Text("New topic").font(Typography.app(14, .medium)).foregroundStyle(Palette.text)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("topics-new")
+        }
+        .frame(height: metrics.headHeight)
+        .padding(.leading, onToggleColumn == nil ? 16 : 10).padding(.trailing, 16)
+    }
+
+    /// "Search topics", with no magnifier: the field is the only thing in its row.
+    private var searchField: some View {
+        TextField("", text: $search, prompt: Text("Search topics").foregroundColor(Palette.textFaint))
+            .textFieldStyle(.plain)
+            .font(Typography.app(metrics.searchFont))
+            .foregroundStyle(Palette.text)
+            .tint(Palette.text)
+            .focused($searchFocused)
+            .submitLabel(.search)
+            .autocorrectionDisabled()
+            .textInputAutocapitalization(.never)
+            .padding(.horizontal, 12)
+            .frame(height: metrics.searchHeight)
+            .background(RoundedRectangle(cornerRadius: metrics.searchRadius).fill(Palette.surface))
+            .accessibilityIdentifier("topics-search-field")
+            .padding(.horizontal, 16).padding(.bottom, 8)
+    }
+
+    /// "Today", "This week", "Closed": sentence case, muted.
+    private func sectionLabel(_ title: String) -> some View {
+        Text(title).font(Typography.app(metrics.section, .semibold)).foregroundStyle(Palette.textDim)
+            .padding(.horizontal, 10).padding(.top, metrics.sectionTop).padding(.bottom, 4)
+            .accessibilityAddTraits(.isHeader)
+    }
+
+    /// The agent's own conversation, pinned first, as a row like the topics: it opens the
+    /// page's Chat view.
     private var inboxRow: some View {
         Button(action: onOpenInbox) {
-            HStack(spacing: 12) {
-                Image(systemName: "tray")
-                    .font(.system(size: 15, weight: .semibold)).foregroundStyle(Palette.text)
-                    .frame(width: 36, height: 36)
-                    .background(RoundedRectangle(cornerRadius: 10).fill(Palette.surface))
-                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Palette.hairline, lineWidth: 1))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Inbox").font(Typography.app(15, .semibold)).foregroundStyle(Palette.text)
-                    Text(inboxPreview?.isEmpty == false ? inboxPreview! : "The agent's own conversation")
-                        .font(Typography.app(13)).foregroundStyle(Palette.textDim).lineLimit(1)
-                }
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Palette.textFaint)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Inbox").font(Typography.app(metrics.rowTitle, .semibold)).foregroundStyle(Palette.text)
+                Text(inboxPreview?.isEmpty == false ? inboxPreview! : "The agent's own conversation")
+                    .font(Typography.app(metrics.rowLine)).foregroundStyle(Palette.textFaint).lineLimit(1)
             }
-            .padding(.horizontal, 16).padding(.vertical, 10)
+            .padding(.horizontal, 10).padding(.top, 10).padding(.bottom, 11)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -849,10 +994,7 @@ private struct TopicsList: View {
     /// topics to create, never messages: the agent picked those.
     private var proposals: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(model.agentName.isEmpty ? "SUGGESTED BY THE AGENT" : "SUGGESTED BY \(model.agentName.uppercased())")
-                .font(Typography.microLabel).tracking(1)
-                .foregroundStyle(Palette.textFaint)
-                .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 4)
+            sectionLabel(model.agentName.isEmpty ? "Suggested by the agent" : "Suggested by \(model.agentName)")
                 .accessibilityIdentifier("topics-proposals-heading")
             ForEach(model.suggestions) { suggestion in
                 proposalRow(suggestion)
@@ -864,34 +1006,32 @@ private struct TopicsList: View {
         let ticked = model.isTicked(suggestion.id)
         let title = suggestion.title.isEmpty ? "Untitled topic" : suggestion.title
         return Button { model.toggleTick(suggestion.id) } label: {
-            HStack(alignment: .top, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
+                // The tick is a working control: it picks the topics Create makes.
                 Image(systemName: ticked ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 20, weight: .regular))
+                    .font(.system(size: 18, weight: .regular))
                     .foregroundStyle(ticked ? Palette.text : Palette.textFaint)
-                    .frame(width: 24, height: 24)
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 8) {
-                        Text(title).font(Typography.app(15, .semibold))
+                    .frame(width: 22, height: 22)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(title).font(Typography.app(metrics.rowTitle, .semibold))
                             .foregroundStyle(ticked ? Palette.text : Palette.textDim)
                             .lineLimit(1)
-                        Spacer(minLength: 4)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         if suggestion.messageCount > 0 {
-                            Text(suggestion.messageCount == 1 ? "1 msg" : "\(suggestion.messageCount) msgs")
-                                .font(Typography.machine(11)).foregroundStyle(Palette.textFaint)
+                            Text(suggestion.messageCount == 1 ? "1 message" : "\(suggestion.messageCount) messages")
+                                .font(Typography.app(metrics.rowTime)).foregroundStyle(Palette.textFaint)
                                 .fixedSize()
                         }
                     }
                     if !suggestion.reason.isEmpty {
-                        Text(suggestion.reason).font(Typography.app(13)).foregroundStyle(Palette.textDim)
+                        Text(suggestion.reason).font(Typography.app(metrics.rowLine)).foregroundStyle(Palette.textDim)
                             .lineLimit(2)
                     }
                 }
             }
-            .padding(.horizontal, 16).padding(.vertical, 10)
+            .padding(.horizontal, 10).padding(.top, 10).padding(.bottom, 11)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .overlay(alignment: .bottom) {
-                Rectangle().fill(Palette.hairlineQuiet).frame(height: 1).padding(.leading, 52)
-            }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -904,18 +1044,18 @@ private struct TopicsList: View {
         .accessibilityIdentifier("topics-proposal-\(suggestion.id)")
     }
 
-    /// Create N topics / Not now under the list while there are proposals.
+    /// Not now · Create N topics under the list while there are proposals: a word, and the
+    /// one filled button, as the suggestion card.
     private var proposalsBar: some View {
         let count = model.tickedCount
-        return HStack(spacing: 10) {
+        return HStack(spacing: 18) {
+            Spacer(minLength: 0)
             Button {
                 Task { actionNote = await model.dismissProposals(client: client) }
             } label: {
-                Text("Not now").font(Typography.app(15, .semibold)).foregroundStyle(Palette.text)
-                    .frame(maxWidth: .infinity).frame(height: 44)
-                    .background(Capsule().fill(Palette.surface))
-                    .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
-                    .contentShape(Capsule())
+                Text("Not now").font(Typography.app(14, .medium)).foregroundStyle(Palette.textDim)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("topics-proposals-dismiss")
@@ -923,10 +1063,11 @@ private struct TopicsList: View {
                 Task { actionNote = await model.createTicked(client: client) }
             } label: {
                 Text(count == 1 ? "Create 1 topic" : "Create \(count) topics")
-                    .font(Typography.app(15, .semibold)).foregroundStyle(Palette.ground)
-                    .frame(maxWidth: .infinity).frame(height: 44)
-                    .background(Capsule().fill(Palette.text))
-                    .contentShape(Capsule())
+                    .font(Typography.app(14, .semibold)).foregroundStyle(Palette.ground)
+                    .padding(.horizontal, 16).frame(height: 32)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Palette.text))
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(count == 0)
@@ -934,39 +1075,46 @@ private struct TopicsList: View {
             .accessibilityIdentifier("topics-proposals-create")
         }
         .disabled(model.settling)
-        .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 12)
+        .padding(.horizontal, 16).padding(.top, 4).padding(.bottom, 8)
         .background(Palette.groundMachine)
         .overlay(alignment: .top) { Rectangle().fill(Palette.hairlineQuiet).frame(height: 1) }
     }
 
-    private func row(_ topic: AgentTopic) -> some View {
-        let selected = highlightsSelection && model.selectedTopicID == topic.id
+    private func row(_ topic: AgentTopic, ruled: Bool) -> some View {
+        let selected = isSelected(topic.id)
+        let closed = topic.state == .closed
         return Button {
             model.selectedTopicID = topic.id
         } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(topic.title.isEmpty ? "Untitled topic" : topic.title)
-                        .font(Typography.app(15, .semibold))
-                        .foregroundStyle(topic.state == .closed ? Palette.textDim : Palette.text)
+                        .font(Typography.app(metrics.rowTitle, closed ? .medium : .semibold))
+                        .foregroundStyle(closed ? Palette.textDim : Palette.text)
                         .lineLimit(1)
-                    Spacer(minLength: 4)
-                    TopicStatusPill(topic: topic)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     if topic.activityUnixMs > 0 {
                         Text(GramDates.rowTime(for: Date(timeIntervalSince1970: Double(topic.activityUnixMs) / 1000)))
-                            .font(Typography.machine(11)).foregroundStyle(Palette.textFaint)
+                            .font(Typography.app(metrics.rowTime)).foregroundStyle(Palette.textFaint)
                             .fixedSize()
                     }
                 }
-                if let activity = topic.lastActivity, !activity.isEmpty {
-                    Text(activity).font(Typography.app(13)).foregroundStyle(Palette.textDim).lineLimit(1)
+                // "Working · Drawing the waiting state…": the status in words, then the last step.
+                HStack(spacing: 0) {
+                    TopicStatusText(topic: topic, size: metrics.rowLine)
+                    if let activity = topic.lastActivity, !activity.isEmpty {
+                        TopicsSeparator(size: metrics.rowLine)
+                        Text(activity).font(Typography.app(metrics.rowLine)).foregroundStyle(Palette.textFaint)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
                 }
             }
-            .padding(.horizontal, 16).padding(.vertical, 10)
+            .padding(.horizontal, 10).padding(.top, 10).padding(.bottom, 11)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selected ? Palette.surfaceRaised : Color.clear)
-            .overlay(alignment: .bottom) {
-                Rectangle().fill(Palette.hairlineQuiet).frame(height: 1).padding(.leading, 16)
+            .background(RoundedRectangle(cornerRadius: 9).fill(selected ? Palette.surfaceRaised : Color.clear))
+            .overlay(alignment: .top) {
+                if ruled { Rectangle().fill(Palette.hairlineQuiet).frame(height: 1).padding(.horizontal, 10) }
             }
             .contentShape(Rectangle())
         }
@@ -975,7 +1123,7 @@ private struct TopicsList: View {
         .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel(topic.title.isEmpty ? "Untitled topic" : topic.title)
-        .accessibilityValue([TopicStatusPill.text(for: topic), topic.lastActivity]
+        .accessibilityValue([TopicStatusText.text(for: topic), topic.lastActivity]
             .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", "))
         .accessibilityIdentifier("topic-row-\(topic.id)")
         .stableContextMenu {
@@ -997,20 +1145,19 @@ private struct TopicsList: View {
 }
 
 extension TopicsList {
-    /// The "i" after the heading: what topics are. A bottom sheet on iPhone, a popover
-    /// pointing at it on iPad. 44 pt to tap, laid out at the icon's size.
+    /// "About topics", a word at the foot of the list: what topics are. A bottom sheet on
+    /// iPhone, a popover pointing at it on iPad. 44 pt to tap.
     private var aboutButton: some View {
         Button { showingAbout = true } label: {
-            Image(systemName: "info.circle").font(.system(size: 17))
-                .foregroundStyle(Palette.textDim)
-                .frame(width: 44, height: 44, alignment: .leading)
+            Text("About topics").font(Typography.app(13)).foregroundStyle(Palette.textFaint)
+                .padding(.horizontal, 10)
+                .frame(minWidth: 44, minHeight: 44, alignment: .leading)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .padding(.vertical, -5)
         .accessibilityLabel("About topics")
         .accessibilityIdentifier("topics.about")
-        .popover(isPresented: $showingAbout, arrowEdge: .top) {
+        .popover(isPresented: $showingAbout, arrowEdge: .bottom) {
             AboutTopicsView()
                 .frame(idealWidth: 380, idealHeight: 560)
                 .presentationCompactAdaptation(.sheet)
@@ -1152,7 +1299,12 @@ private struct TopicChat: View {
     let eventsPaneID: String?
     let isActive: Bool
     let live: Bool
+    /// iPhone: the topic is its own screen, with "‹ Topics" back to the list.
     let showsBack: Bool
+    /// iPad: "‹ Inbox" in the header opens the agent's own conversation (the Chat view).
+    let onOpenInbox: () -> Void
+    /// iPad, column folded: "Topics ⌥⌘T" at the header's left brings the column back.
+    let onShowColumn: (() -> Void)?
     let onOpenTerminal: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1219,40 +1371,107 @@ private struct TopicChat: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private var title: String { topic.title.isEmpty ? "Untitled topic" : topic.title }
+
+    @ViewBuilder
     private var header: some View {
-        HStack(spacing: 10) {
-            if showsBack {
-                PaneHeaderBackButton(identifier: "topic-back") {
-                    focused = false
-                    model.selectedTopicID = nil
-                }
+        if showsBack { phoneHeader } else { padHeader }
+    }
+
+    /// iPad: [Topics ⌥⌘T |] ‹ Inbox | Title · status … ⋯, one 48 pt row.
+    private var padHeader: some View {
+        HStack(spacing: 12) {
+            if let onShowColumn {
+                TopicsColumnShowButton(action: onShowColumn)
+                TopicsHeaderRule()
             }
-            VStack(alignment: .leading, spacing: 3) {
-                Text(topic.title.isEmpty ? "Untitled topic" : topic.title)
+            Button(action: onOpenInbox) {
+                HStack(spacing: 1) {
+                    Image(systemName: "chevron.left").font(.system(size: 13, weight: .semibold))
+                    Text("Inbox").font(Typography.app(14, .medium))
+                }
+                .foregroundStyle(Palette.text)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Inbox")
+            .accessibilityIdentifier("topic-inbox-link")
+            TopicsHeaderRule()
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(title)
                     .font(Typography.app(15, .semibold)).foregroundStyle(Palette.text).lineLimit(1)
                     .accessibilityIdentifier("topic-chat-title")
-                TopicStatusPill(topic: topic)
+                TopicStatusText(topic: topic, size: 13)
             }
-            Spacer(minLength: 0)
-            Menu {
-                if closed {
-                    Button {
-                        Task { actionNote = await model.reopen(client: client, topicID: topic.id) }
-                    } label: { Label("Reopen", systemImage: "arrow.uturn.backward") }
-                } else {
-                    Button {
-                        Task { actionNote = await model.close(client: client, topicID: topic.id) }
-                    } label: { Label("Close", systemImage: "archivebox") }
-                }
-            } label: {
-                Image(systemName: "ellipsis").font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Palette.text).frame(width: 44, height: 44)
-            }
-            .accessibilityLabel("Topic actions")
-            .accessibilityIdentifier("topic-actions")
+            .frame(maxWidth: .infinity, alignment: .leading)
+            actionsMenu
         }
-        .padding(.horizontal, showsBack ? 8 : 16).padding(.vertical, 4)
+        .frame(height: 48)
+        .padding(.leading, 16).padding(.trailing, 4)
         .overlay(alignment: .bottom) { Rectangle().fill(Palette.hairlineQuiet).frame(height: 1) }
+    }
+
+    /// iPhone: ‹ Topics … ⋯, then the title large, and "• Working · herdr-app" under it.
+    private var phoneHeader: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 0) {
+                Button {
+                    focused = false
+                    model.selectedTopicID = nil
+                } label: {
+                    HStack(spacing: 2) {
+                        Image(systemName: "chevron.left").font(.system(size: 17, weight: .semibold))
+                        Text("Topics").font(Typography.app(15, .medium))
+                    }
+                    .foregroundStyle(Palette.text)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Topics")
+                .accessibilityIdentifier("topic-back")
+                Spacer(minLength: 0)
+                actionsMenu
+            }
+            .frame(height: 50)
+            .padding(.leading, 8).padding(.trailing, 4)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(Typography.app(22, .bold)).foregroundStyle(Palette.text).lineLimit(2)
+                    .accessibilityIdentifier("topic-chat-title")
+                HStack(spacing: 0) {
+                    TopicStatusText(topic: topic, size: 13)
+                    if !model.agentName.isEmpty {
+                        TopicsSeparator(size: 13)
+                        Text(model.agentName).font(Typography.app(13)).foregroundStyle(Palette.textDim).lineLimit(1)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 20).padding(.bottom, 10)
+        }
+        .overlay(alignment: .bottom) { Rectangle().fill(Palette.hairlineQuiet).frame(height: 1) }
+    }
+
+    /// ⋯: Close or Reopen.
+    private var actionsMenu: some View {
+        Menu {
+            if closed {
+                Button {
+                    Task { actionNote = await model.reopen(client: client, topicID: topic.id) }
+                } label: { Label("Reopen", systemImage: "arrow.uturn.backward") }
+            } else {
+                Button {
+                    Task { actionNote = await model.close(client: client, topicID: topic.id) }
+                } label: { Label("Close", systemImage: "archivebox") }
+            }
+        } label: {
+            Image(systemName: "ellipsis").font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Palette.text).frame(width: 44, height: 44)
+        }
+        .accessibilityLabel("Topic actions")
+        .accessibilityIdentifier("topic-actions")
     }
 
     private var composer: some View {
