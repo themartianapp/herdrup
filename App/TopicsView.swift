@@ -182,10 +182,10 @@ final class TopicsModel: ObservableObject {
             let list = try await client.agentTopicsList(target: target)
             let ordered = list.ordered
             if ordered != topics { topics = ordered }
-            // A topic Start opened that the list no longer has ended before its first turn,
-            // even when `start_failed` never reached this page (a guest; the owner between
-            // subscriptions).
-            if let ended = startWatch.endedSelection(selected: selectedTopicID, listed: ordered.map(\.id)) {
+            // A topic Start opened that the list no longer has, never seen with a turn, ended
+            // before its first turn, even when `start_failed` never reached this page (a guest;
+            // the owner between subscriptions). A topic that ran a turn may just be out of scope.
+            if let ended = startWatch.endedSelection(selected: selectedTopicID, listed: ordered) {
                 leaveFailedStart(ended)
             }
             if list.agent != agentName { agentName = list.agent }
