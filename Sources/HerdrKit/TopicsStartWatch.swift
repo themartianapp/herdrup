@@ -21,10 +21,11 @@ public struct TopicsStartWatch: Sendable, Equatable {
 
     public init() {}
 
-    /// A Start opened this topic: it was in the list.
-    public mutating func didOpen(_ topicID: String) {
-        guard !topicID.isEmpty else { return }
-        opened.insert(topicID)
+    /// A Start (or its "Continued in topic" line) opened this listed topic. Watched only if it
+    /// has not been seen to start: one that already ran a turn is not a new start (herdrup#816).
+    public mutating func didOpen(_ topic: AgentTopic) {
+        guard !topic.id.isEmpty, topic.turns == 0, topic.state != .running else { return }
+        opened.insert(topic.id)
     }
 
     /// `start_failed` for this topic.

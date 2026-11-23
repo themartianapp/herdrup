@@ -15,7 +15,7 @@ final class TopicsStartWatchTests: XCTestCase {
     /// and the reader leaves it.
     func testAListWithoutTheStartedTopicReturnsTheReader() {
         var watch = TopicsStartWatch()
-        watch.didOpen("t-sug-1")
+        watch.didOpen(topic("t-sug-1"))
         XCTAssertNil(watch.endedSelection(selected: "t-sug-1", listed: [topic("t-1", .idle, turns: 3), topic("t-sug-1")]),
                      "still there")
         XCTAssertEqual(watch.endedSelection(selected: "t-sug-1", listed: [topic("t-1", .idle, turns: 3)]), "t-sug-1")
@@ -27,13 +27,13 @@ final class TopicsStartWatchTests: XCTestCase {
     /// switch; a settled turn without a parked ref). The reader stays on it.
     func testAStartedTopicThatRanATurnAndLeavesTheListKeepsTheReader() {
         var watch = TopicsStartWatch()
-        watch.didOpen("t-sug-1")
+        watch.didOpen(topic("t-sug-1"))
         XCTAssertNil(watch.endedSelection(selected: "t-sug-1", listed: [topic("t-sug-1", .running)]))
         XCTAssertNil(watch.endedSelection(selected: "t-sug-1", listed: []), "it started: out of the list is not a failed start")
         XCTAssertFalse(watch.hasFailed("t-sug-1"))
 
         var settled = TopicsStartWatch()
-        settled.didOpen("t-sug-2")
+        settled.didOpen(topic("t-sug-2"))
         XCTAssertNil(settled.endedSelection(selected: "t-sug-2", listed: [topic("t-sug-2", .idle, turns: 1)]))
         XCTAssertNil(settled.endedSelection(selected: "t-sug-2", listed: []))
         XCTAssertFalse(settled.hasFailed("t-sug-2"))
@@ -44,7 +44,7 @@ final class TopicsStartWatchTests: XCTestCase {
     /// line opens it again. `start_failed` stays for good.
     func testATopicThatReappearsOpensAgain() {
         var watch = TopicsStartWatch()
-        watch.didOpen("t-sug-1")
+        watch.didOpen(topic("t-sug-1"))
         XCTAssertEqual(watch.endedSelection(selected: "t-sug-1", listed: []), "t-sug-1")
         XCTAssertTrue(watch.hasFailed("t-sug-1"))
         XCTAssertNil(watch.endedSelection(selected: nil, listed: [topic("t-sug-1", .idle, turns: 2)]))
@@ -59,10 +59,25 @@ final class TopicsStartWatchTests: XCTestCase {
     /// or one the reader already left, is not this page's to undo.
     func testOnlyTheSelectedTopicAStartOpenedLeaves() {
         var watch = TopicsStartWatch()
-        watch.didOpen("t-sug-1")
+        watch.didOpen(topic("t-sug-1"))
         XCTAssertNil(watch.endedSelection(selected: "t-1", listed: []), "picked from the list")
         XCTAssertNil(watch.endedSelection(selected: nil, listed: []), "nothing selected")
         XCTAssertFalse(watch.hasFailed("t-sug-1"), "not selected: not judged")
         XCTAssertEqual(watch.endedSelection(selected: "t-sug-1", listed: []), "t-sug-1")
+    }
+
+    /// #816: the Inbox's "Continued in topic" line opens an idle topic that already ran turns.
+    /// It is not a new start: a later list without it (a session switch, the backstop poll)
+    /// does not send the reader back.
+    func testOpeningATopicThatRanTurnsDoesNotWatchItAsANewStart() {
+        var watch = TopicsStartWatch()
+        XCTAssertNil(watch.endedSelection(selected: nil, listed: [topic("t-a", .idle, turns: 3)]))
+        watch.didOpen(topic("t-a", .idle, turns: 3))
+        XCTAssertNil(watch.endedSelection(selected: "t-a", listed: [topic("t-other", .idle, turns: 1)]))
+        XCTAssertFalse(watch.hasFailed("t-a"))
+
+        var working = TopicsStartWatch()
+        working.didOpen(topic("t-b", .running))
+        XCTAssertNil(working.endedSelection(selected: "t-b", listed: []), "a running topic has started")
     }
 }

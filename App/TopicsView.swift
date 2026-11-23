@@ -480,7 +480,7 @@ final class TopicsModel: ObservableObject {
             selectedTopicID = nil
             return false
         }
-        startWatch.didOpen(topicID)
+        if let listed = topic(topicID) { startWatch.didOpen(listed) }
         return true
     }
 
