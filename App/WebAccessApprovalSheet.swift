@@ -43,6 +43,8 @@ struct WebAccessApprovalSheet: View {
                 .padding(.bottom, 16)
         }
         .background(Palette.surface.ignoresSafeArea())
+        // A container element, so its id doesn't replace the buttons' and rows' own.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("web-approve-sheet")
         .task {
             await model.start()
