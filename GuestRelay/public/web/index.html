@@ -9,13 +9,24 @@
     <meta name="referrer" content="no-referrer" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>herdrup</title>
-    <script type="module" crossorigin src="/web/assets/index-BoXgYgBf.js"></script>
-    <link rel="stylesheet" crossorigin href="/web/assets/index-u7dX_LSf.css">
+    <script type="module" crossorigin src="/web/assets/index-ByEUf0C9.js"></script>
+    <link rel="modulepreload" crossorigin href="/web/assets/bootChoice-CF8zuOgh.js">
+    <link rel="modulepreload" crossorigin href="/web/assets/longPress-BDlrk1q3.js">
+    <link rel="stylesheet" crossorigin href="/web/assets/bootChoice-D1EwjHkp.css">
+    <link rel="stylesheet" crossorigin href="/web/assets/longPress-GbSZGKPI.css">
+    <link rel="stylesheet" crossorigin href="/web/assets/index-DrQ4JJC9.css">
   </head>
   <body>
-    <!-- src/main.ts's layout, guest parts only: the detail column under the sidebar card. -->
+    <!-- index.html's layout, which both pages share (boot.ts runs one): the owner's shell
+         (src/main.ts) uses all of it; the guest page (src/web/main.ts) the detail column, the top
+         and tab bars and #welcome. What the guest page doesn't use starts hidden. -->
     <main id="detail" class="detail">
+      <canvas id="field" class="field" hidden></canvas>
       <p id="select" class="select" hidden>Select an agent</p>
+      <!-- The owner's host home: web/hosts.ts draws the approved machines here. -->
+      <section id="connect" class="connect" hidden>
+        <form id="connect-form" class="form" hidden></form>
+      </section>
     </main>
     <aside class="sidebar" id="sidebar">
       <header class="topbar">
@@ -25,6 +36,13 @@
           <div class="capsule" id="bar-actions" hidden></div>
         </div>
       </header>
+      <div class="roster" id="roster" hidden>
+        <label class="search" id="search-field">
+          <span class="search-icon" id="search-icon"></span>
+          <input id="search" type="text" placeholder="Search" autocomplete="off" spellcheck="false" />
+        </label>
+        <div id="rows"></div>
+      </div>
       <nav class="tabbar" id="tabbar"></nav>
     </aside>
     <section id="welcome" class="web-welcome" hidden></section>
