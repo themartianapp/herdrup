@@ -586,20 +586,19 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
         XCTAssertEqual(field.frame.height, wrapped.height, accuracy: 2)
         XCTAssertEqual(send.frame.maxY, sendBottom, accuracy: 2)
         XCTAssertTrue((field.value as? String)?.contains("tail-token") == true)
-        let lower = field.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
-        let upper = field.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
-        lower.press(forDuration: 0.05, thenDragTo: upper)
+        // A real swipe scrolls the overflow. A short press-and-drag is not one on iOS 27: it
+        // can start the caret loupe instead and move the caret into the middle of the text.
+        field.swipeUp()
         field.typeText(" after-scroll")
         XCTAssertTrue((field.value as? String)?.contains("after-scroll") == true,
                       "scrolling overflow text should keep the composer focused and editable")
         command("reply-multiline-pasteboard")
-        // The first tap puts the caret at the end of the visible text; a second tap ON
-        // that caret opens the edit menu. Not a long press: over text, iOS 27's long press
-        // only drives the loupe and lifts with no edit menu (an empty field still gets one,
-        // see `pasteIntoReply`), where iOS 26 showed the menu on lift.
-        let end = field.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.8))
-        end.tap()
-        end.tap()
+        // A double tap selects a word and opens the edit menu wherever the text wraps.
+        // Not taps at a fixed point: a second tap opens the menu only when it lands on the
+        // caret the first one placed, which depends on the wrap. Not a long press: over
+        // text, iOS 27's long press only drives the loupe and lifts with no edit menu (an
+        // empty field still gets one, see `pasteIntoReply`).
+        field.doubleTap()
         let paste = app.descendants(matching: .any)
             .matching(NSPredicate(format: "label == %@", "Paste"))
             .firstMatch
@@ -608,10 +607,9 @@ func testDictationStartDisarmsEvenIfPermissionIsDenied() throws {
         XCTAssertTrue((field.value as? String)?.contains("pasted-tail") == true,
                       "a multiline paste should remain in the scrolling composer")
         field.typeText(" after-paste")
-        // The caret after the paste is wherever the coordinate tap placed it.
+        // The paste replaced the selected word, and the caret follows the pasted text.
         // The contract here is that the multiline paste remains and the composer stays
-        // focused/editable afterward — not that a normalized tap maps past the last
-        // glyph. A 5pt inset legitimately changes that coordinate mapping.
+        // focused/editable afterward.
         XCTAssertTrue((field.value as? String)?.contains("after-paste") == true,
                       "typing after a multiline paste should keep the composer editable")
         XCTAssertTrue(send.isHittable)
