@@ -1,5 +1,5 @@
 {
- "sourceCommit": "d278eee71a97d0f8963982ad1485f0c8e0cfe4e8",
+ "sourceCommit": "51c7f58707b7d828ef35c0c77acee3a312b173ab",
  "sourceDirty": false,
  "buildCommand": "bun install --frozen-lockfile && bun run build:guest-web",
  "files": {
@@ -24,7 +24,7 @@
   "assets/circle-bold-BsM6irvh.svg": "f379b4d00604bc0f55a57d857a158cdd0e41529f372c643b70c41f82aad3ec51",
   "assets/envelope-C6fNIEBn.svg": "1cacf2964607ad27bcb6c55117e5c7275cfb3c206f799b720f095b63965efdc4",
   "assets/file-text-CmjDRSMN.svg": "b504cf8370b6b91ad12f3c56d3116360510fa22c41da90c57f2e83d10d9d8d7e",
-  "assets/index-DMFVQ02d.js": "ea485b4343d76ff6dbcf12b4ae6b6a57216eb1bfbff0812e9d52b1be4620d30c",
+  "assets/index-PZqDilMX.js": "a8c8d7f40c64a40aed29a92a1f177b993b5d26b64d6b7119e8979a86976fe843",
   "assets/index-RT5CjAvI.css": "23a6b9b1b82d4d1b90b613c01272d046cb5b548ff0684082e994825f5f231efd",
   "assets/info-C9QkPWf7.svg": "438a1f319d53d86e840af73fb7b1d224c9224a437b9fa449a4e2cb45a82a3552",
   "assets/lightbulb-DXlfS_UP.svg": "b61e4d9685a1d74e579a7dbbe0d5222bdf8dcdcaf5b67825a17ff45363e4fadd",
@@ -64,7 +64,7 @@
   "herdrup/mascots/squib.svg": "87a2f2684bb008d5513cc321d89af08b180f175b9cacff8a6fc23a4f6cba19ea",
   "herdrup/mascots/tri.svg": "7a73d23792fd1d8e67bead1f2b9d2f067f6bebddc2146d0ae5d835e5266c5755",
   "herdrup/mascots/zag.svg": "06619463ac8ef2a5e6b7af5810f7651272139973c5d64448ef04da1643f35290",
-  "index.html": "1a99cb373460a2fc08dd28c47908eef2a95ed2e8a03d63eb10fb02ac9faf3094",
+  "index.html": "69d929d758ec08c33a37f1ce4079d9ebbbd24fee4031eff444e9bdd868e38a13",
   "mermaid/Mermaid-LICENSE.txt": "ec9fb67dcb25eccc416ed56e1aab819222c805a2a4bfe4cb19e7556bf2ffde80",
   "mermaid/mermaid.min.js": "581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8",
   "relays.json": "ff991486bc63fa926bc7563ba373a16a5173e1635ee37ae921fecc1638df5841"
