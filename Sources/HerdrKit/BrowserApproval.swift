@@ -1,3 +1,4 @@
+import Crypto
 import Foundation
 
 // The approver's side of browser approval (web owner access WIRE-PLAN §2.4), as HerdrUp
@@ -232,7 +233,7 @@ public actor BrowserApproval {
                              poll: @escaping @Sendable (TimeInterval) -> TimeInterval = BrowserApproval.defaultPoll)
         async throws -> BrowserApproval {
         guard let browserPub = Base64URL.decode(request.browser.devicePub), browserPub.count == ApproveV1.keySize,
-              let commit = Base64URL.decode(request.commit), commit.count == 32
+              let commit = Base64URL.decode(request.commit), commit.count == SHA256.byteCount
         else { throw Failure.tampered }
         let nonceT = ApproveV1.newNonce()
         let client = session.client

@@ -62,7 +62,7 @@ final class WebAccessApprovals: ObservableObject {
         // One claimed here is answered in its open sheet; one claimed elsewhere isn't ours.
         requests = list.filter { $0.claimed == "no" }
         if presented == nil,
-           let next = requests.first(where: { $0.claimed == "no" && !shown.contains($0.id) }),
+           let next = requests.first(where: { !shown.contains($0.id) }),
            !machines.isEmpty {
             shown.insert(next.id)
             presented = next
@@ -212,8 +212,11 @@ final class WebAccessApprovalModel: ObservableObject {
         }
     }
 
+    /// The sheet closed: stop waiting, and remove the browser's key on any machine whose grant
+    /// got no answer (such a grant is in no envelope, whatever the outcome).
     func stop() {
         waiting?.cancel()
+        if let web { Task { _ = await web.cleanUp() } }
     }
 
     private func check(_ code: String) async {
@@ -288,7 +291,7 @@ final class WebAccessApprovalModel: ObservableObject {
         if result.granted.isEmpty, !result.skipped.isEmpty || !result.failed.isEmpty {
             out.append("No machine took the access.")
         }
-        out += result.skipped.map { "\($0.label) \(WebAccessResult.describe(skip: $0.reason))." }
+        out += result.skipped.map { "\($0.label) \($0.reason.description)." }
         out += result.failed.map { "\($0.label): \($0.reason)." }
         return out
     }

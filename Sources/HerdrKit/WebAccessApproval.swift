@@ -10,7 +10,9 @@ import Foundation
 // Grants exist only for a recorded approval: they are made after the service confirms the
 // request is still open, and removed again when the service definitely didn't record the
 // approval. When that can't be told (no answer), the grants stay and Approve retries the same
-// report.
+// report. An `owner_access.add` sent without an answer may still have made a grant that is in
+// no envelope: that machine is "uncertain", and the browser's key is removed there whatever the
+// outcome (a late answer's grant too).
 
 // MARK: owner_access (herdr, protocol 2)
 
@@ -19,9 +21,9 @@ public struct OwnerAccessInfo: Decodable, Equatable, Sendable {
     /// 1 stores grants (herdr H1); 2 admits owner browsers (H2). Nil from a herdr that predates
     /// the field.
     public let `protocol`: Int?
-    /// The relay's id for this machine, unpadded base64url of 16 bytes.
+    /// The relay's id for this machine, unpadded base64url of `OwnerAccessIDs.hostIDBytes`.
     public let hostID: String
-    /// The machine's X25519 Noise key, unpadded base64url of 32 bytes.
+    /// The machine's X25519 Noise key, unpadded base64url of `OwnerAccessIDs.nodePubBytes`.
     public let nodePub: String
     public let relayURL: String
     public let version: String?
@@ -66,21 +68,25 @@ public struct OwnerAccessAdded: Decodable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey { case grant, replaced }
 }
 
-struct OwnerAccessInfoParams: Encodable {
-    func encode(to encoder: Encoder) throws {
-        _ = encoder.container(keyedBy: CodingKeys.self)
+/// `owner_access.add`'s params: one browser key, bound to the account of `accountStatement`
+/// (this device's own statement for the machine's `host_id`).
+public struct OwnerAccessAddParams: Encodable, Equatable, Sendable {
+    public let devicePub: String
+    public let deviceName: String
+    public let scope: String
+    public let ttlSecs: UInt64
+    public let accountStatement: String
+    public let approvedBy: String
+
+    public init(devicePub: String, deviceName: String, scope: String, ttlSecs: UInt64,
+                accountStatement: String, approvedBy: String) {
+        self.devicePub = devicePub
+        self.deviceName = deviceName
+        self.scope = scope
+        self.ttlSecs = ttlSecs
+        self.accountStatement = accountStatement
+        self.approvedBy = approvedBy
     }
-
-    enum CodingKeys: CodingKey {}
-}
-
-struct OwnerAccessAddParams: Encodable {
-    let devicePub: String
-    let deviceName: String
-    let scope: String
-    let ttlSecs: UInt64
-    let accountStatement: String
-    let approvedBy: String
 
     enum CodingKeys: String, CodingKey {
         case scope
@@ -92,10 +98,38 @@ struct OwnerAccessAddParams: Encodable {
     }
 }
 
-struct OwnerAccessRemoveParams: Encodable {
-    let grantID: String
+/// The lengths of herdr's ids, as unpadded base64url of so many bytes. The envelope's size
+/// check counts them at these lengths, so a value of another length is refused.
+public enum OwnerAccessIDs {
+    public static let hostIDBytes = 16
+    public static let nodePubBytes = ApproveV1.keySize
+    public static let grantIDBytes = 16
 
-    enum CodingKeys: String, CodingKey { case grantID = "grant_id" }
+    /// The base64url length of `bytes` bytes.
+    static func length(_ bytes: Int) -> Int { (bytes * 8 + 5) / 6 }
+
+    static func valid(_ text: String, bytes: Int) -> Bool {
+        text.count == length(bytes) && Base64URL.decode(text)?.count == bytes
+    }
+}
+
+struct OwnerAccessInfoParams: Encodable {
+    func encode(to encoder: Encoder) throws {
+        _ = encoder.container(keyedBy: CodingKeys.self)
+    }
+
+    enum CodingKeys: CodingKey {}
+}
+
+/// `owner_access.remove` takes exactly one of `grant_id` or `device_pub`.
+struct OwnerAccessRemoveParams: Encodable {
+    var grantID: String?
+    var devicePub: String?
+
+    enum CodingKeys: String, CodingKey {
+        case grantID = "grant_id"
+        case devicePub = "device_pub"
+    }
 }
 
 struct OwnerAccessRemoved: Decodable {
@@ -170,35 +204,45 @@ public struct WebAccessMachine: Identifiable, Sendable {
     }
 }
 
+/// Why a machine was left out of the list, as the browser sees it (envelope `skipped.reason`).
+public enum WebAccessSkipReason: String, Sendable {
+    case needsUpdate = "needs_update"
+    case unsupported
+    case unreachable
+    case relayNotAllowed = "relay_not_allowed"
+
+    /// As the sheet words it, after the machine's name.
+    public var description: String {
+        switch self {
+        case .needsUpdate: return "needs a herdr update"
+        case .unsupported: return "can't share with the web"
+        case .unreachable: return "couldn't be reached"
+        case .relayNotAllowed: return "uses a relay the web app can't reach"
+        }
+    }
+}
+
 /// What an approval did on each machine.
 public struct WebAccessResult: Equatable, Sendable {
-    public struct Line: Equatable, Sendable {
+    public struct Skip: Equatable, Sendable {
         public let label: String
-        /// For a skip, the reason the browser sees (`needs_update`, `unsupported`, `unreachable`,
-        /// `relay_not_allowed`); for a failure, the error.
+        public let reason: WebAccessSkipReason
+    }
+
+    public struct Failure: Equatable, Sendable {
+        public let label: String
         public let reason: String
     }
 
     public var granted: [String] = []
-    public var skipped: [Line] = []
-    public var failed: [Line] = []
+    public var skipped: [Skip] = []
+    public var failed: [Failure] = []
     /// The service's answer to the approval was lost (`problem` says how): the grants are kept,
     /// Approve sends the same report again and Deny removes them.
     public var unsure = false
     public var problem: String?
 
     public init() {}
-
-    /// A skip reason as the sheet words it.
-    public static func describe(skip reason: String) -> String {
-        switch reason {
-        case "needs_update": return "needs a herdr update"
-        case "unsupported": return "can't share with the web"
-        case "unreachable": return "couldn't be reached"
-        case "relay_not_allowed": return "uses a relay the web app can't reach"
-        default: return reason
-        }
-    }
 }
 
 // MARK: Envelope seq
@@ -273,6 +317,8 @@ public actor WebAccessApproval {
     /// The `owner_access` protocol of a machine that admits owner browsers (herdr H2). 1 only
     /// stores grants: a grant there couldn't let the browser in.
     public static let ownerProtocol = 2
+    /// The longest herdr version put in the envelope for a skipped machine.
+    static let versionLimit = 32
 
     struct Grant: Sendable {
         let machine: WebAccessMachine
@@ -342,8 +388,17 @@ public actor WebAccessApproval {
 
     enum GrantOutcome {
         case granted(Envelope.Machine)
-        case skipped(String, version: String?)
+        case skipped(WebAccessSkipReason, version: String?)
+        /// Nothing changed on the machine.
         case failed(String)
+        /// `owner_access.add` was sent and got no answer: it may have made a grant.
+        case uncertain(String)
+    }
+
+    /// What a machine said before the add.
+    enum Prepared: Sendable {
+        case skip(WebAccessSkipReason, version: String?)
+        case ready(OwnerAccessLink, OwnerAccessInfo, statement: String)
     }
 
     public nonisolated let approval: BrowserApproval
@@ -356,6 +411,9 @@ public actor WebAccessApproval {
     private var busy = false
     /// A report sent without a known outcome, and the grants it carries.
     private var pending: Pending?
+    /// Machines whose `owner_access.add` got no answer, so any grant there for the browser is
+    /// in no envelope: the browser's key is removed there, whatever the outcome.
+    private var uncertain: [WebAccessMachine] = []
 
     /// `statement` is this device's account statement (JWS) for a host id (`StatementCache`).
     public init(approval: BrowserApproval, approverName: String,
@@ -411,19 +469,28 @@ public actor WebAccessApproval {
                 result.failed.append(.init(label: machine.label, reason: "not reached before this request expires"))
                 continue
             }
-            let params = OwnerAccessAddParams(
-                devicePub: browser.devicePub, deviceName: Self.truncate(browser.name, 64), scope: scope.rawValue,
-                ttlSecs: length.seconds, accountStatement: "", approvedBy: approverName)
-            switch await grant(on: machine, params, within: min(grantTime, left)) {
+            let approvedBy = approverName
+            let add = { (jws: String) in
+                OwnerAccessAddParams(devicePub: browser.devicePub, deviceName: Self.truncate(browser.name, 64),
+                                     scope: scope.rawValue, ttlSecs: length.seconds, accountStatement: jws,
+                                     approvedBy: approvedBy)
+            }
+            switch await grant(on: machine, add, within: min(grantTime, left)) {
             case .failed(let reason):
                 result.failed.append(.init(label: machine.label, reason: reason))
+            case .uncertain(let reason):
+                result.failed.append(.init(label: machine.label, reason: "no answer to the grant (\(reason)); any access it added is removed"))
+                if !uncertain.contains(where: { $0.id == machine.id }) { uncertain.append(machine) }
             case .skipped(let reason, let version):
                 result.skipped.append(.init(label: machine.label, reason: reason))
-                envelope.skipped.append(.init(hostItemID: machine.hostItemID, label: machine.label, reason: reason, version: version))
+                envelope.skipped.append(.init(hostItemID: machine.hostItemID, label: machine.label,
+                                              reason: reason.rawValue, version: version))
             case .granted(let entry):
                 result.granted.append(machine.label)
                 envelope.machines.append(entry)
                 grants.append(Grant(machine: machine, grantID: entry.grantID))
+                // This grant replaced whatever an earlier unanswered add made here.
+                uncertain.removeAll { $0.id == machine.id }
             }
         }
         guard !envelope.machines.isEmpty else { return result }
@@ -435,6 +502,7 @@ public actor WebAccessApproval {
     /// already over); on an error the sheet keeps the request so Deny can be tried again.
     /// Grants waiting on a report with no known outcome are removed once this denial was taken,
     /// or once the service shows the request ended with no report of this device recorded.
+    /// The browser's key is removed on uncertain machines either way.
     public func deny() async throws {
         try begin()
         defer { busy = false }
@@ -446,7 +514,11 @@ public actor WebAccessApproval {
         } catch {
             throw Failure.problem("Couldn't deny (\(BrowserApproval.describe(error))). Deny to try again.")
         }
-        guard var pending else { return }
+        await removeUncertain()
+        guard var pending else {
+            if !uncertain.isEmpty { throw Self.leftAccess(uncertain.map(\.label)) }
+            return
+        }
         // Taken by the service, the denial is the outcome. Otherwise the request was over
         // before it, and only the service knows how.
         if ended {
@@ -470,11 +542,20 @@ public actor WebAccessApproval {
         }
         // The ones that couldn't be removed stay pending for the next Deny.
         pending.grants = await removeGrants(pending.grants)
-        guard pending.grants.isEmpty else {
-            self.pending = pending
-            throw Failure.problem("Denied, but couldn't remove the access added on \(Self.labels(pending.grants)). Deny to try again.")
-        }
-        self.pending = nil
+        let left = pending.grants.map(\.machine.label) + uncertain.map(\.label)
+        if pending.grants.isEmpty { self.pending = nil } else { self.pending = pending }
+        guard left.isEmpty else { throw Self.leftAccess(left) }
+    }
+
+    /// Removes the browser's key from machines whose add got no answer. Always safe: such a
+    /// grant is in no envelope. Run when the request is over; returns the machines it couldn't
+    /// reach.
+    public func cleanUp() async -> [String] {
+        guard !busy else { return uncertain.map(\.label) }
+        busy = true
+        defer { busy = false }
+        await removeUncertain()
+        return uncertain.map(\.label)
     }
 
     // MARK: Steps
@@ -492,13 +573,16 @@ public actor WebAccessApproval {
         do {
             try await approval.approve(scope: p.scope, expiresMs: p.expiresMs, seq: p.seq, envelope: p.envelope)
             pending = nil
+            await removeUncertain()
             return result
         } catch let refused as BrowserApproval.NotRecorded {
             pending = nil
             let why = BrowserApproval.describe(refused)
-            let failed = await removeGrants(p.grants)
-            if !failed.isEmpty {
-                throw Failure.problem("The browser wasn't approved (\(why)), and the access added on \(Self.labels(failed)) couldn't be removed.")
+            let failed = await removeGrants(p.grants).map(\.machine.label)
+            await removeUncertain()
+            let left = failed + uncertain.map(\.label)
+            if !left.isEmpty {
+                throw Failure.problem("The browser wasn't approved (\(why)), and the access added on \(left.joined(separator: ", ")) couldn't be removed.")
             }
             throw Failure.problem("The browser wasn't approved: \(why)")
         } catch {
@@ -511,78 +595,151 @@ public actor WebAccessApproval {
 
     /// The grant on one machine: `owner_access.info` for its relay id, a statement for that
     /// host, then `owner_access.add`. A machine that can't take owner grants is skipped with
-    /// the envelope's reason.
-    private func grant(on machine: WebAccessMachine, _ params: OwnerAccessAddParams,
+    /// the envelope's reason. Everything before the add may be abandoned at the deadline;
+    /// once sent, an add without an answer is `.uncertain`, and a late answer's grant is
+    /// removed.
+    private func grant(on machine: WebAccessMachine, _ add: (String) -> OwnerAccessAddParams,
                        within seconds: TimeInterval) async -> GrantOutcome {
+        let deadline = now().addingTimeInterval(seconds)
         let statement = self.statement
+        let prepared: Prepared
         do {
-            return try await Self.withTimeout(seconds) {
-                let link: OwnerAccessLink
-                do {
-                    link = try await machine.open()
-                } catch {
-                    return .skipped("unreachable", version: nil)
-                }
-                do {
-                    let outcome = try await Self.grant(on: machine, link.client, params, statement: statement)
-                    await link.close()
-                    return outcome
-                } catch {
-                    await link.close()
-                    throw error
-                }
+            prepared = try await Self.withDeadline(seconds) {
+                try await Self.prepare(machine, statement: statement)
+            } late: { late in
+                if case .success(.ready(let link, _, _)) = late { await link.close() }
             }
         } catch Failure.timedOut {
             return .failed("timed out")
         } catch {
             return .failed(Self.describe(error))
         }
-    }
-
-    private static func grant(on machine: WebAccessMachine, _ client: HerdrClient, _ params: OwnerAccessAddParams,
-                              statement: @Sendable (String) async throws -> String) async throws -> GrantOutcome {
-        let info: OwnerAccessInfo
+        let link: OwnerAccessLink, info: OwnerAccessInfo, jws: String
+        switch prepared {
+        case .skip(let reason, let version): return .skipped(reason, version: version)
+        case .ready(let l, let i, let s):
+            link = l
+            info = i
+            jws = s
+        }
+        let left = deadline.timeIntervalSince(now())
+        guard left > 0 else {
+            await link.close()
+            return .failed("timed out")
+        }
+        let params = add(jws)
+        let added: OwnerAccessAdded
         do {
-            info = try await client.ownerAccessInfo()
-        } catch let error as APIError where HerdrClient.isUnknownMethod(error, "owner_access.info") {
-            return .skipped("needs_update", version: nil)
-        } catch let error as APIError where error.code == "owner_access_unsupported" {
-            return .skipped("unsupported", version: nil)
+            added = try await Self.withDeadline(left) {
+                try await link.client.ownerAccessAdd(params)
+            } late: { late in
+                // The approval moved on without this grant: it is in no envelope.
+                if case .success(let added) = late { _ = try? await link.client.ownerAccessRemove(grantID: added.grant.grantID) }
+                await link.close()
+            }
+        } catch let error as APIError {
+            // herdr answered: no grant was made.
+            await link.close()
+            return .failed(Self.describe(error))
+        } catch Failure.timedOut {
+            return .uncertain("timed out")
+        } catch {
+            await link.close()
+            return .uncertain(Self.describe(error))
         }
-        guard let version = info.protocol, version >= ownerProtocol else {
-            return .skipped("needs_update", version: info.version)
+        await link.close()
+        guard OwnerAccessIDs.valid(added.grant.grantID, bytes: OwnerAccessIDs.grantIDBytes) else {
+            return .uncertain("herdr answered a malformed grant id")
         }
-        guard WebRelays.allowed(info.relayURL) else { return .skipped("relay_not_allowed", version: info.version) }
-        let jws = try await statement(info.hostID)
-        let added = try await client.ownerAccessAdd(
-            devicePub: params.devicePub, deviceName: params.deviceName, scope: params.scope, ttlSecs: params.ttlSecs,
-            accountStatement: jws, approvedBy: params.approvedBy)
         return .granted(Envelope.Machine(
             hostItemID: machine.hostItemID, label: machine.label, relay: WebRelays.trimSlash(info.relayURL),
             hostID: info.hostID, nodePub: info.nodePub, grantID: added.grant.grantID, scope: added.grant.scope,
             expiresUnix: Int64(added.grant.expiresMs / 1000)))
     }
 
+    /// Opens the machine, reads `owner_access.info` and fetches the statement. Changes nothing
+    /// on the machine. The link is closed here unless it is returned.
+    private static func prepare(_ machine: WebAccessMachine,
+                                statement: @Sendable (String) async throws -> String) async throws -> Prepared {
+        let link: OwnerAccessLink
+        do {
+            link = try await machine.open()
+        } catch {
+            return .skip(.unreachable, version: nil)
+        }
+        do {
+            let info: OwnerAccessInfo
+            do {
+                info = try await link.client.ownerAccessInfo()
+            } catch let error as APIError where HerdrClient.isUnknownMethod(error, "owner_access.info") {
+                await link.close()
+                return .skip(.needsUpdate, version: nil)
+            } catch let error as APIError where error.code == "owner_access_unsupported" {
+                await link.close()
+                return .skip(.unsupported, version: nil)
+            }
+            let version = info.version.map { String($0.prefix(versionLimit)) }
+            guard let proto = info.protocol, proto >= ownerProtocol else {
+                await link.close()
+                return .skip(.needsUpdate, version: version)
+            }
+            guard WebRelays.allowed(info.relayURL) else {
+                await link.close()
+                return .skip(.relayNotAllowed, version: version)
+            }
+            guard OwnerAccessIDs.valid(info.hostID, bytes: OwnerAccessIDs.hostIDBytes),
+                  OwnerAccessIDs.valid(info.nodePub, bytes: OwnerAccessIDs.nodePubBytes)
+            else { throw Failure.problem("herdr answered a malformed relay identity") }
+            return .ready(link, info, statement: try await statement(info.hostID))
+        } catch {
+            await link.close()
+            throw error
+        }
+    }
+
     /// Removes grants made for an approval that wasn't recorded; returns the ones it couldn't.
     private func removeGrants(_ grants: [Grant]) async -> [Grant] {
         var failed: [Grant] = []
         for grant in grants {
+            let id = grant.grantID
             do {
-                try await Self.withTimeout(grantTime) {
-                    let link = try await grant.machine.open()
-                    do {
-                        _ = try await link.client.ownerAccessRemove(grantID: grant.grantID)
-                    } catch {
-                        await link.close()
-                        throw error
-                    }
-                    await link.close()
-                }
+                try await Self.onMachine(grant.machine, within: grantTime) { _ = try await $0.ownerAccessRemove(grantID: id) }
             } catch {
                 failed.append(grant)
             }
         }
         return failed
+    }
+
+    /// Removes the browser's key on the uncertain machines (`owner_access.remove {device_pub}`,
+    /// idempotent); the ones that couldn't be reached stay uncertain.
+    private func removeUncertain() async {
+        let key = approval.request.browser.devicePub
+        var left: [WebAccessMachine] = []
+        for machine in uncertain {
+            do {
+                try await Self.onMachine(machine, within: grantTime) { _ = try await $0.ownerAccessRemove(devicePub: key) }
+            } catch {
+                left.append(machine)
+            }
+        }
+        uncertain = left
+    }
+
+    /// Runs `call` on a session to `machine`, given up after `seconds` (the session is closed
+    /// when the call ends, also late).
+    private static func onMachine(_ machine: WebAccessMachine, within seconds: TimeInterval,
+                                  _ call: @escaping @Sendable (HerdrClient) async throws -> Void) async throws {
+        try await withDeadline(seconds) {
+            let link = try await machine.open()
+            do {
+                try await call(link.client)
+            } catch {
+                await link.close()
+                throw error
+            }
+            await link.close()
+        } late: { _ in }
     }
 
     /// The next envelope seq: the clock in milliseconds, above any seq this key used before,
@@ -601,14 +758,17 @@ public actor WebAccessApproval {
     // MARK: Helpers
 
     /// Whether the sealed list for `machines` fits what the service takes, each counted as
-    /// granted with every field at its longest.
+    /// granted with every field at its longest (herdr's ids at `OwnerAccessIDs`' lengths, which
+    /// `grant` checks).
     static func fits(_ machines: [WebAccessMachine], approver: String) -> Bool {
         let relay = WebRelays.origins.max { $0.count < $1.count } ?? ""
         var envelope = Envelope(seq: .max, issuedUnix: .max, approver: approver)
         envelope.machines = machines.map {
             Envelope.Machine(hostItemID: $0.hostItemID, label: $0.label, relay: relay,
-                             hostID: String(repeating: "h", count: 22), nodePub: String(repeating: "n", count: 43),
-                             grantID: String(repeating: "g", count: 22), scope: "terminal", expiresUnix: .max)
+                             hostID: String(repeating: "h", count: OwnerAccessIDs.length(OwnerAccessIDs.hostIDBytes)),
+                             nodePub: String(repeating: "n", count: OwnerAccessIDs.length(OwnerAccessIDs.nodePubBytes)),
+                             grantID: String(repeating: "g", count: OwnerAccessIDs.length(OwnerAccessIDs.grantIDBytes)),
+                             scope: WebAccessScope.terminal.rawValue, expiresUnix: .max)
         }
         guard let plain = try? envelope.json() else { return false }
         return ApproveV1.sealedLength(plain.count) <= ApproveV1.maxSealedLength
@@ -622,25 +782,67 @@ public actor WebAccessApproval {
         grants.map(\.machine.label).joined(separator: ", ")
     }
 
+    static func leftAccess(_ labels: [String]) -> Failure {
+        .problem("Denied, but couldn't remove the access added on \(labels.joined(separator: ", ")). Deny to try again.")
+    }
+
     static func describe(_ error: Error) -> String {
         switch error {
         case let error as APIError: return error.message.isEmpty ? error.code : "\(error.code): \(error.message)"
         case StatementCache.Failure.missingStatement: return "the account service gave no statement for this machine"
+        case Failure.problem(let text): return text
         default: return BrowserApproval.describe(error)
         }
     }
 
-    static func withTimeout<T: Sendable>(_ seconds: TimeInterval,
-                                         _ operation: @escaping @Sendable () async throws -> T) async throws -> T {
-        try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask { try await operation() }
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
-                throw Failure.timedOut
+    /// Runs `operation`, and gives up on it after `seconds`: the caller gets `.timedOut` then
+    /// and goes on, whether or not the operation heeds cancellation. An answer that arrives
+    /// after that goes to `late` (to undo what it did, or close what it opened).
+    static func withDeadline<T: Sendable>(_ seconds: TimeInterval,
+                                          _ operation: @escaping @Sendable () async throws -> T,
+                                          late: @escaping @Sendable (Result<T, Error>) async -> Void) async throws -> T {
+        let gate = DeadlineGate()
+        return try await withCheckedThrowingContinuation { continuation in
+            let work = Task {
+                let result: Result<T, Error>
+                do { result = .success(try await operation()) } catch { result = .failure(error) }
+                if gate.settle() { continuation.resume(with: result) } else { await late(result) }
             }
-            defer { group.cancelAll() }
-            guard let first = try await group.next() else { throw Failure.timedOut }
-            return first
+            gate.timer = Task {
+                try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+                if gate.settle() {
+                    work.cancel()
+                    continuation.resume(throwing: Failure.timedOut)
+                }
+            }
         }
+    }
+}
+
+/// Who answered first in `withDeadline`: the operation or the timer.
+private final class DeadlineGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var settled = false
+    private var _timer: Task<Void, Never>?
+
+    var timer: Task<Void, Never>? {
+        get { lock.withLock { _timer } }
+        set {
+            let cancel = lock.withLock { () -> Bool in
+                _timer = newValue
+                return settled
+            }
+            if cancel { newValue?.cancel() }
+        }
+    }
+
+    /// True for the first caller only. The operation settling first stops the timer.
+    func settle() -> Bool {
+        let (first, timer) = lock.withLock { () -> (Bool, Task<Void, Never>?) in
+            defer { settled = true }
+            return (!settled, _timer)
+        }
+        if first { timer?.cancel() }
+        return first
     }
 }

@@ -24,7 +24,7 @@ final class WebAccessApprovalTests: XCTestCase {
     }
 
     /// A herdr machine answering owner_access.* the way `kind` says.
-    enum Kind { case current, h1, old, windows, otherRelay, refusesAdd }
+    enum Kind { case current, h1, old, windows, otherRelay, refusesAdd, badIdentity }
 
     private func machine(_ label: String, _ kind: Kind, grantID: String = "AwMDAwMDAwMDAwMDAwMDAw",
                          reachable: Bool = true) -> (WebAccessMachine, RecordingTransport) {
@@ -38,7 +38,8 @@ final class WebAccessApprovalTests: XCTestCase {
             case ("owner_access.info", _):
                 let proto = kind == .h1 ? 1 : 2
                 let relay = kind == .otherRelay ? "https://relay.example.com" : "https://guest.herdrup.app/"
-                return #"{"id":"x","result":{"type":"owner_access_info","protocol":\#(proto),"host_id":"\#(host)","node_pub":"\#(node)","relay_url":"\#(relay)","link":{"state":"off"},"max_ttl_secs":2592000,"scopes":["chat","terminal"],"version":"0.9.\#(proto)"}}"#
+                let nodePub = kind == .badIdentity ? node + "AAAA" : node
+                return #"{"id":"x","result":{"type":"owner_access_info","protocol":\#(proto),"host_id":"\#(host)","node_pub":"\#(nodePub)","relay_url":"\#(relay)","link":{"state":"off"},"max_ttl_secs":2592000,"scopes":["chat","terminal"],"version":"0.9.\#(proto)"}}"#
             case ("owner_access.add", .refusesAdd):
                 return RecordingTransport.errorReply(code: "owner_grant_limit", message: "10 grants")
             case ("owner_access.add", _):
@@ -91,7 +92,7 @@ final class WebAccessApprovalTests: XCTestCase {
         let result = try await web.approve(machines: [good, h1, old, win, relay, gone, full], scope: .terminal, length: .sevenDays)
 
         XCTAssertEqual(result.granted, ["dev2306"])
-        XCTAssertEqual(result.skipped.map(\.reason), ["needs_update", "needs_update", "unsupported", "relay_not_allowed", "unreachable"])
+        XCTAssertEqual(result.skipped.map(\.reason.rawValue), ["needs_update", "needs_update", "unsupported", "relay_not_allowed", "unreachable"])
         XCTAssertEqual(result.failed.map(\.label), ["full-box"])
         XCTAssertFalse(result.unsure)
         XCTAssertFalse(h1Wire.requests.contains { $0.method == "owner_access.add" }, "no grant below protocol 2")
@@ -131,6 +132,17 @@ final class WebAccessApprovalTests: XCTestCase {
         XCTAssertEqual(skipped.map { $0["label"] as? String }, ["preview-box", "old-vps", "win-box", "self-relay", "offline"])
         XCTAssertEqual(skipped[0]["version"] as? String, "0.9.1")
         XCTAssertNil(skipped[1]["version"])
+    }
+
+    /// herdr's ids go into the envelope at the lengths its size check counts: a machine that
+    /// answers another length gets no grant.
+    func testAMalformedRelayIdentityGetsNoGrant() async throws {
+        let (bad, wire) = machine("odd-box", .badIdentity)
+        let web = try await approval()
+        let result = try await web.approve(machines: [bad], scope: .chat, length: .oneDay)
+        XCTAssertEqual(result.failed.map(\.label), ["odd-box"])
+        XCTAssertFalse(wire.requests.contains { $0.method == "owner_access.add" })
+        XCTAssertEqual(service.finishCount, 0)
     }
 
     func testNoGrantAndNoReportWithoutTheCode() async throws {

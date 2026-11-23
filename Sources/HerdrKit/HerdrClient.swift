@@ -2396,22 +2396,22 @@ public actor HerdrClient {
         try await call("owner_access.info", OwnerAccessInfoParams(), as: OwnerAccessInfo.self)
     }
 
-    /// Allows one browser key on this machine, bound to the account of `accountStatement`
-    /// (this device's own statement for the machine's `host_id`). Replaces a live grant for
+    /// Allows one browser key on this machine (`owner_access.add`). Replaces a live grant for
     /// the same key.
-    public func ownerAccessAdd(devicePub: String, deviceName: String, scope: String, ttlSecs: UInt64,
-                               accountStatement: String, approvedBy: String) async throws -> OwnerAccessAdded {
-        try await call("owner_access.add",
-                       OwnerAccessAddParams(devicePub: devicePub, deviceName: deviceName, scope: scope,
-                                            ttlSecs: ttlSecs, accountStatement: accountStatement,
-                                            approvedBy: approvedBy),
-                       as: OwnerAccessAdded.self)
+    public func ownerAccessAdd(_ params: OwnerAccessAddParams) async throws -> OwnerAccessAdded {
+        try await call("owner_access.add", params, as: OwnerAccessAdded.self)
     }
 
     /// Removes a grant; its live sessions close at once. Returns the grants removed (`[]` for
     /// an unknown or already removed one).
     public func ownerAccessRemove(grantID: String) async throws -> [String] {
         try await call("owner_access.remove", OwnerAccessRemoveParams(grantID: grantID),
+                       as: OwnerAccessRemoved.self).removed
+    }
+
+    /// Removes every grant of one browser key on this machine (idempotent).
+    public func ownerAccessRemove(devicePub: String) async throws -> [String] {
+        try await call("owner_access.remove", OwnerAccessRemoveParams(devicePub: devicePub),
                        as: OwnerAccessRemoved.self).removed
     }
 }
