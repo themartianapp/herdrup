@@ -3570,7 +3570,15 @@ struct TerminalHomeView: View {
     @ViewBuilder
     private func agentActions<Content: View>(_ content: Content) -> some View {
         folderActions(content)
-            .overlay(alignment: .bottom) { TopicsSwitchBanner(status: $topicsSwitchStatus) }
+            .overlay(alignment: .bottom) {
+                // "Topics will turn on when X finishes." · Cancel: the agent's current state
+                // drops the switch herdr holds (as the row menu's Cancel pending switch).
+                TopicsSwitchBanner(status: $topicsSwitchStatus) { scheduled in
+                    let request = TopicsSwitchRequest(paneID: scheduled.paneID, title: scheduled.title,
+                                                      enabled: !scheduled.enabled, cancelsPending: true)
+                    Task { await cancelPendingTopicsSwitch(request) }
+                }
+            }
             .confirmationDialog(
                 topicsSwitchCandidate.map { TopicsSwitchRequest.title($0) } ?? "",
                 isPresented: $topicsSwitchCandidate.isPresent(),
@@ -5931,6 +5939,7 @@ struct TerminalPaneContent: View {
     /// reconnects from the live tail, missing output produced while away — so we
     /// reseed the front pane from durable scrollback (issue #62 follow-up).
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var paneSizeClass
     /// Set when the app actually goes `.background`, so the reseed on the next
     /// `.active` fires only after a real background — not a transient `.inactive`
     /// (Control Center / a notification banner), which would flash needlessly.
@@ -6060,6 +6069,12 @@ struct TerminalPaneContent: View {
     }
     private var showingChat: Bool { shownMode == .chat }
     private var showingTopics: Bool { shownMode == .topics }
+    /// iPhone, a topic open: the topic is its own screen ("Topics · A, revised"), with its own
+    /// "‹ Topics" header, so the page's header and switch step aside. The terminal is not
+    /// mounted under Topics, so this changes no terminal size.
+    private var topicFullScreen: Bool {
+        paneSizeClass == .compact && showingTopics && topicsModel.topic(topicsModel.selectedTopicID) != nil
+    }
     /// Chat or Topics covers the page instead of the terminal.
     private var coversTerminal: Bool { shownMode != .terminal }
     /// The terminal is mounted only when it is what the page shows. Not under Chat or Topics,
@@ -6146,15 +6161,17 @@ struct TerminalPaneContent: View {
             // the chrome floats over it; this is that base shade.
             Palette.groundMachine.ignoresSafeArea()
             VStack(spacing: 0) {
-                header
+                if !topicFullScreen { header }
                 // omp agents on a machine with `agent_transcript`: the Chat | Terminal switch
                 // (#481), with Topics first where the agent offers them. An agent with topics
                 // whose own transcript is refused still gets Topics | Terminal (#760). Other
                 // agents and older servers keep exactly today's page.
-                if chatAvailable || topicsAvailable {
+                if (chatAvailable || topicsAvailable) && !topicFullScreen {
                     ChatTerminalSwitch(mode: Binding(get: { shownMode }, set: { setMode($0) }),
                                        showsTopics: topicsAvailable, showsChat: chatAvailable)
-                        .padding(.top, 2).padding(.bottom, 4)
+                        .padding(.top, 2).padding(.bottom, 10)
+                        .frame(maxWidth: .infinity)
+                        .overlay(alignment: .bottom) { Rectangle().fill(Palette.hairlineQuiet).frame(height: 1) }
                         .accessibilityHidden(!isForeground)
                 }
                 // A one-time, dismissible offer to move Claude Code off its laggy

@@ -29,6 +29,22 @@ final class TopicSuggestionsTests: XCTestCase {
         row.tap()
     }
 
+    /// Back to the Inbox (the page's Chat view) from an open topic: on iPad the "‹ Inbox" link
+    /// in the topic header; on iPhone the topic is its own screen, so "‹ Topics" first, then
+    /// the page's Chat switch.
+    private func showInbox(_ app: XCUIApplication) {
+        let link = app.buttons["topic-inbox-link"]
+        if link.exists {
+            link.tap()
+            return
+        }
+        let back = app.buttons["topic-back"]
+        if back.exists { back.tap() }
+        let chat = app.buttons["chat-switch-chat"]
+        XCTAssertTrue(chat.exists(within: 6), "the page's switch is back with the topics list")
+        chat.tap()
+    }
+
     private func shot(_ app: XCUIApplication, _ name: String) {
         let shot = XCTAttachment(screenshot: app.screenshot())
         shot.name = name
@@ -301,7 +317,7 @@ final class TopicSuggestionsTests: XCTestCase {
                       "Start opens the new topic")
         shot(app, "topic-suggestion-started")
 
-        app.buttons["chat-switch-chat"].tap()
+        showInbox(app)
         let note = any(app, "chat-topic-continued-sg-scroll")
         XCTAssertTrue(note.exists(within: 10), "the Inbox keeps one line for it")
         XCTAssertTrue(note.label.contains("Continued in topic"), note.label)
@@ -346,7 +362,7 @@ final class TopicSuggestionsTests: XCTestCase {
         XCTAssertTrue(status.label.contains("Starting"), "a seeding topic is starting: \(status.label)")
 
         // Back in the Inbox the transcript still has no entry: the line is the app's own.
-        app.buttons["chat-switch-chat"].tap()
+        showInbox(app)
         let note = any(app, "chat-topic-continued-sg-scroll")
         XCTAssertTrue(note.exists(within: 10), "Continued in topic shows at once, before the transcript has it")
         XCTAssertTrue(note.label.contains("Terminal scrollback"), note.label)

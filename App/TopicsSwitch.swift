@@ -90,27 +90,42 @@ enum TopicsSwitchStatus: Equatable {
     }
 }
 
-/// The switch's progress and result at the foot of the agents list: a neutral capsule with a
-/// hairline and at most one status dot. A result clears itself after a few seconds.
+/// The switch's progress and result at the foot of the agents list: one plain line of muted
+/// text over a hairline ("Topics · A, revised"), at most one status dot, and "Cancel" while
+/// herdr holds a switch for when the agent finishes. A result clears itself after a few seconds.
 struct TopicsSwitchBanner: View {
     @Binding var status: TopicsSwitchStatus?
+    /// Drops a switch herdr holds for when the agent finishes; nil where it cannot be cancelled.
+    var onCancel: ((TopicsSwitchRequest) -> Void)? = nil
 
     var body: some View {
         if let status {
-            HStack(spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
                 if status.isWorking {
-                    ProgressView().controlSize(.small).tint(Palette.textDim)
+                    ProgressView().controlSize(.mini).tint(Palette.textDim)
                 } else if case .failed = status {
                     Circle().fill(Palette.died).frame(width: 6, height: 6)
                 }
-                Text(status.text).font(Typography.app(13)).foregroundStyle(Palette.text).lineLimit(2)
+                Text(status.text).font(Typography.app(13)).foregroundStyle(Palette.textDim)
+                    .lineSpacing(3)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("topics-switch-status")
+                if case .scheduled(let request) = status, let onCancel {
+                    Button { onCancel(request) } label: {
+                        Text("Cancel").font(Typography.app(13, .medium)).foregroundStyle(Palette.text)
+                            .frame(minHeight: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("topics-switch-cancel")
+                }
             }
-            .padding(.horizontal, 14).padding(.vertical, 9)
-            .background(Capsule().fill(Palette.surface))
-            .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
-            .padding(.horizontal, 16).padding(.bottom, 12)
-            .accessibilityElement(children: .combine)
-            .accessibilityIdentifier("topics-switch-status")
+            .padding(.horizontal, 20).padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Palette.ground)
+            .overlay(alignment: .top) { Rectangle().fill(Palette.hairlineQuiet).frame(height: 1) }
+            .accessibilityElement(children: .contain)
             .task(id: status) {
                 guard !status.isWorking else { return }
                 try? await Task.sleep(nanoseconds: 6_000_000_000)
