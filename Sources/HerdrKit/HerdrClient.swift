@@ -2386,6 +2386,34 @@ public actor HerdrClient {
                                         machine: machine),
                        as: GuestAuditResult.self).entries
     }
+
+    // MARK: - Owner access for browsers (web owner access WIRE-PLAN §1.4)
+
+    /// This machine's relay identity and owner-access protocol (`owner_access.info`). A herdr
+    /// that predates it refuses the method (`isUnknownMethod`); Windows answers
+    /// `owner_access_unsupported`.
+    public func ownerAccessInfo() async throws -> OwnerAccessInfo {
+        try await call("owner_access.info", OwnerAccessInfoParams(), as: OwnerAccessInfo.self)
+    }
+
+    /// Allows one browser key on this machine (`owner_access.add`). Replaces a live grant for
+    /// the same key.
+    public func ownerAccessAdd(_ params: OwnerAccessAddParams) async throws -> OwnerAccessAdded {
+        try await call("owner_access.add", params, as: OwnerAccessAdded.self)
+    }
+
+    /// Removes a grant; its live sessions close at once. Returns the grants removed (`[]` for
+    /// an unknown or already removed one).
+    public func ownerAccessRemove(grantID: String) async throws -> [String] {
+        try await call("owner_access.remove", OwnerAccessRemoveParams(grantID: grantID),
+                       as: OwnerAccessRemoved.self).removed
+    }
+
+    /// Removes every grant of one browser key on this machine (idempotent).
+    public func ownerAccessRemove(devicePub: String) async throws -> [String] {
+        try await call("owner_access.remove", OwnerAccessRemoveParams(devicePub: devicePub),
+                       as: OwnerAccessRemoved.self).removed
+    }
 }
 
 /// Who the app reports as the actor when it archives an agent, and why.

@@ -193,6 +193,7 @@ struct HerdrUpAccountContent: View {
     @State private var removing: AccountDevice?
     @State private var confirmSignOut = false
     @State private var confirmDelete = false
+    @ObservedObject private var webAccess = WebAccessApprovals.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -210,6 +211,8 @@ struct HerdrUpAccountContent: View {
         .onAppear { account.screenVisible = true }
         .onDisappear { account.screenVisible = false }
         .accountNoticeAlert(account)
+        .webAccessApprovalSheet(webAccess, active: true)
+        .task(id: account.signedIn) { await webAccess.refresh() }
         .alert("Rename device", isPresented: $renaming.isPresent()) {
             TextField("Name", text: $newName)
                 .accessibilityIdentifier("account-rename-field")
@@ -313,6 +316,31 @@ struct HerdrUpAccountContent: View {
             }
             if account.devices.isEmpty, account.enrolment == .enrolling || account.enrolment == .unknown {
                 row("Loading devices…", systemImage: "iphone") { ProgressView().tint(Palette.textDim) }
+            }
+        }
+        if webAccess.available {
+            group("WEB ACCESS") {
+                if webAccess.requests.isEmpty {
+                    row("No browser is asking", systemImage: "globe",
+                        subtitle: "A browser signed in to your account at herdrup.app asks here to reach your machines.") { EmptyView() }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("account-web-access-none")
+                }
+                ForEach(Array(webAccess.requests.enumerated()), id: \.element.id) { index, request in
+                    if index > 0 { divider }
+                    Button { webAccess.open(request) } label: {
+                        row(request.browser.name, systemImage: "globe",
+                            subtitle: webAccess.machines.isEmpty
+                                ? "Add a machine with its key or password to approve it"
+                                : "Asks to reach your machines") {
+                            Text("Approve…").font(Typography.app(15)).foregroundStyle(Palette.textDim)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(webAccess.machines.isEmpty)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("account-web-access-request")
+                }
             }
         }
         group(nil) {

@@ -122,6 +122,38 @@ public struct AccountClient: Sendable {
         try await send("POST", "v1/statements", bearer: accessToken, body: ["hosts": hosts])
     }
 
+    // MARK: Browser approvals (web owner access WIRE-PLAN §2.4; `BrowserApproval` runs them)
+
+    /// `GET /v1/approvals`: the browsers waiting for this account's approval.
+    public func approvals(accessToken: String) async throws -> [ApprovalRequest] {
+        let answer: ApprovalList = try await send("GET", "v1/approvals", bearer: accessToken)
+        return answer.requests
+    }
+
+    /// `POST /v1/approvals/<id>/claim` with `nonce_t`. The service records this session's
+    /// device as the approver, never one from the body. `409 already_claimed`.
+    public func claimApproval(id: String, nonceT: Data, accessToken: String) async throws {
+        let _: JSONNull = try await send("POST", "v1/approvals/\(id)/claim", bearer: accessToken,
+                                         body: ["nonce_t": Base64URL.encode(nonceT)])
+    }
+
+    /// `GET /v1/approvals/<id>`.
+    public func approvalState(id: String, accessToken: String) async throws -> ApprovalStatus {
+        try await send("GET", "v1/approvals/\(id)", bearer: accessToken)
+    }
+
+    /// `POST /v1/approvals/<id>/finish` as approved, with the grants made and the sealed list.
+    public func approveBrowser(id: String, report: ApprovalReport, accessToken: String) async throws {
+        let _: JSONNull = try await send("POST", "v1/approvals/\(id)/finish", bearer: accessToken,
+                                         body: FinishApproved(report: report))
+    }
+
+    /// `POST /v1/approvals/<id>/finish` as denied.
+    public func denyBrowser(id: String, accessToken: String) async throws {
+        let _: JSONNull = try await send("POST", "v1/approvals/\(id)/finish", bearer: accessToken,
+                                         body: ["outcome": "denied"])
+    }
+
     // MARK: Sync (DESIGN §5.2, §5.5)
 
     /// `GET /v1/sync?since=<rev>`; `since` 0 is a full pull.
@@ -244,6 +276,9 @@ public struct AccountHealth: Decodable, Equatable, Sendable {
     public static let nativeSignIn = "native_sign_in"
     /// Native Google sign-in with the Google iOS client (`GOOGLE_IOS_CLIENT_ID` configured).
     public static let nativeSignInGoogle = "native_sign_in_google"
+
+    /// Browser approvals for web owner access (`/v1/approvals`, WIRE-PLAN §2.4).
+    public static let webApprove = "web_approve"
 
     public let version: String
     public let features: [String]

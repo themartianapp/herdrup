@@ -119,6 +119,8 @@ struct RootView: View {
     @ObservedObject private var pairing = PairingRouter.shared
     /// The HerdrUp account (#698): its notices show over whatever is on screen.
     @ObservedObject private var herdrupAccount = HerdrUpAccount.shared
+    /// Browsers asking to reach this account's machines (web owner access, I1).
+    @ObservedObject private var webAccess = WebAccessApprovals.shared
     @State private var openGuest: GuestAccess?
     /// A guest's Settings › Connect your own machine closed the share: the machine list
     /// shows with its owner setup open.
@@ -242,7 +244,11 @@ struct RootView: View {
                 UsagePingLaunch.foregrounded()
                 HerdrUpAccount.shared.foregrounded()
             }
+            // Browsers asking for approval are listed only in the foreground (no push, §5.9).
+            webAccess.setActive(phase == .active)
         }
+        // "Approve a browser?" opens over whatever is on screen; the account page shows its own.
+        .webAccessApprovalSheet(webAccess, active: !herdrupAccount.screenVisible)
     }
 
     @ViewBuilder
