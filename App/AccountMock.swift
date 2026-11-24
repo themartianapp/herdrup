@@ -25,6 +25,10 @@ import SwiftUI
 ///   sign-out killed half-way), which is signed out.
 /// - `HERDR_MOCK_ACCOUNT_SYNC_OFFLINE=1`: sync can't reach the service (a quiet failure), so
 ///   the account needs attention.
+/// - `HERDR_MOCK_ACCOUNT_APPROVAL=1`: the service offers `web_approve`, and a browser ("Chrome on
+///   macOS") waits for approval; it reveals as soon as this device claims. The sheet's
+///   `fixture-browser-code` element reads the code the browser shows. The machines are
+///   `OwnerAccessMock`'s.
 /// - Saved machines on this device: the `-dev.herdr.savedHosts.v1` launch argument
 ///   (SavedHostMissingSecretTests' pattern); mock runs never write the saved list.
 ///
@@ -101,6 +105,34 @@ final class MockAccountServer: @unchecked Sendable {
     ]]
     private var currentDeviceID: String?
 
+    // Browser approval (`HERDR_MOCK_ACCOUNT_APPROVAL=1`): one browser, "Chrome on macOS", asks to
+    // reach the account's machines, and reveals as soon as this device claims its request.
+    static let approvalID = "ReqMockAAAAAAAAAAAAAAA"
+    static let browserKey = try! Curve25519.KeyAgreement.PrivateKey(rawRepresentation: Data(repeating: 9, count: 32))
+    static let browserNonce = Data(repeating: 0x11, count: 32)
+    private lazy var approvalMock = env["HERDR_MOCK_ACCOUNT_APPROVAL"] == "1"
+    private var approvalState = "waiting"
+    private var approvalNonceT: Data?
+
+    /// The code the mock browser shows: known once this device claimed (it covers this device's
+    /// key and `nonce_t`).
+    var browserCode: String? {
+        lock.lock(); defer { lock.unlock() }
+        guard let nonceT = approvalNonceT, let approver = try? GuestDevice.identity() else { return nil }
+        return try? ApproveV1.code(browserPub: Self.browserKey.publicKey.rawRepresentation,
+                                   approverPub: approver.publicKey, nonceB: Self.browserNonce, nonceT: nonceT)
+    }
+
+    private func approvalListed() -> [String: Any] {
+        let browserPub = Self.browserKey.publicKey.rawRepresentation
+        let commit = (try? ApproveV1.commit(browserPub: browserPub, nonceB: Self.browserNonce)) ?? Data()
+        return ["id": Self.approvalID,
+                "browser": ["device_id": "dev_mock_browser", "device_pub": Base64URL.encode(browserPub),
+                            "name": "Chrome on macOS", "platform": "web", "created_ms": 1_795_200_000_000],
+                "commit": Base64URL.encode(commit),
+                "claimed": approvalState == "waiting" ? "no" : "you", "expires_in": 540]
+    }
+
     init() {
         func host(_ id: String, _ body: SyncHost) {
             rev += 1
@@ -128,7 +160,8 @@ final class MockAccountServer: @unchecked Sendable {
         let json = body.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any] ?? [:]
         switch (method, path) {
         case ("GET", "/v1/health"):
-            let features = env["HERDR_MOCK_ACCOUNT_FEATURES"] ?? "native_sign_in,devices,statements,sync,delete"
+            var features = env["HERDR_MOCK_ACCOUNT_FEATURES"] ?? "native_sign_in,devices,statements,sync,delete"
+            if approvalMock { features += ",web_approve" }
             return (200, ["ok": true, "version": "mock",
                           "features": features.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }])
         case ("POST", "/v1/auth/nonce"):
@@ -170,7 +203,27 @@ final class MockAccountServer: @unchecked Sendable {
         case ("GET", "/v1/devices"):
             return (200, ["devices": devices])
         case ("POST", "/v1/statements"):
-            return (200, ["statements": [], "exp": Int(Date().timeIntervalSince1970) + 600])
+            let hosts = json["hosts"] as? [String] ?? []
+            return (200, ["statements": hosts.map { ["host": $0, "jws": "mock.statement.\($0)"] },
+                          "exp": Int(Date().timeIntervalSince1970) + 600])
+        case ("GET", "/v1/approvals"):
+            let live = approvalMock && ["waiting", "claimed", "revealed"].contains(approvalState)
+            return (200, ["requests": live ? [approvalListed()] : []])
+        case ("POST", "/v1/approvals/\(Self.approvalID)/claim"):
+            guard approvalState == "waiting" else { return refusal(409, "already_claimed") }
+            approvalNonceT = Base64URL.decode(json["nonce_t"] as? String ?? "")
+            approvalState = "claimed"
+            return (200, ["state": "claimed"])
+        case ("GET", "/v1/approvals/\(Self.approvalID)"):
+            // The browser reveals as soon as it sees the claim.
+            if approvalState == "claimed" { approvalState = "revealed" }
+            var answer: [String: Any] = ["state": approvalState, "expires_in": 540]
+            if approvalState == "revealed" { answer["nonce_b"] = Base64URL.encode(Self.browserNonce) }
+            return (200, answer)
+        case ("POST", "/v1/approvals/\(Self.approvalID)/finish"):
+            guard approvalState == "revealed" || approvalState == "claimed" else { return refusal(409, "already_finished") }
+            approvalState = json["outcome"] as? String == "approved" ? "approved" : "denied"
+            return (200, ["state": approvalState])
         case ("GET", "/v1/sync"):
             let since = query.first { $0.name == "since" }?.value.flatMap(Int.init) ?? 0
             let changes = items.filter { $0.rev > since }.sorted { $0.rev < $1.rev }.map(Self.object)
@@ -305,6 +358,57 @@ struct AccountMockRoot: View {
         .sheet(isPresented: $showSettings) {
             SettingsView(mode: .owner(HerdrClient(transport: MockTransport())), agents: [],
                          host: "mac.tail-scale.ts.net", onClose: { showSettings = false })
+        }
+    }
+}
+
+/// The machines "Approve a browser?" offers under `HERDR_MOCK_ACCOUNT_APPROVAL=1`: "fleet-hel1"
+/// runs a herdr that admits owner browsers (protocol 2), "Mac Studio" one that only stores
+/// grants (protocol 1, so it is skipped as needing an update).
+enum OwnerAccessMock {
+    static let machines: [WebAccessMachine] = [
+        machine(MockAccountService.fleetID, "fleet-hel1", protocol: 2),
+        machine(MockAccountService.macStudioID, "Mac Studio", protocol: 1),
+    ]
+
+    private static func machine(_ id: String, _ label: String, protocol version: Int) -> WebAccessMachine {
+        WebAccessMachine(id: id, label: label, hostItemID: id) {
+            OwnerAccessLink(client: HerdrClient(transport: Transport(protocolVersion: version)), close: {})
+        }
+    }
+
+    struct Transport: HerdrTransport {
+        let protocolVersion: Int
+
+        func roundTrip(_ requestLine: String) async throws -> String {
+            let request = (try? JSONSerialization.jsonObject(with: Data(requestLine.utf8))) as? [String: Any] ?? [:]
+            let params = request["params"] as? [String: Any] ?? [:]
+            let result: [String: Any]
+            switch request["method"] as? String {
+            case "owner_access.info":
+                result = ["type": "owner_access_info", "protocol": protocolVersion, "host_id": "AQEBAQEBAQEBAQEBAQEBAQ",
+                          "node_pub": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI", "relay_url": "https://guest.herdrup.app",
+                          "link": ["state": "off"], "max_ttl_secs": 2_592_000, "scopes": ["chat", "terminal"],
+                          "version": "0.9.\(protocolVersion)"]
+            case "owner_access.add":
+                let ttl = (params["ttl_secs"] as? NSNumber)?.uint64Value ?? 0
+                result = ["type": "owner_access_added", "replaced": [],
+                          "grant": ["grant_id": "AwMDAwMDAwMDAwMDAwMDAw", "device_pub": params["device_pub"] ?? "",
+                                    "fingerprint": "SHA256:0000000000000000", "device": params["device_name"] ?? "",
+                                    "scope": params["scope"] ?? "terminal", "approved_by": params["approved_by"] ?? "",
+                                    "created_ms": 1_795_200_000_000,
+                                    "expires_ms": UInt64(Date().timeIntervalSince1970 * 1000) + ttl * 1000, "revoked": false]]
+            case "owner_access.remove":
+                result = ["type": "owner_access_removed", "removed": ["AwMDAwMDAwMDAwMDAwMDAw"]]
+            default:
+                return #"{"id":"x","error":{"code":"forbidden","message":"not in the owner_access mock"}}"#
+            }
+            let data = try JSONSerialization.data(withJSONObject: ["id": request["id"] ?? "x", "result": result])
+            return String(decoding: data, as: UTF8.self)
+        }
+
+        func stream(_ requestLine: String) -> AsyncThrowingStream<String, Error> {
+            AsyncThrowingStream { $0.finish() }
         }
     }
 }
