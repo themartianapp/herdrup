@@ -322,7 +322,10 @@ describe("routing", () => {
   it("serves the browser guest's hashed assets with a long immutable cache, and every file as built", async () => {
     const page = await (await env.ASSETS.fetch(`${ORIGIN}/web/`)).text();
     const hashed = [...page.matchAll(/(?:src|href)="(\/web\/assets\/[^"]+)"/g)].map((m) => m[1]);
-    expect(hashed).toHaveLength(2);
+    // The bundle may split into chunks (entry script, preloaded chunks, stylesheets); every
+    // asset the page references must be served, so count only that there is a script and a sheet.
+    expect(hashed.some((ref) => ref.endsWith(".js"))).toBe(true);
+    expect(hashed.some((ref) => ref.endsWith(".css"))).toBe(true);
     for (const ref of hashed) {
       const response = await env.ASSETS.fetch(`${ORIGIN}${ref}`);
       expect([ref, response.status]).toEqual([ref, 200]);

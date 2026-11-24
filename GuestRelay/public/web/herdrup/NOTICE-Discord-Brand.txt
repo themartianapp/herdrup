@@ -1,0 +1,27 @@
+Discord brand asset notice
+==========================
+
+File:   Shared/Assets.xcassets/DiscordMark.imageset/DiscordMark{,@2x,@3x}.png
+Source: Discord's own brand kit, downloaded from Discord's CDN
+        https://cdn.discordapp.com/assets/content/\
+        a736b95923ddbc155e828651c92471292e40727655d770a06cec89c48ba0b41f.zip
+        -> Discord_Symbol_Color/Discord-Symbol-Blurple.png  (528x400, #5865F2)
+        linked from https://discord.com/branding
+Dated:  2026-09-17
+
+WHAT WAS DONE TO IT: downscaled to 33x25, 66x50 and 99x75 with Lanczos, which
+are exact reductions of the 528x400 source (528:400 = 33:25), so no scale
+distorts the mark. The transparent background, the geometry and the official
+blurple are unmodified. The app renders it with `.renderingMode(.original)`, so
+it is never recoloured.
+
+WHY IT IS NOT A FONT GLYPH. This row first drew `fa-discord` from the bundled
+Nerd Fonts subset. The LICENCE side of that was clean - Font Awesome Free ships
+under CC BY 4.0 and the attribution is in App/Fonts/NerdFonts-LICENSE.txt - but
+CC BY 4.0 grants no TRADEMARK rights (section 2(b)(2)), and Discord's brand
+policy asks for the official mark in an approved colour rather than a
+third-party redraw. The owner chose the official asset on 2026-09-17.
+
+TRADEMARK. The Discord name and logo are trademarks of Discord Inc. They are
+used here nominatively, to link to this project's own Discord server, and this
+project claims no affiliation with or endorsement by Discord Inc.
