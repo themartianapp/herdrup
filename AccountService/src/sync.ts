@@ -1,8 +1,8 @@
 // Sync of non-secret settings (DESIGN.md §5):
 //
-//   GET  /v1/sync?since=<rev> | ?cursor=<cursor>  → {rev, changes: [item, … ≤ 500], more, cursor?}
-//   POST /v1/sync              {changes: [{collection, id, base_rev?, deleted?, body?}, … ≤ 100]}
-//                              → {rev, applied: [{collection, id, rev}], conflicts: [{collection, id, server}]}
+//   GET  /v1/sync?since=<rev> | ?cursor=<cursor>  → {rev, changes: [item, … ≤ 500], more, cursor?, now_ms}
+//   POST /v1/sync              {changes: [{collection, id, base_rev?, deleted?, body?}, … ≤ 100], not_after?}
+//                              → {rev, applied: [{collection, id, rev}], conflicts: [{collection, id, server}], now_ms}
 //
 // An item is {collection, id, rev, updated_ms, deleted, body}. Every collection has an
 // allowlist schema (SCHEMAS below): an unknown or malformed field, id or value is refused with
@@ -35,6 +35,13 @@
 // live items, 1 MB of bodies and each collection's cap (403 quota). The account caps are
 // CHECK constraints on counters that triggers keep (migrations/0003_sync.sql), so a push that
 // would pass one rolls back whole, even when two devices push at once.
+//
+// Deadline: now_ms is D1's clock in milliseconds, read inside the answer's own batch. A pull
+// reads it first, before the rows; a push reads it after its writes, and with `not_after` the
+// same statement aborts the batch when that clock is past it (409 expired, nothing committed).
+// D1 runs one transaction at a time, so a pull at now_ms holds every write committed by then,
+// and a push that could land would have to commit before any pull with now_ms > not_after: a
+// pull that shows now_ms > not_after and still the old item proves the push can never land.
 import { openAccountRequest } from "./auth";
 import type { Env } from "./env";
 import { errorResponse, isRecord, json, readJsonObject } from "./http";
@@ -308,6 +315,20 @@ const itemKey = (collection: string, id: string) => `${collection}\n${id}`;
 const SINCE = /^(0|[1-9][0-9]{0,14})$/;
 const CURSOR = /^(0|[1-9][0-9]{0,14})\.(0|[1-9][0-9]{0,14})$/;
 
+/**
+ * D1's clock in integer milliseconds. SQLite reads the clock once per statement, so every use in
+ * one statement agrees. Rounded: 'subsec' is millisecond-exact, and * 1000 can land a hair below.
+ */
+const D1_NOW_MS = "CAST(round(unixepoch('subsec') * 1000) AS INTEGER)";
+/** How far ahead of this Worker's clock a push's not_after may be; it is meant to be minutes. */
+export const MAX_NOT_AFTER_AHEAD_MS = 24 * 60 * 60 * 1000;
+
+function d1NowMs(result: D1Result<Record<string, unknown>>): number {
+  const value = result.results[0]?.now_ms;
+  if (typeof value !== "number") throw new Error("D1 returned no clock reading");
+  return value;
+}
+
 export async function handlePull(request: Request, env: Env, nowMs: number): Promise<Response> {
   const principal = await openAccountRequest(request, env, "/v1/sync", nowMs);
   if (principal instanceof Response) return principal;
@@ -317,8 +338,11 @@ export async function handlePull(request: Request, env: Env, nowMs: number): Pro
   const cursor = keys.length === 1 && keys[0] === "cursor" ? CURSOR.exec(query.get("cursor") ?? "") : null;
   if (keys.length > 0 && since === null && cursor === null) return errorResponse(400, "bad_request");
   const position = Number(cursor?.[1] ?? since?.[1] ?? 0);
-  // One batch is one transaction: the account's revision and the page agree.
-  const [account, page] = await env.DB.batch<Record<string, unknown>>([
+  // One batch is one transaction: the account's revision and the page agree. D1's clock is read
+  // first in it, so the page is complete as of now_ms: D1 runs one transaction at a time, so a
+  // write the page doesn't show commits after this batch, at a D1 time past now_ms (Deadline).
+  const [clock, account, page] = await env.DB.batch<Record<string, unknown>>([
+    env.DB.prepare(`SELECT ${D1_NOW_MS} AS now_ms`),
     env.DB.prepare("SELECT sync_rev, sync_floor FROM accounts WHERE id = ?").bind(principal.accountId),
     env.DB.prepare(`SELECT ${ITEM_COLUMNS} FROM sync_items WHERE account_id = ? AND rev > ? ORDER BY rev LIMIT ?`).bind(
       principal.accountId,
@@ -328,6 +352,7 @@ export async function handlePull(request: Request, env: Env, nowMs: number): Pro
   ]);
   const state = account.results[0] as { sync_rev: number; sync_floor: number } | undefined;
   if (state === undefined) return errorResponse(401, "invalid_token", { "WWW-Authenticate": "Bearer" });
+  const now_ms = d1NowMs(clock);
   // A full pull starts out complete up to the account's current revision (Paging, above). Past
   // the account's revision, a cursor comes from another history (a restored database).
   const base = cursor !== null ? Number(cursor[2]) : position === 0 ? state.sync_rev : position;
@@ -336,9 +361,9 @@ export async function handlePull(request: Request, env: Env, nowMs: number): Pro
   const rows = page.results as unknown as ItemRow[];
   const more = rows.length > PAGE_SIZE;
   const changes = rows.slice(0, PAGE_SIZE);
-  if (!more) return json(200, { rev: state.sync_rev, changes: changes.map(itemJson), more });
+  if (!more) return json(200, { rev: state.sync_rev, changes: changes.map(itemJson), more, now_ms });
   const last = changes[changes.length - 1].rev;
-  return json(200, { rev: last, changes: changes.map(itemJson), more, cursor: `${last}.${base}` });
+  return json(200, { rev: last, changes: changes.map(itemJson), more, cursor: `${last}.${base}`, now_ms });
 }
 
 /**
@@ -360,14 +385,28 @@ const RAISE_FLOOR = `UPDATE accounts SET sync_floor = max(sync_floor, COALESCE(
 WHERE id = ?1 AND sync_tombstones > ?2`;
 /** ... and every tombstone at or below the floor goes. */
 const TRIM_TOMBSTONES = "DELETE FROM sync_items WHERE account_id = ?1 AND deleted = 1 AND rev <= (SELECT sync_floor FROM accounts WHERE id = ?1)";
+/**
+ * The account's revision and D1's clock, after the push's writes. With a not_after (?2) that the
+ * clock is past, the statement fails, which aborts the batch: json_extract refuses a path that
+ * doesn't start with '$', and SQLite's error names the path, PUSH_EXPIRED. SQL can't raise an
+ * error of its own outside a trigger, and this needs no migration.
+ */
+const PUSH_EXPIRED = "push_expired";
+const PUSH_CLOCK = `SELECT sync_rev, ${D1_NOW_MS} AS now_ms,
+  json_extract('{}', CASE WHEN ?2 IS NULL OR ${D1_NOW_MS} <= ?2 THEN '$' ELSE '${PUSH_EXPIRED}' END) AS deadline
+FROM accounts WHERE id = ?1`;
 
 export async function handlePush(request: Request, env: Env, nowMs: number): Promise<Response> {
   const principal = await openAccountRequest(request, env, "/v1/sync", nowMs, "SYNC_WRITE_LIMIT");
   if (principal instanceof Response) return principal;
   const body = await readJsonObject(request, MAX_SYNC_BODY_BYTES);
   if (body instanceof Response) return body;
-  const { changes: raw } = body;
-  if (Object.keys(body).some((key) => key !== "changes") || !Array.isArray(raw) || raw.length === 0) return errorResponse(400, "bad_request");
+  const { changes: raw, not_after } = body;
+  if (Object.keys(body).some((key) => key !== "changes" && key !== "not_after") || !Array.isArray(raw) || raw.length === 0) {
+    return errorResponse(400, "bad_request");
+  }
+  if (not_after !== undefined && !(isRev(not_after) && not_after <= nowMs + MAX_NOT_AFTER_AHEAD_MS)) return errorResponse(400, "bad_request");
+  const notAfter = isRev(not_after) ? not_after : null;
   if (raw.length > MAX_CHANGES) return errorResponse(413, "too_large");
 
   const changes: Change[] = [];
@@ -395,7 +434,9 @@ export async function handlePush(request: Request, env: Env, nowMs: number): Pro
       ),
       db.prepare(RAISE_FLOOR).bind(id, MAX_TOMBSTONES),
       db.prepare(TRIM_TOMBSTONES).bind(id),
-      db.prepare("SELECT sync_rev FROM accounts WHERE id = ?").bind(id),
+      // D1's clock, read after every write of the batch, is now_ms; past not_after it aborts the
+      // batch (Deadline, above), so nothing the push wrote is committed.
+      db.prepare(PUSH_CLOCK).bind(id, notAfter),
       db
         .prepare(
           `SELECT ${ITEM_COLUMNS} FROM sync_items WHERE account_id = ?1
@@ -404,14 +445,17 @@ export async function handlePush(request: Request, env: Env, nowMs: number): Pro
         .bind(id, JSON.stringify(changes.map((change) => [change.collection, change.id]))),
     ]);
   } catch (error) {
-    // A cap's CHECK constraint failed (migrations/0003_sync.sql): the batch rolled back whole.
-    // D1 puts SQLite's message in the error's message, or in its cause.
+    // A cap's CHECK constraint failed (migrations/0003_sync.sql), or the deadline passed: the
+    // batch rolled back whole. D1 puts SQLite's message in the error's message, or in its cause.
     const message = error instanceof Error ? `${error.message} ${error.cause instanceof Error ? error.cause.message : ""}` : "";
     if (/CHECK constraint failed: sync_quota_/.test(message)) return errorResponse(403, "quota");
+    if (message.includes(PUSH_EXPIRED)) return errorResponse(409, "expired");
     throw error;
   }
-  const account = results[results.length - 2].results[0] as { sync_rev: number } | undefined;
+  const clock = results[results.length - 2];
+  const account = clock.results[0] as { sync_rev: number } | undefined;
   if (account === undefined) return errorResponse(401, "invalid_token", { "WWW-Authenticate": "Bearer" });
+  const now_ms = d1NowMs(clock);
   const stored = new Map((results[results.length - 1].results as unknown as ItemRow[]).map((row) => [itemKey(row.collection, row.item_id), row]));
 
   // Each change is applied when the server now holds what it asked for (a missing item counts
@@ -426,7 +470,7 @@ export async function handlePush(request: Request, env: Env, nowMs: number): Pro
       conflicts.push({ collection: change.collection, id: change.id, server: row === undefined ? null : itemJson(row) });
     }
   }
-  return json(200, { rev: account.sync_rev, applied, conflicts });
+  return json(200, { rev: account.sync_rev, applied, conflicts, now_ms });
 }
 
 /** The hourly cron's part: tombstones past 90 days go, and each account's floor rises past them. */

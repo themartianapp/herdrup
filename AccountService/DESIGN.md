@@ -786,6 +786,51 @@ create-and-delete loops can't grow D1 without bound. Either way the floor rises.
 **Who may sync.** Any session of the account. Unlike statements, sync doesn't need an enrolled
 device, because nothing it returns is bound to a device key.
 
+### 5.6 Server time and the push deadline (#826, 24 Nov)
+
+Clients keep a journal of pushes that got no answer, and need to know when such a push can no
+longer land, by the service's clock rather than their own. A request has no hard time limit
+while its client stays connected, so the only sound bound is one the service enforces at the
+write.
+
+**`now_ms`.** Every `200` answer to `GET /v1/sync` (each page) and to `POST /v1/sync` carries
+`now_ms`, D1's clock in milliseconds (`CAST(round(unixepoch('subsec') * 1000) AS INTEGER)`), read
+inside the answer's own D1 batch:
+
+- a pull reads it as the batch's **first** statement, before the account's revision and the
+  page's rows. So a page at `now_ms` holds every write committed by `now_ms`.
+- a push reads it after its writes, in the statement that enforces the deadline. On a push with
+  `not_after`, the `now_ms` answered is therefore at or before `not_after`.
+
+Error answers keep their `{"error"}` body and carry no `now_ms`.
+
+**`not_after`.** A push may carry `not_after`: a non-negative integer in ms on the service's
+clock, at most 24 hours ahead of the Worker's clock (otherwise `400 bad_request`). Clients set
+it to the newest `now_ms` they have seen plus a couple of minutes. The deadline is checked inside
+the write: after the batch's writes, one statement reads D1's clock, and when that clock is past
+`not_after` the statement fails. A failed statement aborts the D1 batch, which is one
+transaction, so nothing the push wrote is committed. The answer is
+`409 {"error":"expired"}`. A push without `not_after` behaves as before, with `now_ms` added.
+
+The statement fails through SQL alone: `json_extract('{}', <path>)` with the path `push_expired`
+in place of `$`. SQLite refuses a path that doesn't start with `$`, and its error names the path,
+which the Worker matches to answer `409`. SQL can't raise an error of its own outside a trigger,
+and a trigger would need a migration.
+
+**Why a guard that aborts, after the writes.** Conditional writes, each with
+`WHERE <D1 now> <= not_after`, can't be all-or-nothing: SQLite reads the clock once per statement,
+so the deadline could pass between two of them and leave half a push behind. A guard that aborts
+the transaction leaves nothing. Reading the clock after the writes is the strictest place: every
+write of the batch ran before a clock reading at or before `not_after`.
+
+**What the client may conclude.** D1 runs one transaction at a time. A push that lands commits
+its batch with a clock reading at or before `not_after`, so it is ordered before any pull whose
+first statement read a later time. Therefore, if a pull answers `now_ms > not_after` and still
+shows the item at the push's base, that push can never land, and the client may free its journal
+slot.
+
+No migration: this needs no schema change.
+
 ---
 
 ## 6. Account deletion

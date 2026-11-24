@@ -34,8 +34,8 @@ own deploys, so a bug or rollback here can't drop a guest session.
 | `PATCH /v1/devices/<id>` | bearer; `{name}` | `{device}` |
 | `DELETE /v1/devices/<id>` | bearer | 204; that device's sessions end. Any device of the account may remove any other. A browser that had owner access leaves a withdrawal |
 | `POST /v1/statements` | bearer; `{hosts: [host_id, … ≤ 50]}` | `{statements: [{host, jws}], exp}` |
-| `GET /v1/sync?since=<rev>`, `GET /v1/sync?cursor=<cursor>` | bearer | `{rev, changes: [item, … ≤ 500], more, cursor?}`; `410 reset_required` |
-| `POST /v1/sync` | bearer; `{changes: [{collection, id, base_rev?, deleted?, body?}, … ≤ 100]}` | `{rev, applied: [{collection, id, rev}], conflicts: [{collection, id, server}]}` |
+| `GET /v1/sync?since=<rev>`, `GET /v1/sync?cursor=<cursor>` | bearer | `{rev, changes: [item, … ≤ 500], more, cursor?, now_ms}`; `410 reset_required`. `now_ms` is D1's clock in ms, read in the page's batch before its rows, on every page |
+| `POST /v1/sync` | bearer; `{changes: [{collection, id, base_rev?, deleted?, body?}, … ≤ 100], not_after?}` | `{rev, applied: [{collection, id, rev}], conflicts: [{collection, id, server}], now_ms}`; `409 expired` when D1's clock at the write is past `not_after` (ms, service clock, ≤ 24 h ahead): the whole push writes nothing. Without `not_after`, as before |
 | `POST /v1/approvals` | bearer, browser; `{commit}` | 201 `{id, expires_in: 600}`; replaces the browser's request; `403 not_a_browser`, `429 too_many_requests` |
 | `GET /v1/approvals` | bearer, approver | `{requests: [{id, browser: {device_id, device_pub, name, platform, created_ms}, commit, claimed: "no"\|"you"\|"other", expires_in}]}` |
 | `POST /v1/approvals/<id>/claim` | bearer, approver; `{nonce_t}` | `{state: "claimed"}`; `409 already_claimed` |
