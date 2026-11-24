@@ -4,7 +4,7 @@ import { findOrCreateAccount } from "../src/auth";
 import { randomB64url } from "../src/bytes";
 import { cleanup } from "../src/cleanup";
 import { openSession } from "../src/sessions";
-import { COLLECTION_CAPS, MAX_ACCOUNT_BYTES, MAX_ACCOUNT_ITEMS, MAX_CHANGES, MAX_TOMBSTONES, PAGE_SIZE, TOMBSTONE_TTL_MS } from "../src/sync";
+import { handlePush, COLLECTION_CAPS, MAX_ACCOUNT_BYTES, MAX_ACCOUNT_ITEMS, MAX_CHANGES, MAX_NOT_AFTER_AHEAD_MS, MAX_TOMBSTONES, PAGE_SIZE, TOMBSTONE_TTL_MS } from "../src/sync";
 
 // Sync against the real Worker and a local D1 in workerd. Accounts and sessions are made
 // directly (sign-in has its own tests); two sessions of one account stand for two devices. The
@@ -74,10 +74,17 @@ interface ChangeIn {
   body?: unknown;
 }
 
+/** Every sync answer carries D1's time as an integer `now_ms`; the rest is the answer proper. */
+function withoutClock<T extends object>(answer: T & { now_ms?: unknown }): T {
+  const { now_ms, ...rest } = answer;
+  expect(Number.isSafeInteger(now_ms), "now_ms").toBe(true);
+  return rest as T;
+}
+
 async function push(session: Session, changes: ChangeIn[]): Promise<PushResult> {
   const response = await call("POST", "/v1/sync", session, { changes });
   expect(response.status).toBe(200);
-  return response.json<PushResult>();
+  return withoutClock(await response.json<PushResult>());
 }
 
 /** A pull from `since` (a revision), or the continuation `cursor` (a string) of an earlier page. */
@@ -85,7 +92,7 @@ async function pull(session: Session, from?: number | string): Promise<PullResul
   const query = from === undefined ? "" : typeof from === "number" ? `?since=${from}` : `?cursor=${from}`;
   const response = await call("GET", `/v1/sync${query}`, session);
   expect(response.status).toBe(200);
-  return response.json<PullResult>();
+  return withoutClock(await response.json<PullResult>());
 }
 
 /** Every page from `since`, following each page's cursor, as a client catches up. */
@@ -777,5 +784,102 @@ describe("routing, auth, logs and deletion", () => {
       const left = await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE account_id = ?`).bind(session.accountId).first<{ n: number }>();
       expect(left?.n).toBe(0);
     }
+  });
+});
+
+describe("server time and the push deadline", () => {
+  /** D1's own clock, the one the Worker reads inside its batches. */
+  const d1Now = async () => (await env.DB.prepare("SELECT CAST(round(unixepoch('subsec') * 1000) AS INTEGER) AS t").first<{ t: number }>())!.t;
+
+  /** Everything a push can change for the account: its items, revision, floor and counters. */
+  const snapshot = async (accountId: string) =>
+    env.DB.batch([
+      env.DB.prepare("SELECT collection, item_id, rev, updated_ms, deleted, body FROM sync_items WHERE account_id = ? ORDER BY collection, item_id").bind(accountId),
+      env.DB.prepare("SELECT sync_rev, sync_floor, sync_tombstones FROM accounts WHERE id = ?").bind(accountId),
+      env.DB.prepare("SELECT * FROM sync_usage WHERE account_id = ? ORDER BY collection").bind(accountId),
+    ]).then((results) => results.map((result) => result.results));
+
+  /** Two items at revisions 1 and 2, and a push that deletes one, edits the other and adds a third. */
+  async function seeded() {
+    const session = await newSession();
+    const prompt = uuid();
+    await push(session, [setting("ui.fontScale", 1), { collection: "prompts", id: prompt, body: { text: "kept" } }]);
+    const changes: ChangeIn[] = [
+      { collection: "prompts", id: prompt, deleted: true },
+      setting("ui.fontScale", 2),
+      { collection: "prompts", id: uuid(), body: { text: "late" } },
+    ];
+    return { session, changes, before: await snapshot(session.accountId) };
+  }
+
+  it("answers a pull with D1's time read before its rows, never after a later write", async () => {
+    const session = await newSession();
+    await push(session, [setting("ui.fontScale", 1)]);
+    const before = await d1Now();
+    const page = await (await call("GET", "/v1/sync?since=0", session)).json<PullResult & { now_ms: number }>();
+    const after = await d1Now();
+    expect(Number.isSafeInteger(page.now_ms)).toBe(true);
+    expect(page.now_ms).toBeGreaterThanOrEqual(before);
+    expect(page.now_ms).toBeLessThanOrEqual(after);
+    expect(page.changes.map((item) => item.id)).toEqual(["ui.fontScale"]);
+
+    // A write after the pull is read at a D1 time no earlier than the pull's now_ms, and the next
+    // pull, later still, shows it.
+    const write = await (await call("POST", "/v1/sync", session, { changes: [setting("ui.fontScale", 2)] })).json<PushResult & { now_ms: number }>();
+    expect(write.now_ms).toBeGreaterThanOrEqual(page.now_ms);
+    const next = await (await call("GET", `/v1/sync?since=${page.rev}`, session)).json<PullResult & { now_ms: number }>();
+    expect(next.now_ms).toBeGreaterThanOrEqual(write.now_ms);
+    expect(next.changes.map((item) => item.body)).toEqual([{ value: 2 }]);
+  });
+
+  it("refuses a push whose not_after has passed, whole, and changes nothing", async () => {
+    const { session, changes, before } = await seeded();
+    const late = await call("POST", "/v1/sync", session, { changes, not_after: (await d1Now()) - 1 });
+    expect(await rejection(late)).toEqual({ status: 409, error: "expired" });
+    expect(await snapshot(session.accountId)).toEqual(before);
+  });
+
+  it("lands a push before its not_after, with now_ms at or before it", async () => {
+    const { session, changes } = await seeded();
+    const notAfter = (await d1Now()) + 2 * 60 * 1000;
+    const response = await call("POST", "/v1/sync", session, { changes, not_after: notAfter });
+    expect(response.status).toBe(200);
+    const answer = await response.json<PushResult & { now_ms: number }>();
+    expect(answer).toEqual({ rev: 5, applied: expect.any(Array), conflicts: [], now_ms: expect.any(Number) });
+    expect(answer.applied).toHaveLength(3);
+    expect(answer.now_ms).toBeLessThanOrEqual(notAfter);
+  });
+
+  it("treats a push without not_after as before, and adds now_ms", async () => {
+    const { session, changes } = await seeded();
+    const before = await d1Now();
+    const answer = await (await call("POST", "/v1/sync", session, { changes })).json<PushResult & { now_ms: number }>();
+    expect(answer).toEqual({ rev: 5, applied: expect.any(Array), conflicts: [], now_ms: expect.any(Number) });
+    expect(answer.now_ms).toBeGreaterThanOrEqual(before);
+    expect((await pull(session, 2)).changes.map((item) => item.rev)).toEqual([3, 4, 5]);
+  });
+
+  it("refuses a late write at the write, whatever the Worker's clock said on arrival", async () => {
+    // The Worker admitted this push a minute before its deadline; D1's clock at the write is past
+    // it, as for a request held in flight. The batch rolls back whole.
+    const { session, changes, before } = await seeded();
+    const notAfter = (await d1Now()) - 1;
+    const request = new Request(`${ORIGIN}/v1/sync`, {
+      method: "POST",
+      headers: { "content-type": "application/json", Authorization: `Bearer ${session.access}` },
+      body: JSON.stringify({ changes, not_after: notAfter }),
+    });
+    expect(await rejection(await handlePush(request, env, notAfter - 60 * 1000))).toEqual({ status: 409, error: "expired" });
+    expect(await snapshot(session.accountId)).toEqual(before);
+  });
+
+  it("refuses a not_after that isn't a millisecond time in range", async () => {
+    const session = await newSession();
+    const tooFar = Date.now() + MAX_NOT_AFTER_AHEAD_MS + 60 * 60 * 1000;
+    for (const notAfter of ["1", -1, 1.5, null, true, tooFar, 2 ** 53]) {
+      const response = await call("POST", "/v1/sync", session, { changes: [setting("ui.fontScale", 1)], not_after: notAfter });
+      expect(await rejection(response), String(notAfter)).toEqual({ status: 400, error: "bad_request" });
+    }
+    expect((await pull(session, 0)).changes).toEqual([]);
   });
 });
