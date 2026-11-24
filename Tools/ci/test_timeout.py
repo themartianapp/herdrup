@@ -146,6 +146,20 @@ class TimeoutTests(unittest.TestCase):
         self.assertFalse(alive, "the descendant survived the KILL deadline (wrapper returned after %.3f s)" % elapsed)
         self.assertGreaterEqual(elapsed, 0.2, "the wrapper returned before the kill-after grace")
 
+    def test_a_group_member_it_may_not_signal_does_not_crash_the_cleanup(self):
+        # macserve 2026-11-24 (job j_0acf5df2…): os.killpg(group, 0) raised EPERM in finish(),
+        # and the wrapper crashed instead of finishing the cleanup and reporting the status.
+        import importlib.util
+        from unittest import mock
+        spec = importlib.util.spec_from_file_location("ci_timeout", TIMEOUT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        child = subprocess.Popen(["true"], start_new_session=True)
+        with mock.patch.object(module.os, "killpg", side_effect=PermissionError(1, "Operation not permitted")):
+            self.assertTrue(module.signal_group(child.pid, 0), "EPERM means the group still exists")
+            module.finish(child, 0.1)
+        self.assertEqual(child.returncode, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

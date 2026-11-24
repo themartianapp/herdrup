@@ -55,11 +55,18 @@ def seconds(text: str) -> float:
 
 
 def signal_group(group: int, sig: int) -> bool:
-    """Sends sig to the group; False when no process is left in it."""
+    """Sends sig to the group; False when no process is left in it.
+
+    EPERM means a process we may not signal is left in the group (seen on macserve while a
+    simulator hung): the group still exists, and a KILL we may not send is skipped rather
+    than crashing the wrapper.
+    """
     try:
         os.killpg(group, sig)
     except ProcessLookupError:
         return False
+    except PermissionError:
+        return True
     return True
 
 
