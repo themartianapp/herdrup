@@ -42,6 +42,8 @@
 // D1 runs one transaction at a time, so a pull at now_ms holds every write committed by then,
 // and a push that could land would have to commit before any pull with now_ms > not_after: a
 // pull that shows now_ms > not_after and still the old item proves the push can never land.
+// An item's updated_ms is D1's clock at its write too, so a committed push's rows have
+// updated_ms <= its now_ms <= not_after, and a row past a send's not_after isn't that send.
 import { openAccountRequest } from "./auth";
 import type { Env } from "./env";
 import { errorResponse, isRecord, json, readJsonObject } from "./http";
@@ -368,13 +370,15 @@ export async function handlePull(request: Request, env: Env, nowMs: number): Pro
 
 /**
  * The upsert of one change at the account's next revision, unless `base_rev` no longer matches,
- * nothing changes, or it deletes an item the server doesn't hold.
+ * nothing changes, or it deletes an item the server doesn't hold. updated_ms is D1's clock at
+ * this write, not the request's arrival: PUSH_CLOCK reads the clock later in the same
+ * transaction, so a committed push has updated_ms <= its now_ms <= not_after (Deadline, above).
  */
 const UPSERT = `INSERT INTO sync_items (account_id, collection, item_id, rev, updated_ms, deleted, body)
-SELECT id, ?2, ?3, sync_rev + 1, ?4, ?5, ?6 FROM accounts
+SELECT id, ?2, ?3, sync_rev + 1, ${D1_NOW_MS}, ?4, ?5 FROM accounts
 WHERE id = ?1
-  AND (?7 IS NULL OR ?7 = COALESCE((SELECT rev FROM sync_items WHERE account_id = ?1 AND collection = ?2 AND item_id = ?3), 0))
-  AND (?5 = 0 OR EXISTS (SELECT 1 FROM sync_items WHERE account_id = ?1 AND collection = ?2 AND item_id = ?3))
+  AND (?6 IS NULL OR ?6 = COALESCE((SELECT rev FROM sync_items WHERE account_id = ?1 AND collection = ?2 AND item_id = ?3), 0))
+  AND (?4 = 0 OR EXISTS (SELECT 1 FROM sync_items WHERE account_id = ?1 AND collection = ?2 AND item_id = ?3))
 ON CONFLICT (account_id, collection, item_id) DO UPDATE SET
   rev = excluded.rev, updated_ms = excluded.updated_ms, deleted = excluded.deleted, body = excluded.body
 WHERE sync_items.deleted <> excluded.deleted OR sync_items.body IS NOT excluded.body`;
@@ -430,7 +434,7 @@ export async function handlePush(request: Request, env: Env, nowMs: number): Pro
   try {
     results = await db.batch<Record<string, unknown>>([
       ...ordered.map((change) =>
-        db.prepare(UPSERT).bind(id, change.collection, change.id, nowMs, change.deleted ? 1 : 0, change.body, change.baseRev),
+        db.prepare(UPSERT).bind(id, change.collection, change.id, change.deleted ? 1 : 0, change.body, change.baseRev),
       ),
       db.prepare(RAISE_FLOOR).bind(id, MAX_TOMBSTONES),
       db.prepare(TRIM_TOMBSTONES).bind(id),
