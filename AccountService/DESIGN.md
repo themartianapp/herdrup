@@ -804,6 +804,13 @@ inside the answer's own D1 batch:
 
 Error answers keep their `{"error"}` body and carry no `now_ms`.
 
+**`updated_ms` is D1's clock at the write** (#828), not the Worker's arrival time. A push writes
+each item, tombstones included, with `CAST(round(unixepoch('subsec') * 1000) AS INTEGER)` in the
+upsert itself. The deadline guard reads the clock later in the same transaction, so a committed
+push has `updated_ms` ≤ its `now_ms` ≤ `not_after`. A row whose `updated_ms` is past a send's
+`not_after` was written by another push, after that send could have landed. The 90-day
+tombstone prune compares `updated_ms` with the cron's wall clock, as before.
+
 **`not_after`.** A push may carry `not_after`: a non-negative integer in ms on the service's
 clock, at most 24 hours ahead of the Worker's clock (otherwise `400 bad_request`). Clients set
 it to the newest `now_ms` they have seen plus a couple of minutes. The deadline is checked inside

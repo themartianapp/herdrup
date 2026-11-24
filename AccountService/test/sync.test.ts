@@ -873,6 +873,30 @@ describe("server time and the push deadline", () => {
     expect(await snapshot(session.accountId)).toEqual(before);
   });
 
+  it("stamps updated_ms with D1's clock at the write, not the Worker's arrival time", async () => {
+    // The Worker saw this push arrive an hour before D1's clock: a request held in flight. Every
+    // row it writes, tombstones included, carries D1's time, between the reading before the push
+    // and the push's now_ms, which is at or before its not_after.
+    const { session, changes } = await seeded();
+    const before = await d1Now();
+    const notAfter = before + 2 * 60 * 1000;
+    const request = new Request(`${ORIGIN}/v1/sync`, {
+      method: "POST",
+      headers: { "content-type": "application/json", Authorization: `Bearer ${session.access}` },
+      body: JSON.stringify({ changes, not_after: notAfter }),
+    });
+    const response = await handlePush(request, env, before - 60 * 60 * 1000);
+    expect(response.status).toBe(200);
+    const answer = await response.json<PushResult & { now_ms: number }>();
+    expect(answer.now_ms).toBeLessThanOrEqual(notAfter);
+    const written = (await pull(session, 2)).changes;
+    expect(written.map((item) => item.deleted)).toEqual([true, false, false]);
+    for (const item of written) {
+      expect(item.updated_ms, item.id).toBeGreaterThanOrEqual(before);
+      expect(item.updated_ms, item.id).toBeLessThanOrEqual(answer.now_ms);
+    }
+  });
+
   it("refuses a not_after that isn't a millisecond time in range", async () => {
     const session = await newSession();
     const tooFar = Date.now() + MAX_NOT_AFTER_AHEAD_MS + 60 * 60 * 1000;
