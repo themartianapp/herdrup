@@ -8445,7 +8445,18 @@ struct SettingsView: View {
         }
     }
 
+    /// Shared access pushes a person's page. On iPhone it already sits in Settings' stack; the
+    /// iPad detail column has none (the split is the nav), so the page brings its own there.
+    @ViewBuilder
     private func sharedAccessDetail(showBack: Bool) -> some View {
+        if showBack {
+            sharedAccessPage(showBack: true)
+        } else {
+            NavigationStack { sharedAccessPage(showBack: false) }
+        }
+    }
+
+    private func sharedAccessPage(showBack: Bool) -> some View {
         detailScaffold(title: "Shared access", subtitle: guestAccess.summary, showBack: showBack) {
             if case .owner(let client) = mode {
                 GuestAccessSection(client: client, model: guestAccess) { await loadGuestAccess() }

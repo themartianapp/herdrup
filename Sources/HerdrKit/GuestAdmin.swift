@@ -140,16 +140,27 @@ public struct GuestRecord: Decodable, Sendable, Equatable, Identifiable {
     public let device: String?
     public let grant: GuestGrant?
     public let createdMs: UInt64?
+    /// The share's last use, from whichever of its devices.
     public let lastSeenMs: UInt64?
     public let revoked: Bool
     /// The guest sees the agent's Grams and gets pushed for new ones (`share_gram`).
     public let shareGram: Bool
+    /// The guest kept the share in their HerdrUp account, so each of their signed-in
+    /// devices may use it (`account_bound`). False on a daemon from before accounts.
+    public let accountBound: Bool
+    /// Who the share belongs to (`person`): the account's id on this machine when
+    /// account-bound, else the device's fingerprint. Every share with the same person is one
+    /// person to the owner, and `guest.revoke {person}` ends them all. Nil on an older daemon.
+    public let person: String?
+    /// The devices the account added after the one that accepted, removed ones included.
+    public let devices: [GuestDevice]
 
     public var id: String { guestID }
 
     public init(guestID: String, name: String, fingerprint: String? = nil, device: String? = nil,
                 grant: GuestGrant?, createdMs: UInt64? = nil, lastSeenMs: UInt64? = nil,
-                revoked: Bool = false, shareGram: Bool = false) {
+                revoked: Bool = false, shareGram: Bool = false, accountBound: Bool = false,
+                person: String? = nil, devices: [GuestDevice] = []) {
         self.guestID = guestID
         self.name = name
         self.fingerprint = fingerprint
@@ -159,14 +170,18 @@ public struct GuestRecord: Decodable, Sendable, Equatable, Identifiable {
         self.lastSeenMs = lastSeenMs
         self.revoked = revoked
         self.shareGram = shareGram
+        self.accountBound = accountBound
+        self.person = person
+        self.devices = devices
     }
 
     enum CodingKeys: String, CodingKey {
-        case name, fingerprint, device, grant, revoked
+        case name, fingerprint, device, grant, revoked, person, devices
         case guestID = "guest_id"
         case createdMs = "created_ms"
         case lastSeenMs = "last_seen_ms"
         case shareGram = "share_gram"
+        case accountBound = "account_bound"
     }
 
     public init(from decoder: Decoder) throws {
@@ -180,6 +195,139 @@ public struct GuestRecord: Decodable, Sendable, Equatable, Identifiable {
         lastSeenMs = try c.decodeIfPresent(UInt64.self, forKey: .lastSeenMs)
         revoked = try c.decodeIfPresent(Bool.self, forKey: .revoked) ?? false
         shareGram = try c.decodeIfPresent(Bool.self, forKey: .shareGram) ?? false
+        accountBound = try c.decodeIfPresent(Bool.self, forKey: .accountBound) ?? false
+        person = try c.decodeIfPresent(String.self, forKey: .person).flatMap { $0.isEmpty ? nil : $0 }
+        devices = try c.decodeIfPresent([GuestDevice].self, forKey: .devices) ?? []
+    }
+
+    /// The devices that may use this share now: the one that accepted (`fingerprint`,
+    /// `device`) unless the owner removed it, which herdr records as a removed `devices`
+    /// entry with its fingerprint, then every added device not removed.
+    ///
+    /// herdr keeps no last-seen time for the accepting device of its own: `last_seen_ms` is
+    /// the share's, stamped by whichever device connected. An added device's connection
+    /// stamps both at once, so the accepting device was the last one seen only when the
+    /// share's time is newer than every added device's.
+    public var usableDevices: [GuestDevice] {
+        var usable: [GuestDevice] = []
+        if let fingerprint, !devices.contains(where: { $0.fingerprint == fingerprint && $0.removed }) {
+            var seen = lastSeenMs
+            if let seenMs = seen, let newestAdded = devices.compactMap(\.lastSeenMs).max(), seenMs <= newestAdded {
+                seen = nil
+            }
+            usable.append(GuestDevice(fingerprint: fingerprint, device: device.flatMap { $0.isEmpty ? nil : $0 },
+                                      addedMs: createdMs, lastSeenMs: seen))
+        }
+        usable += devices.filter { !$0.removed && $0.fingerprint != fingerprint }
+        return usable
+    }
+}
+
+/// One device of an account-bound share (`devices[]` in `guest.list`).
+public struct GuestDevice: Decodable, Sendable, Equatable {
+    public let fingerprint: String
+    /// The name the device gave when it was added ("iPhone", "Browser (Chrome on macOS)").
+    public let device: String?
+    public let addedMs: UInt64?
+    public let lastSeenMs: UInt64?
+    /// The owner removed it (`guest.remove_device`): herdr refuses it for good.
+    public let removed: Bool
+
+    public init(fingerprint: String, device: String? = nil, addedMs: UInt64? = nil,
+                lastSeenMs: UInt64? = nil, removed: Bool = false) {
+        self.fingerprint = fingerprint
+        self.device = device
+        self.addedMs = addedMs
+        self.lastSeenMs = lastSeenMs
+        self.removed = removed
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case fingerprint, device, removed
+        case addedMs = "added_ms"
+        case lastSeenMs = "last_seen_ms"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        fingerprint = try c.decode(String.self, forKey: .fingerprint)
+        device = try c.decodeIfPresent(String.self, forKey: .device).flatMap { $0.isEmpty ? nil : $0 }
+        addedMs = try c.decodeIfPresent(UInt64.self, forKey: .addedMs)
+        lastSeenMs = try c.decodeIfPresent(UInt64.self, forKey: .lastSeenMs)
+        removed = try c.decodeIfPresent(Bool.self, forKey: .removed) ?? false
+    }
+}
+
+/// Everything one person holds on one machine: their active shares (one per agent) and the
+/// devices that may use them. An account-bound person is one person whatever devices they
+/// use; a plain guest is one device. Shares are grouped by herdr's `person`, or by the
+/// device's fingerprint on a daemon from before accounts, which is what `person` is for a
+/// plain share.
+public struct GuestPerson: Sendable, Equatable, Identifiable {
+    /// The grouping key: `person`, else the fingerprint, else the lone share's guest id.
+    public let id: String
+    /// Oldest first: the share that brought the person in names them.
+    public let grants: [GuestRecord]
+    /// Every device that may use at least one of the grants, by fingerprint, in the order
+    /// they were added. A device removed from one grant but still on another is listed.
+    public let devices: [GuestDevice]
+
+    public var name: String { grants.first?.name ?? "" }
+    public var accountBound: Bool { grants.contains(where: \.accountBound) }
+    /// The most recent use of any grant.
+    public var lastSeenMs: UInt64? { grants.compactMap(\.lastSeenMs).max() }
+    /// The device seen last, when herdr can tell (see `GuestRecord.usableDevices`).
+    public var lastSeenDevice: GuestDevice? {
+        devices.filter { $0.lastSeenMs != nil }.max { ($0.lastSeenMs ?? 0) < ($1.lastSeenMs ?? 0) }
+    }
+
+    /// What "Remove <name>" sends: one `guest.revoke {person}` for an account-bound person,
+    /// so every share and device goes at once; a plain guest's share by its guest id, which a
+    /// daemon from before `person` also understands.
+    public var revokeTargets: [GuestRevokeTarget] {
+        if accountBound, let person = grants.first(where: { $0.person != nil })?.person {
+            return [.person(person)]
+        }
+        return grants.map { .guest($0.guestID) }
+    }
+
+    /// The grants that "Remove device" must send `guest.remove_device` for: herdr keeps the
+    /// device list per share, so the device goes from each account-bound grant it may use.
+    public func grantsHolding(fingerprint: String) -> [GuestRecord] {
+        grants.filter { $0.accountBound && $0.usableDevices.contains { $0.fingerprint == fingerprint } }
+    }
+
+    /// Groups active shares into people, most recently seen first.
+    public static func group(_ guests: [GuestRecord]) -> [GuestPerson] {
+        var order: [String] = []
+        var byKey: [String: [GuestRecord]] = [:]
+        for guest in guests where !guest.revoked {
+            let key = guest.person ?? guest.fingerprint ?? guest.guestID
+            if byKey[key] == nil { order.append(key) }
+            byKey[key, default: []].append(guest)
+        }
+        let people = order.map { key -> GuestPerson in
+            let grants = byKey[key, default: []].sorted { ($0.createdMs ?? 0) < ($1.createdMs ?? 0) }
+            return GuestPerson(id: key, grants: grants, devices: merge(grants.map(\.usableDevices)))
+        }
+        return people.sorted { ($0.lastSeenMs ?? 0) > ($1.lastSeenMs ?? 0) }
+    }
+
+    /// One entry per fingerprint: the first name given, the earliest add, the latest use.
+    private static func merge(_ lists: [[GuestDevice]]) -> [GuestDevice] {
+        var merged: [GuestDevice] = []
+        for device in lists.joined() {
+            guard let index = merged.firstIndex(where: { $0.fingerprint == device.fingerprint }) else {
+                merged.append(device)
+                continue
+            }
+            let known = merged[index]
+            merged[index] = GuestDevice(
+                fingerprint: known.fingerprint, device: known.device ?? device.device,
+                addedMs: [known.addedMs, device.addedMs].compactMap { $0 }.min(),
+                lastSeenMs: [known.lastSeenMs, device.lastSeenMs].compactMap { $0 }.max())
+        }
+        return merged.sorted { ($0.addedMs ?? 0) < ($1.addedMs ?? 0) }
     }
 }
 
@@ -241,6 +389,9 @@ public struct GuestListing: Decodable, Sendable, Equatable {
     /// Guests who can still reach the agent: revoked ones stay in the store for the log.
     public var activeGuests: [GuestRecord] { guests.filter { !$0.revoked } }
 
+    /// The active guests as people (see `GuestPerson`), most recently seen first.
+    public var people: [GuestPerson] { GuestPerson.group(guests) }
+
     public func pendingInvites(nowMs: UInt64) -> [GuestInviteRecord] {
         invites.filter { $0.isPending(nowMs: nowMs) }
     }
@@ -277,14 +428,21 @@ public struct GuestInviteCreated: Decodable, Sendable, Equatable {
     }
 }
 
-/// What `guest.revoke` removes: an accepted guest (closing its live sessions) or an unused invite.
+/// What `guest.revoke` removes: an accepted guest (closing its live sessions), an unused
+/// invite, or every share of one person (`person` from `guest.list`) at once.
 public enum GuestRevokeTarget: Sendable, Equatable {
     case guest(String)
     case invite(String)
+    case person(String)
 }
 
 public enum GuestAuditEvent: Sendable, Equatable {
     case accepted, connected, prompt, upload, denied, paused, revoked
+    /// An account-bound person opened the share on another of their devices: `text` is its
+    /// name, `fingerprint` its key.
+    case deviceAdded
+    /// The owner removed one device from an account-bound share (`guest.remove_device`).
+    case deviceRemoved
     case other(String)
 
     init(raw: String) {
@@ -296,6 +454,8 @@ public enum GuestAuditEvent: Sendable, Equatable {
         case "denied": self = .denied
         case "paused": self = .paused
         case "revoked": self = .revoked
+        case "device_added": self = .deviceAdded
+        case "device_removed": self = .deviceRemoved
         default: self = .other(raw)
         }
     }
@@ -459,7 +619,7 @@ struct GuestRevokeParams: Encodable {
     let machine: String?
 
     enum CodingKeys: String, CodingKey {
-        case machine
+        case machine, person
         case guestID = "guest_id"
         case inviteID = "invite_id"
     }
@@ -469,9 +629,34 @@ struct GuestRevokeParams: Encodable {
         switch target {
         case .guest(let id): try c.encode(id, forKey: .guestID)
         case .invite(let id): try c.encode(id, forKey: .inviteID)
+        case .person(let person): try c.encode(person, forKey: .person)
         }
         try c.encodeIfPresent(machine, forKey: .machine)
     }
+}
+
+/// `guest.remove_device`: one device off one account-bound share, for good.
+struct GuestRemoveDeviceParams: Encodable {
+    let guestID: String
+    let fingerprint: String
+    let machine: String?
+
+    enum CodingKeys: String, CodingKey {
+        case fingerprint, machine
+        case guestID = "guest_id"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(guestID, forKey: .guestID)
+        try c.encode(fingerprint, forKey: .fingerprint)
+        try c.encodeIfPresent(machine, forKey: .machine)
+    }
+}
+
+/// Result of `guest.remove_device`: the share as it is now.
+struct GuestDeviceRemovedResult: Decodable {
+    let guest: GuestRecord
 }
 
 struct GuestAuditParams: Encodable {

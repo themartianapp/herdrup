@@ -2370,10 +2370,23 @@ public actor HerdrClient {
         try await call("guest.list", GuestListParams(machine: machine), as: GuestListing.self)
     }
 
-    /// Revoke a guest (its live sessions close immediately) or cancel an unused invite.
+    /// Revoke a guest (its live sessions close immediately), every share of one person, or
+    /// cancel an unused invite.
     public func guestRevoke(_ target: GuestRevokeTarget, machine: String? = nil) async throws {
         _ = try await call("guest.revoke", GuestRevokeParams(target: target, machine: machine),
                            as: OkAck.self)
+    }
+
+    /// Remove one device, by fingerprint, from an account-bound share (`guest.remove_device`):
+    /// its live sessions close and herdr refuses it for good, while the person's other devices
+    /// keep the share. A plain share answers `guest_not_account_bound` (revoke it instead).
+    /// Returns the share as it is now.
+    @discardableResult
+    public func guestRemoveDevice(guestID: String, fingerprint: String,
+                                  machine: String? = nil) async throws -> GuestRecord {
+        try await call("guest.remove_device",
+                       GuestRemoveDeviceParams(guestID: guestID, fingerprint: fingerprint, machine: machine),
+                       as: GuestDeviceRemovedResult.self).guest
     }
 
     /// The guest activity log, newest first (`guest.audit`). `limit` is clamped to the

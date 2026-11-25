@@ -3,13 +3,16 @@ import SwiftUI
 
 // Settings → Shared access: everyone the owner has shared an agent with, across the connected
 // machine and its federated peers, the invites nobody has used yet, and the activity log.
+// Each machine lists its own people: the same account on two machines is two people, and
+// removing one acts on that machine only (owner decision, 2026-11-25).
 
 @MainActor
 final class GuestAccessModel: ObservableObject {
+    /// One person on one machine: their shares there and the devices that may use them.
     struct Person: Identifiable {
-        let guest: GuestRecord
+        let person: GuestPerson
         let machine: GuestMachine
-        var id: String { "\(machine.alias ?? "")|\(guest.guestID)" }
+        var id: String { "\(machine.alias ?? "")|\(person.id)" }
     }
 
     struct Invite: Identifiable {
@@ -38,6 +41,12 @@ final class GuestAccessModel: ObservableObject {
     }
 
     @Published private(set) var people: [Person] = []
+    /// Share Gram flipped on a person page and not yet confirmed by a reload, by `shareKey`,
+    /// so the switch shows the owner's latest choice while `guest.update` is in flight. Kept
+    /// here, not in the page, so it outlives a page the owner leaves mid-flight.
+    @Published var shareGramPending: [String: Bool] = [:]
+    /// One `guest.update` per share at a time; quick flips collapse into the last choice.
+    let shareGramSender = LatestValueSender<String, Bool>()
     @Published private(set) var invites: [Invite] = []
     @Published private(set) var log: [LogLine] = []
     @Published private(set) var failures: [Failure] = []
@@ -63,7 +72,9 @@ final class GuestAccessModel: ObservableObject {
         }
         var parts: [String] = []
         if !people.isEmpty {
-            let agents = Set(people.map { "\($0.machine.alias ?? "")|\($0.guest.grant?.terminalID ?? $0.guest.grant?.agentName ?? "")" })
+            let agents = Set(people.flatMap { item in
+                item.person.grants.map { "\(item.machine.alias ?? "")|\($0.grant?.terminalID ?? $0.grant?.agentName ?? $0.guestID)" }
+            })
             parts.append("\(people.count) \(people.count == 1 ? "person" : "people")")
             parts.append("\(agents.count) agent\(agents.count == 1 ? "" : "s")")
         }
@@ -127,7 +138,7 @@ final class GuestAccessModel: ObservableObject {
             if let auditError = result.auditError {
                 logFailures.append(Failure(machine: result.machine, message: GuestAdminError.message(auditError)))
             }
-            people += listing.activeGuests.map { Person(guest: $0, machine: result.machine) }
+            people += listing.people.map { Person(person: $0, machine: result.machine) }
             invites += listing.pendingInvites(nowMs: nowMs).map { Invite(invite: $0, machine: result.machine) }
             if let link = listing.link, link.state == .retrying {
                 links.append(TroubledLink(machine: result.machine, status: link))
@@ -139,16 +150,35 @@ final class GuestAccessModel: ObservableObject {
                     id: "\(result.machine.alias ?? "")|\(entry.tsMs)|\(index)",
                     entry: entry,
                     agentName: guest?.grant?.agentName ?? entry.pane,
-                    device: guest?.device.flatMap { $0.isEmpty ? nil : $0 }))
+                    device: guest.flatMap { Self.deviceName(entry.fingerprint, in: $0) }))
             }
         }
-        self.people = people.sorted { ($0.guest.lastSeenMs ?? 0) > ($1.guest.lastSeenMs ?? 0) }
+        self.people = people.sorted { ($0.person.lastSeenMs ?? 0) > ($1.person.lastSeenMs ?? 0) }
         self.invites = invites.sorted { ($0.invite.createdMs ?? 0) > ($1.invite.createdMs ?? 0) }
         self.log = log.sorted { $0.entry.tsMs > $1.entry.tsMs }
         self.failures = failures
         self.logFailures = logFailures
         self.troubledLinks = links
         loaded = true
+    }
+
+    func person(id: String) -> Person? {
+        people.first { $0.id == id }
+    }
+
+    /// The key a Share Gram flip is tracked by: one share on one machine.
+    static func shareKey(_ guest: GuestRecord, on machine: GuestMachine) -> String {
+        "\(machine.alias ?? "")|\(guest.guestID)"
+    }
+
+    /// The device a log entry came from: an account-bound share's entries carry the key of
+    /// whichever of the person's devices acted, which may be one added after the share's
+    /// own `device`.
+    private static func deviceName(_ fingerprint: String?, in guest: GuestRecord) -> String? {
+        if let fingerprint, let added = guest.devices.first(where: { $0.fingerprint == fingerprint }) {
+            return added.device
+        }
+        return guest.device.flatMap { $0.isEmpty ? nil : $0 }
     }
 
     private static func isMissingFeature(_ error: Error) -> Bool {
@@ -165,18 +195,16 @@ struct GuestAccessSection: View {
     let reload: () async -> Void
 
     @AppStorage(GuestOwnerName.storageKey) private var ownerName = ""
-    @State private var revoking: GuestAccessModel.Person?
     @State private var actionError: String?
-    /// Share Gram flipped here and not yet confirmed by a reload, by person id, so the switch
-    /// shows the owner's latest choice while `guest.update` is in flight.
-    @State private var shareGramPending: [String: Bool] = [:]
-    /// One `guest.update` per guest at a time; quick flips collapse into the last choice.
-    @State private var shareGramSender = LatestValueSender<String, Bool>()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             GuestStyle.sectionLabel("PEOPLE", top: 6)
             peopleCard
+            if model.people.contains(where: { $0.person.accountBound }) {
+                note("With a HerdrUp account, a person is one row whatever devices they use. Removing them removes every device.",
+                     tint: Palette.textFaint)
+            }
             ForEach(model.troubledLinks) { link in
                 note("Relay link on \(link.machine.label) is retrying"
                      + (link.status.lastError.map { ": \($0)" } ?? ""), tint: Palette.waiting)
@@ -193,17 +221,10 @@ struct GuestAccessSection: View {
             GuestStyle.sectionLabel("YOUR NAME")
             ownerNameField
         }
-        .confirmationDialog(
-            revoking.map { "Revoke \($0.guest.name)?" } ?? "",
-            isPresented: $revoking.isPresent(),
-            titleVisibility: .visible,
-            presenting: revoking
-        ) { person in
-            Button("Revoke", role: .destructive) {
-                Task { await revoke(.guest(person.guest.guestID), on: person.machine) }
-            }
-        } message: { person in
-            Text("\(person.guest.name) loses access to \(person.guest.grant?.agentName ?? "the agent") right away, and any open session closes.")
+        // The person page is pushed on the stack Shared access sits in: Settings' own on
+        // iPhone, the one `sharedAccessDetail` gives the iPad detail column.
+        .navigationDestination(for: GuestPersonRoute.self) { route in
+            GuestPersonPage(client: client, model: model, personID: route.id, reload: reload)
         }
         .alert("Shared access", isPresented: $actionError.isPresent()) {
             Button("OK", role: .cancel) {}
@@ -233,84 +254,37 @@ struct GuestAccessSection: View {
         }
     }
 
-    private func personRow(_ person: GuestAccessModel.Person) -> some View {
-        let guest = person.guest
-        let state = GuestPresence(lastSeenMs: guest.lastSeenMs)
-        return VStack(alignment: .leading, spacing: 10) {
+    /// One person on one machine: what they hold there, on which devices, and when they were
+    /// last seen. Everything else (Share Gram, removing an agent, a device or the person) is
+    /// on their page.
+    private func personRow(_ item: GuestAccessModel.Person) -> some View {
+        let person = item.person
+        let state = GuestPresence(lastSeenMs: person.lastSeenMs)
+        return NavigationLink(value: GuestPersonRoute(id: item.id)) {
             HStack(alignment: .center, spacing: 12) {
-                Text(String(guest.name.prefix(1)).uppercased())
-                    .font(Typography.app(16, .bold)).foregroundStyle(.white)
-                    .frame(width: 36, height: 36)
-                    .background(RoundedRectangle(cornerRadius: 9).fill(GuestStyle.avatar))
+                GuestInitialTile(name: person.name, size: 36)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(guest.name).font(Typography.app(16, .semibold)).foregroundStyle(Palette.text)
-                    Text("\(guest.grant?.agentName ?? "An agent") on \(person.machine.label)"
-                         + (sharesGram(person) ? " · Gram shared" : ""))
-                        .font(Typography.app(13)).foregroundStyle(Palette.textFaint).lineLimit(1)
+                    Text(person.name).font(Typography.app(16, .semibold)).foregroundStyle(Palette.text)
+                    Text(GuestPeopleText.agents(person, on: item.machine))
+                        .font(Typography.app(13)).foregroundStyle(Palette.textDim).lineLimit(2)
+                    Text(GuestPeopleText.devices(person))
+                        .font(Typography.app(13)).foregroundStyle(Palette.textDim).lineLimit(2)
                     HStack(spacing: 6) {
                         Circle().fill(state.color).frame(width: 8, height: 8)
                         Text(state.text).font(Typography.machine(12)).foregroundStyle(Palette.textFaint)
                     }
                     .padding(.top, 4)
-                    if let fingerprint = guest.fingerprint {
-                        Text([fingerprint, guest.device.flatMap { $0.isEmpty ? nil : $0 }]
-                            .compactMap { $0 }.joined(separator: " · "))
-                            .font(Typography.machine(11.5)).foregroundStyle(Palette.textFaint)
-                            .lineLimit(1).truncationMode(.middle)
-                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityElement(children: .combine)
-                Button("Revoke") { revoking = person }
-                    .buttonStyle(.capsule(.destructive))
-                    .accessibilityLabel("Revoke \(guest.name)")
-                    .accessibilityIdentifier("guest-revoke-\(guest.name)")
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.textFaint)
             }
-            Toggle(isOn: Binding(
-                get: { sharesGram(person) },
-                set: { on in Task { await setShareGram(on, for: person) } }
-            )) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Share Gram").font(Typography.app(14, .semibold)).foregroundStyle(Palette.text)
-                    Text("\(guest.name) sees what \(guest.grant?.agentName ?? "the agent") sends you, and is notified")
-                        .font(Typography.app(12)).foregroundStyle(Palette.textFaint)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .tint(Palette.brand)
-            .padding(.leading, 48)
-            .accessibilityIdentifier("guest-share-gram-\(guest.name)")
+            .padding(.horizontal, 16).padding(.vertical, 14)
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, 16).padding(.vertical, 14)
-    }
-
-    private func sharesGram(_ person: GuestAccessModel.Person) -> Bool {
-        shareGramPending[person.id] ?? person.guest.shareGram
-    }
-
-    /// `guest.update` for one guest, on the machine that holds them. Flips made while one is in
-    /// flight are sent after it, as the latest choice only, so the daemon ends on the owner's
-    /// last choice; the run that sends them reloads and reports once, at the end.
-    private func setShareGram(_ on: Bool, for person: GuestAccessModel.Person) async {
-        shareGramPending[person.id] = on
-        var failure: String?
-        let outcome = await shareGramSender.submit(on, for: person.id) { value in
-            do {
-                try await client.guestUpdate(guestID: person.guest.guestID, shareGram: value,
-                                             machine: person.machine.alias)
-                failure = nil
-            } catch let api as APIError where api.code == "invalid_request" && api.message.contains("unknown variant") {
-                failure = "Update Herdr on \(person.machine.label) to share Gram."
-                throw api
-            } catch {
-                failure = GuestAdminError.message(error)
-                throw error
-            }
-        }
-        guard case .finished(let failed) = outcome else { return }
-        await reload()
-        shareGramPending[person.id] = nil
-        if failed, let failure { actionError = failure }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("guest-person-\(person.name)")
     }
 
     // MARK: Invites
@@ -442,7 +416,7 @@ struct GuestLogRow: View {
             .font(Typography.machine(12, .medium)).foregroundStyle(Palette.textFaint)
             bodyText
             if let fingerprint = entry.fingerprint {
-                Text("key " + ([fingerprint, line.device].compactMap { $0 }.joined(separator: " · ")))
+                Text("key " + ([fingerprint, keySource].compactMap { $0 }.joined(separator: " · ")))
                     .font(Typography.machine(11.5)).foregroundStyle(Palette.textFaint)
                     .lineLimit(1).truncationMode(.middle)
             }
@@ -457,6 +431,12 @@ struct GuestLogRow: View {
         Text(who).foregroundStyle(GuestStyle.label).fontWeight(.semibold)
     }
 
+    /// Where the key comes from: the device, or for a device just added, the account that
+    /// vouched for it (the body already names the device).
+    private var keySource: String? {
+        entry.event == .deviceAdded ? "from \(who)'s account" : line.device
+    }
+
     private var headline: Text {
         switch entry.event {
         case .prompt, .upload: return Text("\(name) → \(agent)")
@@ -465,6 +445,8 @@ struct GuestLogRow: View {
         case .denied: return Text("\(name) was refused")
         case .paused: return Text("\(name) paused")
         case .revoked: return Text("\(name) revoked")
+        case .deviceAdded: return Text("\(name) added a device")
+        case .deviceRemoved: return Text("\(name) lost a device")
         case .other(let raw): return Text("\(name) \(raw)")
         }
     }
@@ -474,6 +456,8 @@ struct GuestLogRow: View {
         case .prompt:
             Text(entry.text ?? "").font(Typography.app(13.5)).foregroundStyle(Palette.text)
                 .lineSpacing(2).lineLimit(6)
+        case .deviceAdded:
+            Text(entry.text ?? line.device ?? "A new device").font(Typography.app(13.5)).foregroundStyle(Palette.text)
         case .upload:
             let size = entry.file?.size.map {
                 Text(ByteCountFormatter.string(fromByteCount: Int64(clamping: $0), countStyle: .memory))
@@ -497,7 +481,8 @@ struct GuestLogRow: View {
         case .denied: return "Blocked \(entry.method ?? "a request")"
         case .paused: return "\(agent) left the foreground, so the stream paused"
         case .revoked: return "Access revoked"
-        case .prompt, .upload, .other: return nil
+        case .deviceRemoved: return "You removed \(line.device ?? "a device"): it can't open \(agent) any more"
+        case .prompt, .upload, .deviceAdded, .other: return nil
         }
     }
 }
@@ -528,6 +513,25 @@ enum GuestPresence {
         }
     }
 
+    /// One device's last use on a person page: "active now", "2 h ago".
+    var deviceText: String {
+        switch self {
+        case .active: return "active now"
+        case .idle(let ago): return ago
+        case .neverConnected: return "not connected yet"
+        }
+    }
+
+    /// A person page's status line, naming the device seen last when herdr can tell.
+    func headline(on device: String?) -> String {
+        let place = device.map { " on \($0)" } ?? ""
+        switch self {
+        case .active: return "Active now" + place
+        case .idle(let ago): return "Last active \(ago)" + place
+        case .neverConnected: return "Not connected yet"
+        }
+    }
+
     var color: Color {
         switch self {
         case .active: return Palette.done
@@ -541,6 +545,14 @@ enum GuestPresence {
         if s < 3600 { return "\(s / 60) min ago" }
         if s < 86_400 { return "\(s / 3600) h ago" }
         return "\(s / 86_400) d ago"
+    }
+
+    /// "25 Nov": the day a share began or a device was added.
+    static func day(_ ms: UInt64) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "d MMM"
+        return formatter.string(from: Date(timeIntervalSince1970: Double(ms) / 1000))
     }
 
     static func remaining(_ seconds: Double) -> String {

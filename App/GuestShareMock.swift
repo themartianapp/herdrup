@@ -5,13 +5,17 @@ import SwiftUI
 
 /// The owner's guest-access screens over canned daemon answers (`HERDR_SCREENSHOT_MOCK=share`
 /// for the pane and its share sheet, `sharedaccess` for Settings). The guest store is stateful
-/// for the whole process, so a UI test sees its own invite, revoke or cancel land.
+/// for the whole process, so a UI test sees its own invite, revoke, device removal or cancel
+/// land.
 ///
 /// Launch environment:
 /// - `HERDR_MOCK_OWNER_NAME`: preset "Your name"; `-` clears it to exercise the first-share ask.
 /// - `HERDR_MOCK_GUEST_INVITE=1`: start with one pending invite (for "sam").
 /// - `HERDR_MOCK_SAVED_PEER_GUEST=1`: the agent-less saved machine mcb-air holds guest `sam`.
 /// - `HERDR_MOCK_AUDIT_FAIL=1`: the connected machine's `guest.audit` fails.
+/// - `HERDR_MOCK_ACCOUNT_PEOPLE=1`: the connected machine holds, instead of plotarmordev,
+///   Nike (account-bound: llm-opt and orgstudio, on her iPhone, MacBook and a browser she
+///   added today) and sam (a plain share on one iPhone), as in the account-shares design.
 /// - `HERDR_MOCK_STILL=1`: llm-opt reads idle instead of working. The WORKING pill pulses
 ///   forever, which holds XCUITest's wait-for-idle for a minute per action; only the
 ///   screenshot capture keeps the design's WORKING state.
@@ -111,6 +115,11 @@ final class GuestShareMockStore: @unchecked Sendable {
             Self.entry(today(11, 42), "prompt", extra: ["text": "can you rerun the TensorFold bench against our Q5 build and send me the table?"]),
             Self.entry(today(11, 40), "accepted"),
         ]
+        if env["HERDR_MOCK_ACCOUNT_PEOPLE"] == "1" {
+            let people = Self.accountPeople(nowMs: nowMs)
+            local.guests = people.guests
+            local.audit = people.audit
+        }
         if env["HERDR_MOCK_GUEST_INVITE"] == "1" {
             local.invites.append(Self.invite(id: "inv-sam", name: "sam", createdMs: nowMs - 60_000))
         }
@@ -130,11 +139,56 @@ final class GuestShareMockStore: @unchecked Sendable {
     private static func ms(_ date: Date) -> UInt64 { UInt64(date.timeIntervalSince1970 * 1000) }
 
     private static func entry(_ ts: UInt64, _ event: String, guestID: String = "g-plot",
-                              name: String = "plotarmordev", extra: [String: Any] = [:]) -> [String: Any] {
+                              name: String = "plotarmordev", fingerprint: String = GuestShareMockStore.fingerprint,
+                              extra: [String: Any] = [:]) -> [String: Any] {
         var e: [String: Any] = ["ts_ms": ts, "guest_id": guestID, "name": name,
                                 "fingerprint": fingerprint, "event": event, "pane": "w1:p1"]
         e.merge(extra) { _, new in new }
         return e
+    }
+
+    /// `HERDR_MOCK_ACCOUNT_PEOPLE=1`: the account-shares design's people, as herdr's
+    /// `guest.list` and `guest.audit` give them. Nike accepted both agents on her iPhone; her
+    /// MacBook opened both shares since, the browser only llm-opt's, so removing the browser
+    /// touches one share and removing the MacBook both.
+    private static func accountPeople(nowMs: UInt64) -> (guests: [[String: Any]], audit: [[String: Any]]) {
+        let day: UInt64 = 24 * 3600 * 1000
+        let hour: UInt64 = 3600 * 1000
+        let iPhone = "SHA256:4b1d·90ce·7a2f·e613"
+        let macBook = "SHA256:8c55·d2e0·31ab·f4c7"
+        let browser = "SHA256:1c07·88ae·5f02·b3d9"
+        let sam = "SHA256:51c0·2ab9·7e04·d3f8"
+        let browserAdded = nowMs - 20 * 60 * 1000
+        let orgstudio: [String: Any] = ["terminal_id": "t-org", "agent_name": "orgstudio",
+                                        "agent_session": ["source": "hook", "agent": "claude", "kind": "session_id", "value": "s2"]]
+        func device(_ fingerprint: String, _ name: String, added: UInt64, seen: UInt64) -> [String: Any] {
+            ["fingerprint": fingerprint, "device": name, "added_ms": added, "last_seen_ms": seen, "removed": false]
+        }
+        let guests: [[String: Any]] = [
+            ["guest_id": "g-nike-llm", "name": "Nike", "fingerprint": iPhone, "device": "iPhone", "grant": grant,
+             "created_ms": nowMs - 2 * day, "last_seen_ms": nowMs - 30_000, "revoked": false, "share_gram": true,
+             "account_bound": true, "person": "acct-nike", "devices": [
+                device(macBook, "MacBook", added: nowMs - 2 * day + hour, seen: nowMs - 2 * hour),
+                device(browser, "Browser (Chrome on macOS)", added: browserAdded, seen: browserAdded),
+             ]],
+            ["guest_id": "g-nike-org", "name": "Nike", "fingerprint": iPhone, "device": "iPhone", "grant": orgstudio,
+             "created_ms": nowMs - day, "last_seen_ms": nowMs - 3 * hour, "revoked": false, "share_gram": false,
+             "account_bound": true, "person": "acct-nike", "devices": [
+                device(macBook, "MacBook", added: nowMs - day + hour, seen: nowMs - 2 * hour - 60_000),
+             ]],
+            ["guest_id": "g-sam", "name": "sam", "fingerprint": sam, "device": "iPhone", "grant": grant,
+             "created_ms": nowMs - day, "last_seen_ms": nowMs - 2 * hour, "revoked": false, "share_gram": false,
+             "account_bound": false, "person": sam, "devices": [] as [[String: Any]]],
+        ]
+        let audit = [
+            entry(browserAdded, "device_added", guestID: "g-nike-llm", name: "Nike", fingerprint: browser,
+                  extra: ["text": "Browser (Chrome on macOS)"]),
+            entry(nowMs - 28 * 60 * 1000, "prompt", guestID: "g-nike-llm", name: "Nike", fingerprint: iPhone,
+                  extra: ["text": "can you rerun the deploy script against staging?"]),
+            entry(nowMs - day, "accepted", guestID: "g-nike-org", name: "Nike", fingerprint: iPhone),
+            entry(nowMs - day, "accepted", guestID: "g-sam", name: "sam", fingerprint: sam),
+        ]
+        return (guests, audit)
     }
 
     private static func invite(id: String, name: String, createdMs: UInt64, shareGram: Bool = false) -> [String: Any] {
@@ -186,9 +240,7 @@ final class GuestShareMockStore: @unchecked Sendable {
         case "guest.revoke":
             if let id = params["guest_id"] as? String,
                let index = machine.guests.firstIndex(where: { $0["guest_id"] as? String == id }) {
-                machine.guests[index]["revoked"] = true
-                let name = machine.guests[index]["name"] as? String ?? ""
-                machine.audit.insert(Self.entry(Self.ms(Date()), "revoked", guestID: id, name: name), at: 0)
+                revokeGuest(at: index, in: &machine)
                 return ["type": "guest_revoked", "guest_id": id, "closed_streams": 1]
             }
             if let id = params["invite_id"] as? String,
@@ -196,10 +248,57 @@ final class GuestShareMockStore: @unchecked Sendable {
                 machine.invites.remove(at: index)
                 return ["type": "guest_revoked", "invite_id": id, "closed_streams": 0]
             }
-            return ["error": ["code": "guest_not_found", "message": "no such guest or invite"]]
+            // herdr's person: the account when account-bound, else the device's fingerprint.
+            if let person = params["person"] as? String {
+                let indices = machine.guests.indices.filter {
+                    (machine.guests[$0]["person"] as? String ?? machine.guests[$0]["fingerprint"] as? String) == person
+                }
+                if !indices.isEmpty {
+                    for index in indices where machine.guests[index]["revoked"] as? Bool != true {
+                        revokeGuest(at: index, in: &machine)
+                    }
+                    return ["type": "guest_revoked", "person": person, "closed_streams": indices.count]
+                }
+            }
+            return ["error": ["code": "guest_not_found", "message": "no guest, invite or person with that id"]]
+        case "guest.remove_device":
+            guard let id = params["guest_id"] as? String, let fingerprint = params["fingerprint"] as? String,
+                  let index = machine.guests.firstIndex(where: {
+                      $0["guest_id"] as? String == id && $0["revoked"] as? Bool != true
+                  }) else {
+                return ["error": ["code": "guest_not_found", "message": "no active guest with that id"]]
+            }
+            var guest = machine.guests[index]
+            guard guest["account_bound"] as? Bool == true else {
+                return ["error": ["code": "guest_not_account_bound",
+                                  "message": "this share is bound to one device; revoke the guest instead"]]
+            }
+            var devices = guest["devices"] as? [[String: Any]] ?? []
+            if let known = devices.firstIndex(where: { $0["fingerprint"] as? String == fingerprint }) {
+                devices[known]["removed"] = true
+            } else if guest["fingerprint"] as? String == fingerprint {
+                // As herdr does: the accepting device goes as a removed entry of its own.
+                devices.append(["fingerprint": fingerprint, "device": guest["device"] ?? "",
+                                "added_ms": guest["created_ms"] ?? 0, "last_seen_ms": NSNull(), "removed": true])
+            } else {
+                return ["error": ["code": "guest_device_not_found", "message": "this guest has no device with that fingerprint"]]
+            }
+            guest["devices"] = devices
+            machine.guests[index] = guest
+            machine.audit.insert(Self.entry(Self.ms(Date()), "device_removed", guestID: id,
+                                            name: guest["name"] as? String ?? "", fingerprint: fingerprint), at: 0)
+            return ["type": "guest_device_removed", "guest": guest, "closed_streams": 0]
         default:
             return [:]
         }
+    }
+
+    private func revokeGuest(at index: Int, in machine: inout Machine) {
+        machine.guests[index]["revoked"] = true
+        let guest = machine.guests[index]
+        machine.audit.insert(Self.entry(Self.ms(Date()), "revoked", guestID: guest["guest_id"] as? String ?? "",
+                                        name: guest["name"] as? String ?? "",
+                                        fingerprint: guest["fingerprint"] as? String ?? Self.fingerprint), at: 0)
     }
 }
 

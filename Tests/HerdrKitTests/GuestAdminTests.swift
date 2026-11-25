@@ -204,6 +204,146 @@ final class GuestAdminTests: XCTestCase {
         }
     }
 
+    func testRevokeByPersonSendsOnlyThePerson() async throws {
+        let t = RecordingTransport(reply: #"{"id":"x","result":{"type":"guest_revoked","person":"acct-nike","closed_streams":2}}"#)
+        try await HerdrClient(transport: t).guestRevoke(.person("acct-nike"), machine: "peer")
+        let (method, params) = try t.last()
+        XCTAssertEqual(method, "guest.revoke")
+        XCTAssertEqual(params["person"] as? String, "acct-nike")
+        XCTAssertNil(params["guest_id"], "herdr takes exactly one of guest_id, invite_id and person")
+        XCTAssertNil(params["invite_id"])
+        XCTAssertEqual(params["machine"] as? String, "peer")
+    }
+
+    // MARK: guest.remove_device
+
+    func testRemoveDeviceNamesTheShareAndTheDeviceAndReadsTheShareBack() async throws {
+        let reply = #"""
+        {"id":"x","result":{"type":"guest_device_removed","closed_streams":1,"guest":{"guest_id":"g-n1","name":"Nike",
+         "fingerprint":"SHA256:aaaa","device":"iPhone","grant":{"terminal_id":"t7","agent_name":"enyo"},"created_ms":100,
+         "last_seen_ms":900,"revoked":false,"share_gram":false,"account_bound":true,"person":"acct-nike",
+         "devices":[{"fingerprint":"SHA256:bbbb","device":"MacBook","added_ms":200,"last_seen_ms":500,"removed":true}]}}}
+        """#
+        let t = RecordingTransport(reply: reply)
+        let guest = try await HerdrClient(transport: t).guestRemoveDevice(guestID: "g-n1", fingerprint: "SHA256:bbbb")
+        let (method, params) = try t.last()
+        XCTAssertEqual(method, "guest.remove_device")
+        XCTAssertEqual(params["guest_id"] as? String, "g-n1")
+        XCTAssertEqual(params["fingerprint"] as? String, "SHA256:bbbb")
+        XCTAssertNil(params["machine"], "a local share must not name a machine")
+        XCTAssertEqual(guest.usableDevices.map(\.fingerprint), ["SHA256:aaaa"], "the removed device is gone")
+
+        _ = try await HerdrClient(transport: t).guestRemoveDevice(guestID: "g-n1", fingerprint: "SHA256:bbbb",
+                                                                  machine: "peer")
+        XCTAssertEqual(try t.last().params["machine"] as? String, "peer")
+    }
+
+    func testRemoveDeviceFromAPlainShareSurfacesTheDaemonError() async throws {
+        let t = RecordingTransport.error(code: "guest_not_account_bound", message: "revoke the guest instead")
+        do {
+            try await HerdrClient(transport: t).guestRemoveDevice(guestID: "g-sam", fingerprint: "SHA256:dddd")
+            XCTFail("an error envelope must throw")
+        } catch let error as APIError {
+            XCTAssertEqual(error.code, "guest_not_account_bound")
+        }
+    }
+
+    // MARK: People (account-linked shares)
+
+    /// `guest.list` as herdr emits it with accounts: Nike accepted enyo on her iPhone and
+    /// orgstudio on her MacBook, and each share learned the other device; she also opened enyo
+    /// in a browser the owner removed since. sam has a plain share; `old` comes from a daemon
+    /// from before accounts.
+    private static let peopleReply = #"""
+    {"id":"x","result":{"type":"guest_list","guests":[
+     {"guest_id":"g-old","name":"old","fingerprint":"SHA256:eeee","device":"iPad",
+      "grant":{"terminal_id":"t9","agent_name":"notes"},"created_ms":10,"revoked":false},
+     {"guest_id":"g-n2","name":"Nike","fingerprint":"SHA256:bbbb","device":"MacBook",
+      "grant":{"terminal_id":"t8","agent_name":"orgstudio"},"created_ms":150,"last_seen_ms":400,"revoked":false,
+      "share_gram":false,"account_bound":true,"person":"acct-nike",
+      "devices":[{"fingerprint":"SHA256:aaaa","device":"iPhone","added_ms":160,"last_seen_ms":300,"removed":false}]},
+     {"guest_id":"g-sam","name":"sam","fingerprint":"SHA256:dddd","device":"iPhone",
+      "grant":{"terminal_id":"t7","agent_name":"enyo"},"created_ms":120,"last_seen_ms":50,"revoked":false,
+      "share_gram":false,"account_bound":false,"person":"SHA256:dddd","devices":[]},
+     {"guest_id":"g-n1","name":"Nike","fingerprint":"SHA256:aaaa","device":"iPhone",
+      "grant":{"terminal_id":"t7","agent_name":"enyo"},"created_ms":100,"last_seen_ms":900,"revoked":false,
+      "share_gram":true,"account_bound":true,"person":"acct-nike","devices":[
+       {"fingerprint":"SHA256:bbbb","device":"MacBook","added_ms":200,"last_seen_ms":500,"removed":false},
+       {"fingerprint":"SHA256:cccc","device":"Browser (Chrome on macOS)","added_ms":300,"last_seen_ms":null,"removed":true}]},
+     {"guest_id":"g-gone","name":"Nike","fingerprint":"SHA256:aaaa","grant":{"terminal_id":"t6"},
+      "revoked":true,"account_bound":true,"person":"acct-nike"}]}}
+    """#
+
+    func testListDecodesTheAccountFieldsAndAnOlderDaemonMeansAPlainShare() async throws {
+        let listing = try await HerdrClient(transport: RecordingTransport(reply: Self.peopleReply)).guestList()
+        let nike = try XCTUnwrap(listing.guests.first { $0.guestID == "g-n1" })
+        XCTAssertTrue(nike.accountBound)
+        XCTAssertEqual(nike.person, "acct-nike")
+        XCTAssertEqual(nike.devices, [
+            GuestDevice(fingerprint: "SHA256:bbbb", device: "MacBook", addedMs: 200, lastSeenMs: 500),
+            GuestDevice(fingerprint: "SHA256:cccc", device: "Browser (Chrome on macOS)", addedMs: 300, removed: true),
+        ])
+        XCTAssertEqual(nike.usableDevices.map(\.fingerprint), ["SHA256:aaaa", "SHA256:bbbb"],
+                       "the accepting device first, and never a removed one")
+        XCTAssertEqual(nike.usableDevices.first?.lastSeenMs, 900,
+                       "the share was used after every added device, so by the accepting one")
+
+        let old = try XCTUnwrap(listing.guests.first { $0.guestID == "g-old" })
+        XCTAssertFalse(old.accountBound)
+        XCTAssertNil(old.person)
+        XCTAssertEqual(old.devices, [])
+        XCTAssertEqual(old.usableDevices, [GuestDevice(fingerprint: "SHA256:eeee", device: "iPad", addedMs: 10)])
+    }
+
+    func testAnAddedDevicesUseIsNotTheAcceptingDevices() {
+        let share = GuestRecord(
+            guestID: "g1", name: "Nike", fingerprint: "SHA256:aaaa", device: "iPhone", grant: nil,
+            createdMs: 100, lastSeenMs: 500, accountBound: true, person: "acct",
+            devices: [GuestDevice(fingerprint: "SHA256:bbbb", device: "MacBook", addedMs: 200, lastSeenMs: 500)])
+        XCTAssertNil(share.usableDevices[0].lastSeenMs,
+                     "the MacBook stamped the share's last use, so the iPhone's is unknown")
+        XCTAssertEqual(share.usableDevices[1].lastSeenMs, 500)
+    }
+
+    func testARemovedAcceptingDeviceLeavesOnlyTheOthers() {
+        let share = GuestRecord(
+            guestID: "g1", name: "Nike", fingerprint: "SHA256:aaaa", device: "iPhone", grant: nil,
+            createdMs: 100, lastSeenMs: 500, accountBound: true, person: "acct",
+            devices: [GuestDevice(fingerprint: "SHA256:bbbb", device: "MacBook", addedMs: 200),
+                      GuestDevice(fingerprint: "SHA256:aaaa", device: "iPhone", addedMs: 100, removed: true)])
+        XCTAssertEqual(share.usableDevices.map(\.fingerprint), ["SHA256:bbbb"])
+    }
+
+    func testPeopleGroupEveryShareOfOnePersonAndMergeTheirDevices() async throws {
+        let listing = try await HerdrClient(transport: RecordingTransport(reply: Self.peopleReply)).guestList()
+        let people = listing.people
+        XCTAssertEqual(people.map(\.name), ["Nike", "sam", "old"], "most recently seen first; revoked shares drop out")
+
+        let nike = people[0]
+        XCTAssertTrue(nike.accountBound)
+        XCTAssertEqual(nike.grants.map(\.guestID), ["g-n1", "g-n2"], "oldest share first")
+        XCTAssertEqual(nike.devices, [
+            GuestDevice(fingerprint: "SHA256:aaaa", device: "iPhone", addedMs: 100, lastSeenMs: 900),
+            GuestDevice(fingerprint: "SHA256:bbbb", device: "MacBook", addedMs: 150, lastSeenMs: 500),
+        ], "one entry per device across both shares; the removed browser is not listed")
+        XCTAssertEqual(nike.lastSeenMs, 900)
+        XCTAssertEqual(nike.lastSeenDevice?.device, "iPhone")
+        XCTAssertEqual(nike.revokeTargets, [.person("acct-nike")], "Remove Nike is one guest.revoke {person}")
+        XCTAssertEqual(nike.grantsHolding(fingerprint: "SHA256:bbbb").map(\.guestID), ["g-n1", "g-n2"],
+                       "a device goes from every share it may use")
+        XCTAssertEqual(nike.grantsHolding(fingerprint: "SHA256:cccc").map(\.guestID), [])
+
+        let sam = people[1]
+        XCTAssertFalse(sam.accountBound)
+        XCTAssertEqual(sam.devices.map(\.device), ["iPhone"])
+        XCTAssertEqual(sam.revokeTargets, [.guest("g-sam")], "a plain guest is revoked by its guest id")
+        XCTAssertEqual(sam.grantsHolding(fingerprint: "SHA256:dddd").map(\.guestID), [],
+                       "a plain share has no device to remove")
+
+        XCTAssertEqual(people[2].id, "SHA256:eeee", "an older daemon's share groups by its device key")
+        XCTAssertEqual(people[2].revokeTargets, [.guest("g-old")])
+    }
+
     // MARK: guest.audit
 
     func testAuditClampsTheLimitAndOmitsUnsetFilters() async throws {
@@ -229,6 +369,9 @@ final class GuestAdminTests: XCTestCase {
     func testAuditDecodesEveryEventShapeAndKeepsUnknownEvents() async throws {
         let reply = #"""
         {"id":"x","result":{"type":"guest_audit","entries":[
+         {"ts_ms":5,"guest_id":"g-n1","name":"Nike","fingerprint":"SHA256:cccc","event":"device_added",
+          "pane":"t7","text":"Browser (Chrome on macOS)"},
+         {"ts_ms":4,"guest_id":"g-n1","name":"Nike","fingerprint":"SHA256:cccc","event":"device_removed","pane":"t7"},
          {"ts_ms":3,"guest_id":"g1","name":"plotarmordev","fingerprint":"SHA256:9f3a·e71c·04bd·c21e","event":"upload",
           "pane":"w1:p1","file":{"name":"prompt-set-v2.jsonl","size":49152,"sha256":"ab"}},
          {"ts_ms":2,"guest_id":"g1","name":"plotarmordev","event":"prompt","pane":"w1:p1","text":"rerun the bench"},
@@ -236,11 +379,14 @@ final class GuestAdminTests: XCTestCase {
          {"ts_ms":0,"event":"quarantined","new":1}]}}
         """#
         let entries = try await HerdrClient(transport: RecordingTransport(reply: reply)).guestAudit()
-        XCTAssertEqual(entries.map(\.event), [.upload, .prompt, .denied, .other("quarantined")])
-        XCTAssertEqual(entries[0].file, GuestAuditFile(name: "prompt-set-v2.jsonl", size: 49152, sha256: "ab"))
-        XCTAssertEqual(entries[1].text, "rerun the bench")
-        XCTAssertEqual(entries[2].method, "pane.send_keys")
-        XCTAssertNil(entries[3].guestID)
+        XCTAssertEqual(entries.map(\.event),
+                       [.deviceAdded, .deviceRemoved, .upload, .prompt, .denied, .other("quarantined")])
+        XCTAssertEqual(entries[0].text, "Browser (Chrome on macOS)", "a device_added entry names the device")
+        XCTAssertEqual(entries[0].fingerprint, "SHA256:cccc")
+        XCTAssertEqual(entries[2].file, GuestAuditFile(name: "prompt-set-v2.jsonl", size: 49152, sha256: "ab"))
+        XCTAssertEqual(entries[3].text, "rerun the bench")
+        XCTAssertEqual(entries[4].method, "pane.send_keys")
+        XCTAssertNil(entries[5].guestID)
     }
 
     // MARK: Which machines Settings reads
