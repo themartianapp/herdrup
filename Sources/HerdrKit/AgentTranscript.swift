@@ -25,14 +25,18 @@ public struct AgentTranscriptParams: Encodable, Sendable, Equatable {
     /// (herdr #430). Older servers ignore it.
     public let heldFrom: String?
     public let topic: String?
+    /// `true` asks for `relay` entries (`transcript_relay_entries`); nil is not sent.
+    public let relayEntries: Bool?
 
     enum CodingKeys: String, CodingKey {
         case target, before, after, limit, subagent, topic
         case heldFrom = "held_from"
+        case relayEntries = "relay_entries"
     }
 
     public init(target: String, before: String? = nil, after: String? = nil, limit: UInt32? = nil,
-                subagent: String? = nil, heldFrom: String? = nil, topic: String? = nil) {
+                subagent: String? = nil, heldFrom: String? = nil, topic: String? = nil,
+                relayEntries: Bool? = nil) {
         self.target = target
         self.before = before
         self.after = after
@@ -40,6 +44,7 @@ public struct AgentTranscriptParams: Encodable, Sendable, Equatable {
         self.subagent = subagent
         self.heldFrom = heldFrom
         self.topic = topic
+        self.relayEntries = relayEntries
     }
 }
 

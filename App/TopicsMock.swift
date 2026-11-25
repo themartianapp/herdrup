@@ -122,7 +122,8 @@ final class TopicsMock: @unchecked Sendable {
             : switchWhenIdle ? #","agent_topics_switch":true,"agent_topics_switch_when_idle":true"#
             : #","agent_topics_switch":true"#
         let suggestCapability = suggests ? #","agent_topic_suggestions":true"# : ""
-        let base = transcriptTopic ? #","agent_topics":true,"agent_transcript_topic":true"# : #","agent_topics":true"#
+        let base = (transcriptTopic ? #","agent_topics":true,"agent_transcript_topic":true"# : #","agent_topics":true"#)
+            + (relays ? #","transcript_relay_entries":true"# : "")
         let eventsCapability = applyAfter == nil ? "" : #","events_v2":true"#
         return base + switchCapability + suggestCapability + eventsCapability
     }
@@ -561,7 +562,9 @@ final class TopicsMock: @unchecked Sendable {
 
     /// `agent.transcript` with `topic`: that topic's whole conversation on one page, a turn per
     /// message (the reader's prompt, the topic's reply).
-    func transcript(id: String, topic topicID: String) -> String {
+    /// `relayEntries`: the request carried `relay_entries: true` (herdr #521); without it a
+    /// handover comes back as a `user` entry, as from a herdr without relays.
+    func transcript(id: String, topic topicID: String, relayEntries: Bool = false) -> String {
         lock.withLock {
             guard let topic = topics.first(where: { $0.id == topicID }) else {
                 return ChatMockConversation.error(id: id, code: "topic_not_found", message: "no such topic")
@@ -584,10 +587,14 @@ final class TopicsMock: @unchecked Sendable {
                                     "text": message.text, "final": true])
                     entries.append(["id": "\(topic.id)-\(index)e", "ts_ms": message.ms + 1, "kind": "turn_end",
                                     "status": "done"])
-                case .inbox:
+                case .inbox where relayEntries:
                     entries.append(["id": "\(topic.id)-\(index)h", "ts_ms": message.ms, "kind": "relay",
                                     "from": "Inbox", "direction": "to_topic",
                                     "text": message.text])
+                case .inbox:
+                    // Not asked for `relay_entries`: herdr sends the handover as omp wrote it.
+                    entries.append(["id": "\(topic.id)-\(index)h", "ts_ms": message.ms, "kind": "user",
+                                    "text": message.text, "author": "owner"])
                 }
             }
             return ChatMockConversation.encode(id: id, result: [

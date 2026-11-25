@@ -72,6 +72,27 @@ final class AgentTopicsTests: XCTestCase {
         XCTAssertTrue(pages)
     }
 
+    /// herdr #521: `relay` entries are opt-in. `relay_entries: true` goes on every transcript
+    /// request (the Inbox's and a topic's) only to a server advertising
+    /// `transcript_relay_entries`; otherwise the param is not sent at all.
+    func testRelayEntriesAreAskedForOnlyWhenAdvertised() async throws {
+        let relayPong =
+            #"{"id":"x","result":{"type":"pong","version":"0.9.9","protocol":22,"capabilities":{"agent_transcript":true,"agent_topics":true,"agent_transcript_topic":true,"transcript_relay_entries":true}}}"#
+        XCTAssertTrue(try capabilities(#"{"transcript_relay_entries":true}"#).transcriptRelayEntries)
+        XCTAssertFalse(try capabilities(#"{"agent_transcript":true}"#).transcriptRelayEntries)
+
+        let offered = RecordingTransport { method, _ in method == "ping" ? relayPong : Self.emptyPage }
+        let client = HerdrClient(transport: offered)
+        _ = try await client.agentTranscript(target: "w1:p1", topic: "t1")
+        XCTAssertEqual(try offered.last().params["relay_entries"] as? Bool, true, "a topic's page asks for relays")
+        _ = try await client.agentTranscript(target: "w1:p1")
+        XCTAssertEqual(try offered.last().params["relay_entries"] as? Bool, true, "and so does the Inbox's")
+
+        let older = RecordingTransport { method, _ in method == "ping" ? Self.pongWithTopics : Self.emptyPage }
+        _ = try await HerdrClient(transport: older).agentTranscript(target: "w1:p1", topic: "t1")
+        XCTAssertNil(try older.last().params["relay_entries"], "not advertised: not sent")
+    }
+
     // MARK: Discovery schedule (#758)
 
     /// `topics_unsupported` and a server without `agent_topics` stop discovery for good, on the

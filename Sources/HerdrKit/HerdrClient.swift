@@ -2110,9 +2110,12 @@ public actor HerdrClient {
         if topic != nil, !(await supports(\.agentTranscriptTopic)) {
             throw AgentTranscriptError.unsupported
         }
+        // Handovers as `relay` entries only from a server that offers them: asked for, an
+        // older one could refuse the unknown param.
+        let relayEntries: Bool? = await supports(\.transcriptRelayEntries) ? true : nil
         let params = AgentTranscriptParams(target: target, before: before, after: after,
                                            limit: limit.map { min(max($0, 1), 50) }, subagent: subagent,
-                                           heldFrom: heldFrom, topic: topic)
+                                           heldFrom: heldFrom, topic: topic, relayEntries: relayEntries)
         // The newest page (no cursor) is what a chat opens on, so it is what a cold start
         // paints from; a page of older history or of appended entries is not. A topic's page
         // is not kept: the cache holds one page per agent (and subagent), the Inbox's.
