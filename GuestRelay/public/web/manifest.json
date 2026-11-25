@@ -1,5 +1,5 @@
 {
- "sourceCommit": "24de3ad0e6e5e0dc5f24d07cbea37a2d08eac98b",
+ "sourceCommit": "64f7f5c24e960c322d01f26cd38113d72f0a7d6f",
  "sourceDirty": false,
  "buildCommand": "bun install --frozen-lockfile && bun run build:guest-web",
  "files": {
@@ -100,7 +100,7 @@
   "herdrup/mascots/squib.svg": "87a2f2684bb008d5513cc321d89af08b180f175b9cacff8a6fc23a4f6cba19ea",
   "herdrup/mascots/tri.svg": "7a73d23792fd1d8e67bead1f2b9d2f067f6bebddc2146d0ae5d835e5266c5755",
   "herdrup/mascots/zag.svg": "06619463ac8ef2a5e6b7af5810f7651272139973c5d64448ef04da1643f35290",
-  "index.html": "33b5e9232c7d4a4bfc962afade64b1789dcbad8bf1de93c56ce74ded34186d0c",
+  "index.html": "18008697dc931d81fbfe0a14c8997ec428d0106268b1c9462b85e298636bb460",
   "mermaid/Mermaid-LICENSE.txt": "ec9fb67dcb25eccc416ed56e1aab819222c805a2a4bfe4cb19e7556bf2ffde80",
   "mermaid/mermaid.min.js": "581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8",
   "relays.json": "ff991486bc63fa926bc7563ba373a16a5173e1635ee37ae921fecc1638df5841"
