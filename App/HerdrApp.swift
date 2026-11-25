@@ -962,10 +962,11 @@ struct ConnectView: View {
     @State private var showingOwnerSetup = false
     /// Settings › HerdrUp account, opened from the account avatar (#698 host-status proposal 1).
     @State private var showingAccount = false
-    /// The shared machine whose account shares are being opened on this device, and why the
-    /// last one couldn't be.
+    /// The shared machine whose account shares are being opened on this device, why some
+    /// couldn't be, and the machine to open once that is read (when another share on it did).
     @State private var openingShared: SharedMachineGroup.Identity?
     @State private var openSharedError: String?
+    @State private var openAfterError: GuestAccess?
 
     var body: some View {
         ZStack {
@@ -1028,7 +1029,12 @@ struct ConnectView: View {
             get: { openSharedError != nil },
             set: { if !$0 { openSharedError = nil } }
         )) {
-            Button("OK", role: .cancel) {}
+            Button("OK", role: .cancel) {
+                if let access = openAfterError {
+                    openAfterError = nil
+                    onOpenShared(access)
+                }
+            }
         } message: {
             Text(openSharedError ?? "")
         }
@@ -1073,17 +1079,26 @@ struct ConnectView: View {
 
     /// A machine this device holds opens at once; one with account shares not opened here
     /// opens them first (a hello with the account's statement), its row reading
-    /// "Connecting…" meanwhile.
+    /// "Connecting…" meanwhile. A share that couldn't be opened is named, before the machine
+    /// opens with the others.
     private func openShared(_ group: SharedMachineGroup) {
         guard group.synced.isEmpty, let access = group.accesses.first else {
             openingShared = group.id
             Task {
-                defer { openingShared = nil }
-                do {
-                    onOpenShared(try await sharedMachines.open(group))
-                } catch {
-                    openSharedError = GuestDevice.describe(error, machine: group.machineLabel)
+                let opened = await sharedMachines.open(group)
+                openingShared = nil
+                if opened.failures.isEmpty {
+                    if let access = opened.access { onOpenShared(access) }
+                    return
                 }
+                let reasons = opened.failures.map { GuestDevice.describe($0.error, machine: group.machineLabel) }
+                if opened.failures.count == 1, opened.access == nil {
+                    openSharedError = reasons[0]
+                } else {
+                    openSharedError = zip(opened.failures, reasons).map { "\($0.share.agentName): \($1)" }
+                        .joined(separator: "\n")
+                }
+                openAfterError = opened.access
             }
             return
         }

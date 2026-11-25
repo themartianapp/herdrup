@@ -80,10 +80,18 @@ struct SharedWithYouContent: View {
         .confirmationDialog("Leave \(access.machineLabel)?", isPresented: $confirmingLeave, titleVisibility: .visible) {
             Button("Leave share", role: .destructive, action: share.onLeave)
         } message: {
-            Text(access.accountBound
-                 ? "\(access.agentName) disappears from every device of your HerdrUp account."
-                 : "\(access.agentName) disappears from this phone.")
+            Text(leaveMessage)
         }
+    }
+
+    /// Signed out, a share in the account leaves this device now and the account at the next
+    /// sign-in to it (the ledger keeps the leave).
+    private var leaveMessage: String {
+        guard access.accountBound else { return "\(access.agentName) disappears from this phone." }
+        guard HerdrUpAccount.shared.signedIn else {
+            return "\(access.agentName) disappears from this phone now, and from your other devices when you sign in to HerdrUp here again."
+        }
+        return "\(access.agentName) disappears from every device of your HerdrUp account."
     }
 
     private func value(_ text: String) -> some View {

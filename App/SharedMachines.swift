@@ -31,9 +31,10 @@ struct SharedMachineGroup: Identifiable {
 /// the Keychain), so the list is plain JSON in UserDefaults.
 ///
 /// Shares added to the HerdrUp account (#700) also live in the account's `shares`
-/// collection: accepting or leaving one here asks the account to sync (`AccountShareSync`
-/// pushes or deletes it), and the account's shares this device hasn't opened are listed as
-/// `accountShares` until they are.
+/// collection: `HerdrUpAccount` watches `machines` and syncs (`AccountShareSync` pushes or
+/// deletes them), `ledger` keeps which account each one belongs to and the leaves not yet
+/// written to it (across sign-outs), and the account's shares this device hasn't opened are
+/// listed as `accountShares` until they are.
 @MainActor
 final class SharedMachinesStore: ObservableObject {
     static let shared: SharedMachinesStore = {
@@ -53,6 +54,7 @@ final class SharedMachinesStore: ObservableObject {
     }()
 
     static let defaultsKey = ShareStorage.guestsKey
+    static let ledgerKey = "guest.accountLedger.v1"
 
     /// Nil keeps the list in memory only (screenshot mocks and UI tests).
     private let defaults: UserDefaults?
@@ -64,6 +66,14 @@ final class SharedMachinesStore: ObservableObject {
     /// The HerdrUp account's shares that this device hasn't opened (set by each sync;
     /// empty when signed out).
     @Published private(set) var accountShares: [AccountShare] = []
+    /// Which account each account-bound share belongs to, and the leaves not yet written to
+    /// it. Kept with the shares: a sign-out doesn't clear it.
+    var ledger: AccountShareLedger {
+        didSet {
+            guard ledger != oldValue, let defaults, let data = try? JSONEncoder().encode(ledger) else { return }
+            defaults.set(data, forKey: Self.ledgerKey)
+        }
+    }
 
     /// Nothing shared with this device, here or through the account.
     var isEmpty: Bool { machines.isEmpty && accountShares.isEmpty }
@@ -103,6 +113,8 @@ final class SharedMachinesStore: ObservableObject {
         } else {
             self.machines = machines
         }
+        ledger = defaults?.data(forKey: Self.ledgerKey)
+            .flatMap { try? JSONDecoder().decode(AccountShareLedger.self, from: $0) } ?? AccountShareLedger()
     }
 
     /// A first open over the relay: the account's statement for this device and the share's
@@ -113,8 +125,7 @@ final class SharedMachinesStore: ObservableObject {
     }
 
     /// Adds a grant, replacing any earlier one with the same id (accepting a fresh
-    /// invite from the same host as the same guest refreshes it in place). One added to the
-    /// account is pushed to it.
+    /// invite from the same host as the same guest refreshes it in place).
     func add(_ access: GuestAccess) {
         if let index = machines.firstIndex(where: { $0.id == access.id }) {
             machines[index] = access
@@ -123,24 +134,29 @@ final class SharedMachinesStore: ObservableObject {
         }
         accountShares.removeAll { $0.id == access.id }
         persist()
-        if access.accountBound { HerdrUpAccount.shared.sharesChanged() }
+    }
+
+    /// What opening a machine from SHARED WITH YOU gave: the grant its home starts from (nil
+    /// when nothing on it could be opened), and the account's shares that couldn't be.
+    struct Opened {
+        var access: GuestAccess?
+        var failures: [(share: AccountShare, error: Error)] = []
     }
 
     /// Opens a machine from SHARED WITH YOU. The account's shares on it that this device
-    /// hasn't opened are opened first, with nothing to accept; the result is the grant its
-    /// home starts from. A share that couldn't be opened stays listed, and throws only when
-    /// nothing on the machine could be.
-    func open(_ group: SharedMachineGroup) async throws -> GuestAccess {
-        var failure: Error?
+    /// hasn't opened are opened first, with nothing to accept; one that couldn't be stays
+    /// listed and is reported.
+    func open(_ group: SharedMachineGroup) async -> Opened {
+        var opened = Opened()
         for share in group.synced {
             do {
                 add(try await firstOpen(share))
             } catch {
-                failure = failure ?? error
+                opened.failures.append((share, error))
             }
         }
-        if let access = machines.first(where: { SharedMachineGroup.Identity($0) == group.id }) { return access }
-        throw failure ?? GuestError.revoked
+        opened.access = machines.first { SharedMachineGroup.Identity($0) == group.id }
+        return opened
     }
 
     /// Saves what the host reports about a grant now (the owner renamed its agent). A grant
@@ -153,11 +169,11 @@ final class SharedMachinesStore: ObservableObject {
     }
 
     /// Removes a grant; its host stops pushing to this phone for it, and nothing it showed
-    /// stays on this phone. One in the account leaves the account too, so it leaves every
-    /// device.
+    /// stays on this phone. One in the account is left there too (the ledger keeps the leave
+    /// until its account deletes it), so it leaves every device.
     func remove(_ access: GuestAccess) {
+        ledger.left(access)
         drop([access])
-        if access.accountBound { HerdrUpAccount.shared.sharesChanged() }
     }
 
     /// Removes grants left on another device of the account: nothing more to tell it.

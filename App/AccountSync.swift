@@ -79,35 +79,7 @@ final class SavedStoresAccountLocal: AccountLocalStore {
 }
 
 /// The shares shared with this device as HerdrKit's `AccountShareSync` sees them (#700): the
-/// account-bound grants in `SharedMachinesStore`, the account's shares not opened here, and
-/// which ones were in step at the last sync (beside the machines' and prompts', cleared at
-/// sign-out).
-@MainActor
-final class SharedMachinesAccountLocal: AccountShareStore {
-    private let store: SharedMachinesStore
-    private let defaults: UserDefaults
-
-    private static let shareIDsKey = "account.sync.shareIDs"
-
-    init(store: SharedMachinesStore, defaults: UserDefaults) {
-        self.store = store
-        self.defaults = defaults
-    }
-
-    /// Signed out: nothing is in step any more, and the account's shares aren't listed.
-    static func forget(_ defaults: UserDefaults, store: SharedMachinesStore) {
-        defaults.removeObject(forKey: shareIDsKey)
-        store.setAccountShares([])
-    }
-
-    var shares: [GuestAccess] { store.machines }
-
-    func removeLeftElsewhere(_ ids: Set<String>) { store.removeLeftElsewhere(ids) }
-
-    func setAccountShares(_ shares: [AccountShare]) { store.setAccountShares(shares) }
-
-    var heldShareIDs: Set<String> {
-        get { Set(defaults.stringArray(forKey: Self.shareIDsKey) ?? []) }
-        set { defaults.set(newValue.sorted(), forKey: Self.shareIDsKey) }
-    }
+/// account-bound grants, the account's shares not opened here, and the ledger kept with them.
+extension SharedMachinesStore: AccountShareStore {
+    var shares: [GuestAccess] { machines }
 }

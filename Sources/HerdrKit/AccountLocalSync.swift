@@ -98,6 +98,20 @@ public struct AccountSyncSummary: Equatable, Sendable {
         }
     }
 
+    /// Adds a later step's summary of the same sync (the shares after the machines and
+    /// prompts): its counts and problems join this one's; the date stays this one's.
+    public mutating func absorb(_ other: AccountSyncSummary) {
+        machinesAdded += other.machinesAdded
+        machinesMerged += other.machinesMerged
+        machinesRemoved += other.machinesRemoved
+        machinesPushed += other.machinesPushed
+        promptsChanged += other.promptsChanged
+        rejected += other.rejected
+        conflicts += other.conflicts
+        overQuota = overQuota || other.overQuota
+        adoptFailures += other.adoptFailures
+    }
+
     static func describe(_ key: SyncKey, body: SyncBody?, error: SyncError) -> String {
         let name: String
         switch body {

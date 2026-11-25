@@ -71,57 +71,61 @@ extension SyncKey {
 }
 
 extension GuestSession {
-    /// `{"v":1,"guest_id":…,"account":…,"device":…}`: a returning hello for an account-bound
-    /// grant from a device the host may not know yet. herdr adds the device to the grant on
-    /// the statement and names it by `device` in the owner's list (DESIGN #698 §4).
-    private struct FirstOpenHello: Encodable {
-        let v = 1
-        let guestID: String
-        let account: String
-        let device: String
-
-        enum CodingKeys: String, CodingKey {
-            case v, account, device
-            case guestID = "guest_id"
-        }
-    }
-
     /// Opens a share the account holds on this device for the first time: no invite, nothing
-    /// to accept. The hello selects the grant by `guest_id` and carries this device's
-    /// statement for the host; the reply names the grant as an accept's does, and the result
-    /// is account-bound, so every later hello carries a statement too.
+    /// to accept. The returning hello selects the grant by `guest_id` and carries this
+    /// device's statement and name, so herdr adds the device to the grant and names it in the
+    /// owner's list (DESIGN #698 §4). The reply names the grant as an accept's does, and the
+    /// result is account-bound, so every later hello carries a statement too.
     public static func open(
         _ share: AccountShare, identity: GuestIdentity, device: String = "iPhone",
         statements: GuestStatementSource?, now: Date = Date(),
         connector: RelaySocketConnector = URLSessionRelayConnector()
     ) async throws -> GuestAccess {
         let statement = try await GuestStatements.fetch(for: share.endpoint.hostID, from: statements)
-        let hello = try JSONEncoder().encode(FirstOpenHello(guestID: share.guestID, account: statement.jws, device: device))
+        let hello = try JSONEncoder().encode(Hello.returning(share.guestID, account: statement.jws, device: device))
         let session = try await RelaySession.open(endpoint: share.endpoint, identity: identity, hello: hello, connector: connector)
         session.close()
-        guard session.reply["guest_id"] as? String == share.guestID else { throw GuestError.revoked }
-        return try access(from: session.reply, share: share, now: now)
+        return try access(from: session.reply, expecting: ExpectedGrant(share), endpoint: share.endpoint, now: now,
+                          accountBound: true)
+    }
+}
+
+extension GuestSession.ExpectedGrant {
+    /// A share opened from the account: its grant is selected, and only the host knows the
+    /// guest's name.
+    init(_ share: AccountShare) {
+        self.init(guestID: share.guestID, guestName: nil, machineLabel: share.machineLabel,
+                  ownerName: share.ownerName, agentName: share.agentName)
+    }
+}
+
+/// Which HerdrUp account each account-bound share on this device belongs to, and the leaves
+/// not yet written to it. It is kept with the shares, not with the sign-in: a sign-out clears
+/// the sync state but not this. So a share left on another device while this one was signed
+/// out is not pushed back at the next sign-in, and a share left here while signed out is
+/// deleted from its account at the next sign-in to that account.
+public struct AccountShareLedger: Codable, Equatable, Sendable {
+    /// Share id → the account it was added to.
+    public var owners: [String: String] = [:]
+    /// Share id → the account it was left from here, until that account holds its tombstone.
+    public var leaves: [String: String] = [:]
+    /// Account id → the shares this device held in step with that account at the end of its
+    /// last sync: one of these the account no longer holds was left elsewhere.
+    public var held: [String: Set<String>] = [:]
+
+    public init() {}
+
+    /// Shares added while signed in to `account` (accepted with it, or opened from it).
+    public mutating func claim(_ ids: some Sequence<String>, account: String) {
+        for id in ids where owners[id] == nil { owners[id] = account }
     }
 
-    static func access(from reply: [String: Any], share: AccountShare, now: Date) throws -> GuestAccess {
-        func text(_ value: Any?) -> String? {
-            guard let string = value as? String, !string.isEmpty else { return nil }
-            return string
-        }
-        let agent = reply["agent"] as? [String: Any]
-        guard let target = text(agent?["target"]), let name = text(reply["name"]) else {
-            throw GuestError.secureChannelFailed("the host's answer is incomplete")
-        }
-        return GuestAccess(
-            guestID: share.guestID,
-            guestName: name,
-            machineLabel: text(reply["machine_label"]) ?? share.machineLabel,
-            ownerName: text(reply["owner_name"]) ?? share.ownerName,
-            agentName: text(agent?["name"]) ?? share.agentName,
-            agentTarget: target,
-            endpoint: share.endpoint,
-            acceptedAt: now,
-            accountBound: true)
+    /// `access` was left here (Leave, Remove share). One its account may hold is deleted
+    /// there at that account's next sync, signed out meanwhile or not. A share no account
+    /// ever took has nothing to delete.
+    public mutating func left(_ access: GuestAccess) {
+        guard access.accountBound, let owner = owners.removeValue(forKey: access.id) else { return }
+        leaves[access.id] = owner
     }
 }
 
@@ -135,14 +139,13 @@ public protocol AccountShareStore: AnyObject {
     func removeLeftElsewhere(_ ids: Set<String>)
     /// The account's shares that aren't on this device: SHARED WITH YOU lists them.
     func setAccountShares(_ shares: [AccountShare])
-    /// The ids this device held in step with the account at the end of the last sync: only
-    /// these, when missing here, count as left here.
-    var heldShareIDs: Set<String> { get set }
+    /// Persisted with the shares; a sign-out leaves it as it is.
+    var ledger: AccountShareLedger { get set }
 }
 
 /// What one `AccountShareSync` decides, before anything is written.
 public struct AccountSharePlan: Equatable, Sendable {
-    /// Account-bound shares accepted here that the account doesn't hold yet.
+    /// Account-bound shares added here that the account doesn't hold yet.
     public var push: [SyncShare] = []
     /// Shares left here: their items become tombstones, so they leave every device.
     public var delete: [SyncKey] = []
@@ -150,73 +153,115 @@ public struct AccountSharePlan: Equatable, Sendable {
     public var removeHere: Set<String> = []
     /// The account's shares this device doesn't hold.
     public var available: [AccountShare] = []
+    /// Account-bound shares here no account has claimed yet: this account's.
+    public var claim: Set<String> = []
+    /// Leaves from this account it holds no live item for any more: nothing left to delete.
+    public var leavesDone: Set<String> = []
 
     public init() {}
 }
 
+/// The service's copy of the `shares` collection, as `AccountShareSync.plan` reads it.
+public struct AccountShareMirror: Equatable, Sendable {
+    /// Live items, with the changes queued here applied.
+    public var live: [SyncItem]
+    /// Ids the service holds as tombstones, with nothing queued here for them.
+    public var tombstones: Set<String>
+    /// Ids with a change queued here, not yet taken by the service.
+    public var queued: Set<String>
+
+    public init(live: [SyncItem], tombstones: Set<String> = [], queued: Set<String> = []) {
+        self.live = live
+        self.tombstones = tombstones
+        self.queued = queued
+    }
+
+    /// The engine's current view.
+    public static func of(_ engine: SyncEngine) async -> AccountShareMirror {
+        let state = await engine.currentState
+        let live = await engine.items(in: .shares)
+        let queued = Set(state.pending.map(\.key).filter { $0.collection == .shares }.map(\.id))
+        let tombstones = Set(state.items.filter { $0.key.collection == .shares && $0.deleted }.map(\.key.id))
+        return AccountShareMirror(live: live, tombstones: tombstones.subtracting(queued), queued: queued)
+    }
+}
+
 /// The guest side of the `shares` collection (#700): run after `AccountLocalSync`, on the
-/// mirror it just pulled.
+/// mirror it just pulled, for the signed-in `account`.
 ///
-/// - **Accepted with the account here:** the share is pushed (on the next sync after accept,
-///   or after a sync that couldn't reach the service).
-/// - **Left here** (Leave, Remove share): a share held in step that is no longer here is
-///   deleted in the account, so it leaves the other devices too.
-/// - **Left on another device:** a share held in step whose item is gone is removed here.
+/// - **Added with the account here** (accepted with it, or opened from it): the share is
+///   claimed for the account and pushed when the account doesn't hold it yet.
+/// - **Left here** (Leave, Remove share): the ledger keeps a leave until the share's own
+///   account holds a tombstone for it, so it leaves every device, even when it was left while
+///   signed out.
+/// - **Left on another device:** a share of this account that it holds as a tombstone, or
+///   that was in step at this account's last sync and is gone, is removed here and never
+///   pushed back.
 /// - **Accepted on another device:** listed with nothing to accept; opening it is a returning
-///   hello with the statement (`GuestSession.open(_:)`), and only then is it held here.
-///
-/// The ids held at the end come from the shares this run saw, so a share left while the run
-/// waited on the network still counts as held and is deleted by the next run.
+///   hello with the statement (`GuestSession.open(_:)`).
+/// - A share of another account waits for a sign-in to that account.
 @MainActor
 public struct AccountShareSync {
     public let engine: SyncEngine
     public let store: AccountShareStore
+    public let account: String
 
-    public init(engine: SyncEngine, store: AccountShareStore) {
+    public init(engine: SyncEngine, store: AccountShareStore, account: String) {
         self.engine = engine
         self.store = store
+        self.account = account
     }
 
-    public static func plan(local: [GuestAccess], mirror: [SyncItem], held: Set<String>) -> AccountSharePlan {
+    public static func plan(local: [GuestAccess], mirror: AccountShareMirror, ledger: AccountShareLedger,
+                            account: String) -> AccountSharePlan {
         var live: [String: SyncShare] = [:]
-        for item in mirror where item.key.collection == .shares {
+        for item in mirror.live where item.key.collection == .shares {
             if case .share(let share)? = item.body { live[item.key.id] = share }
         }
+        let held = ledger.held[account] ?? []
         let here = Set(local.map(\.id))
         var plan = AccountSharePlan()
         for access in local where access.accountBound {
-            if live[access.id] != nil { continue }
-            if held.contains(access.id) {
+            switch ledger.owners[access.id] {
+            case nil: plan.claim.insert(access.id)
+            case account?: break
+            default: continue
+            }
+            if live[access.id] != nil || mirror.queued.contains(access.id) { continue }
+            if mirror.tombstones.contains(access.id) || held.contains(access.id) {
                 plan.removeHere.insert(access.id)
             } else {
                 plan.push.append(SyncShare(access))
             }
         }
-        var leaving: Set<String> = []
-        for id in held.sorted() where !here.contains(id) {
-            guard let share = live[id] else { continue }
-            leaving.insert(id)
-            plan.delete.append(.share(hostID: share.hostID, guestID: share.guestID))
+        for (id, owner) in ledger.leaves.sorted(by: { $0.key < $1.key }) where owner == account {
+            if let share = live[id] {
+                plan.delete.append(.share(hostID: share.hostID, guestID: share.guestID))
+            } else if !mirror.queued.contains(id) {
+                plan.leavesDone.insert(id)
+            }
         }
         plan.available = live.keys.sorted()
-            .filter { !here.contains($0) && !leaving.contains($0) }
+            .filter { !here.contains($0) && ledger.leaves[$0] == nil }
             .compactMap { live[$0].flatMap(AccountShare.init) }
         return plan
     }
 
-    /// The plan, applied: removals and the list here, then pushes and deletes. Returns the
-    /// summary of the extra push, when there was one.
+    /// The plan, applied: removals, the list here and the ledger, then pushes and deletes.
+    /// Returns the summary of the extra push, when there was one.
     @discardableResult
     public func run() async throws -> AccountSyncSummary {
         var summary = AccountSyncSummary()
-        let mirror = await engine.items(in: .shares)
+        let mirror = await AccountShareMirror.of(engine)
         // No await from the snapshot to the store writes: the plan holds for what is here.
-        let local = store.shares
-        let plan = Self.plan(local: local, mirror: mirror, held: store.heldShareIDs)
+        let plan = Self.plan(local: store.shares, mirror: mirror, ledger: store.ledger, account: account)
         if !plan.removeHere.isEmpty { store.removeLeftElsewhere(plan.removeHere) }
         store.setAccountShares(plan.available)
-        let seen = Set(local.filter(\.accountBound).map(\.id)).subtracting(plan.removeHere)
-            .union(store.heldShareIDs)
+        var ledger = store.ledger
+        ledger.claim(plan.claim, account: account)
+        for id in plan.removeHere { ledger.owners[id] = nil }
+        for id in plan.leavesDone { ledger.leaves[id] = nil }
+        store.ledger = ledger
 
         var staged = false
         for share in plan.push {
@@ -229,8 +274,19 @@ public struct AccountShareSync {
         }
         if staged { summary.absorb(try await engine.sync()) }
 
-        let account = Set(await engine.items(in: .shares).map(\.key.id))
-        store.heldShareIDs = seen.intersection(account)
+        // What changed here while the run waited (a share left, one added) is in the ledger
+        // and the store now: read both again.
+        let after = await AccountShareMirror.of(engine)
+        let inAccount = Set(after.live.map(\.key.id))
+        ledger = store.ledger
+        for (id, owner) in ledger.leaves where owner == account && !inAccount.contains(id) && !after.queued.contains(id) {
+            ledger.leaves[id] = nil
+        }
+        let mine = store.shares.filter { $0.accountBound && ledger.owners[$0.id] == account }.map(\.id)
+        ledger.held[account] = Set(mine).intersection(inAccount)
+        let kept = Set(store.shares.map(\.id))
+        ledger.owners = ledger.owners.filter { kept.contains($0.key) }
+        store.ledger = ledger
         return summary
     }
 
