@@ -542,8 +542,9 @@ final class TopicsModel: ObservableObject {
 
 // MARK: - Status
 
-/// A topic's status as plain muted text ("Working", "Idle · 1 queued", "Closed"), with one
-/// small dot only while it works (owner pick "Topics · A, revised": no pills, badges or chips).
+/// A topic's status as plain muted text ("Working", "Idle · 1 queued", "Closed") after its mark
+/// (owner picks 2026-11-24, item 12, Apple clean): the activity spinner while it works, a 7 pt
+/// faint dot while idle, no mark otherwise.
 struct TopicStatusText: View {
     let topic: AgentTopic
     var size: CGFloat = 13
@@ -566,9 +567,10 @@ struct TopicStatusText: View {
     var body: some View {
         if let text = Self.text(for: topic) {
             HStack(spacing: 5) {
-                // The one dot the owner kept for topics: working (or starting its first turn).
                 if topic.state.isWorking {
-                    Circle().fill(Palette.working).frame(width: 6, height: 6)
+                    ActivitySpinner()
+                } else if topic.state == .idle {
+                    Circle().fill(Palette.textFaint).frame(width: 7, height: 7)
                 }
                 Text(text).font(Typography.app(size)).foregroundStyle(Palette.textDim).lineLimit(1)
             }
@@ -597,38 +599,86 @@ private struct TopicsHeaderRule: View {
     }
 }
 
-/// iPad, column folded: "Topics" with its ⌥⌘T hint at the left of the header brings it back.
+/// The Topics bar's two parts, [fold] Topics (i) and the actions: on one line, the actions at the
+/// trailing edge, while both fit; otherwise the actions on a line of their own under the heading,
+/// still at the trailing edge (herdrup-desktop's wrapping `.topics-head`). The heading part is
+/// never squeezed.
+private struct TopicsHeadLayout: Layout {
+    var spacing: CGFloat = 6
+    var lineSpacing: CGFloat = 4
+
+    private func sizes(_ subviews: Subviews) -> (CGSize, CGSize)? {
+        guard subviews.count == 2 else { return nil }
+        return (subviews[0].sizeThatFits(.unspecified), subviews[1].sizeThatFits(.unspecified))
+    }
+
+    private func oneLine(_ title: CGSize, _ actions: CGSize, width: CGFloat) -> Bool {
+        title.width + spacing + actions.width <= width
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard case let (title, actions)? = sizes(subviews) else { return .zero }
+        let width = proposal.width ?? title.width + spacing + actions.width
+        if oneLine(title, actions, width: width) {
+            return CGSize(width: width, height: max(title.height, actions.height))
+        }
+        return CGSize(width: width, height: title.height + lineSpacing + actions.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard case let (title, actions)? = sizes(subviews) else { return }
+        if oneLine(title, actions, width: bounds.width) {
+            subviews[0].place(at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading,
+                              proposal: ProposedViewSize(title))
+            subviews[1].place(at: CGPoint(x: bounds.maxX, y: bounds.midY), anchor: .trailing,
+                              proposal: ProposedViewSize(actions))
+        } else {
+            subviews[0].place(at: CGPoint(x: bounds.minX, y: bounds.minY), anchor: .topLeading,
+                              proposal: ProposedViewSize(title))
+            subviews[1].place(at: CGPoint(x: bounds.maxX, y: bounds.maxY), anchor: .bottomTrailing,
+                              proposal: ProposedViewSize(actions))
+        }
+    }
+}
+
+/// iPad, column folded (owner picks 2026-11-24, item 15, Apple clean): a "Topics" compact capsule
+/// with the sidebar glyph at the left of the header brings the column back; its ⌥⌘T hint is faint
+/// text beside it.
 private struct TopicsColumnShowButton: View {
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                Text("Topics").font(Typography.app(14, .medium)).foregroundStyle(Palette.text)
-                Text("⌥⌘T").font(Typography.app(12)).tracking(0.5).foregroundStyle(Palette.textFaint)
+        HStack(spacing: 10) {
+            Button(action: action) {
+                HStack(spacing: 6) {
+                    Image(systemName: "sidebar.left").font(.system(size: 13, weight: .medium))
+                    Text("Topics")
+                }
             }
-            .frame(minHeight: 44)
-            .contentShape(Rectangle())
+            .buttonStyle(.capsule(.secondary, .compact))
+            .accessibilityLabel("Show topics")
+            .accessibilityIdentifier("topics-column-show")
+            Text("⌥⌘T").font(Typography.app(12)).tracking(0.5).foregroundStyle(Palette.textFaint)
+                .accessibilityHidden(true)
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Show topics")
-        .accessibilityIdentifier("topics-column-show")
     }
 }
 
-/// The design's sizes (topics-A-v2): iPad's column, and iPhone's list screen (`compact`).
+/// The design's sizes: iPad's column as the owner picked it on 2026-11-24 (item 11, Apple clean:
+/// herdrup-desktop src/topics.css), and iPhone's list screen (`compact`), which keeps its large
+/// title and sizes.
 private struct TopicsMetrics {
     let compact: Bool
 
     var headHeight: CGFloat { compact ? 52 : 50 }
-    var heading: Font { compact ? Typography.app(28, .bold) : Typography.app(15, .semibold) }
-    var searchHeight: CGFloat { compact ? 36 : 32 }
+    var heading: Font { compact ? Typography.app(28, .bold) : Typography.app(17, .semibold) }
+    var searchHeight: CGFloat { compact ? 36 : 30 }
     var searchFont: CGFloat { compact ? 16 : 14 }
-    var searchRadius: CGFloat { compact ? 10 : 8 }
-    var rowTitle: CGFloat { compact ? 16 : 14.5 }
+    var searchRadius: CGFloat { compact ? 10 : 9 }
+    var rowTitle: CGFloat { compact ? 16 : 15 }
     var rowLine: CGFloat { compact ? 14 : 13 }
-    var rowTime: CGFloat { compact ? 14 : 12.5 }
-    var section: CGFloat { compact ? 14 : 12.5 }
+    var rowTime: CGFloat { compact ? 14 : 12 }
+    var section: CGFloat { compact ? 14 : 12 }
     var sectionTop: CGFloat { compact ? 16 : 14 }
 }
 
@@ -655,8 +705,9 @@ struct TopicsPane: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.scenePhase) private var scenePhase
 
-    /// iPad: the topics column's width in the design.
-    static let columnWidth: CGFloat = 300
+    /// iPad: the topics column's width. The desktop's 320 (Apple clean's 299 widened): the fold,
+    /// the heading with About, and the two capsules fit on one line only this way.
+    static let columnWidth: CGFloat = 320
 
     var body: some View {
         Group {
@@ -870,8 +921,6 @@ private struct TopicsList: View {
                             .font(Typography.app(13)).foregroundStyle(Palette.textDim)
                             .padding(.horizontal, 10).padding(.top, 16)
                     }
-                    aboutButton
-                        .padding(.top, 12)
                 }
                 .padding(.horizontal, 8)
                 .padding(.bottom, 24)
@@ -901,68 +950,78 @@ private struct TopicsList: View {
         }
     }
 
-    /// [column toggle] Topics … Organise  New topic: the toggle is the column's one icon; the
-    /// actions are plain words.
+    /// [fold] Topics (i) … Organise  New topic (owner picks 2026-11-24, item 11, Apple clean with
+    /// Before's buttons): the fold is the column's one icon, About sits beside the heading, and
+    /// the actions are compact capsules. When they don't fit beside the heading (a busy Organise
+    /// in the iPad column, a large text size), they take a line of their own at the trailing edge.
     private var head: some View {
-        HStack(spacing: 14) {
-            if let onToggleColumn {
-                Button(action: onToggleColumn) {
-                    Image(systemName: "sidebar.left").font(.system(size: 16, weight: .regular))
-                        .foregroundStyle(Palette.textDim)
-                        .frame(width: 32, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Hide topics")
-                .accessibilityIdentifier("topics-column-toggle")
-            }
-            Text("Topics").font(metrics.heading).foregroundStyle(Palette.text)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityAddTraits(.isHeader)
-            if model.suggestionsServed {
-                // The agent proposes topics from its Inbox (proposal 3).
-                Button { Task { await model.organise(client: client) } } label: {
-                    HStack(spacing: 6) {
-                        if model.organising { ProgressView().controlSize(.mini).tint(Palette.textDim) }
-                        Text("Organise").font(Typography.app(14, .medium))
-                            .foregroundStyle(model.organising ? Palette.textDim : Palette.text)
+        TopicsHeadLayout {
+            HStack(spacing: 6) {
+                if let onToggleColumn {
+                    Button(action: onToggleColumn) {
+                        Image(systemName: "sidebar.left").font(.system(size: 16, weight: .regular))
+                            .foregroundStyle(Palette.textDim)
+                            .frame(width: 32, height: 44)
+                            .contentShape(Rectangle())
                     }
-                    .frame(minHeight: 44)
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Hide topics")
+                    .accessibilityIdentifier("topics-column-toggle")
+                    .padding(.trailing, -6)
                 }
-                .buttonStyle(.plain)
-                .disabled(model.organising)
-                .accessibilityIdentifier("topics-organise")
+                Text("Topics").font(metrics.heading).foregroundStyle(Palette.text)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .accessibilityAddTraits(.isHeader)
+                aboutButton
+                    .padding(.leading, -2)
             }
-            Button { composing = true } label: {
-                Text("New topic").font(Typography.app(14, .medium)).foregroundStyle(Palette.text)
-                    .frame(minHeight: 44)
-                    .contentShape(Rectangle())
+            HStack(spacing: 6) {
+                if model.suggestionsServed {
+                    // The agent proposes topics from its Inbox (proposal 3).
+                    Button { Task { await model.organise(client: client) } } label: {
+                        HStack(spacing: 6) {
+                            if model.organising { ProgressView().controlSize(.mini).tint(Palette.textDim) }
+                            Text("Organise")
+                        }
+                    }
+                    .buttonStyle(.capsule(.secondary, .compact))
+                    .disabled(model.organising)
+                    .accessibilityIdentifier("topics-organise")
+                }
+                Button("New topic") { composing = true }
+                    .buttonStyle(.capsule(.secondary, .compact))
+                    .accessibilityIdentifier("topics-new")
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("topics-new")
         }
-        .frame(height: metrics.headHeight)
-        .padding(.leading, onToggleColumn == nil ? 16 : 10).padding(.trailing, 16)
+        .frame(minHeight: metrics.headHeight)
+        .padding(.leading, onToggleColumn == nil ? 16 : 8).padding(.trailing, onToggleColumn == nil ? 16 : 10)
     }
 
-    /// "Search topics", with no magnifier: the field is the only thing in its row.
+    /// "Search topics" after a magnifying glass (owner picks 2026-11-24, item 11).
     private var searchField: some View {
-        TextField("", text: $search, prompt: Text("Search topics").foregroundColor(Palette.textFaint))
-            .textFieldStyle(.plain)
-            .font(Typography.app(metrics.searchFont))
-            .foregroundStyle(Palette.text)
-            .tint(Palette.text)
-            .focused($searchFocused)
-            .submitLabel(.search)
-            .autocorrectionDisabled()
-            .textInputAutocapitalization(.never)
-            .padding(.horizontal, 12)
-            .frame(height: metrics.searchHeight)
-            .background(RoundedRectangle(cornerRadius: metrics.searchRadius).fill(Palette.surface))
-            .accessibilityIdentifier("topics-search-field")
-            .padding(.horizontal, 16).padding(.bottom, 8)
+        HStack(spacing: 7) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: metrics.searchFont - 1, weight: .medium))
+                .foregroundStyle(Palette.textFaint)
+                .accessibilityHidden(true)
+            TextField("", text: $search, prompt: Text("Search topics").foregroundColor(Palette.textFaint))
+                .textFieldStyle(.plain)
+                .font(Typography.app(metrics.searchFont))
+                .foregroundStyle(Palette.text)
+                .tint(Palette.text)
+                .focused($searchFocused)
+                .submitLabel(.search)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .accessibilityIdentifier("topics-search-field")
+        }
+        .padding(.horizontal, compact ? 10 : 9)
+        .frame(height: metrics.searchHeight)
+        .background(RoundedRectangle(cornerRadius: metrics.searchRadius).fill(Palette.surface))
+        .contentShape(Rectangle())
+        .onTapGesture { searchFocused = true }
+        .padding(.horizontal, 16).padding(.bottom, 8)
     }
 
     /// "Today", "This week", "Closed": sentence case, muted.
@@ -979,7 +1038,7 @@ private struct TopicsList: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Inbox").font(Typography.app(metrics.rowTitle, .semibold)).foregroundStyle(Palette.text)
                 Text(inboxPreview?.isEmpty == false ? inboxPreview! : "The agent's own conversation")
-                    .font(Typography.app(metrics.rowLine)).foregroundStyle(Palette.textFaint).lineLimit(1)
+                    .font(Typography.app(metrics.rowLine)).foregroundStyle(Palette.textDim).lineLimit(1)
             }
             .padding(.horizontal, 10).padding(.top, 10).padding(.bottom, 11)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1044,39 +1103,30 @@ private struct TopicsList: View {
         .accessibilityIdentifier("topics-proposal-\(suggestion.id)")
     }
 
-    /// Not now · Create N topics under the list while there are proposals: a word, and the
-    /// one filled button, as the suggestion card.
+    /// Not now · Create N topics under the list while there are proposals (owner picks 2026-11-24,
+    /// item 13: Apple clean dimensions, curved like Before): a quiet 55 pt bar with a hairline on
+    /// top, Not now a secondary capsule and Create N topics the filled one.
     private var proposalsBar: some View {
         let count = model.tickedCount
-        return HStack(spacing: 18) {
+        return HStack(spacing: 8) {
             Spacer(minLength: 0)
-            Button {
+            Button("Not now") {
                 Task { actionNote = await model.dismissProposals(client: client) }
-            } label: {
-                Text("Not now").font(Typography.app(14, .medium)).foregroundStyle(Palette.textDim)
-                    .frame(minHeight: 44)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.capsule(.secondary, .compact))
             .accessibilityIdentifier("topics-proposals-dismiss")
-            Button {
+            Button(count == 1 ? "Create 1 topic" : "Create \(count) topics") {
                 Task { actionNote = await model.createTicked(client: client) }
-            } label: {
-                Text(count == 1 ? "Create 1 topic" : "Create \(count) topics")
-                    .font(Typography.app(14, .semibold)).foregroundStyle(Palette.ground)
-                    .padding(.horizontal, 16).frame(height: 32)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Palette.text))
-                    .frame(minHeight: 44)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.capsule(.filled, .compact))
             .disabled(count == 0)
-            .opacity(count == 0 ? 0.5 : 1)
             .accessibilityIdentifier("topics-proposals-create")
         }
         .disabled(model.settling)
-        .padding(.horizontal, 16).padding(.top, 4).padding(.bottom, 8)
-        .background(Palette.groundMachine)
+        .padding(.horizontal, 16)
+        .frame(height: 55)
+        // The desktop's quiet fill: the surface at 55 % over the ground.
+        .background { Palette.surface.opacity(0.55).background(Palette.ground) }
         .overlay(alignment: .top) { Rectangle().fill(Palette.hairlineQuiet).frame(height: 1) }
     }
 
@@ -1095,7 +1145,7 @@ private struct TopicsList: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if topic.activityUnixMs > 0 {
                         Text(GramDates.rowTime(for: Date(timeIntervalSince1970: Double(topic.activityUnixMs) / 1000)))
-                            .font(Typography.app(metrics.rowTime)).foregroundStyle(Palette.textFaint)
+                            .font(Typography.app(metrics.rowTime)).monospacedDigit().foregroundStyle(Palette.textFaint)
                             .fixedSize()
                     }
                 }
@@ -1104,7 +1154,7 @@ private struct TopicsList: View {
                     TopicStatusText(topic: topic, size: metrics.rowLine)
                     if let activity = topic.lastActivity, !activity.isEmpty {
                         TopicsSeparator(size: metrics.rowLine)
-                        Text(activity).font(Typography.app(metrics.rowLine)).foregroundStyle(Palette.textFaint)
+                        Text(activity).font(Typography.app(metrics.rowLine)).foregroundStyle(Palette.textDim)
                             .lineLimit(1)
                     }
                     Spacer(minLength: 0)
@@ -1112,7 +1162,7 @@ private struct TopicsList: View {
             }
             .padding(.horizontal, 10).padding(.top, 10).padding(.bottom, 11)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 9).fill(selected ? Palette.surfaceRaised : Color.clear))
+            .background(RoundedRectangle(cornerRadius: 10).fill(selected ? Palette.surfaceRaised : Color.clear))
             .overlay(alignment: .top) {
                 if ruled { Rectangle().fill(Palette.hairlineQuiet).frame(height: 1).padding(.horizontal, 10) }
             }
@@ -1145,19 +1195,21 @@ private struct TopicsList: View {
 }
 
 extension TopicsList {
-    /// "About topics", a word at the foot of the list: what topics are. A bottom sheet on
-    /// iPhone, a popover pointing at it on iPad. 44 pt to tap.
+    /// About topics (owner picks 2026-11-24, item 11): the faint (i) beside the heading, what
+    /// topics are. A bottom sheet on iPhone, a popover pointing at it on iPad. 44 pt to tap; it
+    /// takes 24 pt of the bar, so its touch area reaches into the space around it.
     private var aboutButton: some View {
         Button { showingAbout = true } label: {
-            Text("About topics").font(Typography.app(13)).foregroundStyle(Palette.textFaint)
-                .padding(.horizontal, 10)
-                .frame(minWidth: 44, minHeight: 44, alignment: .leading)
+            Image(systemName: "info.circle").font(.system(size: 15, weight: .regular))
+                .foregroundStyle(Palette.textFaint)
+                .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .padding(.horizontal, -10)
         .accessibilityLabel("About topics")
         .accessibilityIdentifier("topics.about")
-        .popover(isPresented: $showingAbout, arrowEdge: .bottom) {
+        .popover(isPresented: $showingAbout, arrowEdge: .top) {
             AboutTopicsView()
                 .frame(idealWidth: 380, idealHeight: 560)
                 .presentationCompactAdaptation(.sheet)
@@ -1378,7 +1430,9 @@ private struct TopicChat: View {
         if showsBack { phoneHeader } else { padHeader }
     }
 
-    /// iPad: [Topics ⌥⌘T |] ‹ Inbox | Title · status … ⋯, one 48 pt row.
+    /// iPad: [Topics ⌥⌘T |] ‹ Inbox | Title · status … ⋯, one 48 pt row (owner picks 2026-11-24,
+    /// item 14, Apple clean with Before's buttons): ‹ Inbox a compact capsule, the 16 pt title,
+    /// ••• a circle.
     private var padHeader: some View {
         HStack(spacing: 12) {
             if let onShowColumn {
@@ -1386,21 +1440,18 @@ private struct TopicChat: View {
                 TopicsHeaderRule()
             }
             Button(action: onOpenInbox) {
-                HStack(spacing: 1) {
-                    Image(systemName: "chevron.left").font(.system(size: 13, weight: .semibold))
-                    Text("Inbox").font(Typography.app(14, .medium))
+                HStack(spacing: 3) {
+                    Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold))
+                    Text("Inbox")
                 }
-                .foregroundStyle(Palette.text)
-                .frame(minHeight: 44)
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.capsule(.secondary, .compact))
             .accessibilityLabel("Inbox")
             .accessibilityIdentifier("topic-inbox-link")
             TopicsHeaderRule()
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text(title)
-                    .font(Typography.app(15, .semibold)).foregroundStyle(Palette.text).lineLimit(1)
+                    .font(Typography.app(16, .semibold)).foregroundStyle(Palette.text).lineLimit(1)
                     .accessibilityIdentifier("topic-chat-title")
                 TopicStatusText(topic: topic, size: 13)
             }
@@ -1408,11 +1459,12 @@ private struct TopicChat: View {
             actionsMenu
         }
         .frame(height: 48)
-        .padding(.leading, 16).padding(.trailing, 4)
+        .padding(.leading, 16).padding(.trailing, 12)
         .overlay(alignment: .bottom) { Rectangle().fill(Palette.hairlineQuiet).frame(height: 1) }
     }
 
-    /// iPhone: ‹ Topics … ⋯, then the title large, and "• Working · herdr-app" under it.
+    /// iPhone: ‹ Topics … ⋯, then the title large, and "• Working · herdr-app" under it. ‹ Topics
+    /// is a compact capsule and ••• a circle (item 14); the title keeps the large-title scale.
     private var phoneHeader: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 0) {
@@ -1420,22 +1472,19 @@ private struct TopicChat: View {
                     focused = false
                     model.selectedTopicID = nil
                 } label: {
-                    HStack(spacing: 2) {
-                        Image(systemName: "chevron.left").font(.system(size: 17, weight: .semibold))
-                        Text("Topics").font(Typography.app(15, .medium))
+                    HStack(spacing: 3) {
+                        Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold))
+                        Text("Topics")
                     }
-                    .foregroundStyle(Palette.text)
-                    .frame(minHeight: 44)
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.capsule(.secondary, .compact))
                 .accessibilityLabel("Topics")
                 .accessibilityIdentifier("topic-back")
                 Spacer(minLength: 0)
                 actionsMenu
             }
             .frame(height: 50)
-            .padding(.leading, 8).padding(.trailing, 4)
+            .padding(.leading, 16).padding(.trailing, 12)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(Typography.app(22, .bold)).foregroundStyle(Palette.text).lineLimit(2)
@@ -1467,9 +1516,10 @@ private struct TopicChat: View {
                 } label: { Label("Close", systemImage: "archivebox") }
             }
         } label: {
-            Image(systemName: "ellipsis").font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(Palette.text).frame(width: 44, height: 44)
+            Image(systemName: "ellipsis")
         }
+        .menuStyle(.button)
+        .buttonStyle(.circle(diameter: 30))
         .accessibilityLabel("Topic actions")
         .accessibilityIdentifier("topic-actions")
     }
