@@ -498,19 +498,19 @@ struct GuestPaneView: View {
         switch availability {
         case .connecting:
             GuestStatusPill(label: "CONNECTING", color: Palette.textDim, dot: Palette.textFaint,
-                            fill: Palette.surfaceRaised, pulsing: false)
+                            fill: Palette.surfaceRaised, working: false)
         case .paused, .offline, .lost:
             GuestStatusPill(label: availability == .offline ? "OFFLINE" : availability == .lost ? "ACCESS REMOVED" : "NOT RUNNING",
                             color: Palette.textDim, dot: Palette.textFaint, fill: Palette.surfaceRaised,
-                            pulsing: false)
+                            working: false)
         case .running:
             if waitingForOwner {
                 GuestStatusPill(label: "NEEDS \(access.ownerName.uppercased())", color: Palette.waiting,
-                                dot: Palette.waiting, fill: Palette.waiting.opacity(0.14), pulsing: false)
+                                dot: Palette.waiting, fill: Palette.waiting.opacity(0.14), working: false)
             } else {
                 let group = agent.map { AgentRow(info: $0).group } ?? .working
                 GuestStatusPill(label: group.sectionTitle, color: group.color, dot: group.color,
-                                fill: group.color.opacity(0.13), pulsing: group == .working)
+                                fill: group.color.opacity(0.13), working: group == .working)
             }
         }
     }
@@ -1158,17 +1158,22 @@ extension AgentInfo {
     }
 }
 
-/// The status pill of the guest pane's status row.
+/// The status pill of the guest pane's status row: the activity spinner while the agent works (as
+/// the owner's header, owner picks 2026-11-24 item 6), the status dot otherwise.
 private struct GuestStatusPill: View {
     let label: String
     let color: Color
     let dot: Color
     let fill: Color
-    let pulsing: Bool
+    let working: Bool
 
     var body: some View {
         HStack(spacing: 7) {
-            PulsingDot(color: dot, active: pulsing)
+            if working {
+                ActivitySpinner(color: dot)
+            } else {
+                Circle().fill(dot).frame(width: 7, height: 7)
+            }
             Text(label).font(Typography.machine(12, .semibold)).tracking(1.2)
                 .foregroundStyle(color)
         }

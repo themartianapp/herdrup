@@ -6171,7 +6171,6 @@ struct TerminalPaneContent: View {
                                        showsTopics: topicsAvailable, showsChat: chatAvailable)
                         .padding(.top, 2).padding(.bottom, 10)
                         .frame(maxWidth: .infinity)
-                        .overlay(alignment: .bottom) { Rectangle().fill(Palette.hairlineQuiet).frame(height: 1) }
                         .accessibilityHidden(!isForeground)
                 }
                 // A one-time, dismissible offer to move Claude Code off its laggy
@@ -6595,22 +6594,27 @@ struct TerminalPaneContent: View {
                                       fallbackTitle: title, isForeground: isForeground))
     }
 
-    /// The heading, with the agent's status underneath: pulsing dot + status word and the
-    /// live time in that status.
+    /// The heading, with the agent's status underneath (owner picks 2026-11-24, items 5 and 6, Apple
+    /// clean): the status in sentence case and dim text, the activity spinner while working, the amber
+    /// dot only while it needs you, no mark otherwise; then the live time in that status.
     private var titleBlock: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(heading).font(Typography.app(16, .semibold))
                 .foregroundStyle(Palette.text).lineLimit(1)
             if let group {
                 HStack(spacing: 6) {
-                    PulsingDot(color: group.color, active: group == .working)
-                    Text(group.sectionTitle).font(Typography.microLabel).tracking(1)
-                        .foregroundStyle(group.color)
+                    switch group {
+                    case .working: ActivitySpinner()
+                    case .needsYou: Circle().fill(Palette.waiting).frame(width: 7, height: 7)
+                    case .idle, .stopped, .unrecognised: EmptyView()
+                    }
+                    Text(group.sentenceLabel).font(Typography.app(13))
+                        .foregroundStyle(Palette.textDim)
                     if let sinceMs = statusSinceMs {
                         let start = Date(timeIntervalSince1970: Double(sinceMs) / 1000)
                         TimelineView(.periodic(from: .now, by: 1)) { ctx in
                             Text(elapsedLabel(ctx.date.timeIntervalSince(start)))
-                                .font(Typography.machine(11)).monospacedDigit()
+                                .font(Typography.app(13)).monospacedDigit()
                                 .foregroundStyle(Palette.textFaint)
                         }
                     }

@@ -507,6 +507,7 @@ struct GramCodeBlock: View {
                             .frame(width: 28, height: 28)
                             .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                 }
                 .padding(.leading, 10)
                 .padding(.trailing, 4)
@@ -521,17 +522,15 @@ struct GramCodeBlock: View {
                                 .lineLimit(1)
                         }
                         Spacer(minLength: 0)
-                        // An acting control: ink, like the file card's actions.
+                        // A text action, so a plain capsule (all capsules, owner 2026-11-24).
                         copyButton {
                             HStack(spacing: 4) {
                                 copyGlyph(size: 11, tint: Palette.text)
                                 Text(copied ? "Copied" : "Copy")
-                                    .font(Typography.app(12, .semibold))
                                     .foregroundStyle(copied ? Palette.done : Palette.text)
                             }
-                            .padding(.vertical, 2)
-                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.capsule(.plain, .compact))
                     }
                     codeText
                 }
@@ -578,7 +577,6 @@ struct GramCodeBlock: View {
 
     private func copyButton<Label: View>(@ViewBuilder label: () -> Label) -> some View {
         Button(action: { receipt.record(code) }, label: label)
-            .buttonStyle(.plain)
             .accessibilityLabel(Text(copied ? "Copied" : "Copy code"))
             .accessibilityIdentifier("gram-code-copy")
     }

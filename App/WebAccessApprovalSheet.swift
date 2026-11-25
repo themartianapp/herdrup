@@ -98,24 +98,27 @@ struct WebAccessApprovalSheet: View {
         }
     }
 
+    /// One code box (owner picks 2026-11-24, approve sheet code entry, Apple clean): 46×56, radius
+    /// 10, the digit in 28 pt medium with tabular figures, a 6 pt dot while empty.
     private func box(_ index: Int) -> some View {
         let digits = Array(model.typed)
         let active = model.phase == .enterCode && index == digits.count && codeFocused
         let matched = model.phase == .matched || model.phase == .working && model.typed.count == 4
         return ZStack {
-            RoundedRectangle(cornerRadius: 12)
+            RoundedRectangle(cornerRadius: 10)
                 .fill(Palette.ground)
-            RoundedRectangle(cornerRadius: 12)
+            RoundedRectangle(cornerRadius: 10)
                 .stroke(active ? Palette.text : matched ? Palette.brand : Palette.hairline, lineWidth: active ? 2 : 1)
             if index < digits.count {
-                Text(String(digits[index])).font(Typography.app(28, .semibold)).foregroundStyle(Palette.text)
+                Text(String(digits[index])).font(Typography.app(28, .medium)).monospacedDigit()
+                    .foregroundStyle(Palette.text)
             } else if active {
-                Rectangle().fill(Palette.text).frame(width: 2, height: 28)
+                Rectangle().fill(Palette.text).frame(width: 2, height: 24)
             } else {
                 Circle().fill(Palette.textFaint).frame(width: 6, height: 6)
             }
         }
-        .frame(width: 62, height: 72)
+        .frame(width: 46, height: 56)
     }
 
     @ViewBuilder
@@ -309,27 +312,29 @@ struct WebAccessApprovalSheet: View {
 
     // MARK: Actions
 
+    /// Large capsules, as a dialog's actions (all capsules, owner 2026-11-24): Approve and Done
+    /// filled, Deny secondary, stacked full width.
     @ViewBuilder
     private var actions: some View {
         switch model.phase {
         case .approved, .ended:
             Button("Done") { onClose() }
-                .buttonStyle(SheetButtonStyle(filled: true))
+                .buttonStyle(.capsule(.filled, .large, fullWidth: true))
                 .accessibilityIdentifier("web-approve-done")
         default:
             VStack(spacing: 10) {
                 Button {
                     Task { await model.approve() }
                 } label: {
-                    if model.phase == .working { ProgressView().tint(Palette.onAccent) } else { Text(model.unsure ? "Approve again" : "Approve") }
+                    if model.phase == .working { ProgressView().tint(Palette.ground) } else { Text(model.unsure ? "Approve again" : "Approve") }
                 }
-                .buttonStyle(SheetButtonStyle(filled: true))
+                .buttonStyle(.capsule(.filled, .large, fullWidth: true))
                 .disabled(!model.canApprove)
                 .accessibilityIdentifier("web-approve-approve")
                 Button("Deny") {
                     Task { if await model.deny() { onClose() } }
                 }
-                .buttonStyle(SheetButtonStyle(filled: false))
+                .buttonStyle(.capsule(.secondary, .large, fullWidth: true))
                 .disabled(model.phase == .working)
                 .accessibilityIdentifier("web-approve-deny")
             }
@@ -350,26 +355,6 @@ struct WebAccessApprovalSheet: View {
                 .id(String(describing: model.phase))
         }
         #endif
-    }
-}
-
-private struct SheetButtonStyle: ButtonStyle {
-    let filled: Bool
-    @Environment(\.isEnabled) private var enabled
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(Typography.app(16, .semibold))
-            // The filled button is drawn in the text colour (near white), so its label takes the
-            // ground colour, as the other filled buttons do (AddAccountSheet).
-            .foregroundStyle(filled ? Palette.ground : Palette.text)
-            .frame(maxWidth: .infinity, minHeight: 50)
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(filled ? Palette.text.opacity(enabled ? 1 : 0.35) : .clear)
-            )
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(filled ? .clear : Palette.hairline))
-            .opacity(configuration.isPressed ? 0.8 : 1)
     }
 }
 

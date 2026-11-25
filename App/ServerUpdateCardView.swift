@@ -137,13 +137,9 @@ struct ServerUpdateCardView: View {
             let details = model.details
             Button { receipt.record(details) } label: {
                 Text(receipt.text == details ? "Copied" : "Copy details")
-                    .font(Typography.app(14, .semibold))
-                    .foregroundStyle(receipt.text == details ? Palette.done : Palette.textDim)
-                    .padding(.horizontal, 10)
-                    .frame(height: 32)
-                    .contentShape(Rectangle())
+                    .foregroundStyle(receipt.text == details ? Palette.done : Palette.text)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.capsule(.plain))
             .accessibilityIdentifier("server-update-copy-details")
         }
         .padding(.top, 14)
@@ -211,31 +207,19 @@ struct ServerUpdateCardView: View {
             .padding(.top, DesignTokens.Space.stackSmall)
     }
 
-    /// Full width, 44 pt capsule, filled with text, Geist 16 semibold in ground.
+    /// The card's main action: a full-width large filled capsule.
     private func bigButton(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(Typography.app(16, .semibold)).foregroundStyle(Palette.ground)
-                .frame(maxWidth: .infinity).frame(height: 44)
-                .background(Capsule().fill(Palette.text))
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .padding(.top, 14)
-        .accessibilityIdentifier("server-update-button")
+        Button(title, action: action)
+            .buttonStyle(.capsule(.filled, .large, fullWidth: true))
+            .padding(.top, 14)
+            .accessibilityIdentifier("server-update-button")
     }
 
-    /// 32 pt capsule on surfaceRaised, Geist 14 semibold.
+    /// A secondary capsule (Try again, Look again).
     private func smallButton(_ title: String, id: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(Typography.app(14, .semibold)).foregroundStyle(Palette.text)
-                .padding(.horizontal, 16).frame(height: 32)
-                .background(Capsule().fill(Palette.surfaceRaised))
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier(id)
+        Button(title, action: action)
+            .buttonStyle(.capsule(.secondary))
+            .accessibilityIdentifier(id)
     }
 
     /// Download, Check, Switch over: 4 pt bars 4 pt apart, the active one filling in working blue,
@@ -366,20 +350,21 @@ private struct CardCommand: View {
     var body: some View {
         let copied = receipt.text == command
         Button { receipt.record(command) } label: {
-            HStack(alignment: .top, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text(command)
                     .font(Typography.machine(13)).foregroundStyle(Palette.text)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
+                // The whole card copies; its Copy wears the plain compact capsule (all capsules,
+                // owner 2026-11-24).
                 HStack(spacing: 5) {
                     Image(systemName: copied ? "checkmark" : "doc.on.doc")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(copied ? Palette.done : Palette.textFaint)
                     Text(copied ? "Copied" : "Copy")
-                        .font(Typography.app(13, .semibold))
-                        .foregroundStyle(copied ? Palette.done : Palette.textDim)
                 }
+                .foregroundStyle(copied ? Palette.done : Palette.text)
+                .modifier(CapsuleLook(variant: .plain, size: .compact))
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
             .frame(maxWidth: .infinity)

@@ -572,15 +572,10 @@ struct AskFormStepper: View {
             Button(action: onSubmit) {
                 HStack(spacing: 8) {
                     if answering { ProgressView().tint(Palette.ground).controlSize(.small) }
-                    Text(answering ? "Submitting…" : "Submit").font(Typography.app(15 * textScale, .semibold))
+                    Text(answering ? "Submitting…" : "Submit")
                 }
-                .foregroundStyle(Palette.ground)
-                .frame(maxWidth: .infinity, minHeight: 40)
-                .background(RoundedRectangle(cornerRadius: 12).fill(Palette.text))
-                .opacity(draft.isComplete ? 1 : 0.5)
-                .contentShape(RoundedRectangle(cornerRadius: 12))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.capsule(.filled, .large, fullWidth: true, textScale: textScale))
             .disabled(answering || !draft.isComplete)
             .accessibilityIdentifier("chat-ask-form-submit")
         }
@@ -673,8 +668,8 @@ struct AskFormStepper: View {
             switch next {
             case .link(let title):
                 let enabled = draft.step < draft.fields.count - 1
-                Button { draft.step += 1 } label: { link(title, chevron: .chevronRight, enabled: enabled) }
-                    .buttonStyle(.plain)
+                Button { draft.step += 1 } label: { link(title, chevron: .chevronRight) }
+                    .buttonStyle(.capsule(.plain, .compact, textScale: textScale))
                     .disabled(!enabled)
                     .accessibilityIdentifier("chat-ask-form-next")
             case .reviewAll:
@@ -682,8 +677,8 @@ struct AskFormStepper: View {
                     focused = false
                     draft.editingFromReview = false
                     draft.step = draft.reviewStep
-                } label: { link("Review all", chevron: .chevronRight, enabled: interactive) }
-                    .buttonStyle(.plain)
+                } label: { link("Review all", chevron: .chevronRight) }
+                    .buttonStyle(.capsule(.plain, .compact, textScale: textScale))
                     .disabled(!interactive)
                     .accessibilityIdentifier("chat-ask-form-review-all")
             case .button(let enabled):
@@ -691,13 +686,9 @@ struct AskFormStepper: View {
                     focused = false
                     draft.advance()
                 } label: {
-                    Text("Next").font(Typography.app(14 * textScale, .semibold))
-                        .foregroundStyle(Palette.ground)
-                        .padding(.horizontal, 20).frame(height: 34)
-                        .background(Capsule().fill(Palette.text))
-                        .opacity(enabled ? 1 : 0.5)
+                    Text("Next")
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.capsule(.filled, textScale: textScale))
                 .disabled(!enabled || !interactive)
                 .accessibilityIdentifier("chat-ask-form-next")
             }
@@ -706,6 +697,8 @@ struct AskFormStepper: View {
         .frame(minHeight: 34 + 12)
     }
 
+    /// Back, Dismiss and the step links are text actions: plain compact capsules (all capsules,
+    /// owner 2026-11-24), dimmed by the capsule style while they can't act.
     private var backLink: some View {
         let enabled = draft.step > 0 && !answering
         return Button {
@@ -713,44 +706,35 @@ struct AskFormStepper: View {
             draft.back()
         } label: {
             HStack(spacing: 3) {
-                AskFormIcon.chevronLeft.view(size: 15)
-                Text("Back").font(Typography.app(14 * textScale, .semibold))
+                AskFormIcon.chevronLeft.view(size: 13)
+                Text("Back")
             }
-            .foregroundStyle(enabled ? Palette.textDim : AskFormStyle.disabled)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.capsule(.plain, .compact, textScale: textScale))
         .disabled(!enabled)
         .accessibilityIdentifier("chat-ask-form-back")
     }
 
     /// "Dismiss": Esc on omp's dialog (`agent.dismiss_ask`), so the ask ends cancelled.
-    /// A secondary text link next to Back, never a destructive colour.
+    /// A plain capsule next to Back, never a destructive colour.
     @ViewBuilder
     private var dismissLink: some View {
         if let onDismiss {
-            Button {
+            Button("Dismiss") {
                 focused = false
                 onDismiss()
-            } label: {
-                Text("Dismiss").font(Typography.app(14 * textScale, .semibold))
-                    .foregroundStyle(answering ? AskFormStyle.disabled : Palette.textDim)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.capsule(.plain, .compact, textScale: textScale))
             .disabled(answering)
-            .padding(.leading, 14)
             .accessibilityIdentifier("chat.ask.dismiss")
         }
     }
 
-    private func link(_ title: String, chevron: AskFormIcon, enabled: Bool) -> some View {
+    private func link(_ title: String, chevron: AskFormIcon) -> some View {
         HStack(spacing: 3) {
-            Text(title).font(Typography.app(14 * textScale, .semibold))
-            chevron.view(size: 15)
+            Text(title)
+            chevron.view(size: 13)
         }
-        .foregroundStyle(enabled ? Palette.textDim : AskFormStyle.disabled)
-        .contentShape(Rectangle())
     }
 
     private var terminalButton: some View {
@@ -780,9 +764,6 @@ struct AskFormRowStyle: ButtonStyle {
 }
 
 enum AskFormStyle {
-    /// A control that cannot be used right now (the first step's Back): the mockup's #3A3F66.
-    static let disabled = Color(hex: 0x3A3F66)
-
     static var card: some View {
         RoundedRectangle(cornerRadius: 16).fill(Palette.surface)
             .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Palette.hairline, lineWidth: 1))

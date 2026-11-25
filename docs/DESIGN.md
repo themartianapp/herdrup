@@ -452,6 +452,14 @@ Claude Design kit (design: [jerryfane/herdr#28](https://github.com/jerryfane/her
 *meaning* (amber = waiting on you, red = died, blue = working, green = done), monospace is the machine
 voice and a proportional sans is the app voice.
 
+Every labelled button and text action is a capsule (owner, 2026-11-24): one style,
+`.buttonStyle(.capsule(variant, size))` (`CapsuleButtonStyle` in `App/DesignSystem.swift`), in the
+heights herdrup-desktop's `src/buttons.css` uses — regular 34 pt / 14, large 44 pt / 15, compact
+28 pt / 13, weight 600 — with filled, secondary, plain and destructive variants and at least 44 pt to
+touch. Icon-only buttons are circles (`.buttonStyle(.circle())`). List rows, menu items, cards,
+inputs and segmented-control segments keep their own shapes; system dialogs and toolbar items are
+iOS's. In-progress status (the agent header's Working) is the eight-spoke `ActivitySpinner`.
+
 Live agent rows use system text, equal-height previews and a name-based avatar with a stable
 colour; the badge still carries status. Archive entries share the name colour but keep their
 archive icon. The Gram feed uses the same avatars; guest-view identity styling is unchanged.

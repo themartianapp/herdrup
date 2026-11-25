@@ -126,25 +126,21 @@ struct ChatMermaidView: View {
 
     private var header: some View {
         let copied = receipt.text == source
-        return HStack(spacing: 14) {
+        return HStack(spacing: 8) {
             Text(isSVG ? "SVG" : "Mermaid")
                 .font(Typography.app(11.5))
                 .foregroundStyle(Palette.textDim)
             Spacer(minLength: 0)
+            // Text actions, so plain capsules (all capsules, owner 2026-11-24).
             Button { receipt.record(source) } label: {
                 Text(copied ? "Copied" : "Copy source")
-                    .font(Typography.app(12, .semibold))
                     .foregroundStyle(copied ? Palette.done : Palette.text)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.capsule(.plain, .compact))
             .accessibilityIdentifier("\(tag)-copy")
-            Button { showCode.toggle() } label: {
-                Text(showCode ? (isSVG ? "Show image" : "Show diagram") : "Show code")
-                    .font(Typography.app(12, .semibold))
-                    .foregroundStyle(Palette.text)
-            }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("\(tag)-toggle")
+            Button(showCode ? (isSVG ? "Show image" : "Show diagram") : "Show code") { showCode.toggle() }
+                .buttonStyle(.capsule(.plain, .compact))
+                .accessibilityIdentifier("\(tag)-toggle")
         }
         .padding(.horizontal, Self.inset)
         .padding(.top, 7)
