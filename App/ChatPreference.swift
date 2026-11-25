@@ -91,14 +91,16 @@ struct ChatTerminalSwitch: View {
     }
 
     private func segment(_ title: String, selected: Bool, id: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        let height = (26 * Typography.scale).rounded()
+        return Button(action: action) {
             Text(title)
                 .font(Typography.app(13, .semibold))
                 .foregroundStyle(selected ? Palette.text : Palette.textDim)
                 .padding(.horizontal, 16)
-                .frame(height: (26 * Typography.scale).rounded())
+                .frame(height: height)
                 .background(Capsule().fill(selected ? Palette.surfaceRaised : Color.clear))
-                .contentShape(Capsule())
+                // Drawn 26 pt, touched over 44: the segment reaches up and down past the track.
+                .contentShape(.interaction, TouchTarget(dy: max(0, (44 - height) / 2)))
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? .isSelected : [])

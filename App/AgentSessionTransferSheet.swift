@@ -324,15 +324,10 @@ struct AgentSessionTransferSheet: View {
             HStack(spacing: 8) {
                 if disabled && busy { ProgressView().tint(Palette.ground) }
                 if let systemImage { Image(systemName: systemImage) }
-                Text(title).font(Typography.app(15, .semibold))
+                Text(title)
             }
-            .foregroundStyle(Palette.ground)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Palette.text))
-            .opacity(disabled ? 0.45 : 1)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.capsule(.filled, .large, fullWidth: true))
         .disabled(disabled)
     }
 

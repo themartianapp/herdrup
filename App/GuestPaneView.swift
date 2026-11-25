@@ -1170,7 +1170,7 @@ private struct GuestStatusPill: View {
     var body: some View {
         HStack(spacing: 7) {
             if working {
-                ActivitySpinner(color: dot)
+                ActivitySpinner()
             } else {
                 Circle().fill(dot).frame(width: 7, height: 7)
             }

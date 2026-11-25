@@ -180,9 +180,13 @@ final class TopicsTests: XCTestCase {
         XCTAssertLessThan(about.frame.midY, app.textFields["topics-search-field"].frame.minY,
                           "About sits in the bar, above the search field")
         XCTAssertEqual(about.label, "About topics")
-        XCTAssertGreaterThanOrEqual(about.frame.width, 44, "a 44 pt target")
-        XCTAssertGreaterThanOrEqual(about.frame.height, 44, "a 44 pt target")
-        about.tap()
+        // 24 pt in the bar, 44 pt square to touch: a tap 2 pt inside the touch area's corner
+        // (20 pt right of and below the glyph's centre) opens it. The 0.5 pt allows for a
+        // fractional origin at 3x.
+        XCTAssertGreaterThanOrEqual(about.frame.width, 23.5, "the glyph's 24 pt box")
+        XCTAssertGreaterThanOrEqual(about.frame.height, 23.5, "the glyph's 24 pt box")
+        about.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .withOffset(CGVector(dx: 20, dy: 20)).tap()
         let title = app.staticTexts["About topics"].firstMatch
         XCTAssertTrue(title.exists(within: 6), "About topics opens")
         XCTAssertTrue(app.descendants(matching: .any)

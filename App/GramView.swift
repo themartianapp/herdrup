@@ -963,12 +963,8 @@ struct GramView: View {
                             if searchingOlder { ProgressView().controlSize(.small).tint(Palette.ground) }
                             Text(searchingOlder ? "Searching older messages…" : "Search older messages")
                         }
-                        .font(Typography.app(14, .semibold))
-                        .foregroundStyle(Palette.ground)
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 8)
-                        .background(Capsule().fill(Palette.text))
                     }
+                    .buttonStyle(.capsule(.filled))
                     .disabled(searchingOlder)
                     .padding(.top, 6)
                     .accessibilityIdentifier("gram-search-older")
@@ -1061,14 +1057,8 @@ struct GramView: View {
                         .font(Typography.app(14))
                         .foregroundStyle(Palette.textDim)
                         .multilineTextAlignment(.center)
-                    Button { Task { await load(initial: true) } } label: {
-                        Text("Retry")
-                            .font(Typography.app(14, .semibold))
-                            .foregroundStyle(Palette.ground)
-                            .padding(.horizontal, 20)
-                            .padding(.vertical, 8)
-                            .background(Capsule().fill(Palette.text))
-                    }
+                    Button("Retry") { Task { await load(initial: true) } }
+                        .buttonStyle(.capsule(.filled))
                 }
                 .padding(.horizontal, 32)
             }
@@ -1172,15 +1162,9 @@ struct GramView: View {
                             Image(systemName: "chevron.down")
                                 .font(.system(size: 13, weight: .semibold))
                             Text("New messages")
-                                .font(Typography.app(15, .semibold))
                         }
-                        .foregroundStyle(Palette.text)
-                        .padding(.horizontal, 14)
-                        .frame(minHeight: 36)
-                        .background(Capsule().fill(Palette.surfaceRaised))
-                        .contentShape(Capsule())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.capsule())
                     .padding(.bottom, 10)
                     .transition(.opacity)
                     .accessibilityIdentifier("gram-new-messages")
@@ -1315,9 +1299,8 @@ struct GramView: View {
                     Image(systemName: "xmark")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Palette.textFaint)
-                        .frame(width: 26, height: 26)
-                        .background(Circle().fill(Palette.surfaceRaised))
                 }
+                .buttonStyle(.circle(diameter: 26))
             }
             Text(Self.setupCommand)
                 .font(Typography.machine(11))
@@ -1331,12 +1314,8 @@ struct GramView: View {
                 setupCommandCopied = true
             } label: {
                 Text(setupCommandCopied ? "Copied ✓" : "Copy command")
-                    .font(Typography.app(13, .semibold))
-                    .foregroundStyle(Palette.ground)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 9)
-                    .background(RoundedRectangle(cornerRadius: 9).fill(Palette.text))
             }
+            .buttonStyle(.capsule(.filled, fullWidth: true))
         }
         .padding(14)
         .background(RoundedRectangle(cornerRadius: 14).fill(Palette.surface))

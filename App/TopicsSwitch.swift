@@ -93,15 +93,13 @@ enum TopicsSwitchStatus: Equatable {
 /// The switch's progress and result, 12 pt above the tab bar (the sidebar's section bar on iPad):
 /// a centred neutral capsule (surface + hairline, owner picks 2026-11-24 item 16) with at most one
 /// mark (the activity spinner while working, a red dot on failure) and a "Cancel" capsule while
-/// herdr holds a switch for when the agent finishes. A result clears itself after a few seconds.
-/// The home places it as a bottom safe-area inset, so the roster, Gram and Settings end above it.
+/// herdr holds a switch for when the agent finishes. The home places it as a bottom safe-area
+/// inset, so the roster, Gram and Settings end above it, and owns how long a result stays
+/// (`TerminalHomeView.expireTopicsSwitchResult`): each tab has its own copy of the notice.
 struct TopicsSwitchBanner: View {
-    @Binding var status: TopicsSwitchStatus?
+    let status: TopicsSwitchStatus?
     /// Drops a switch herdr holds for when the agent finishes; nil where it cannot be cancelled.
     var onCancel: ((TopicsSwitchRequest) -> Void)? = nil
-
-    /// The gap between the capsule and the tab bar below it.
-    static let bottomGap: CGFloat = 12
 
     var body: some View {
         if let status {
@@ -126,14 +124,9 @@ struct TopicsSwitchBanner: View {
             .background(Capsule().fill(Palette.surface))
             .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
             .padding(.horizontal, 16)
-            .padding(.bottom, Self.bottomGap)
+            .padding(.bottom, 12)   // the gap to the tab bar below
             .frame(maxWidth: .infinity)
             .accessibilityElement(children: .contain)
-            .task(id: status) {
-                guard !status.isWorking else { return }
-                try? await Task.sleep(nanoseconds: 6_000_000_000)
-                if self.status == status { self.status = nil }
-            }
         }
     }
 }

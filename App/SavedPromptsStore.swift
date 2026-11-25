@@ -143,14 +143,9 @@ struct SavePromptSheet: View {
                             .padding(.horizontal, 16).padding(.vertical, 14)
                             .background(Palette.surface).clipShape(RoundedRectangle(cornerRadius: 12))
 
-                        Button {
-                            onSave(nickname, text); dismiss()
-                        } label: {
-                            Text("Save prompt").font(Typography.app(16, .semibold)).foregroundStyle(Palette.ground)
-                                .frame(maxWidth: .infinity).padding(.vertical, 14)
-                                .background(RoundedRectangle(cornerRadius: 14).fill(Palette.text))
-                        }
-                        .disabled(!canSave).opacity(canSave ? 1 : 0.5).padding(.top, 6)
+                        Button("Save prompt") { onSave(nickname, text); dismiss() }
+                            .buttonStyle(.capsule(.filled, .large, fullWidth: true))
+                            .disabled(!canSave).padding(.top, 6)
                     }
                     .padding(20)
                 }

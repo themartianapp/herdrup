@@ -65,10 +65,8 @@ struct AddAccountSheet: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Palette.textDim)
-                    .frame(width: 36, height: 36)
-                    .background(Circle().fill(Palette.surface))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.circle(diameter: 36))
             .accessibilityLabel("Close")
         }
         .padding(.horizontal, 16)
@@ -158,27 +156,14 @@ struct AddAccountSheet: View {
     private var createSection: some View {
         VStack(spacing: 8) {
             let ready = !label.trimmingCharacters(in: .whitespaces).isEmpty && !busy
-            if ready {
-                Button { Task { await create() } } label: {
-                    Text("Add account")
-                        .font(Typography.app(15, .semibold))
-                        .foregroundStyle(Palette.ground)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(RoundedRectangle(cornerRadius: 11).fill(Palette.text))
-                }
-                .buttonStyle(.plain)
-            } else {
+            Button { Task { await create() } } label: {
                 HStack(spacing: 8) {
-                    if busy { TurningRing(color: Palette.working) }
+                    if busy { TurningRing(color: Palette.ground) }
                     Text(busy ? "Adding…" : "Add account")
-                        .font(Typography.app(15, .semibold))
-                        .foregroundStyle(Palette.textFaint)
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
-                .overlay(RoundedRectangle(cornerRadius: 11).stroke(Palette.hairline, lineWidth: 1))
             }
+            .buttonStyle(.capsule(.filled, .large, fullWidth: true))
+            .disabled(!ready)
             Text("sign in to it next, or later, from accounts")
                 .font(Typography.machine(10))
                 .foregroundStyle(Palette.textFaint)

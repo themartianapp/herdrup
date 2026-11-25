@@ -602,12 +602,26 @@ private struct TopicsHeaderRule: View {
 /// The Topics bar's two parts, [fold] Topics (i) and the actions: on one line, the actions at the
 /// trailing edge, while both fit; otherwise the actions on a line of their own under the heading,
 /// still at the trailing edge (herdrup-desktop's wrapping `.topics-head`). The heading part is
-/// never squeezed.
+/// never squeezed. Each part is one row, so the layout below always gets exactly its two subviews.
+private struct TopicsHead<Title: View, Actions: View>: View {
+    @ViewBuilder var title: Title
+    @ViewBuilder var actions: Actions
+
+    var body: some View {
+        TopicsHeadLayout {
+            HStack(spacing: 6) { title }
+            HStack(spacing: 6) { actions }
+        }
+    }
+}
+
+/// `TopicsHead`'s layout: the heading row first, the actions row second.
 private struct TopicsHeadLayout: Layout {
     var spacing: CGFloat = 6
     var lineSpacing: CGFloat = 4
 
     private func sizes(_ subviews: Subviews) -> (CGSize, CGSize)? {
+        // `TopicsHead` always passes its two rows.
         guard subviews.count == 2 else { return nil }
         return (subviews[0].sizeThatFits(.unspecified), subviews[1].sizeThatFits(.unspecified))
     }
@@ -952,47 +966,48 @@ private struct TopicsList: View {
 
     /// [fold] Topics (i) … Organise  New topic (owner picks 2026-11-24, item 11, Apple clean with
     /// Before's buttons): the fold is the column's one icon, About sits beside the heading, and
-    /// the actions are compact capsules. When they don't fit beside the heading (a busy Organise
-    /// in the iPad column, a large text size), they take a line of their own at the trailing edge.
+    /// the actions are compact capsules. When they don't fit beside the heading (a narrow column, a
+    /// large text size), they take a line of their own at the trailing edge.
     private var head: some View {
-        TopicsHeadLayout {
-            HStack(spacing: 6) {
-                if let onToggleColumn {
-                    Button(action: onToggleColumn) {
-                        Image(systemName: "sidebar.left").font(.system(size: 16, weight: .regular))
-                            .foregroundStyle(Palette.textDim)
-                            .frame(width: 32, height: 44)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Hide topics")
-                    .accessibilityIdentifier("topics-column-toggle")
-                    .padding(.trailing, -6)
+        TopicsHead {
+            if let onToggleColumn {
+                Button(action: onToggleColumn) {
+                    Image(systemName: "sidebar.left").font(.system(size: 16, weight: .regular))
+                        .foregroundStyle(Palette.textDim)
+                        .frame(width: 32, height: 44)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Hide topics")
+                .accessibilityIdentifier("topics-column-toggle")
+                .padding(.trailing, -6)
+            }
+            HStack(spacing: 4) {
                 Text("Topics").font(metrics.heading).foregroundStyle(Palette.text)
                     .lineLimit(1)
                     .fixedSize()
                     .accessibilityAddTraits(.isHeader)
                 aboutButton
-                    .padding(.leading, -2)
             }
-            HStack(spacing: 6) {
-                if model.suggestionsServed {
-                    // The agent proposes topics from its Inbox (proposal 3).
-                    Button { Task { await model.organise(client: client) } } label: {
-                        HStack(spacing: 6) {
-                            if model.organising { ProgressView().controlSize(.mini).tint(Palette.textDim) }
-                            Text("Organise")
-                        }
+        } actions: {
+            if model.suggestionsServed {
+                // The agent proposes topics from its Inbox (proposal 3). While it works, the
+                // spinner takes the label's place in a slot the label sizes, so the capsule
+                // keeps its width and the bar never wraps for it.
+                Button { Task { await model.organise(client: client) } } label: {
+                    ZStack {
+                        Text("Organise").opacity(model.organising ? 0 : 1)
+                        if model.organising { ProgressView().controlSize(.mini).tint(Palette.textDim) }
                     }
-                    .buttonStyle(.capsule(.secondary, .compact))
-                    .disabled(model.organising)
-                    .accessibilityIdentifier("topics-organise")
                 }
-                Button("New topic") { composing = true }
-                    .buttonStyle(.capsule(.secondary, .compact))
-                    .accessibilityIdentifier("topics-new")
+                .buttonStyle(.capsule(.secondary, .compact))
+                .disabled(model.organising)
+                .accessibilityLabel("Organise")
+                .accessibilityIdentifier("topics-organise")
             }
+            Button("New topic") { composing = true }
+                .buttonStyle(.capsule(.secondary, .compact))
+                .accessibilityIdentifier("topics-new")
         }
         .frame(minHeight: metrics.headHeight)
         .padding(.leading, onToggleColumn == nil ? 16 : 8).padding(.trailing, onToggleColumn == nil ? 16 : 10)
@@ -1197,18 +1212,16 @@ private struct TopicsList: View {
 
 extension TopicsList {
     /// About topics (owner picks 2026-11-24, item 11): the faint (i) beside the heading, what
-    /// topics are. A bottom sheet on iPhone, a popover pointing at it on iPad. 44 pt to tap; it
-    /// takes 24 pt of the bar, so its touch area reaches into the space around it.
+    /// topics are. A bottom sheet on iPhone, a popover pointing at it on iPad. It takes 24 pt of
+    /// the bar; its touch area reaches 10 pt past each edge, 44 pt square.
     private var aboutButton: some View {
         Button { showingAbout = true } label: {
             Image(systemName: "info.circle").font(.system(size: 15, weight: .regular))
                 .foregroundStyle(Palette.textFaint)
-                // 46, not 44: at 3x a fractional origin measured the 44 pt frame as 43.99 pt.
-                .frame(width: 46, height: 46)
-                .contentShape(Rectangle())
+                .frame(width: 24, height: 24)
+                .contentShape(.interaction, TouchTarget(dx: 10, dy: 10))
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, -11)
         .accessibilityLabel("About topics")
         .accessibilityIdentifier("topics.about")
         .popover(isPresented: $showingAbout, arrowEdge: .top) {
