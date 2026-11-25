@@ -124,11 +124,8 @@ struct InstallInstructionsLink: View {
                 Text(label)
                 Image(systemName: "arrow.up.right").font(.system(size: 12, weight: .semibold))
             }
-            .font(Typography.app(16, .semibold))
-            .foregroundStyle(Palette.ground)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
-            .background(RoundedRectangle(cornerRadius: 14).fill(Palette.text))
+            // A link, so the capsule's look on its label (`Link` takes no button style).
+            .modifier(CapsuleLook(variant: .filled, size: .large, fullWidth: true))
         }
     }
 }

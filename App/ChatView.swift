@@ -2770,14 +2770,11 @@ struct ChatAskCard: View {
     private var terminalButton: some View {
         Button(action: onOpenTerminal) {
             HStack(spacing: 6) {
-                Image(systemName: "terminal").font(.system(size: 12, weight: .semibold))
-                Text("Answer in Terminal").font(Typography.app(14 * textScale, .semibold))
+                Image(systemName: "terminal").font(.system(size: 12 * textScale, weight: .semibold))
+                Text("Answer in Terminal")
             }
-            .foregroundStyle(Palette.text)
-            .padding(.horizontal, 14).frame(height: 36)
-            .background(Capsule().fill(Palette.surfaceRaised))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.capsule(textScale: textScale))
         .accessibilityIdentifier("chat-ask-terminal")
     }
 

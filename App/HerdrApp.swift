@@ -1592,14 +1592,10 @@ struct FolderBrowser: View {
                         .padding(.horizontal, 16).padding(.vertical, 10)
                     Divider().overlay(Palette.hairlineQuiet)
                     content
-                    Button { onPick(path); dismiss() } label: {
-                        Text("Use this folder").font(Typography.app(16, .semibold)).foregroundStyle(Palette.ground)
-                            .frame(maxWidth: .infinity).padding(.vertical, 14)
-                            .background(RoundedRectangle(cornerRadius: 14).fill(Palette.text))
-                    }
-                    .disabled(loading || error != nil || path.isEmpty)
-                    .opacity((loading || error != nil || path.isEmpty) ? 0.5 : 1)
-                    .padding(16)
+                    Button("Use this folder") { onPick(path); dismiss() }
+                        .buttonStyle(.capsule(.filled, .large, fullWidth: true))
+                        .disabled(loading || error != nil || path.isEmpty)
+                        .padding(16)
                 }
             }
             .navigationTitle("Choose folder")
@@ -3126,14 +3122,9 @@ struct TerminalHomeView: View {
     /// expected gesture, there was nothing to hit. A 44 pt round button (#360).
     private func sidebarToggleButton(icon: String, hint: String, minimize: Bool) -> some View {
         Button { toggleSidebar() } label: {
-            Image(systemName: icon)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(Palette.text)
-                .frame(width: 44, height: 44)
-                .background(Circle().fill(Palette.surfaceRaised))
-                .contentShape(Circle())
+            Image(systemName: icon).font(.system(size: 16, weight: .medium))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.circle(diameter: 44))
         .hoverEffect(.highlight)
         .accessibilityLabel(minimize ? "Minimise sidebar" : "Expand sidebar")
         .accessibilityIdentifier("terminal-sidebar-toggle")
@@ -5006,7 +4997,7 @@ struct TerminalHomeView: View {
                         .multilineTextAlignment(.center)
                     CopyableCommand(command: HerdrSetup.startCommand)
                     Button("retry") { Task { await load() } }
-                        .font(Typography.app(15, .semibold)).foregroundStyle(Palette.text)
+                        .buttonStyle(.capsule(.secondary))
                 }
             } else {
                 Text(error).font(Typography.machine(13)).foregroundStyle(Palette.died)
@@ -5033,7 +5024,7 @@ struct TerminalHomeView: View {
                 // the only routes then are "trust this key" above or disconnect.
                 if rejectedFingerprint == nil {
                     Button("retry") { Task { await load() } }
-                        .font(Typography.app(15, .semibold)).foregroundStyle(Palette.text)
+                        .buttonStyle(.capsule(.secondary))
                 }
             }
         }
@@ -5083,16 +5074,14 @@ struct TerminalHomeView: View {
                 installCmdCopied = true
             } label: {
                 Text(installCmdCopied ? "Copied ✓" : "Copy command")
-                    .font(Typography.app(13, .semibold)).foregroundStyle(Palette.ground)
-                    .frame(maxWidth: .infinity).padding(.vertical, 9)
-                    .background(RoundedRectangle(cornerRadius: 9).fill(Palette.text))
             }
+            .buttonStyle(.capsule(.filled, fullWidth: true))
         }
         .padding(.top, 4)
         // Full instructions (every install variant) + retry once it's installed.
         InstallInstructionsLink(label: "Full install instructions")
         Button("retry") { Task { await load() } }
-            .font(Typography.app(15, .semibold)).foregroundStyle(Palette.text)
+            .buttonStyle(.capsule(.secondary))
             .padding(.top, 2)
     }
 
@@ -10245,14 +10234,9 @@ struct RenameSheet: View {
                         Text(footnote).font(Typography.app(12)).foregroundStyle(Palette.textFaint)
                             .fixedSize(horizontal: false, vertical: true)
                             .padding(.leading, 4).padding(.top, 2)
-                        Button {
-                            onSave(effective); dismiss()
-                        } label: {
-                            Text("Save").font(Typography.app(16, .semibold)).foregroundStyle(Palette.ground)
-                                .frame(maxWidth: .infinity).padding(.vertical, 14)
-                                .background(RoundedRectangle(cornerRadius: 14).fill(Palette.text))
-                        }
-                        .disabled(!canSave).opacity(canSave ? 1 : 0.5).padding(.top, 6)
+                        Button("Save") { onSave(effective); dismiss() }
+                            .buttonStyle(.capsule(.filled, .large, fullWidth: true))
+                            .disabled(!canSave).padding(.top, 6)
                     }
                     .padding(20)
                 }

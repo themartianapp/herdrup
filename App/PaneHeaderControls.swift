@@ -15,12 +15,8 @@ struct PaneHeaderBackButton: View {
     @ViewBuilder var body: some View {
         let button = Button(action: action) {
             Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(Palette.text)
-                .frame(width: 44, height: 44)
-                .background(Circle().fill(Palette.surfaceRaised))
-                .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.circle(diameter: 44))
         .accessibilityLabel("Back")
         if let identifier { button.accessibilityIdentifier(identifier) } else { button }
     }

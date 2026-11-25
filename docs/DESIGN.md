@@ -456,9 +456,15 @@ Every labelled button and text action is a capsule (owner, 2026-11-24): one styl
 `.buttonStyle(.capsule(variant, size))` (`CapsuleButtonStyle` in `App/DesignSystem.swift`), in the
 heights herdrup-desktop's `src/buttons.css` uses — regular 34 pt / 14, large 44 pt / 15, compact
 28 pt / 13, weight 600 — with filled, secondary, plain and destructive variants and at least 44 pt to
-touch. Icon-only buttons are circles (`.buttonStyle(.circle())`). List rows, menu items, cards,
-inputs and segmented-control segments keep their own shapes; system dialogs and toolbar items are
-iOS's. In-progress status (the agent header's Working) is the eight-spoke `ActivitySpinner`.
+touch. A `Link`, which takes no button style, wears the same look through `CapsuleLook`. A
+stand-alone icon-only button is a circle (`.buttonStyle(.circle(diameter:))`: the pane's back button,
+the sidebar toggle, sheet and card close buttons). Not buttons in this sense, so they keep their own
+shapes: list rows, menu items and menu pickers, cards, inputs, the segments of a segmented control
+(26 pt, touched over 44 through `TouchTarget`), the terminal key bar's keys (capsule-shaped key caps),
+the icon buttons grouped on a header's capsule (`PaneHeaderCapsule`, `SectionTopBar`) and an inline
+text link. System dialogs and toolbar items are iOS's. In-progress status beside the agent header's
+Working (and a guest's status pill) is the eight-spoke `ActivitySpinner`, which holds still under
+Reduce Motion.
 
 Live agent rows use system text, equal-height previews and a name-based avatar with a stable
 colour; the badge still carries status. Archive entries share the name colour but keep their

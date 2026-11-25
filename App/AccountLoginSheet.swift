@@ -120,10 +120,8 @@ struct AccountLoginSheet: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Palette.textDim)
-                    .frame(width: 36, height: 36)
-                    .background(Circle().fill(Palette.surface))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.circle(diameter: 36))
             .accessibilityLabel("Close")
         }
         .padding(.horizontal, 16)
@@ -329,11 +327,8 @@ struct AccountLoginSheet: View {
                                     lineWidth: 1)
                     )
                 let ready = !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                if ready {
-                    inkControl("Sign in") { Task { await sendCode() } }
-                } else {
-                    disabledControl("Sign in")
-                }
+                inkControl("Sign in") { Task { await sendCode() } }
+                    .disabled(!ready)
                 Text(phase == .rejected
                      ? "your code is kept · codes expire, so fetch a fresh one if this repeats"
                      : "the code is a one-time grant · it expires in a few minutes")
@@ -468,43 +463,20 @@ struct AccountLoginSheet: View {
             .background(RoundedRectangle(cornerRadius: 6).fill(Palette.surfaceRaised))
     }
 
-    /// Acting controls are filled with INK, not a system accent — the same fill as Approve
-    /// and ⏎ elsewhere in the app.
+    /// The acting control: the filled capsule (ink fill, ground label), as Approve elsewhere.
     private func inkControl(_ title: String, icon: String? = nil, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 7) {
                 if let icon { Image(systemName: icon).font(.system(size: 13, weight: .semibold)) }
-                Text(title).font(Typography.app(15, .semibold))
+                Text(title)
             }
-            .foregroundStyle(Palette.ground)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
-            .background(RoundedRectangle(cornerRadius: 11).fill(Palette.text))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.capsule(.filled, .large, fullWidth: true))
     }
 
     private func outlineControl(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(Typography.app(15, .semibold))
-                .foregroundStyle(Palette.text)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
-                .overlay(RoundedRectangle(cornerRadius: 11).stroke(Palette.hairline, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-    }
-
-    /// Disabled is transparent + hairline + faint ink — never a tinted grey capsule, which
-    /// reads as a colour with a meaning it does not have.
-    private func disabledControl(_ title: String) -> some View {
-        Text(title)
-            .font(Typography.app(15, .semibold))
-            .foregroundStyle(Palette.textFaint)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
-            .overlay(RoundedRectangle(cornerRadius: 11).stroke(Palette.hairline, lineWidth: 1))
+        Button(title, action: action)
+            .buttonStyle(.capsule(.secondary, .large, fullWidth: true))
     }
 
     /// The capsule idiom, same geometry as the "exhausted" and "no account" pills.

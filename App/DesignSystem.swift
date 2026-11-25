@@ -344,24 +344,32 @@ struct AgentAvatar: View {
     }
 }
 
-/// The activity indicator (owner picks 2026-11-24, items 6 and 12): eight spokes in the working
-/// blue, fading round behind the leading one, one step per spoke, 0.8 s a turn. The in-progress
-/// mark beside "Working" in the agent's header, the topic rows and the topic's header; herdrup-desktop
-/// draws the same (`.activity-spinner`, src/buttons.css). Like `TurningRing`, it holds still while
-/// `statusMotion` is off, and in UI tests run with animations off (a clock that ticks forever would
-/// hold up XCUITest's idle wait).
+/// The activity indicator (owner picks 2026-11-24, items 6, 12 and 16): eight spokes in the
+/// working blue, fading round behind the leading one, one step per spoke, 0.8 s a turn. The
+/// in-progress mark beside "Working" in the agent's header (`titleBlock`), on a guest's status
+/// pill (`GuestStatusPill`), in the topic rows and the topic's header (`TopicStatusText`), 11 pt,
+/// and in the Topics switch notice (`TopicsSwitchBanner`), 12 pt; herdrup-desktop draws the same
+/// (`.activity-spinner`, src/buttons.css). It holds still (the wheel at rest) under Reduce
+/// Motion, while `statusMotion` is off, and in UI tests run with animations off (a clock that
+/// ticks forever would hold up XCUITest's idle wait).
 struct ActivitySpinner: View {
-    var color: Color = Palette.working
     var diameter: CGFloat = 11
     @Environment(\.statusMotion) private var statusMotion
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// The spokes' opacities, leading spoke first (desktop's conic stops).
     private static let fades: [Double] = [1, 0.86, 0.72, 0.58, 0.46, 0.36, 0.28, 0.22]
     private static let step: TimeInterval = 0.1
 
+    /// Whether the wheel steps round: only on screen (`statusMotion`), never under Reduce Motion,
+    /// and not in UI tests that hold motion still.
+    nonisolated static func turns(statusMotion: Bool, reduceMotion: Bool, testsHoldStill: Bool) -> Bool {
+        statusMotion && !reduceMotion && !testsHoldStill
+    }
+
     var body: some View {
         Group {
-            if statusMotion && !UITestMotion.off {
+            if Self.turns(statusMotion: statusMotion, reduceMotion: reduceMotion, testsHoldStill: UITestMotion.off) {
                 TimelineView(.periodic(from: .now, by: Self.step)) { context in
                     spokes(Int(context.date.timeIntervalSinceReferenceDate / Self.step) % 8)
                 }
@@ -380,16 +388,17 @@ struct ActivitySpinner: View {
 
     /// The wheel with its leading spoke at `lead` (0 = 12 o'clock), the fade trailing anticlockwise.
     private func spokes(_ lead: Int) -> some View {
-        ZStack {
+        let d = diameter
+        return ZStack {
             ForEach(0..<8, id: \.self) { index in
                 Capsule()
-                    .fill(color.opacity(Self.fades[index]))
-                    .frame(width: max(1.5, diameter * 0.17), height: diameter * 0.3)
-                    .offset(y: -diameter * 0.33)
+                    .fill(Palette.working.opacity(Self.fades[index]))
+                    .frame(width: max(1.5, d * 0.17), height: d * 0.3)
+                    .offset(y: -d * 0.33)
                     .rotationEffect(.degrees(Double(lead - index) * 45))
             }
         }
-        .frame(width: diameter, height: diameter)
+        .frame(width: d, height: d)
     }
 }
 
@@ -536,31 +545,45 @@ struct CapsuleLook: ViewModifier {
     var fullWidth = false
     /// A place with its own text size (the chat's) scales the capsule with it.
     var textScale: CGFloat = 1
-    @Environment(\.isEnabled) private var isEnabled
 
     func body(content: Content) -> some View {
         let height = (size.height * Typography.scale * textScale).rounded()
         content
             .font(Typography.app(size.fontSize * textScale, .semibold))
-            .foregroundStyle(variant.ink)
             .padding(.horizontal, size.paddingX)
             .frame(maxWidth: fullWidth ? .infinity : nil, minHeight: height)
+            // At least 44 pt to touch: the compact and regular capsules reach past their edges,
+            // up and down only, so a neighbour in the same row never loses its taps.
+            .modifier(CapsuleSurface(variant: variant, touch: TouchTarget(dy: max(0, (44 - height) / 2))))
+    }
+}
+
+/// What a capsule and a circle share: the variant's ink, fill and hairline on a `Capsule` (a
+/// circle when the frame is square), the touch area, and the disabled fade.
+private struct CapsuleSurface: ViewModifier {
+    var variant: CapsuleVariant
+    var touch: TouchTarget
+    @Environment(\.isEnabled) private var isEnabled
+
+    func body(content: Content) -> some View {
+        content
+            .foregroundStyle(variant.ink)
             .background(Capsule().fill(variant.fill))
             .overlay {
                 if let stroke = variant.stroke { Capsule().strokeBorder(stroke, lineWidth: 1) }
             }
-            // At least 44 pt to touch: the compact and regular capsules reach past their edges,
-            // up and down only, so a neighbour in the same row never loses its taps.
-            .contentShape(.interaction, TouchTarget(outset: max(0, (44 - height) / 2)))
+            .contentShape(.interaction, touch)
             .opacity(isEnabled ? 1 : 0.5)
     }
 }
 
-/// A capsule's touch area: its frame, `outset` taller above and below.
-private struct TouchTarget: Shape {
-    var outset: CGFloat
+/// A touch area: the view's frame, `dx` wider on each side and `dy` taller above and below. For
+/// a control drawn smaller than 44 pt (a capsule, a segment) that must still be 44 pt to touch.
+struct TouchTarget: Shape {
+    var dx: CGFloat = 0
+    var dy: CGFloat = 0
     func path(in rect: CGRect) -> Path {
-        Path(rect.insetBy(dx: 0, dy: -outset))
+        Path(rect.insetBy(dx: -dx, dy: -dy))
     }
 }
 
@@ -586,24 +609,20 @@ extension ButtonStyle where Self == CapsuleButtonStyle {
 }
 
 /// An icon-only button: the capsule with equal width and height, a circle (owner, 2026-11-24).
-/// Touchable over at least 44 pt.
+/// Touchable over at least 44 pt. The glyph's own `.font` and `.foregroundStyle`, when it sets
+/// them, win over the style's.
 struct CircleIconButtonStyle: ButtonStyle {
     var variant: CapsuleVariant = .secondary
     var diameter: CGFloat = 28
-    @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
         let size = (diameter * Typography.scale).rounded()
+        let outset = max(0, (44 - size) / 2)
         configuration.label
             .font(.system(size: (size * 0.43).rounded(), weight: .semibold))
-            .foregroundStyle(variant.ink)
             .frame(width: size, height: size)
-            .background(Circle().fill(variant.fill))
-            .overlay {
-                if let stroke = variant.stroke { Circle().strokeBorder(stroke, lineWidth: 1) }
-            }
-            .contentShape(.interaction, Circle().inset(by: -max(0, (44 - size) / 2)))
-            .opacity(isEnabled ? (configuration.isPressed ? 0.75 : 1) : 0.5)
+            .modifier(CapsuleSurface(variant: variant, touch: TouchTarget(dx: outset, dy: outset)))
+            .opacity(configuration.isPressed ? 0.75 : 1)
     }
 }
 
