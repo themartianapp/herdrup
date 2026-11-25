@@ -658,7 +658,7 @@ struct RootView: View {
                 GuestAcceptView(
                     invite: GuestMockTransport.invite,
                     fingerprint: try? GuestDevice.identity().fingerprint,
-                    accept: { bind in GuestMockTransport.accepted(bindToAccount: bind) },
+                    accept: { bind in try await GuestMockTransport.accepted(bindToAccount: bind) },
                     onAccepted: { access in
                         sharedMachines.add(access)
                         openGuest = access
