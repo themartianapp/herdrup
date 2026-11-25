@@ -1108,6 +1108,7 @@ private struct TopicsList: View {
     /// top, Not now a secondary capsule and Create N topics the filled one.
     private var proposalsBar: some View {
         let count = model.tickedCount
+        let createLabel: String = count == 1 ? "Create 1 topic" : "Create \(count) topics"
         return HStack(spacing: 8) {
             Spacer(minLength: 0)
             Button("Not now") {
@@ -1115,7 +1116,7 @@ private struct TopicsList: View {
             }
             .buttonStyle(.capsule(.secondary, .compact))
             .accessibilityIdentifier("topics-proposals-dismiss")
-            Button(count == 1 ? "Create 1 topic" : "Create \(count) topics") {
+            Button(createLabel) {
                 Task { actionNote = await model.createTicked(client: client) }
             }
             .buttonStyle(.capsule(.filled, .compact))
