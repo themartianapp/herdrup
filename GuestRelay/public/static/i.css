@@ -6,7 +6,7 @@
 
 :root{
   --ground:#13162A;--surface:#1D2038;--raised:#262A45;--hair:#2E3358;--hairq:#232742;
-  --ink:#EEF0F7;--dim:#99A0BC;--faint:#666D91;--brand:#7A6FF0;--amber:#E9A63C;--you:#b7a8ff;
+  --ink:#EEF0F7;--dim:#99A0BC;--faint:#666D91;--brand:#7A6FF0;--amber:#E9A63C;
   --app:"Geist",-apple-system,system-ui,sans-serif;--mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
 }
 *{box-sizing:border-box;margin:0;padding:0}
@@ -15,7 +15,7 @@ html,body{min-height:100%;background:var(--ground);color:var(--ink);font-family:
 main{max-width:440px;min-height:100vh;min-height:100dvh;margin:0 auto;display:flex;flex-direction:column;
   padding:max(40px,env(safe-area-inset-top)) 0 max(34px,env(safe-area-inset-bottom))}
 .mono{font-family:var(--mono);font-weight:500}
-.you{color:var(--you)}
+.you{color:var(--ink)}
 
 .hero{margin:30px 24px 0;text-align:center}
 .ava{width:72px;height:72px;border-radius:18px;margin:0 auto 16px;display:grid;place-items:center;
@@ -35,8 +35,9 @@ main{max-width:440px;min-height:100vh;min-height:100dvh;margin:0 auto;display:fl
 .kv .mono{font-size:13.5px}
 .expiry{margin:10px 16px 0;font:400 13px var(--app);color:var(--faint);text-align:center}
 .expiry.expired{color:var(--amber)}
-.note{margin:14px 16px 0;padding:12px 14px;border-radius:14px;background:rgba(122,111,240,.09);
-  border:1px solid rgba(122,111,240,.28);color:var(--dim);font-size:13px;line-height:1.5}
+/* Neutral, as the desktop's notes: no tint, muted text. */
+.note{margin:14px 16px 0;padding:12px 14px;border-radius:14px;background:var(--surface);
+  border:1px solid var(--hair);color:var(--dim);font-size:13px;line-height:1.5}
 .note b{font-weight:600}
 .problem{margin:22px 16px 0;padding:12px 14px;border-radius:14px;background:rgba(233,166,60,.08);
   border:1px solid rgba(233,166,60,.3);color:var(--dim);font-size:13px;line-height:1.5}
@@ -45,4 +46,14 @@ main{max-width:440px;min-height:100vh;min-height:100dvh;margin:0 auto;display:fl
 .btn{height:50px;border-radius:25px;display:grid;place-items:center;font:600 16px var(--app);text-decoration:none}
 .btn.primary{background:var(--ink);color:var(--ground)}
 .btn.quiet{background:var(--raised);color:var(--ink)}
+.btn.plain{background:var(--surface);color:var(--ink)}
 .hint{font:400 12.5px var(--app);color:var(--faint);text-align:center;line-height:1.5;margin-top:4px}
+.hint a{color:var(--dim)}
+
+/* An account invite's browser choice, under Open in HerdrUp. */
+.choice{display:flex;flex-direction:column;gap:10px}
+.foot .sec.or{margin:8px 0 0;justify-content:center}
+.sec.or::before{content:"";flex:1;height:1px;background:var(--hairq)}
+.choice-lead{font:400 14px var(--app);color:var(--dim);text-align:center;margin-bottom:2px}
+.btn.provider{display:flex;align-items:center;justify-content:center;gap:9px}
+.btn.provider svg{flex:none}

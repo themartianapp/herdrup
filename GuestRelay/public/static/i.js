@@ -3,9 +3,9 @@
 // A short link /i/<id><key> instead names an encrypted blob on this relay: the page fetches
 // /v1/invite/<id> (never the key), decrypts it here, and renders the payload inside.
 // Every field is written with textContent, and only a b64url payload is ever placed in the
-// app link and the browser link (/web/#<payload>), which both carry it in the fragment, so
-// no request ever sends it to a server.
-import { browserLink, installTarget, invitePayload, openShortInvite, shortInvite } from "./invite.js";
+// app link and the browser links (/web/#<payload>, and /web/#<payload>&bind=1&provider=… for an
+// account invite), which all carry it in the fragment, so no request ever sends it to a server.
+import { accountInvite, accountLink, browserLink, installTarget, invitePayload, openShortInvite, shortInvite } from "./invite.js";
 
 (async function () {
   var APP_LINK = "herdrup://guest-invite#";
@@ -137,4 +137,26 @@ import { browserLink, installTarget, invitePayload, openShortInvite, shortInvite
     expiry.textContent = remaining;
   }
   $("details").hidden = false;
+
+  // An account invite (acct: 1) offers the browser's ways to keep it, after Open in HerdrUp: in
+  // the guest's HerdrUp account, through Apple or Google (the browser guest signs in with it
+  // first when it must), or on this device only. The page never signs in itself. The install
+  // capsules shrink to one line under them. Other invites keep the single Open in browser.
+  if (accountInvite(invite)) {
+    browser.hidden = true;
+    $("apple").href = accountLink(payload, "apple");
+    $("google").href = accountLink(payload, "google");
+    $("device").href = browserLink(payload);
+    $("choice").hidden = false;
+    $("store").hidden = true;
+    $("desktop").hidden = true;
+    $("hint").hidden = true;
+    var install = target === "ios" ? $("store") : target === "desktop" ? $("desktop") : null;
+    if (install !== null) {
+      var getLink = $("get-link");
+      getLink.href = install.href;
+      getLink.textContent = target === "ios" ? "Get it on the App Store" : "Get HerdrUp for desktop";
+      $("get").hidden = false;
+    }
+  }
 })();

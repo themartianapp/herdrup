@@ -7,7 +7,7 @@ import {
   runInDurableObject,
 } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
-import { browserLink, installTarget, invitePayload, isRelay, openShortInvite, shortInvite } from "../public/static/invite.js";
+import { accountInvite, accountLink, browserLink, installTarget, invitePayload, isRelay, openShortInvite, shortInvite } from "../public/static/invite.js";
 import { InviteBlob } from "../src/invite";
 
 // Everything here runs against the real Worker and Durable Object in workerd. Each test
@@ -1190,6 +1190,25 @@ describe("landing page script", () => {
     const short = shortInvite(`/i/${id}${b64url(keyBytes)}`);
     expect(short).not.toBeNull();
     expectLink(browserLink(await openShortInvite(short!, await seal(id, keyBytes, plaintext), ORIGIN)));
+  });
+
+  it("offers the account choice only for an invite whose acct is exactly 1", () => {
+    expect(accountInvite({ v: 1, acct: 1 })).toBe(true);
+    // An older invite has no acct, and keeps the single Open in browser.
+    expect(accountInvite({ v: 1 })).toBe(false);
+    for (const other of [0, 2, "1", true, null, [1]]) {
+      expect(accountInvite({ v: 1, acct: other }), JSON.stringify(other)).toBe(false);
+    }
+  });
+
+  it("links Continue with Apple/Google to /web/ with the payload, bind=1 and the provider in the fragment, and Only this device without them", () => {
+    const payload = newInvitePayload();
+    for (const provider of ["apple", "google"] as const) {
+      const account = new URL(accountLink(payload, provider), ORIGIN);
+      expect([account.origin, account.pathname, account.search, account.hash])
+        .toEqual([ORIGIN, "/web/", "", `#${payload}&bind=1&provider=${provider}`]);
+    }
+    expect(browserLink(payload)).toBe(`/web/#${payload}`);
   });
 
   // Owner report 2026-11-05: on a Windows computer the page offered the App Store.

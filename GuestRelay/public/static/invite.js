@@ -70,6 +70,29 @@ export function browserLink(payload) {
 }
 
 /**
+ * Whether a decoded invite lets the guest keep the share in a HerdrUp account: the owner's
+ * herdr sends `acct: 1` (guest access contract). An invite without it is a plain,
+ * this-device-only invite, and the page shows it as before.
+ * @param {object} invite decoded invite payload
+ * @returns {boolean}
+ */
+export function accountInvite(invite) {
+  return invite.acct === 1;
+}
+
+/**
+ * The "Continue with Apple" / "Continue with Google" link: the browser guest with the invite,
+ * `bind=1` and the provider in the fragment. The browser guest signs in with that provider when
+ * it has no session, then accepts bound to the account.
+ * @param {string} payload b64url invite payload
+ * @param {"apple" | "google"} provider
+ * @returns {string}
+ */
+export function accountLink(payload, provider) {
+  return browserLink(payload) + "&bind=1&provider=" + provider;
+}
+
+/**
  * Which HerdrUp this browser's device installs: "ios" on an iPhone or iPad (iPadOS Safari
  * reports a Mac, told apart by its touch screen), "desktop" on a Windows, Mac or Linux
  * computer (HerdrUp Desktop), "" anywhere else, such as Android, which has no HerdrUp.
