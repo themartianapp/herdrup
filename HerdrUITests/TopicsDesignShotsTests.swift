@@ -55,7 +55,7 @@ final class TopicsDesignShotsTests: XCTestCase {
         XCTAssertTrue(diokan.exists(within: 8), "the topics load")
         XCTAssertTrue(app.buttons["topics-inbox-row"].exists, "the Inbox is the first row")
         XCTAssertTrue(app.buttons["topics-new"].exists, "New topic, a capsule")
-        XCTAssertTrue(app.buttons["topics-about"].exists, "About, beside the heading")
+        XCTAssertTrue(app.buttons["topics.about"].exists, "About, beside the heading")
         XCTAssertEqual(app.buttons["topics-column-toggle"].exists, isPad, "the column toggle is iPad's")
         shot(app, "topics-a2-list")
 

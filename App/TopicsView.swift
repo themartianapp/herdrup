@@ -1203,11 +1203,12 @@ extension TopicsList {
         Button { showingAbout = true } label: {
             Image(systemName: "info.circle").font(.system(size: 15, weight: .regular))
                 .foregroundStyle(Palette.textFaint)
-                .frame(width: 44, height: 44)
+                // 46, not 44: at 3x a fractional origin measured the 44 pt frame as 43.99 pt.
+                .frame(width: 46, height: 46)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, -10)
+        .padding(.horizontal, -11)
         .accessibilityLabel("About topics")
         .accessibilityIdentifier("topics.about")
         .popover(isPresented: $showingAbout, arrowEdge: .top) {
