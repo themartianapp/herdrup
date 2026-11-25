@@ -2111,8 +2111,12 @@ public actor HerdrClient {
             throw AgentTranscriptError.unsupported
         }
         // Handovers as `relay` entries only from a server that offers them: asked for, an
-        // older one could refuse the unknown param.
-        let relayEntries: Bool? = await supports(\.transcriptRelayEntries) ? true : nil
+        // older one could refuse the unknown param. From capabilities already probed: the
+        // Inbox's page never waits on a `ping` for it.
+        var relayEntries: Bool?
+        if case .probed(let capabilities) = capabilityCache, capabilities?.transcriptRelayEntries == true {
+            relayEntries = true
+        }
         let params = AgentTranscriptParams(target: target, before: before, after: after,
                                            limit: limit.map { min(max($0, 1), 50) }, subagent: subagent,
                                            heldFrom: heldFrom, topic: topic, relayEntries: relayEntries)
