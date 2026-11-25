@@ -176,7 +176,9 @@ final class GuestShareTests: XCTestCase {
         XCTAssertTrue(remove.exists(within: Self.actionTimeout))
         for _ in 0..<3 where !remove.isHittable { app.swipeUp() }
         remove.tap()
-        let confirm = app.alerts.buttons["Remove \(name)"]
+        // iOS 27 nests a button of the same label inside each alert action: `.firstMatch`
+        // or the tap fails on "Multiple matching elements found".
+        let confirm = app.alerts.buttons["Remove \(name)"].firstMatch
         XCTAssertTrue(confirm.exists(within: Self.actionTimeout), "removing must ask for confirmation")
         XCTAssertTrue(app.staticTexts["Remove \(name)?"].exists)
         if let shot { shoot(shot) }
@@ -372,7 +374,7 @@ final class GuestShareTests: XCTestCase {
         let menu = element("guest-device-menu-MacBook")
         reveal(menu)
         menu.tap()
-        let remove = app.buttons["Remove device"]
+        let remove = app.buttons["Remove device"].firstMatch
         XCTAssertTrue(remove.exists(within: Self.actionTimeout), "⋯ offers Remove device")
         remove.tap()
         XCTAssertTrue(element("guest-device-MacBook").gone(within: Self.actionTimeout), "the MacBook is removed")
@@ -388,7 +390,7 @@ final class GuestShareTests: XCTestCase {
         let remove = element("guest-agent-remove-orgstudio")
         XCTAssertTrue(remove.exists)
         remove.tap()
-        let confirm = app.alerts.buttons["Remove orgstudio"]
+        let confirm = app.alerts.buttons["Remove orgstudio"].firstMatch
         XCTAssertTrue(confirm.exists(within: Self.actionTimeout), "removing an agent asks first")
         confirm.tap()
         XCTAssertTrue(element("guest-agent-orgstudio").gone(within: Self.actionTimeout))
@@ -403,12 +405,12 @@ final class GuestShareTests: XCTestCase {
         let remove = element("guest-person-remove")
         reveal(remove)
         remove.tap()
-        let confirm = app.alerts.buttons["Remove Nike"]
+        let confirm = app.alerts.buttons["Remove Nike"].firstMatch
         XCTAssertTrue(confirm.exists(within: Self.actionTimeout), "removing Nike asks first")
         XCTAssertTrue(app.staticTexts["Remove Nike?"].exists)
         XCTAssertTrue(text(containing: "Nike loses llm-opt and orgstudio on Jerry's Mac Studio on all 3 devices").exists,
                       "the confirmation names what goes")
-        XCTAssertTrue(app.alerts.buttons["Cancel"].exists)
+        XCTAssertTrue(app.alerts.buttons["Cancel"].firstMatch.exists)
         designShot("shares-o3-confirm")
         confirm.tap()
 
