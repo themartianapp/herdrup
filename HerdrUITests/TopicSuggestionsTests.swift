@@ -161,13 +161,26 @@ final class TopicSuggestionsTests: XCTestCase {
         // Owner picks 2026-11-24 item 16: a capsule 12 pt above the tab bar, which stays in sight.
         let cancel = app.buttons["topics-switch-cancel"]
         XCTAssertTrue(cancel.exists, "a held switch can be cancelled from the notice")
+        // An iPhone test (the iphone-app shard): the system tab bar must be there to measure.
         let tabBar = app.tabBars.firstMatch
-        if tabBar.exists {
-            XCTAssertTrue(tabBar.isHittable, "the notice leaves the tab bar in sight")
-            XCTAssertLessThanOrEqual(cancel.frame.maxY, tabBar.frame.minY, "the notice sits above the tab bar")
-            XCTAssertLessThanOrEqual(status.frame.maxY, tabBar.frame.minY, "the notice sits above the tab bar")
-        }
+        XCTAssertTrue(tabBar.exists, "the iPhone home has its tab bar")
+        XCTAssertTrue(tabBar.isHittable, "the notice leaves the tab bar in sight")
+        XCTAssertLessThanOrEqual(cancel.frame.maxY, tabBar.frame.minY, "the notice sits above the tab bar")
+        XCTAssertLessThanOrEqual(status.frame.maxY, tabBar.frame.minY, "the notice sits above the tab bar")
         shot(app, "topics-switch-scheduled")
+
+        // herdrup#842: each tab draws its own copy of the notice, and leaving one must not
+        // clear the result. Gram shows the same notice, and so does Agents again.
+        let held = "Topics will turn on when herdr-app finishes"
+        tabBar.buttons["Gram"].tap()
+        XCTAssertTrue(poll(3, every: 0.3) { status.exists && status.label.contains(held) },
+                      "Gram shows the held switch too")
+        Thread.sleep(forTimeInterval: 1)
+        XCTAssertTrue(status.exists, "leaving the Agents tab left the result in place")
+        tabBar.buttons["Agents"].tap()
+        XCTAssertTrue(poll(3, every: 0.3) { status.exists && status.label.contains(held) },
+                      "back on Agents, the notice still says so")
+        XCTAssertTrue(row.exists(within: 6))
         XCTAssertTrue(menuOffers("Cancel pending switch", row: row, in: app), "the switch waits for the turn")
         XCTAssertTrue(app.buttons["Topics switch pending"].exists)
         XCTAssertFalse(app.buttons["Turn on topics"].exists)

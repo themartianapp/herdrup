@@ -3329,6 +3329,8 @@ struct TerminalHomeView: View {
             }
         }
         #endif
+        // The Topics switch result's one clock, on the root so no tab or column owns it.
+        .task(id: topicsSwitchSighting) { await expireTopicsSwitchResult() }
         // Connect-scoped lifecycle, attached to the PERSISTENT ROOT, not a tab: a
         // TabView re-runs a tab's .task / .onAppear every time that tab re-appears, so
         // keeping these here fires load / fork-probe / first-run / deep-links ONCE per
@@ -3558,18 +3560,15 @@ struct TerminalHomeView: View {
     /// The Settings tab's "1": a herdr update to look at.
     private var settingsBadge: Int { serverUpdate?.showsBadge == true ? 1 : 0 }
 
-    /// The Agents tab: the app-drawn header plus the agents list (or the first-load
-    /// spinner / error). It carries the connect lifecycle — load, fork-probe, the
-    /// first-run gestures tutorial, and the push deep-link hooks. Terminal is not a
-    /// tab; it fronts a keep-mounted pane over the whole TabView.
     /// The Topics switch notice, 12 pt above the tab bar (owner picks 2026-11-24 item 16). A
     /// bottom safe-area inset, not an overlay: on iPad it stacks over the sidebar's section bar,
     /// on iPhone over the system tab bar in the Agents, Gram and Settings tabs, so those lists end
     /// above it and its height is reserved while it shows. "Topics will turn on when X finishes."
     /// · Cancel: the agent's current state drops the switch herdr holds (as the row menu's
-    /// Cancel pending switch).
+    /// Cancel pending switch). Every copy only draws `topicsSwitchStatus`; the home alone clears
+    /// a result (`expireTopicsSwitchResult`).
     private var topicsSwitchNotice: some View {
-        TopicsSwitchBanner(status: $topicsSwitchStatus) { scheduled in
+        TopicsSwitchBanner(status: topicsSwitchStatus) { scheduled in
             let request = TopicsSwitchRequest(paneID: scheduled.paneID, title: scheduled.title,
                                               enabled: !scheduled.enabled, cancelsPending: true)
             Task { await cancelPendingTopicsSwitch(request) }
@@ -3581,6 +3580,42 @@ struct TerminalHomeView: View {
     @ViewBuilder
     private var phoneTopicsSwitchNotice: some View {
         if hSizeClass != .regular { topicsSwitchNotice }
+    }
+
+    /// Where a copy of the Topics switch notice is in sight.
+    private enum TopicsSwitchNoticeHost: Hashable {
+        /// The expanded sidebar, at regular widths.
+        case sidebar
+        /// A phone tab.
+        case tab(HomeTab)
+    }
+
+    /// A switch status and the notice that shows it: the key of the result's clock.
+    private struct TopicsSwitchSighting: Equatable {
+        let status: TopicsSwitchStatus
+        let host: TopicsSwitchNoticeHost
+    }
+
+    /// The status and where it is in sight; nil while nothing shows a notice: no status, the
+    /// folded rail at regular widths, a terminal fronted over the Agents tab, the app inactive.
+    private var topicsSwitchSighting: TopicsSwitchSighting? {
+        guard let status = topicsSwitchStatus, scenePhase == .active else { return nil }
+        if hSizeClass == .regular {
+            return columnVisibility == .detailOnly ? nil : TopicsSwitchSighting(status: status, host: .sidebar)
+        }
+        if selectedTab == .agents && frontID != nil { return nil }
+        return TopicsSwitchSighting(status: status, host: .tab(selectedTab))
+    }
+
+    /// The one owner of a switch result's lifetime, keyed on `topicsSwitchSighting`: a result
+    /// stays 6 s in sight of one notice. A new result or another host (a tab change, the sidebar
+    /// unfolding, the terminal closing) starts the clock again; with no notice in sight there is
+    /// no clock, so a result is never cleared unseen. A cancelled wait clears nothing: it means
+    /// the status or its host changed, and the next run decides.
+    private func expireTopicsSwitchResult() async {
+        guard let sighting = topicsSwitchSighting, !sighting.status.isWorking else { return }
+        do { try await Task.sleep(for: .seconds(6)) } catch { return }
+        if topicsSwitchStatus == sighting.status { topicsSwitchStatus = nil }
     }
 
     /// The per-agent action presenters — the Restart / Swap-subscription confirmation dialogs and the
@@ -3719,6 +3754,10 @@ struct TerminalHomeView: View {
         return "Create"
     }
 
+    /// The Agents tab: the app-drawn header plus the agents list (or the first-load
+    /// spinner / error). It carries the connect lifecycle — load, fork-probe, the
+    /// first-run gestures tutorial, and the push deep-link hooks. Terminal is not a
+    /// tab; it fronts a keep-mounted pane over the whole TabView.
     private var agentsTab: some View {
         NavigationStack {
             ZStack {
