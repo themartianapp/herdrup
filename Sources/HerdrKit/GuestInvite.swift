@@ -30,6 +30,9 @@ public struct GuestInvite: Equatable, Sendable {
     public let agentName: String
     public let guestName: String
     public let expires: Date
+    /// The host takes an account statement at redemption (`"acct": 1`, herdr's `[guest]
+    /// accounts`): the guest may bind the share to their HerdrUp account. Older hosts omit it.
+    public let acceptsAccount: Bool
 
     public enum Failure: Error, Equatable, CustomStringConvertible {
         /// The text holds no guest invite link.
@@ -58,7 +61,8 @@ public struct GuestInvite: Equatable, Sendable {
 
     public init(
         relay: URL, hostID: String, hostPublicKey: Data, inviteID: String, secret: String,
-        machineLabel: String, ownerName: String, agentName: String, guestName: String, expires: Date
+        machineLabel: String, ownerName: String, agentName: String, guestName: String, expires: Date,
+        acceptsAccount: Bool = false
     ) {
         self.relay = relay
         self.hostID = hostID
@@ -70,6 +74,7 @@ public struct GuestInvite: Equatable, Sendable {
         self.agentName = agentName
         self.guestName = guestName
         self.expires = expires
+        self.acceptsAccount = acceptsAccount
     }
 
     /// Parses an invite from a link that carries its payload (every form but the short web
@@ -382,9 +387,11 @@ public struct GuestInvite: Equatable, Sendable {
         let agentName: String
         let guestName: String
         let expiresUnix: Int64
+        /// `1` when the host accepts an account statement; absent otherwise.
+        let acct: Int?
 
         enum CodingKeys: String, CodingKey {
-            case v, relay, secret
+            case v, relay, secret, acct
             case hostID = "host_id"
             case hostPub = "host_pub"
             case inviteID = "invite_id"
@@ -442,7 +449,8 @@ public struct GuestInvite: Equatable, Sendable {
             relay: relay, hostID: wire.hostID, hostPublicKey: hostPub, inviteID: wire.inviteID,
             secret: wire.secret, machineLabel: wire.machineLabel, ownerName: wire.ownerName,
             agentName: wire.agentName, guestName: wire.guestName,
-            expires: Date(timeIntervalSince1970: TimeInterval(wire.expiresUnix)))
+            expires: Date(timeIntervalSince1970: TimeInterval(wire.expiresUnix)),
+            acceptsAccount: wire.acct == 1)
     }
 
     /// HTTPS, or plain HTTP to this machine for a relay under local development.
@@ -466,7 +474,8 @@ public struct GuestInvite: Equatable, Sendable {
         let wire = Wire(
             v: 1, relay: relay.absoluteString, hostID: hostID, hostPub: Base64URL.encode(hostPublicKey),
             inviteID: inviteID, secret: secret, machineLabel: machineLabel, ownerName: ownerName,
-            agentName: agentName, guestName: guestName, expiresUnix: Int64(expires.timeIntervalSince1970))
+            agentName: agentName, guestName: guestName, expiresUnix: Int64(expires.timeIntervalSince1970),
+            acct: acceptsAccount ? 1 : nil)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         // Encoding a struct of strings and integers cannot fail.
