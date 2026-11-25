@@ -158,6 +158,15 @@ final class TopicSuggestionsTests: XCTestCase {
         XCTAssertTrue(status.exists(within: 10))
         XCTAssertTrue(poll(10, every: 0.3) { status.label.contains("Topics will turn on when herdr-app finishes") },
                       "the notice: \(status.label)")
+        // Owner picks 2026-11-24 item 16: a capsule 12 pt above the tab bar, which stays in sight.
+        let cancel = app.buttons["topics-switch-cancel"]
+        XCTAssertTrue(cancel.exists, "a held switch can be cancelled from the notice")
+        let tabBar = app.tabBars.firstMatch
+        if tabBar.exists {
+            XCTAssertTrue(tabBar.isHittable, "the notice leaves the tab bar in sight")
+            XCTAssertLessThanOrEqual(cancel.frame.maxY, tabBar.frame.minY, "the notice sits above the tab bar")
+            XCTAssertLessThanOrEqual(status.frame.maxY, tabBar.frame.minY, "the notice sits above the tab bar")
+        }
         shot(app, "topics-switch-scheduled")
         XCTAssertTrue(menuOffers("Cancel pending switch", row: row, in: app), "the switch waits for the turn")
         XCTAssertTrue(app.buttons["Topics switch pending"].exists)
