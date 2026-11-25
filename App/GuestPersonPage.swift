@@ -71,7 +71,8 @@ enum GuestPeopleText {
 }
 
 /// One person's page. It reads the person live from the model, so a removal shows as soon as
-/// the reload lands, and it closes itself once the person is gone.
+/// the reload lands, and it closes itself once their machine lists without them. A failed
+/// reload keeps them (marked stale by the model), so the page and the action's error stay.
 struct GuestPersonPage: View {
     let client: HerdrClient
     @ObservedObject var model: GuestAccessModel
@@ -148,6 +149,13 @@ struct GuestPersonPage: View {
         let person = item.person
         return VStack(alignment: .leading, spacing: 0) {
             header(item)
+            if item.stale {
+                Text(staleNote(item))
+                    .font(Typography.app(12.5)).foregroundStyle(Palette.waiting)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 18).padding(.top, 12)
+                    .accessibilityIdentifier("guest-person-stale")
+            }
             GuestStyle.sectionLabel("AGENTS", top: 22)
             GuestStyle.card {
                 ForEach(Array(person.grants.enumerated()), id: \.element.guestID) { index, grant in
@@ -178,13 +186,23 @@ struct GuestPersonPage: View {
         .padding(.bottom, 24)
     }
 
+    /// The page stays on a failed reload, so it says the content may be out of date and why.
+    private func staleNote(_ item: GuestAccessModel.Person) -> String {
+        let reason = model.failure(on: item.machine).map { ": \($0.message)" } ?? ""
+        return "Couldn't reload \(item.machine.label)\(reason). This may be out of date."
+    }
+
     // MARK: Header
 
     private func header(_ item: GuestAccessModel.Person) -> some View {
         let person = item.person
         let state = GuestPresence(lastSeenMs: person.lastSeenMs)
-        // Name the device only when it is the one behind the person's latest use.
-        let device = person.lastSeenDevice.flatMap { $0.lastSeenMs == person.lastSeenMs ? $0.device : nil }
+        // Name a device only when its own last use is the person's latest, within herdr's
+        // one-minute stamping: the share's own time says some device, not which.
+        let device = person.lastSeenDevice.flatMap { seen -> String? in
+            guard let own = seen.lastSeenMs, let latest = person.lastSeenMs, own + 60_000 >= latest else { return nil }
+            return seen.device
+        }
         return VStack(spacing: 6) {
             GuestInitialTile(name: person.name, size: 72)
             Text(person.name).font(Typography.app(24, .bold)).foregroundStyle(Palette.text)
@@ -262,7 +280,7 @@ struct GuestPersonPage: View {
             do {
                 try await client.guestUpdate(guestID: grant.guestID, shareGram: value, machine: machine.alias)
                 failure = nil
-            } catch let api as APIError where api.code == "invalid_request" && api.message.contains("unknown variant") {
+            } catch let api as APIError where api.isUnknownMethod {
                 failure = "Update Herdr on \(machine.label) to share Gram."
                 throw api
             } catch {
@@ -343,7 +361,7 @@ struct GuestPersonPage: View {
             do {
                 try await client.guestRemoveDevice(guestID: grant.guestID, fingerprint: device.fingerprint,
                                                    machine: item.machine.alias)
-            } catch let api as APIError where api.code == "invalid_request" && api.message.contains("unknown variant") {
+            } catch let api as APIError where api.isUnknownMethod {
                 actionError = "Update Herdr on \(item.machine.label) to remove a device."
                 break
             } catch {
@@ -385,10 +403,16 @@ struct GuestPersonPage: View {
         }
     }
 
-    /// Names what goes: the agents, the machine, and every device that loses them.
+    /// Names what goes: the agents, the machine, and every device that loses them. One
+    /// agent's share may reach fewer devices than the person has, so it names its own.
     private func message(_ confirm: Confirmation, item: GuestAccessModel.Person) -> String {
         let person = item.person
-        let devices = person.devices.map(GuestPeopleText.deviceName)
+        let reached: [GuestDeviceInfo]
+        switch confirm {
+        case .person: reached = person.devices
+        case .grant(let grant): reached = grant.usableDevices
+        }
+        let devices = reached.map(GuestPeopleText.deviceName)
         let reach = devices.count > 1
             ? "on all \(devices.count) devices (\(devices.joined(separator: ", ")))"
             : "on their \(devices.first ?? "device")"

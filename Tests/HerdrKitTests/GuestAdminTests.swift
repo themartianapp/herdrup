@@ -285,8 +285,8 @@ final class GuestAdminTests: XCTestCase {
         ])
         XCTAssertEqual(nike.usableDevices.map(\.fingerprint), ["SHA256:aaaa", "SHA256:bbbb"],
                        "the accepting device first, and never a removed one")
-        XCTAssertEqual(nike.usableDevices.first?.lastSeenMs, 900,
-                       "the share was used after every added device, so by the accepting one")
+        XCTAssertNil(nike.usableDevices.first?.lastSeenMs,
+                     "with another device added, the share's last use may be any device's")
 
         let old = try XCTUnwrap(listing.guests.first { $0.guestID == "g-old" })
         XCTAssertFalse(old.accountBound)
@@ -295,14 +295,21 @@ final class GuestAdminTests: XCTestCase {
         XCTAssertEqual(old.usableDevices, [GuestDeviceInfo(fingerprint: "SHA256:eeee", device: "iPad", addedMs: 10)])
     }
 
-    func testAnAddedDevicesUseIsNotTheAcceptingDevices() {
+    /// herdr stamps the share's `last_seen_ms` and an added device's own time apart, each
+    /// at most once a minute: after the MacBook alone connected, the share's time (120 s) is
+    /// newer than the MacBook's (60 s), and still none of it is the iPhone's.
+    func testTheSharesLastUseIsTheAcceptingDevicesOnlyWhenNoOtherDeviceWasAdded() {
         let share = GuestRecord(
             guestID: "g1", name: "Nike", fingerprint: "SHA256:aaaa", device: "iPhone", grant: nil,
-            createdMs: 100, lastSeenMs: 500, accountBound: true, person: "acct",
-            devices: [GuestDeviceInfo(fingerprint: "SHA256:bbbb", device: "MacBook", addedMs: 200, lastSeenMs: 500)])
-        XCTAssertNil(share.usableDevices[0].lastSeenMs,
-                     "the MacBook stamped the share's last use, so the iPhone's is unknown")
-        XCTAssertEqual(share.usableDevices[1].lastSeenMs, 500)
+            createdMs: 100, lastSeenMs: 120_000, accountBound: true, person: "acct",
+            devices: [GuestDeviceInfo(fingerprint: "SHA256:bbbb", device: "MacBook", addedMs: 200, lastSeenMs: 60_000)])
+        XCTAssertNil(share.usableDevices[0].lastSeenMs, "the iPhone's own last use is unknown")
+        XCTAssertEqual(share.usableDevices[1].lastSeenMs, 60_000, "the MacBook keeps its own time")
+
+        let plain = GuestRecord(
+            guestID: "g2", name: "sam", fingerprint: "SHA256:dddd", device: "iPhone", grant: nil,
+            createdMs: 100, lastSeenMs: 120_000, person: "SHA256:dddd")
+        XCTAssertEqual(plain.usableDevices.map(\.lastSeenMs), [120_000], "a lone device's use is the share's")
     }
 
     func testARemovedAcceptingDeviceLeavesOnlyTheOthers() {
@@ -323,11 +330,11 @@ final class GuestAdminTests: XCTestCase {
         XCTAssertTrue(nike.accountBound)
         XCTAssertEqual(nike.grants.map(\.guestID), ["g-n1", "g-n2"], "oldest share first")
         XCTAssertEqual(nike.devices, [
-            GuestDeviceInfo(fingerprint: "SHA256:aaaa", device: "iPhone", addedMs: 100, lastSeenMs: 900),
+            GuestDeviceInfo(fingerprint: "SHA256:aaaa", device: "iPhone", addedMs: 100, lastSeenMs: 300),
             GuestDeviceInfo(fingerprint: "SHA256:bbbb", device: "MacBook", addedMs: 150, lastSeenMs: 500),
-        ], "one entry per device across both shares; the removed browser is not listed")
-        XCTAssertEqual(nike.lastSeenMs, 900)
-        XCTAssertEqual(nike.lastSeenDevice?.device, "iPhone")
+        ], "one entry per device across both shares, each with its own last use; the removed browser is not listed")
+        XCTAssertEqual(nike.lastSeenMs, 900, "the person was seen when any share was")
+        XCTAssertEqual(nike.lastSeenDevice?.device, "MacBook")
         XCTAssertEqual(nike.revokeTargets, [.person("acct-nike")], "Remove Nike is one guest.revoke {person}")
         XCTAssertEqual(nike.grantsHolding(fingerprint: "SHA256:bbbb").map(\.guestID), ["g-n1", "g-n2"],
                        "a device goes from every share it may use")
@@ -336,7 +343,8 @@ final class GuestAdminTests: XCTestCase {
         let sam = people[1]
         XCTAssertFalse(sam.accountBound)
         XCTAssertEqual(sam.devices.map(\.device), ["iPhone"])
-        XCTAssertEqual(sam.revokeTargets, [.guest("g-sam")], "a plain guest is revoked by its guest id")
+        XCTAssertEqual(sam.revokeTargets, [.person("SHA256:dddd")],
+                       "a plain guest's person is its key: still one guest.revoke {person}")
         XCTAssertEqual(sam.grantsHolding(fingerprint: "SHA256:dddd").map(\.guestID), [],
                        "a plain share has no device to remove")
 

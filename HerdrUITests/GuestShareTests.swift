@@ -311,8 +311,8 @@ final class GuestShareTests: XCTestCase {
     /// The account-shares design's people (`HERDR_MOCK_ACCOUNT_PEOPLE=1`): Nike holds llm-opt
     /// and orgstudio on her HerdrUp account (iPhone, MacBook, a browser), sam a plain share on
     /// one iPhone.
-    private func openAccountPeople() {
-        launch("sharedaccess", environment: ["HERDR_MOCK_ACCOUNT_PEOPLE": "1"])
+    private func openAccountPeople(_ environment: [String: String] = [:]) {
+        launch("sharedaccess", environment: environment.merging(["HERDR_MOCK_ACCOUNT_PEOPLE": "1"]) { _, new in new })
         openSharedAccess()
     }
 
@@ -383,7 +383,8 @@ final class GuestShareTests: XCTestCase {
         XCTAssertTrue(header.label.contains("HerdrUp account · 2 devices"), header.label)
     }
 
-    /// An agent's Remove ends that one share only.
+    /// An agent's Remove ends that one share only, and its confirmation names the devices
+    /// that share reaches: the browser never opened orgstudio.
     func testRemovingOneAgentKeepsTheOther() {
         openAccountPeople()
         openPerson("Nike")
@@ -392,9 +393,31 @@ final class GuestShareTests: XCTestCase {
         remove.tap()
         let confirm = app.alerts.buttons["Remove orgstudio"].firstMatch
         XCTAssertTrue(confirm.exists(within: Self.actionTimeout), "removing an agent asks first")
+        XCTAssertTrue(text(containing: "Nike loses orgstudio on Jerry's Mac Studio on all 2 devices (MacBook, iPhone)").exists,
+                      "the confirmation names orgstudio's own devices")
         confirm.tap()
         XCTAssertTrue(element("guest-agent-orgstudio").gone(within: Self.actionTimeout))
         XCTAssertTrue(element("guest-agent-llm-opt").exists, "Nike keeps llm-opt")
+    }
+
+    /// A reload that fails after an action says nothing about who has access: the page stays
+    /// with the action's error and says it may be out of date, instead of closing as if Nike
+    /// were gone.
+    func testAFailedReloadKeepsThePersonPageAndItsError() {
+        openAccountPeople(["HERDR_MOCK_GOES_DOWN": "1"])
+        openPerson("Nike")
+        element("guest-agent-remove-orgstudio").tap()
+        let confirm = app.alerts.buttons["Remove orgstudio"].firstMatch
+        XCTAssertTrue(confirm.exists(within: Self.actionTimeout))
+        confirm.tap()
+        let ok = app.alerts.buttons["OK"].firstMatch
+        XCTAssertTrue(ok.exists(within: Self.actionTimeout), "the failed removal says so")
+        XCTAssertTrue(text(containing: "connection refused").exists)
+        ok.tap()
+        XCTAssertTrue(element("guest-person-stale").exists(within: Self.actionTimeout),
+                      "the page stays and says it may be out of date")
+        XCTAssertTrue(element("guest-person-header").exists)
+        XCTAssertTrue(element("guest-agent-orgstudio").exists, "nothing says orgstudio went")
     }
 
     /// o3: Remove Nike asks first, naming the agents, the machine and every device, then

@@ -12,6 +12,9 @@ final class GuestAccessModel: ObservableObject {
     struct Person: Identifiable {
         let person: GuestPerson
         let machine: GuestMachine
+        /// The machine's last `guest.list` failed, so this is the person as last loaded:
+        /// they may be gone or changed, and the failure is in `failures`.
+        var stale = false
         var id: String { "\(machine.alias ?? "")|\(person.id)" }
     }
 
@@ -132,6 +135,12 @@ final class GuestAccessModel: ObservableObject {
                 if !Self.isMissingFeature(error) || result.machine.alias == nil {
                     failures.append(Failure(machine: result.machine, message: GuestAdminError.message(error)))
                 }
+                // A failed list says nothing about who has access: keep whom the machine
+                // listed last, so an open person page stays (with its error) instead of
+                // closing as if they were removed.
+                people += self.people.filter { $0.machine == result.machine }.map {
+                    Person(person: $0.person, machine: $0.machine, stale: true)
+                }
                 continue
             }
             guard let listing = result.listing else { continue }
@@ -166,6 +175,11 @@ final class GuestAccessModel: ObservableObject {
         people.first { $0.id == id }
     }
 
+    /// Why the machine's last load failed, if it did.
+    func failure(on machine: GuestMachine) -> Failure? {
+        failures.first { $0.machine == machine }
+    }
+
     /// The key a Share Gram flip is tracked by: one share on one machine.
     static func shareKey(_ guest: GuestRecord, on machine: GuestMachine) -> String {
         "\(machine.alias ?? "")|\(guest.guestID)"
@@ -183,8 +197,7 @@ final class GuestAccessModel: ObservableObject {
 
     private static func isMissingFeature(_ error: Error) -> Bool {
         guard let api = error as? APIError else { return false }
-        return api.code == "unsupported"
-            || (api.code == "invalid_request" && api.message.contains("unknown variant"))
+        return api.code == "unsupported" || api.isUnknownMethod
     }
 }
 

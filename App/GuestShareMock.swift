@@ -13,6 +13,8 @@ import SwiftUI
 /// - `HERDR_MOCK_GUEST_INVITE=1`: start with one pending invite (for "sam").
 /// - `HERDR_MOCK_SAVED_PEER_GUEST=1`: the agent-less saved machine mcb-air holds guest `sam`.
 /// - `HERDR_MOCK_AUDIT_FAIL=1`: the connected machine's `guest.audit` fails.
+/// - `HERDR_MOCK_GOES_DOWN=1`: the connected machine drops at the first `guest.revoke`: that
+///   call and every later one fails, so the reload after an action fails too.
 /// - `HERDR_MOCK_ACCOUNT_PEOPLE=1`: the connected machine holds, instead of plotarmordev,
 ///   Nike (account-bound: llm-opt and orgstudio, on her iPhone, MacBook and a browser she
 ///   added today) and sam (a plain share on one iPhone), as in the account-shares design.
@@ -90,6 +92,9 @@ final class GuestShareMockStore: @unchecked Sendable {
     private var inviteSeq = 0
     /// `HERDR_MOCK_AUDIT_FAIL=1`: the connected machine's `guest.audit` fails.
     private let auditFails = ProcessInfo.processInfo.environment["HERDR_MOCK_AUDIT_FAIL"] == "1"
+    /// `HERDR_MOCK_GOES_DOWN=1`, and whether the connected machine has dropped.
+    private let goesDown = ProcessInfo.processInfo.environment["HERDR_MOCK_GOES_DOWN"] == "1"
+    private var down = false
 
     private static let fingerprint = "SHA256:9f3a·e71c·04bd·c21e"
     private static let grant: [String: Any] = ["terminal_id": "t-llm", "agent_name": "llm-opt",
@@ -148,9 +153,11 @@ final class GuestShareMockStore: @unchecked Sendable {
     }
 
     /// `HERDR_MOCK_ACCOUNT_PEOPLE=1`: the account-shares design's people, as herdr's
-    /// `guest.list` and `guest.audit` give them. Nike accepted both agents on her iPhone; her
-    /// MacBook opened both shares since, the browser only llm-opt's, so removing the browser
-    /// touches one share and removing the MacBook both.
+    /// `guest.list` and `guest.audit` give them. Nike accepted llm-opt on her iPhone and
+    /// orgstudio on her MacBook; each device opened the other share since, and the browser
+    /// only llm-opt's, so removing the browser touches one share and the MacBook both. Her
+    /// iPhone's own last use comes from orgstudio's share, where it is an added device: herdr
+    /// keeps none for the device that accepted.
     private static func accountPeople(nowMs: UInt64) -> (guests: [[String: Any]], audit: [[String: Any]]) {
         let day: UInt64 = 24 * 3600 * 1000
         let hour: UInt64 = 3600 * 1000
@@ -171,10 +178,10 @@ final class GuestShareMockStore: @unchecked Sendable {
                 device(macBook, "MacBook", added: nowMs - 2 * day + hour, seen: nowMs - 2 * hour),
                 device(browser, "Browser (Chrome on macOS)", added: browserAdded, seen: browserAdded),
              ]],
-            ["guest_id": "g-nike-org", "name": "Nike", "fingerprint": iPhone, "device": "iPhone", "grant": orgstudio,
-             "created_ms": nowMs - day, "last_seen_ms": nowMs - 3 * hour, "revoked": false, "share_gram": false,
+            ["guest_id": "g-nike-org", "name": "Nike", "fingerprint": macBook, "device": "MacBook", "grant": orgstudio,
+             "created_ms": nowMs - day, "last_seen_ms": nowMs - 30_000, "revoked": false, "share_gram": false,
              "account_bound": true, "person": "acct-nike", "devices": [
-                device(macBook, "MacBook", added: nowMs - day + hour, seen: nowMs - 2 * hour - 60_000),
+                device(iPhone, "iPhone", added: nowMs - day + hour, seen: nowMs - 30_000),
              ]],
             ["guest_id": "g-sam", "name": "sam", "fingerprint": sam, "device": "iPhone", "grant": grant,
              "created_ms": nowMs - day, "last_seen_ms": nowMs - 2 * hour, "revoked": false, "share_gram": false,
@@ -185,7 +192,7 @@ final class GuestShareMockStore: @unchecked Sendable {
                   extra: ["text": "Browser (Chrome on macOS)"]),
             entry(nowMs - 28 * 60 * 1000, "prompt", guestID: "g-nike-llm", name: "Nike", fingerprint: iPhone,
                   extra: ["text": "can you rerun the deploy script against staging?"]),
-            entry(nowMs - day, "accepted", guestID: "g-nike-org", name: "Nike", fingerprint: iPhone),
+            entry(nowMs - day, "accepted", guestID: "g-nike-org", name: "Nike", fingerprint: macBook),
             entry(nowMs - day, "accepted", guestID: "g-sam", name: "sam", fingerprint: sam),
         ]
         return (guests, audit)
@@ -206,6 +213,10 @@ final class GuestShareMockStore: @unchecked Sendable {
             return ["error": ["code": "machine_not_found", "message": "no saved machine \(key)"]]
         }
         defer { machines[key] = machine }
+        if goesDown && key.isEmpty && method == "guest.revoke" { down = true }
+        if down && key.isEmpty {
+            return ["error": ["code": "transport_error", "message": "connection refused"]]
+        }
         switch method {
         case "guest.list":
             return ["type": "guest_list", "guests": machine.guests, "invites": machine.invites,

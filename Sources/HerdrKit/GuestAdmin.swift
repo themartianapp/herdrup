@@ -204,19 +204,17 @@ public struct GuestRecord: Decodable, Sendable, Equatable, Identifiable {
     /// `device`) unless the owner removed it, which herdr records as a removed `devices`
     /// entry with its fingerprint, then every added device not removed.
     ///
-    /// herdr keeps no last-seen time for the accepting device of its own: `last_seen_ms` is
-    /// the share's, stamped by whichever device connected. An added device's connection
-    /// stamps both at once, so the accepting device was the last one seen only when the
-    /// share's time is newer than every added device's.
+    /// herdr keeps no last-seen time of its own for the accepting device: `last_seen_ms` is
+    /// the share's, stamped by whichever device connected, and an added device's own time is
+    /// stamped apart from it, each throttled to a minute. So the share's time is the
+    /// accepting device's only when no other device was ever added; otherwise it means
+    /// "some device" and goes to none.
     public var usableDevices: [GuestDeviceInfo] {
         var usable: [GuestDeviceInfo] = []
         if let fingerprint, !devices.contains(where: { $0.fingerprint == fingerprint && $0.removed }) {
-            var seen = lastSeenMs
-            if let seenMs = seen, let newestAdded = devices.compactMap(\.lastSeenMs).max(), seenMs <= newestAdded {
-                seen = nil
-            }
+            let onlyDevice = devices.allSatisfy { $0.fingerprint == fingerprint }
             usable.append(GuestDeviceInfo(fingerprint: fingerprint, device: device.flatMap { $0.isEmpty ? nil : $0 },
-                                      addedMs: createdMs, lastSeenMs: seen))
+                                          addedMs: createdMs, lastSeenMs: onlyDevice ? lastSeenMs : nil))
         }
         usable += devices.filter { !$0.removed && $0.fingerprint != fingerprint }
         return usable
@@ -282,11 +280,11 @@ public struct GuestPerson: Sendable, Equatable, Identifiable {
         devices.filter { $0.lastSeenMs != nil }.max { ($0.lastSeenMs ?? 0) < ($1.lastSeenMs ?? 0) }
     }
 
-    /// What "Remove <name>" sends: one `guest.revoke {person}` for an account-bound person,
-    /// so every share and device goes at once; a plain guest's share by its guest id, which a
-    /// daemon from before `person` also understands.
+    /// What "Remove <name>" sends: one `guest.revoke {person}` whenever herdr names the
+    /// person (a plain share's person is its fingerprint), so every share goes in one store
+    /// write; each share by its guest id only on a daemon from before `person`.
     public var revokeTargets: [GuestRevokeTarget] {
-        if accountBound, let person = grants.first(where: { $0.person != nil })?.person {
+        if let person = grants.first(where: { $0.person != nil })?.person {
             return [.person(person)]
         }
         return grants.map { .guest($0.guestID) }
