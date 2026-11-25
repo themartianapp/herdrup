@@ -586,7 +586,7 @@ final class TopicsMock: @unchecked Sendable {
                                     "status": "done"])
                 case .inbox:
                     entries.append(["id": "\(topic.id)-\(index)h", "ts_ms": message.ms, "kind": "relay",
-                                    "from": "Inbox", "topic_id": topic.id, "direction": "to_topic",
+                                    "from": "Inbox", "direction": "to_topic",
                                     "text": message.text])
                 }
             }

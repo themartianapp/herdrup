@@ -541,6 +541,7 @@ public enum TranscriptRelayDirection: String, Sendable, Equatable {
 public struct TranscriptRelay: Sendable, Equatable {
     /// "Inbox", or the sending topic's title.
     public let from: String
+    /// The sending topic's id; nil when the Inbox sent it.
     public let topicID: String?
     public let direction: TranscriptRelayDirection
     /// The message, markdown.
@@ -553,10 +554,12 @@ public struct TranscriptRelay: Sendable, Equatable {
         self.text = text
     }
 
-    /// "From Inbox", "From topic Trip": who handed the message over.
+    /// "From Inbox", "From topic Trip": who handed the message over. A sending topic
+    /// (`topic_id`) is named as one, whichever page shows it.
     public var label: String {
-        let name = from.isEmpty ? (direction == .toTopic ? "Inbox" : "a topic") : from
-        return direction == .toInbox ? "From topic \(name)" : "From \(name)"
+        let fromTopic = !(topicID ?? "").isEmpty
+        let name = from.isEmpty ? (fromTopic ? "a topic" : "Inbox") : from
+        return fromTopic ? "From topic \(name)" : "From \(name)"
     }
 }
 
