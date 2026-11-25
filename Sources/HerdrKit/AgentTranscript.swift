@@ -526,6 +526,40 @@ public struct TranscriptTopicSuggestion: Sendable, Equatable {
     }
 }
 
+/// Which way a `relay` went between the Inbox and a topic.
+public enum TranscriptRelayDirection: String, Sendable, Equatable {
+    /// The Inbox sent it into this topic (`from` is "Inbox").
+    case toTopic = "to_topic"
+    /// A topic sent it to the Inbox (`from` is the topic's title).
+    case toInbox = "to_inbox"
+    case unknown
+}
+
+/// A `relay` entry: a message the Inbox handed to a topic, or a topic to the Inbox. omp writes
+/// it as a user turn with a wrapper; herdr strips the wrapper and says who sent it. An older
+/// herdr sends the same entry as `user`.
+public struct TranscriptRelay: Sendable, Equatable {
+    /// "Inbox", or the sending topic's title.
+    public let from: String
+    public let topicID: String?
+    public let direction: TranscriptRelayDirection
+    /// The message, markdown.
+    public let text: String
+
+    public init(from: String, topicID: String? = nil, direction: TranscriptRelayDirection, text: String) {
+        self.from = from
+        self.topicID = topicID
+        self.direction = direction
+        self.text = text
+    }
+
+    /// "From Inbox", "From topic Trip": who handed the message over.
+    public var label: String {
+        let name = from.isEmpty ? (direction == .toTopic ? "Inbox" : "a topic") : from
+        return direction == .toInbox ? "From topic \(name)" : "From \(name)"
+    }
+}
+
 public struct TranscriptEntry: Decodable, Sendable, Equatable, Identifiable {
     public enum Kind: Sendable, Equatable {
         case user(text: String, author: TranscriptAuthor, origin: TranscriptOrigin = .mine)
@@ -542,6 +576,8 @@ public struct TranscriptEntry: Decodable, Sendable, Equatable, Identifiable {
         /// The agent suggests starting a topic with messages it picked (`topic_suggestion`). Its
         /// newest state wins: an `after` page re-sends it under the same id when it changes.
         case topicSuggestion(TranscriptTopicSuggestion)
+        /// A message the Inbox handed to a topic, or a topic to the Inbox (`relay`).
+        case relay(TranscriptRelay)
         /// A kind this app does not know; ignored by the view (contract: clients MUST
         /// ignore unknown kinds).
         case unknown(String)
@@ -559,7 +595,7 @@ public struct TranscriptEntry: Decodable, Sendable, Equatable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id, kind, text, author, final, tool, intent, status, detail, source, title, from, body
-        case items, questions, answer, error, origin, form, reason, state, by
+        case items, questions, answer, error, origin, form, reason, state, by, direction
         case tsMs = "ts_ms"
         case authorName = "author_name"
         case formAnswer = "form_answer"
@@ -636,6 +672,13 @@ public struct TranscriptEntry: Decodable, Sendable, Equatable, Identifiable {
                     .flatMap(TopicSuggestionState.init(rawValue:)) ?? .unknown,
                 topicID: (try? c.decodeIfPresent(String.self, forKey: .topicID)) ?? nil,
                 by: (try? c.decodeIfPresent(String.self, forKey: .by)) ?? nil))
+        case "relay":
+            kind = .relay(TranscriptRelay(
+                from: (try? c.decodeIfPresent(String.self, forKey: .from)) ?? "",
+                topicID: (try? c.decodeIfPresent(String.self, forKey: .topicID)) ?? nil,
+                direction: ((try? c.decodeIfPresent(String.self, forKey: .direction)) ?? nil)
+                    .flatMap(TranscriptRelayDirection.init(rawValue:)) ?? .unknown,
+                text: try text()))
         default:
             kind = .unknown(kindName)
         }

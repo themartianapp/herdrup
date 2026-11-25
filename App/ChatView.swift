@@ -723,6 +723,7 @@ private enum ChatRow: Identifiable, Equatable {
                 return lines.joined(separator: "\n")
             case .turnFailed(_, _, let error): return error ?? ""
             case .topicSuggestion(_, let suggestion): return suggestion.title + "\n" + suggestion.reason
+            case .relay(_, let relay): return relay.label + "\n" + relay.text
             }
         }
     }
@@ -2298,6 +2299,9 @@ private struct ChatRowView: View, Equatable {
                                     onDismiss: { actions.dismissSuggestion(id) },
                                     onDismissProblem: actions.clearSuggestionProblem,
                                     onOpenTopic: actions.openTopic)
+        case .relay(_, let relay):
+            ChatRelayView(relay: relay)
+                .stableContextMenu { messageMenu(relay.text, markdown: true, offersMarkdown: true) }
         }
     }
 

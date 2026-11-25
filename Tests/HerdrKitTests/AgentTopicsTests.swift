@@ -265,6 +265,30 @@ final class AgentTopicsTests: XCTestCase {
         XCTAssertTrue(list.topics.isEmpty)
     }
 
+    /// herdr's copy of the list: `stale` and `as_of_unix_ms` decode when sent and default
+    /// when an older herdr leaves them out.
+    func testListCarriesHerdrsCopyFieldsWhenSent() throws {
+        let cached = try JSONDecoder().decode(AgentTopicList.self, from: Data(
+            #"{"type":"agent_topics","agent":"enyo","pane_id":"w1:p1","topics":[],"stale":true,"as_of_unix_ms":1700000000000}"#.utf8))
+        XCTAssertTrue(cached.stale)
+        XCTAssertEqual(cached.asOfUnixMs, 1_700_000_000_000)
+        let older = try JSONDecoder().decode(AgentTopicList.self, from: Data(
+            #"{"type":"agent_topics","agent":"enyo","pane_id":"w1:p1","topics":[],"stale":"maybe"}"#.utf8))
+        XCTAssertFalse(older.stale, "absent or malformed reads as fresh")
+        XCTAssertNil(older.asOfUnixMs)
+    }
+
+    func testSeededRowsComeFromTopicSessionsNewestFirst() {
+        let rows = AgentTopicList.seeded(from: [
+            AgentTopicSession(topicID: "old", title: "Old", createdUnixMs: 1),
+            AgentTopicSession(topicID: ""),
+            AgentTopicSession(topicID: "new", title: nil, createdUnixMs: 9),
+        ])
+        XCTAssertEqual(rows.map(\.id), ["new", "old"], "an empty id is skipped; newest first")
+        XCTAssertEqual(rows.map(\.title), ["", "Old"])
+        XCTAssertTrue(rows.allSatisfy { $0.state == .unknown }, "no state is known before the agent answers")
+    }
+
     func testOrderedPutsOpenTopicsByActivityThenClosedOnes() {
         let list = AgentTopicList(agent: "enyo", paneID: "w1:p1", topics: [
             AgentTopic(id: "old", title: "Old", state: .idle, createdUnixMs: 1, lastActivityUnixMs: 10),

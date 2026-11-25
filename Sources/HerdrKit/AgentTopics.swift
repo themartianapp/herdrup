@@ -118,7 +118,8 @@ public struct AgentTopicSuggestion: Decodable, Sendable, Equatable, Identifiable
 }
 
 /// Result of `agent.topics.list` (`type: "agent_topics"`): the agent's topics, live from the
-/// agent; empty when it has none (an unreachable agent is an error instead).
+/// agent or from herdr's copy of its last list; empty when it has none (an unreachable agent
+/// is an error instead).
 public struct AgentTopicList: Decodable, Sendable, Equatable {
     public let agent: String
     public let paneID: String
@@ -126,17 +127,27 @@ public struct AgentTopicList: Decodable, Sendable, Equatable {
     /// The agent's open topic suggestions, oldest first. Nil when the agent's omp has no
     /// suggestions (the field is absent), empty when it has none open.
     public let suggestions: [AgentTopicSuggestion]?
+    /// herdr answered from its copy of the list and could not refresh it from the agent (or
+    /// has not yet: a copy read from the session file). False from a herdr without the copy.
+    public let stale: Bool
+    /// When herdr last had the list from the agent (`as_of_unix_ms`); nil from a herdr
+    /// without the copy.
+    public let asOfUnixMs: UInt64?
 
-    public init(agent: String, paneID: String, topics: [AgentTopic], suggestions: [AgentTopicSuggestion]? = nil) {
+    public init(agent: String, paneID: String, topics: [AgentTopic], suggestions: [AgentTopicSuggestion]? = nil,
+                stale: Bool = false, asOfUnixMs: UInt64? = nil) {
         self.agent = agent
         self.paneID = paneID
         self.topics = topics
         self.suggestions = suggestions
+        self.stale = stale
+        self.asOfUnixMs = asOfUnixMs
     }
 
     enum CodingKeys: String, CodingKey {
-        case agent, topics, suggestions
+        case agent, topics, suggestions, stale
         case paneID = "pane_id"
+        case asOfUnixMs = "as_of_unix_ms"
     }
 
     public init(from decoder: Decoder) throws {
@@ -147,6 +158,18 @@ public struct AgentTopicList: Decodable, Sendable, Equatable {
         topics = try c.decode([Lossy<AgentTopic>].self, forKey: .topics).compactMap(\.value)
         let lossy = (try? c.decodeIfPresent([Lossy<AgentTopicSuggestion>].self, forKey: .suggestions)) ?? nil
         suggestions = lossy?.compactMap(\.value)
+        stale = (try? c.decodeIfPresent(Bool.self, forKey: .stale)) ?? false
+        asOfUnixMs = (try? c.decodeIfPresent(UInt64.self, forKey: .asOfUnixMs)) ?? nil
+    }
+
+    /// The topics `agent.list` read from the session file (`topic_sessions`), as rows to show
+    /// before the agent's first list answers: titled, in no known state, newest first.
+    public static func seeded(from sessions: [AgentTopicSession]) -> [AgentTopic] {
+        let topics = sessions.filter { !$0.topicID.isEmpty }.map { session in
+            AgentTopic(id: session.topicID, title: session.title ?? "", state: .unknown,
+                       createdUnixMs: session.createdUnixMs ?? 0)
+        }
+        return AgentTopicList(agent: "", paneID: "", topics: topics).ordered
     }
 
     /// Topics in the order the Topics view lists them: open ones by last activity, newest
@@ -424,7 +447,8 @@ public enum AgentTopicsError: Error, Equatable, Sendable {
     case notAdvertised
     /// `topics_unsupported`: not a live omp agent.
     case unsupported
-    /// `topics_unreachable`: the agent has not offered its topics, or its control socket broke.
+    /// `topics_unreachable`: the agent has not offered its topics, its control socket broke, or
+    /// herdr did not find the agent in its pane for a moment. Passing.
     case unreachable
     /// `topics_timeout`: the agent did not answer in time.
     case timeout
@@ -775,6 +799,9 @@ public enum AgentTopicChangeReason: String, Sendable, Equatable, Decodable {
     /// A Start that answered accepted, but the topic ended before its first turn: `topicID`
     /// names it, `suggestionID` the suggestion (open again), `code` why when the agent says.
     case startFailed = "start_failed"
+    /// herdr refreshed its copy of the agent's list in the background and it changed;
+    /// `topicID` is empty.
+    case listed
     /// A reason this client does not know yet.
     case unknown
 

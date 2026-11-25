@@ -44,12 +44,14 @@ public enum TranscriptItem: Identifiable, Sendable, Equatable {
     case summary(id: String, text: String)
     /// A topic the agent suggests (open), or one taken up or set aside (drawn compactly).
     case topicSuggestion(id: String, TranscriptTopicSuggestion)
+    /// A message the Inbox handed to a topic, or a topic to the Inbox: it opens a turn.
+    case relay(id: String, TranscriptRelay)
 
     public var id: String {
         switch self {
         case .work(let work): return work.id
         case .reply(let id, _, _), .note(let id, _, _), .plan(let id, _), .ask(let id, _, _),
-             .turnFailed(let id, _, _), .summary(let id, _), .topicSuggestion(let id, _):
+             .turnFailed(let id, _, _), .summary(let id, _), .topicSuggestion(let id, _), .relay(let id, _):
             return id
         }
     }
@@ -173,6 +175,13 @@ public enum TranscriptGrouping {
                 // A state this app does not know draws nothing.
                 guard suggestion.state != .unknown else { continue }
                 append(.topicSuggestion(id: entry.id, suggestion), entry)
+            case .relay(let relay):
+                // A handed-over message starts the agent's turn as a prompt does, but it is
+                // not the reader's: a prompt-less turn that opens with it.
+                closeWork(at: entry.tsMs)
+                if let turn = current { turns.append(turn) }
+                current = TranscriptTurn(id: entry.id, prompt: nil, items: [.relay(id: entry.id, relay)],
+                                         startMs: entry.tsMs)
             case .unknown:
                 continue
             }
