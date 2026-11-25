@@ -153,14 +153,14 @@ public struct GuestRecord: Decodable, Sendable, Equatable, Identifiable {
     /// person to the owner, and `guest.revoke {person}` ends them all. Nil on an older daemon.
     public let person: String?
     /// The devices the account added after the one that accepted, removed ones included.
-    public let devices: [GuestDevice]
+    public let devices: [GuestDeviceInfo]
 
     public var id: String { guestID }
 
     public init(guestID: String, name: String, fingerprint: String? = nil, device: String? = nil,
                 grant: GuestGrant?, createdMs: UInt64? = nil, lastSeenMs: UInt64? = nil,
                 revoked: Bool = false, shareGram: Bool = false, accountBound: Bool = false,
-                person: String? = nil, devices: [GuestDevice] = []) {
+                person: String? = nil, devices: [GuestDeviceInfo] = []) {
         self.guestID = guestID
         self.name = name
         self.fingerprint = fingerprint
@@ -197,7 +197,7 @@ public struct GuestRecord: Decodable, Sendable, Equatable, Identifiable {
         shareGram = try c.decodeIfPresent(Bool.self, forKey: .shareGram) ?? false
         accountBound = try c.decodeIfPresent(Bool.self, forKey: .accountBound) ?? false
         person = try c.decodeIfPresent(String.self, forKey: .person).flatMap { $0.isEmpty ? nil : $0 }
-        devices = try c.decodeIfPresent([GuestDevice].self, forKey: .devices) ?? []
+        devices = try c.decodeIfPresent([GuestDeviceInfo].self, forKey: .devices) ?? []
     }
 
     /// The devices that may use this share now: the one that accepted (`fingerprint`,
@@ -208,14 +208,14 @@ public struct GuestRecord: Decodable, Sendable, Equatable, Identifiable {
     /// the share's, stamped by whichever device connected. An added device's connection
     /// stamps both at once, so the accepting device was the last one seen only when the
     /// share's time is newer than every added device's.
-    public var usableDevices: [GuestDevice] {
-        var usable: [GuestDevice] = []
+    public var usableDevices: [GuestDeviceInfo] {
+        var usable: [GuestDeviceInfo] = []
         if let fingerprint, !devices.contains(where: { $0.fingerprint == fingerprint && $0.removed }) {
             var seen = lastSeenMs
             if let seenMs = seen, let newestAdded = devices.compactMap(\.lastSeenMs).max(), seenMs <= newestAdded {
                 seen = nil
             }
-            usable.append(GuestDevice(fingerprint: fingerprint, device: device.flatMap { $0.isEmpty ? nil : $0 },
+            usable.append(GuestDeviceInfo(fingerprint: fingerprint, device: device.flatMap { $0.isEmpty ? nil : $0 },
                                       addedMs: createdMs, lastSeenMs: seen))
         }
         usable += devices.filter { !$0.removed && $0.fingerprint != fingerprint }
@@ -223,8 +223,9 @@ public struct GuestRecord: Decodable, Sendable, Equatable, Identifiable {
     }
 }
 
-/// One device of an account-bound share (`devices[]` in `guest.list`).
-public struct GuestDevice: Decodable, Sendable, Equatable {
+/// One device of an account-bound share (`devices[]` in `guest.list`, herdr's
+/// `GuestDeviceInfo`; the app's own `GuestDevice` is this device's key).
+public struct GuestDeviceInfo: Decodable, Sendable, Equatable {
     public let fingerprint: String
     /// The name the device gave when it was added ("iPhone", "Browser (Chrome on macOS)").
     public let device: String?
@@ -270,14 +271,14 @@ public struct GuestPerson: Sendable, Equatable, Identifiable {
     public let grants: [GuestRecord]
     /// Every device that may use at least one of the grants, by fingerprint, in the order
     /// they were added. A device removed from one grant but still on another is listed.
-    public let devices: [GuestDevice]
+    public let devices: [GuestDeviceInfo]
 
     public var name: String { grants.first?.name ?? "" }
     public var accountBound: Bool { grants.contains(where: \.accountBound) }
     /// The most recent use of any grant.
     public var lastSeenMs: UInt64? { grants.compactMap(\.lastSeenMs).max() }
     /// The device seen last, when herdr can tell (see `GuestRecord.usableDevices`).
-    public var lastSeenDevice: GuestDevice? {
+    public var lastSeenDevice: GuestDeviceInfo? {
         devices.filter { $0.lastSeenMs != nil }.max { ($0.lastSeenMs ?? 0) < ($1.lastSeenMs ?? 0) }
     }
 
@@ -314,15 +315,15 @@ public struct GuestPerson: Sendable, Equatable, Identifiable {
     }
 
     /// One entry per fingerprint: the first name given, the earliest add, the latest use.
-    private static func merge(_ lists: [[GuestDevice]]) -> [GuestDevice] {
-        var merged: [GuestDevice] = []
+    private static func merge(_ lists: [[GuestDeviceInfo]]) -> [GuestDeviceInfo] {
+        var merged: [GuestDeviceInfo] = []
         for device in lists.joined() {
             guard let index = merged.firstIndex(where: { $0.fingerprint == device.fingerprint }) else {
                 merged.append(device)
                 continue
             }
             let known = merged[index]
-            merged[index] = GuestDevice(
+            merged[index] = GuestDeviceInfo(
                 fingerprint: known.fingerprint, device: known.device ?? device.device,
                 addedMs: [known.addedMs, device.addedMs].compactMap { $0 }.min(),
                 lastSeenMs: [known.lastSeenMs, device.lastSeenMs].compactMap { $0 }.max())

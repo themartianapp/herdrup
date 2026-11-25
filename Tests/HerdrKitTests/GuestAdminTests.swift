@@ -280,8 +280,8 @@ final class GuestAdminTests: XCTestCase {
         XCTAssertTrue(nike.accountBound)
         XCTAssertEqual(nike.person, "acct-nike")
         XCTAssertEqual(nike.devices, [
-            GuestDevice(fingerprint: "SHA256:bbbb", device: "MacBook", addedMs: 200, lastSeenMs: 500),
-            GuestDevice(fingerprint: "SHA256:cccc", device: "Browser (Chrome on macOS)", addedMs: 300, removed: true),
+            GuestDeviceInfo(fingerprint: "SHA256:bbbb", device: "MacBook", addedMs: 200, lastSeenMs: 500),
+            GuestDeviceInfo(fingerprint: "SHA256:cccc", device: "Browser (Chrome on macOS)", addedMs: 300, removed: true),
         ])
         XCTAssertEqual(nike.usableDevices.map(\.fingerprint), ["SHA256:aaaa", "SHA256:bbbb"],
                        "the accepting device first, and never a removed one")
@@ -292,14 +292,14 @@ final class GuestAdminTests: XCTestCase {
         XCTAssertFalse(old.accountBound)
         XCTAssertNil(old.person)
         XCTAssertEqual(old.devices, [])
-        XCTAssertEqual(old.usableDevices, [GuestDevice(fingerprint: "SHA256:eeee", device: "iPad", addedMs: 10)])
+        XCTAssertEqual(old.usableDevices, [GuestDeviceInfo(fingerprint: "SHA256:eeee", device: "iPad", addedMs: 10)])
     }
 
     func testAnAddedDevicesUseIsNotTheAcceptingDevices() {
         let share = GuestRecord(
             guestID: "g1", name: "Nike", fingerprint: "SHA256:aaaa", device: "iPhone", grant: nil,
             createdMs: 100, lastSeenMs: 500, accountBound: true, person: "acct",
-            devices: [GuestDevice(fingerprint: "SHA256:bbbb", device: "MacBook", addedMs: 200, lastSeenMs: 500)])
+            devices: [GuestDeviceInfo(fingerprint: "SHA256:bbbb", device: "MacBook", addedMs: 200, lastSeenMs: 500)])
         XCTAssertNil(share.usableDevices[0].lastSeenMs,
                      "the MacBook stamped the share's last use, so the iPhone's is unknown")
         XCTAssertEqual(share.usableDevices[1].lastSeenMs, 500)
@@ -309,8 +309,8 @@ final class GuestAdminTests: XCTestCase {
         let share = GuestRecord(
             guestID: "g1", name: "Nike", fingerprint: "SHA256:aaaa", device: "iPhone", grant: nil,
             createdMs: 100, lastSeenMs: 500, accountBound: true, person: "acct",
-            devices: [GuestDevice(fingerprint: "SHA256:bbbb", device: "MacBook", addedMs: 200),
-                      GuestDevice(fingerprint: "SHA256:aaaa", device: "iPhone", addedMs: 100, removed: true)])
+            devices: [GuestDeviceInfo(fingerprint: "SHA256:bbbb", device: "MacBook", addedMs: 200),
+                      GuestDeviceInfo(fingerprint: "SHA256:aaaa", device: "iPhone", addedMs: 100, removed: true)])
         XCTAssertEqual(share.usableDevices.map(\.fingerprint), ["SHA256:bbbb"])
     }
 
@@ -323,8 +323,8 @@ final class GuestAdminTests: XCTestCase {
         XCTAssertTrue(nike.accountBound)
         XCTAssertEqual(nike.grants.map(\.guestID), ["g-n1", "g-n2"], "oldest share first")
         XCTAssertEqual(nike.devices, [
-            GuestDevice(fingerprint: "SHA256:aaaa", device: "iPhone", addedMs: 100, lastSeenMs: 900),
-            GuestDevice(fingerprint: "SHA256:bbbb", device: "MacBook", addedMs: 150, lastSeenMs: 500),
+            GuestDeviceInfo(fingerprint: "SHA256:aaaa", device: "iPhone", addedMs: 100, lastSeenMs: 900),
+            GuestDeviceInfo(fingerprint: "SHA256:bbbb", device: "MacBook", addedMs: 150, lastSeenMs: 500),
         ], "one entry per device across both shares; the removed browser is not listed")
         XCTAssertEqual(nike.lastSeenMs, 900)
         XCTAssertEqual(nike.lastSeenDevice?.device, "iPhone")

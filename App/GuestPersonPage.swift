@@ -55,7 +55,7 @@ enum GuestPeopleText {
         return (["Only this device"] + names.prefix(1)).joined(separator: " · ")
     }
 
-    static func deviceName(_ device: GuestDevice) -> String {
+    static func deviceName(_ device: GuestDeviceInfo) -> String {
         device.device ?? "Unnamed device"
     }
 
@@ -278,7 +278,7 @@ struct GuestPersonPage: View {
 
     // MARK: Devices
 
-    private func deviceRow(_ device: GuestDevice, item: GuestAccessModel.Person) -> some View {
+    private func deviceRow(_ device: GuestDeviceInfo, item: GuestAccessModel.Person) -> some View {
         let name = GuestPeopleText.deviceName(device)
         var status: [String] = []
         if let seen = device.lastSeenMs { status.append(GuestPresence(lastSeenMs: seen).deviceText) }
@@ -337,7 +337,7 @@ struct GuestPersonPage: View {
 
     /// herdr keeps each share's devices separately, so a device goes from every share of the
     /// person that it may use.
-    private func removeDevice(_ device: GuestDevice, item: GuestAccessModel.Person) async {
+    private func removeDevice(_ device: GuestDeviceInfo, item: GuestAccessModel.Person) async {
         working = true
         for grant in item.person.grantsHolding(fingerprint: device.fingerprint) {
             do {
