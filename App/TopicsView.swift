@@ -1,6 +1,7 @@
 import HerdrKit
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 // An omp agent's Topics (option D, jerryfane/herdr#475): the agent is a front desk (the Inbox,
 // its own conversation) and every topic a permanent worker conversation under it. Inside the
@@ -47,11 +48,22 @@ final class TopicsModel: ObservableObject {
     @Published private(set) var topicTranscripts: Bool?
     /// The agent will not offer topics for this page's life (`topics_unsupported`, no
     /// `agent_topics`): discovery stopped for good. Not `agent_not_found`: a restarting agent
-    /// leaves its pane without one for a moment, and its topics come back (herdrup#777).
+    /// leaves its pane without one for a moment, and its topics come back (herdrup#777). Not
+    /// `topics_unsupported` while the session file holds topics either (`seed(sessions:)`).
     private(set) var refused = false
     /// Why the newest list call failed. The last list stays on screen (`topics_unreachable`
-    /// keeps it, as herdr's API asks).
+    /// keeps it, as herdr's API asks); the list shows this only while it has no topic
+    /// (`listedProblem`).
     @Published private(set) var problem: String?
+    /// The problem line the list shows: only while no topic is listed. Over rows that are
+    /// there it said "The agent didn't answer in time." while the list itself was fine
+    /// (owner, 2026-11-25), so the rows stay and say nothing.
+    var listedProblem: String? { topics.isEmpty ? problem : nil }
+    /// The agent answered a list this page's life: its lists, not the session file, say
+    /// which topics there are from then on.
+    private var listAnswered = false
+    /// The session file holds topics (`topic_sessions`).
+    private var sessionTopicsKnown = false
     /// The open topic: its chat on a phone, the selected row and its chat on iPad.
     @Published var selectedTopicID: String?
     /// Each topic's newest send note (queued, refused), shown under that topic's composer
@@ -133,6 +145,18 @@ final class TopicsModel: ObservableObject {
 
     func sendNote(for topicID: String) -> String? { sendNotes[topicID] }
 
+    /// The topics `agent.list` read from the session file (`topic_sessions`). Listed until the
+    /// agent's first list answers, so the column is never just the Inbox while the agent is
+    /// slow or busy; and while they exist, `topics_unsupported` is herdr not seeing the agent
+    /// in its pane for a moment, not an agent without topics.
+    func seed(sessions: [AgentTopicSession]) {
+        let rows = AgentTopicList.seeded(from: sessions)
+        sessionTopicsKnown = !rows.isEmpty
+        if sessionTopicsKnown { refused = false }
+        guard !listAnswered, !rows.isEmpty, rows != topics else { return }
+        topics = rows
+    }
+
     /// Learns whether the agent offers topics (herdrup#758), on `TopicsDiscoveryBackoff`'s
     /// schedule: `topics_unsupported` stops for good; `topics_unreachable` (every omp agent
     /// without topics turned on), `agent_not_found` (an agent restarting), a timeout or a
@@ -201,6 +225,7 @@ final class TopicsModel: ObservableObject {
         do {
             let requestedAt = Date()
             let list = try await client.agentTopicsList(target: target)
+            listAnswered = true
             let ordered = list.ordered
             if ordered != topics { topics = ordered }
             // A topic Start opened that the list no longer has, never seen with a turn, ended
@@ -229,7 +254,10 @@ final class TopicsModel: ObservableObject {
             answered = true
         } catch is CancellationError {
             return false
-        } catch let error as AgentTopicsError {
+        } catch let refusal as AgentTopicsError {
+            // The session file holds topics: a `topics_unsupported` is herdr not finding the
+            // agent in its pane for a moment (a newer herdr says `topics_unreachable`).
+            let error = refusal == .unsupported && sessionTopicsKnown ? AgentTopicsError.unreachable : refusal
             lastListError = error
             if error.isPermanent {
                 // Not an agent with topics (any more): the page goes back to Chat and Terminal.
@@ -332,22 +360,26 @@ final class TopicsModel: ObservableObject {
     }
 
     /// Draws a message to one topic in its chat at once, as a Chat send does (the caller
-    /// animates it); `deliver` then sends it. Nil when it is too long to send.
-    func stage(topicID: String, text: String, author: TranscriptAuthor) -> String? {
+    /// animates it), with the files going with it; `deliver` then sends it. Nil when it is
+    /// too long to send.
+    func stage(topicID: String, text: String, author: TranscriptAuthor, files: [ComposerAttachment] = []) -> String? {
         sendNotes[topicID] = nil
         guard text.utf8.count <= Self.maxMessageBytes else {
             sendNotes[topicID] = Self.tooLong
             return nil
         }
-        return chatModel(for: topicID).stageOutgoing(text: text, author: author)
+        return chatModel(for: topicID).stageOutgoing(text: text, author: author, files: files)
     }
 
     /// Sends a staged message to its topic (`agent.topics.send`); the bubble settles as the
-    /// topic's transcript shows it.
-    func deliver(client: HerdrClient, topicID: String, outgoingID id: String, text: String) async {
+    /// topic's transcript shows it. False only when it surely did not reach the topic, so
+    /// the caller may keep the draft for a retry.
+    @discardableResult
+    func deliver(client: HerdrClient, topicID: String, outgoingID id: String, text: String) async -> Bool {
         let chat = chatModel(for: topicID)
-        guard await chat.prepareOutgoing(id, client: client) else { return }
+        guard await chat.prepareOutgoing(id, client: client) else { return false }
         chat.updateOutgoing(id, state: .sending, wireText: text)
+        var reached = true
         do {
             let mode = try await client.agentTopicsSend(target: target, topicID: topicID, message: text)
             chat.updateOutgoing(id, state: .submitted)
@@ -359,17 +391,19 @@ final class TopicsModel: ObservableObject {
                 chat.updateOutgoing(id, state: .unconfirmed)
             default:
                 chat.updateOutgoing(id, state: .notDelivered(Self.describe(error)))
+                reached = false
             }
             sendNotes[topicID] = Self.describe(error)
         } catch is CancellationError {
             chat.updateOutgoing(id, state: .unconfirmed)
-            return
+            return true
         } catch {
             chat.updateOutgoing(id, state: .unconfirmed)
             sendNotes[topicID] = "Couldn't confirm delivery. Check the topic before sending again."
         }
         Task { await chat.refresh(client: client) }
         await refresh(client: client)
+        return reached
     }
 
     private static let tooLong = "Messages are limited to 32 KB. Send it in parts."
@@ -896,7 +930,7 @@ private struct TopicsList: View {
         VStack(spacing: 0) {
             head
             searchField
-            if let note = actionNote ?? model.problem {
+            if let note = actionNote ?? model.listedProblem {
                 HStack(spacing: 6) {
                     Circle().fill(Palette.died).frame(width: 6, height: 6)
                     Text(note).font(Typography.app(12)).foregroundStyle(Palette.textDim).lineLimit(2)
@@ -1382,10 +1416,39 @@ private struct TopicChat: View {
     @State private var sending = false
     @State private var sendPresses = 0
     @State private var actionNote: String?
+    /// The draft's files: the paperclip's picks, pastes and drops, each uploading to the
+    /// machine from the moment it is added, as in the Inbox's composer.
+    @State private var attachments: [ComposerAttachment] = []
+    @State private var loadingAttachment = false
+    @State private var showAttachSheet = false
+    @State private var uploader = ComposerUploader()
+    @State private var sendingAttachmentID: UUID?
+    @State private var failedAttachmentID: UUID?
+    @State private var dropTargeted = false
+    /// The chat's whole height, its header's and the send note's: the composer's editor
+    /// room is measured from these, never from the composer itself (`composerEditorRoom`).
+    @State private var pageHeight: CGFloat = 0
+    @State private var headerHeight: CGFloat = 0
+    @State private var noteHeight: CGFloat = 0
+
+    /// The composer's padding around its card (top 4 + bottom 8).
+    private static let composerPadding: CGFloat = 12
+    /// Kept above the open editor, as Gram's feed cushion.
+    private static let roomCushion: CGFloat = 12
+    /// How far the composer's pull-to-expand editor may grow over the conversation, as in
+    /// the Inbox and Gram: the chat below the header, less the send note, the resting
+    /// composer and a cushion.
+    private var composerRoom: CGFloat {
+        max(0, pageHeight - headerHeight - noteHeight - Self.composerPadding
+            - ComposerStyle.restingHeight - Self.roomCushion)
+    }
 
     private var closed: Bool { topic.state == .closed }
     private var canCompose: Bool { live && !closed }
-    private var hasContent: Bool { !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var canAttach: Bool { canCompose && !sending && !loadingAttachment }
+    private var hasContent: Bool {
+        !attachments.isEmpty || !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
     private var author: TranscriptAuthor {
         if case .guest(let name, _) = viewer { return .guest(name: name) }
         return .owner
@@ -1394,6 +1457,7 @@ private struct TopicChat: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
             // The server lists topics but cannot page a topic's conversation (no
             // `agent_transcript_topic`): say so, and offer no composer that could not show what
             // it sent (herdrup#766). Decided by the capability, which does not change, not by the
@@ -1402,8 +1466,10 @@ private struct TopicChat: View {
             if model.topicTranscripts == false {
                 unavailable
             } else {
+                // The topic's own state says it works, as the agent's status does for the
+                // Inbox; otherwise the page's `working` decides, as in the Inbox.
                 ChatView(client: client, model: chat, viewer: viewer, eventsPaneID: eventsPaneID,
-                         isActive: isActive, live: live, agentStatus: topic.state.rawValue,
+                         isActive: isActive, live: live, agentStatus: topic.state.isWorking ? "working" : nil,
                          ground: Palette.groundMachine, onOpenTerminal: onOpenTerminal)
                     .equatable()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1413,12 +1479,16 @@ private struct TopicChat: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16).padding(.vertical, 4)
                         .accessibilityIdentifier("topic-send-note")
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { noteHeight = $0 }
+                        .onDisappear { noteHeight = 0 }
                 }
                 composer
+                    .environment(\.composerEditorRoom, composerRoom)
                     .padding(.horizontal, 12).padding(.top, 4).padding(.bottom, 8)
                     .conversationColumn()
             }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { pageHeight = $0 }
         .background(Palette.groundMachine)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("topic-chat")
@@ -1478,8 +1548,11 @@ private struct TopicChat: View {
         .overlay(alignment: .bottom) { Rectangle().fill(Palette.hairlineQuiet).frame(height: 1) }
     }
 
-    /// iPhone: ‹ Topics … ⋯, then the title large, and "• Working · herdr-app" under it. ‹ Topics
-    /// is a compact capsule and ••• a circle (item 14); the title keeps the large-title scale.
+    /// iPhone: ‹ Topics … Terminal ⋯, then the title large, and "• Working · herdr-app" under
+    /// it. ‹ Topics and Terminal are compact capsules and ••• a circle (item 14); the title
+    /// keeps the large-title scale. The topic is full screen here, without the page's
+    /// Topics | Chat | Terminal switch, so Terminal opens the agent's pane from the topic: a
+    /// topic runs inside the agent's one omp, with no terminal of its own.
     private var phoneHeader: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 0) {
@@ -1495,7 +1568,20 @@ private struct TopicChat: View {
                 .buttonStyle(.capsule(.secondary, .compact))
                 .accessibilityLabel("Topics")
                 .accessibilityIdentifier("topic-back")
-                Spacer(minLength: 0)
+                Spacer(minLength: 8)
+                Button {
+                    focused = false
+                    onOpenTerminal()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "terminal").font(.system(size: 11, weight: .semibold))
+                        Text("Terminal")
+                    }
+                }
+                .buttonStyle(.capsule(.secondary, .compact))
+                .accessibilityLabel("Terminal")
+                .accessibilityIdentifier("topic-terminal")
+                .padding(.trailing, 8)
                 actionsMenu
             }
             .frame(height: 50)
@@ -1539,10 +1625,14 @@ private struct TopicChat: View {
         .accessibilityIdentifier("topic-actions")
     }
 
+    /// The Inbox's composer, piece for piece: the paperclip's sheet and pickers, pasted and
+    /// dropped files, the chip strip with each file uploading as it is added, the mic,
+    /// Saved Prompts in Send's slot while the draft is empty, and the pull-to-expand editor.
     private var composer: some View {
         AdaptiveComposer(
             text: reply,
             isFocused: focused,
+            hasAccessory: !attachments.isEmpty || loadingAttachment,
             showsLeading: keyboard.isVisible && focused,
             isRecording: dictating
         ) { editorHeight in
@@ -1557,6 +1647,7 @@ private struct TopicChat: View {
                 autocorrection: .default,
                 onChange: { _, _ in actionNote = nil },
                 onCommandReturn: { send() },
+                onPasteFile: { stageFiles([$0]) },
                 fixedHeight: editorHeight
             )
             .frame(minWidth: 0, maxWidth: .infinity)
@@ -1568,7 +1659,7 @@ private struct TopicChat: View {
                 }
             }
         } accessory: {
-            EmptyView()
+            attachmentStrip
         } leading: {
             Button { focused = false } label: {
                 ComposerActionIcon(image: Image("ComposerKeyboard"))
@@ -1577,17 +1668,33 @@ private struct TopicChat: View {
             .accessibilityLabel("Collapse keyboard")
         } actions: {
             HStack(spacing: 4) {
+                ComposerAttachButton(busy: loadingAttachment) { openAttachSheet() }
+                    .disabled(!canAttach)
+                    .accessibilityIdentifier("topic-attach-button")
                 MicButton(text: $reply, isActive: isActive, recording: $dictating)
                     .fixedSize()
                     .disabled(!canCompose || sending)
+                // One slot for Send and Saved Prompts, so the Send press survives the swap
+                // the clearing composer makes in the same frame.
                 ZStack {
-                    Button { send() } label: {
-                        ComposerActionIcon(image: Image("ComposerSend"), primary: true, busy: sending)
+                    if hasContent {
+                        Button { send() } label: {
+                            ComposerActionIcon(image: Image("ComposerSend"), primary: true, busy: sending,
+                                               progress: uploader.sendProgress(attachments, sending: sending))
+                        }
+                        .disabled(!canCompose || sending || dictating || loadingAttachment)
+                        .fixedSize()
+                        .accessibilityLabel("Send to topic")
+                        .accessibilityIdentifier("topic-send-button")
+                    } else {
+                        // A saved prompt fills the composer and goes to this topic, like a typed one.
+                        SavedPromptsMenu { prompt in
+                            reply = prompt.text
+                            send()
+                        }
+                        .disabled(!canCompose || sending || dictating || loadingAttachment)
+                        .accessibilityIdentifier("topic-saved-prompts")
                     }
-                    .disabled(!canCompose || sending || dictating || !hasContent)
-                    .fixedSize()
-                    .accessibilityLabel("Send to topic")
-                    .accessibilityIdentifier("topic-send-button")
                 }
                 .modifier(ChatSendPress(trigger: sendPresses))
             }
@@ -1595,22 +1702,195 @@ private struct TopicChat: View {
         }
         .opacity(canCompose ? 1 : 0.45)
         .disabled(!canCompose)
+        // A file dragged from Files or a Mac lands like a paste, anywhere on the bar.
+        .onDrop(of: [.item], isTargeted: $dropTargeted) { stageFiles($0) }
+        .overlay {
+            if dropTargeted {
+                RoundedRectangle(cornerRadius: 28)
+                    .strokeBorder(Palette.brand, lineWidth: 2)
+                    .allowsHitTesting(false)
+            }
+        }
+        .composerAttachPicker(
+            isPresented: $showAttachSheet, loading: $loadingAttachment,
+            room: { ComposerStaging.maxAttachments - attachments.count }
+        ) { outcome in addPicked(outcome) }
+        // Leaving the topic stops its uploads (a send waiting on one keeps it); closing it
+        // for good releases the uploader, which cancels and discards them.
+        .onDisappear { uploader.pause() }
+        .onAppear { uploader.resume() }
+    }
+
+    @ViewBuilder
+    private var attachmentStrip: some View {
+        if !attachments.isEmpty || loadingAttachment {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(attachments) { attachmentChip($0) }
+                    if loadingAttachment {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Adding attachment…").font(Typography.app(12))
+                        }
+                        .foregroundStyle(Palette.textDim)
+                        .padding(12)
+                        .background(Palette.surfaceRaised, in: RoundedRectangle(cornerRadius: 15))
+                    }
+                }
+                .padding(.horizontal, 7)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func attachmentChip(_ file: ComposerAttachment) -> some View {
+        let state = ComposerAttachmentState.for(
+            file, upload: uploader.phase(of: file.id), sending: sending,
+            sendingID: sendingAttachmentID, failedID: failedAttachmentID)
+        // A file still uploading can go: removing it cancels its upload. Only a send in
+        // flight holds the strip, so the batch it is delivering stays whole.
+        return ComposerAttachmentChip(
+            name: file.name, size: file.staged.size, isImage: file.isImage, state: state,
+            canRemove: !sending,
+            onRemove: { removeAttachment(file) },
+            onRetry: { uploader.retry(file.id) }
+        )
+        .accessibilityIdentifier("topic-attachment")
+    }
+
+    /// Files go to the agent as Grams addressed to it by name, the name its topics list
+    /// carries; nil until the first list answers.
+    private var attachTarget: String? { model.agentName.isEmpty ? nil : model.agentName }
+
+    private func takesAttachment() -> Bool {
+        guard attachments.count < ComposerStaging.maxAttachments else {
+            actionNote = "Up to \(ComposerStaging.maxAttachments) attachments at a time."
+            return false
+        }
+        guard attachTarget != nil else {
+            actionNote = "Files can be attached once the agent's topics have loaded."
+            return false
+        }
+        return true
+    }
+
+    private func openAttachSheet() {
+        guard canAttach, takesAttachment() else { return }
+        showAttachSheet = true
+    }
+
+    /// Stages pasted or dropped files by the composer's paste and drop rule (`PastedFile`)
+    /// within the attachment cap, then adds them exactly as a paperclip pick. False when
+    /// none is a file this composer takes, so a paste falls back to text.
+    private func stageFiles(_ providers: [NSItemProvider]) -> Bool {
+        let files = TerminalFileDrop.files(in: providers)
+        guard canAttach, !files.isEmpty, takesAttachment() else { return false }
+        let room = ComposerStaging.maxAttachments - attachments.count
+        loadingAttachment = true
+        Task { @MainActor in
+            let outcome = await PastedFile.stageAll(files, room: room)
+            loadingAttachment = false
+            addPicked(outcome)
+        }
+        return true
+    }
+
+    /// Staged picks, pastes or drops join the draft and start uploading at once, so Send
+    /// only has to post them and send the message.
+    private func addPicked(_ outcome: ComposerPickOutcome) {
+        let picked = outcome.files.map {
+            ComposerAttachment(name: $0.name, mime: $0.mime, isImage: $0.isImage, staged: $0.staged)
+        }
+        attachments += picked
+        uploader.start(picked, client: client, into: $attachments)
+        actionNote = outcome.note
+    }
+
+    private func removeAttachment(_ file: ComposerAttachment) {
+        guard let current = attachments.first(where: { $0.id == file.id }) else { return }
+        attachments.removeAll { $0.id == file.id }
+        // Cancels a running upload, deletes the staged bytes, and discards a finished upload.
+        uploader.remove(current)
+        // A file dropped after its Gram posted (a batch that failed halfway) must not stay
+        // behind in the agent's Gram inbox.
+        if let messageID = current.messageID, !viewer.isGuest {
+            Task { try? await client.gramDelete(id: messageID) }
+        }
     }
 
     private func send() {
-        guard canCompose, !sending, !dictating, hasContent else { return }
+        guard canCompose, !sending, !dictating, !loadingAttachment, hasContent else { return }
         let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        let batch = attachments
         // The bubble enters (and the chat follows it) on the send motion; staged now.
         guard let id = withAnimation(ChatSendMotion.bubble(reduceMotion: reduceMotion), {
-            model.stage(topicID: topic.id, text: text, author: author)
+            model.stage(topicID: topic.id, text: text, author: author, files: batch)
         }) else { return }
         sending = true
         actionNote = nil
         if ChatSendMotion.acceptSend(reduceMotion: reduceMotion) { sendPresses += 1 }
+        let clearedReply = reply
         ChatSendMotion.clearComposer(inChat: true) { reply = "" }
         Task {
-            defer { sending = false }
-            await model.deliver(client: client, topicID: topic.id, outgoingID: id, text: text)
+            defer { sending = false; sendingAttachmentID = nil }
+            failedAttachmentID = nil
+            // The Inbox's way: each file posts as a Gram to the agent, then one message names
+            // them all with how to fetch them (`GramAttachmentPrompt`). The topic runs in the
+            // agent's own omp, so `herdr gram get-file` finds them there too.
+            var message = text
+            if !batch.isEmpty {
+                guard let delivered = await postAttachments(batch) else {
+                    chat.updateOutgoing(id, state: .notDelivered("Attachment upload did not complete."))
+                    if reply.isEmpty { reply = clearedReply }
+                    return
+                }
+                message = GramAttachmentPrompt.text(text, delivered: delivered)
+            }
+            let reached = await model.deliver(client: client, topicID: topic.id, outgoingID: id, text: message)
+            guard !batch.isEmpty else { return }
+            if reached {
+                // Each file's staged bytes went when its Gram posted: nothing left to discard.
+                let sentIDs = Set(batch.map(\.id))
+                attachments.removeAll { sentIDs.contains($0.id) }
+                uploader.forget(sentIDs)
+            } else if reply.isEmpty {
+                // Not delivered: the chips (their Grams remembered) and the text stay for a retry.
+                reply = clearedReply
+            }
+        }
+    }
+
+    /// Posts each file as a Gram to the agent (`GramAttachmentSender`), remembering each
+    /// step so a retry resumes rather than re-sends; nil when one failed.
+    private func postAttachments(_ batch: [ComposerAttachment]) async -> [GramAttachmentPrompt.Delivered]? {
+        guard let target = attachTarget else {
+            actionNote = "Files can be attached once the agent's topics have loaded."
+            return nil
+        }
+        let guestName: String? = { if case .guest(let name, _) = viewer { return name } else { return nil } }()
+        let topicTitle = title
+        let sender = uploader.sender(client: client, into: $attachments, post: { [client] _, attachment in
+            if let guestName {
+                return try await client.guestGramPost(
+                    text: "Attachment from \(guestName) for the topic \(topicTitle).", to: target,
+                    attachment: attachment
+                ).id
+            }
+            return try await client.gramPost(
+                text: "Attachment for the topic \(topicTitle).", to: target, attachment: attachment
+            ).id
+        })
+        let result = await sender.send(batch, sending: { sendingAttachmentID = $0.id }) { file in
+            guard let index = attachments.firstIndex(where: { $0.id == file.id }) else { return }
+            attachments[index] = file
+        }
+        switch result {
+        case .success(let delivered):
+            return delivered
+        case .failure(let failure):
+            failedAttachmentID = failure.attachment.id
+            actionNote = failure.note("Send failed: \(failure.error)")
+            return nil
         }
     }
 }

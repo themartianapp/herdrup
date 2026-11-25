@@ -6499,6 +6499,11 @@ struct TerminalPaneContent: View {
                   !topicsModel.offered else { return }
             await topicsModel.discover(client: client, eventsPaneID: paneID)
         }
+        // The session file's topics fill the list until the agent's first list answers, so a
+        // busy or slow agent never leaves Topics with only the Inbox.
+        .onChange(of: agent?.topicSessions ?? [], initial: true) { _, sessions in
+            topicsModel.seed(sessions: sessions)
+        }
         // While the server refuses this omp agent a transcript, ask again: soon after it
         // starts, then less often, and at once when its status changes (its first turn writes
         // the session). Front only; a success clears `unsupported`, which ends the loop.
