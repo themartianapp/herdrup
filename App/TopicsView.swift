@@ -74,6 +74,9 @@ final class TopicsModel: ObservableObject {
     /// One conversation per topic (`TranscriptStore` keyed per agent and topic), kept while
     /// the page lives, so going back to a topic draws what was loaded at once.
     private var chats: [String: ChatModel] = [:]
+    /// Each topic's composer draft (`draft(for:)`): not the mounted chat's, which the
+    /// Terminal or the app going to the background unmounts.
+    private var drafts: [String: TopicDraft] = [:]
     /// The list's refresh rounds: coalesced refreshes, and Start's wait for a list that
     /// started after the accept (herdrup#795).
     private let rounds = TopicsListRounds()
@@ -360,24 +363,37 @@ final class TopicsModel: ObservableObject {
     }
 
     /// Draws a message to one topic in its chat at once, as a Chat send does (the caller
-    /// animates it), with the files going with it; `deliver` then sends it. Nil when it is
-    /// too long to send.
-    func stage(topicID: String, text: String, author: TranscriptAuthor, files: [ComposerAttachment] = []) -> String? {
+    /// animates it), with the files going with it; `prepare`, then `deliver`, send it. Nil
+    /// when the message it goes out as (`wireText`: the text and the files' download
+    /// references) is too long to send.
+    func stage(topicID: String, text: String, wireText: String, author: TranscriptAuthor,
+               files: [ComposerAttachment] = []) -> String? {
         sendNotes[topicID] = nil
-        guard text.utf8.count <= Self.maxMessageBytes else {
+        guard wireText.utf8.count <= Self.maxMessageBytes else {
             sendNotes[topicID] = Self.tooLong
             return nil
         }
         return chatModel(for: topicID).stageOutgoing(text: text, author: author, files: files)
     }
 
-    /// Sends a staged message to its topic (`agent.topics.send`); the bubble settles as the
+    /// Before anything of a staged message leaves (its files' Grams included): the topic's
+    /// chat has its first snapshot, so the send can be matched in it. False marks the bubble
+    /// not delivered, as the Inbox's composer does before it posts.
+    func prepare(client: HerdrClient, topicID: String, outgoingID id: String) async -> Bool {
+        await chatModel(for: topicID).prepareOutgoing(id, client: client)
+    }
+
+    /// Sends a prepared message to its topic (`agent.topics.send`); the bubble settles as the
     /// topic's transcript shows it. False only when it surely did not reach the topic, so
     /// the caller may keep the draft for a retry.
     @discardableResult
     func deliver(client: HerdrClient, topicID: String, outgoingID id: String, text: String) async -> Bool {
         let chat = chatModel(for: topicID)
-        guard await chat.prepareOutgoing(id, client: client) else { return false }
+        guard text.utf8.count <= Self.maxMessageBytes else {
+            chat.updateOutgoing(id, state: .notDelivered(Self.tooLong))
+            sendNotes[topicID] = Self.tooLong
+            return false
+        }
         chat.updateOutgoing(id, state: .sending, wireText: text)
         var reached = true
         do {
@@ -386,6 +402,10 @@ final class TopicsModel: ObservableObject {
             if mode == .queued { sendNotes[topicID] = "Queued: the topic reads it when its current turn ends." }
         } catch let error as AgentTopicsError {
             switch error {
+            case .other(let api) where api.code == "invalid_params":
+                // herdr refuses it before it reaches the agent (its size gate): surely not sent.
+                chat.updateOutgoing(id, state: .notDelivered(Self.describe(error)))
+                reached = false
             case .timeout, .other:
                 // The agent may have taken it: no one-tap duplicate.
                 chat.updateOutgoing(id, state: .unconfirmed)
@@ -404,6 +424,14 @@ final class TopicsModel: ObservableObject {
         Task { await chat.refresh(client: client) }
         await refresh(client: client)
         return reached
+    }
+
+    /// Each topic's composer draft, kept while the page lives (herdrup#854).
+    func draft(for topicID: String) -> TopicDraft {
+        if let draft = drafts[topicID] { return draft }
+        let draft = TopicDraft()
+        drafts[topicID] = draft
+        return draft
     }
 
     private static let tooLong = "Messages are limited to 32 KB. Send it in parts."
@@ -832,7 +860,7 @@ struct TopicsPane: View {
                   isActive: isActive && scenePhase.mountsChat, live: live, showsBack: compact,
                   onOpenInbox: onOpenInbox,
                   onShowColumn: !compact && model.columnHidden ? toggleColumn : nil,
-                  onOpenTerminal: onOpenTerminal)
+                  onOpenTerminal: onOpenTerminal, draft: model.draft(for: topic.id))
             .id(topic.id)
     }
 }
@@ -1387,6 +1415,16 @@ private struct NewTopicSheet: View {
     }
 }
 
+/// One topic's composer draft: its text, its files and their uploads. The page's model keeps
+/// it, as the Inbox's pane keeps its own, so the Terminal or the background, which unmount
+/// the topic's chat, pause the uploads rather than abandon the draft (herdrup#854).
+@MainActor
+final class TopicDraft: ObservableObject {
+    @Published var reply = ""
+    @Published var attachments: [ComposerAttachment] = []
+    let uploader = ComposerUploader()
+}
+
 // MARK: - A topic's chat
 
 /// One topic's conversation: `agent.transcript` with `topic`, and a composer that sends to
@@ -1410,7 +1448,12 @@ private struct TopicChat: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var keyboard = ComposerKeyboard()
-    @State private var reply = ""
+    /// The topic's draft, kept by the page's model (`TopicsModel.draft(for:)`).
+    @ObservedObject var draft: TopicDraft
+    private var reply: String {
+        get { draft.reply }
+        nonmutating set { draft.reply = newValue }
+    }
     @State private var focused = false
     @State private var dictating = false
     @State private var sending = false
@@ -1418,12 +1461,20 @@ private struct TopicChat: View {
     @State private var actionNote: String?
     /// The draft's files: the paperclip's picks, pastes and drops, each uploading to the
     /// machine from the moment it is added, as in the Inbox's composer.
-    @State private var attachments: [ComposerAttachment] = []
+    private var attachments: [ComposerAttachment] {
+        get { draft.attachments }
+        nonmutating set { draft.attachments = newValue }
+    }
     @State private var loadingAttachment = false
     @State private var showAttachSheet = false
-    @State private var uploader = ComposerUploader()
+    private var uploader: ComposerUploader { draft.uploader }
     @State private var sendingAttachmentID: UUID?
     @State private var failedAttachmentID: UUID?
+    #if DEBUG
+    /// The `callsProbe` labels.
+    @State private var sendCallsProbe = ""
+    @State private var gramPostsProbe = ""
+    #endif
     @State private var dropTargeted = false
     /// The chat's whole height, its header's and the send note's: the composer's editor
     /// room is measured from these, never from the composer itself (`composerEditorRoom`).
@@ -1490,9 +1541,41 @@ private struct TopicChat: View {
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { pageHeight = $0 }
         .background(Palette.groundMachine)
+        .overlay(alignment: .topLeading) { callsProbe }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("topic-chat")
         .chatSheets(client: client, model: chat, viewer: viewer, presents: isActive, onOpenTerminal: onOpenTerminal)
+    }
+
+    /// For the UI tests (DEBUG, topics mock): what the mocks received, as LABELS (GramView's
+    /// probes' pattern): `topic-send-calls`, each message an `agent.topics.send` delivered,
+    /// joined by "\n---\n"; `topic-gram-posts`, the `gram.post` calls
+    /// (`MockTransport.gramPostLogSummary`). "none" before the first. Polled while it shows.
+    @ViewBuilder
+    private var callsProbe: some View {
+        #if DEBUG
+        if TopicsMock.enabled {
+            ZStack {
+                Color.clear
+                    .accessibilityElement()
+                    .accessibilityIdentifier("topic-send-calls")
+                    .accessibilityLabel(sendCallsProbe.isEmpty ? "none" : sendCallsProbe)
+                Color.clear
+                    .accessibilityElement()
+                    .accessibilityIdentifier("topic-gram-posts")
+                    .accessibilityLabel(gramPostsProbe.isEmpty ? "none" : gramPostsProbe)
+            }
+            .frame(width: 1, height: 1)
+            .allowsHitTesting(false)
+            .task {
+                while !Task.isCancelled {
+                    sendCallsProbe = TopicsMock.sentMessages.joined(separator: "\n---\n")
+                    gramPostsProbe = MockTransport.gramPostLogSummary
+                    try? await Task.sleep(for: .milliseconds(300))
+                }
+            }
+        }
+        #endif
     }
 
     private var unavailable: some View {
@@ -1637,7 +1720,7 @@ private struct TopicChat: View {
             isRecording: dictating
         ) { editorHeight in
             ComposerTextField(
-                text: $reply,
+                text: $draft.reply,
                 isEnabled: canCompose && !dictating,
                 isFocused: focused,
                 onFocusChange: { focused = $0 },
@@ -1671,7 +1754,7 @@ private struct TopicChat: View {
                 ComposerAttachButton(busy: loadingAttachment) { openAttachSheet() }
                     .disabled(!canAttach)
                     .accessibilityIdentifier("topic-attach-button")
-                MicButton(text: $reply, isActive: isActive, recording: $dictating)
+                MicButton(text: $draft.reply, isActive: isActive, recording: $dictating)
                     .fixedSize()
                     .disabled(!canCompose || sending)
                 // One slot for Send and Saved Prompts, so the Send press survives the swap
@@ -1715,8 +1798,9 @@ private struct TopicChat: View {
             isPresented: $showAttachSheet, loading: $loadingAttachment,
             room: { ComposerStaging.maxAttachments - attachments.count }
         ) { outcome in addPicked(outcome) }
-        // Leaving the topic stops its uploads (a send waiting on one keeps it); closing it
-        // for good releases the uploader, which cancels and discards them.
+        // Leaving the topic, for the list, the Terminal or the background, stops its uploads
+        // (a send waiting on one keeps it) and keeps them: coming back resumes them. The
+        // page's end releases the uploader, which cancels and discards them.
         .onDisappear { uploader.pause() }
         .onAppear { uploader.resume() }
     }
@@ -1802,7 +1886,7 @@ private struct TopicChat: View {
             ComposerAttachment(name: $0.name, mime: $0.mime, isImage: $0.isImage, staged: $0.staged)
         }
         attachments += picked
-        uploader.start(picked, client: client, into: $attachments)
+        uploader.start(picked, client: client, into: $draft.attachments)
         actionNote = outcome.note
     }
 
@@ -1818,13 +1902,23 @@ private struct TopicChat: View {
         }
     }
 
+    /// Stands in for a Gram id not posted yet when Send sizes the message: longer than herdr's
+    /// ids, so a message that fits with it fits once the Grams are posted.
+    private static let unpostedGramID = String(repeating: "0", count: 64)
+
     private func send() {
         guard canCompose, !sending, !dictating, !loadingAttachment, hasContent else { return }
         let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
         let batch = attachments
+        // Sized as it goes out, with the files' download references (herdrup#852): a message
+        // over the limit stops here, before any Gram is posted.
+        let wireText = batch.isEmpty ? text : GramAttachmentPrompt.text(text, delivered: batch.map {
+            GramAttachmentPrompt.Delivered(name: $0.name, isImage: $0.isImage,
+                                           messageID: $0.messageID ?? Self.unpostedGramID)
+        })
         // The bubble enters (and the chat follows it) on the send motion; staged now.
         guard let id = withAnimation(ChatSendMotion.bubble(reduceMotion: reduceMotion), {
-            model.stage(topicID: topic.id, text: text, author: author, files: batch)
+            model.stage(topicID: topic.id, text: text, wireText: wireText, author: author, files: batch)
         }) else { return }
         sending = true
         actionNote = nil
@@ -1834,6 +1928,14 @@ private struct TopicChat: View {
         Task {
             defer { sending = false; sendingAttachmentID = nil }
             failedAttachmentID = nil
+            // Not delivered: the chips (their Grams remembered) and the text stay for a retry.
+            func keepDraft() { if !batch.isEmpty, reply.isEmpty { reply = clearedReply } }
+            // The chat must be able to show the send before anything leaves, as in the Inbox:
+            // a Gram posted for a message that is then not sent stays behind (herdrup#853).
+            guard await model.prepare(client: client, topicID: topic.id, outgoingID: id) else {
+                keepDraft()
+                return
+            }
             // The Inbox's way: each file posts as a Gram to the agent, then one message names
             // them all with how to fetch them (`GramAttachmentPrompt`). The topic runs in the
             // agent's own omp, so `herdr gram get-file` finds them there too.
@@ -1841,7 +1943,7 @@ private struct TopicChat: View {
             if !batch.isEmpty {
                 guard let delivered = await postAttachments(batch) else {
                     chat.updateOutgoing(id, state: .notDelivered("Attachment upload did not complete."))
-                    if reply.isEmpty { reply = clearedReply }
+                    keepDraft()
                     return
                 }
                 message = GramAttachmentPrompt.text(text, delivered: delivered)
@@ -1853,9 +1955,8 @@ private struct TopicChat: View {
                 let sentIDs = Set(batch.map(\.id))
                 attachments.removeAll { sentIDs.contains($0.id) }
                 uploader.forget(sentIDs)
-            } else if reply.isEmpty {
-                // Not delivered: the chips (their Grams remembered) and the text stay for a retry.
-                reply = clearedReply
+            } else {
+                keepDraft()
             }
         }
     }
@@ -1869,7 +1970,7 @@ private struct TopicChat: View {
         }
         let guestName: String? = { if case .guest(let name, _) = viewer { return name } else { return nil } }()
         let topicTitle = title
-        let sender = uploader.sender(client: client, into: $attachments, post: { [client] _, attachment in
+        let sender = uploader.sender(client: client, into: $draft.attachments, post: { [client] _, attachment in
             if let guestName {
                 return try await client.guestGramPost(
                     text: "Attachment from \(guestName) for the topic \(topicTitle).", to: target,

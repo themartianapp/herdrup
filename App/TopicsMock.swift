@@ -262,6 +262,15 @@ final class TopicsMock: @unchecked Sendable {
         for listener in listeners { listener.yield(event) }
     }
 
+    /// `HERDR_MOCK_TOPICS_SEND_REFUSE=<code>`: the first `agent.topics.send` is refused with
+    /// that code before it reaches the topic (`invalid_params`: herdr's size gate).
+    private var sendRefusal = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_SEND_REFUSE"]
+
+    /// Every message an `agent.topics.send` delivered, in order, across the owner's and the
+    /// guest's mocks: TopicChat's DEBUG `topic-send-calls` probe.
+    static var sentMessages: [String] { sentRecorder.messages }
+    private static let sentRecorder = TopicsSendRecorder()
+
     private func answer(method: String, id: String, params: [String: Any]) -> String {
         guard params["target"] as? String == paneID || params["target"] as? String == agent else {
             return ChatMockConversation.error(id: id, code: "agent_not_found", message: "no such agent")
@@ -314,9 +323,15 @@ final class TopicsMock: @unchecked Sendable {
                 guard let index = topics.firstIndex(where: { $0.id == topicID }) else {
                     return ChatMockConversation.error(id: id, code: "topic_not_found", message: "no such topic")
                 }
+                if let code = sendRefusal {
+                    sendRefusal = nil
+                    return ChatMockConversation.error(id: id, code: code, message: "message too long")
+                }
                 let now = Self.now()
                 let running = topics[index].state == "running"
-                topics[index].messages.append((.reader, params["message"] as? String ?? "", now))
+                let message = params["message"] as? String ?? ""
+                Self.sentRecorder.append(message)
+                topics[index].messages.append((.reader, message, now))
                 topics[index].lastMs = now
                 return ChatMockConversation.encode(id: id, result: [
                     "type": "agent_topic_sent", "agent": agent, "pane_id": paneID, "topic_id": topicID,
@@ -588,5 +603,15 @@ final class TopicsMock: @unchecked Sendable {
             ])
         }
     }
+}
+
+/// The messages `agent.topics.send` delivered, in order (`TopicsMock.sentMessages`).
+final class TopicsSendRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [String] = []
+
+    var messages: [String] { lock.withLock { stored } }
+
+    func append(_ message: String) { lock.withLock { stored.append(message) } }
 }
 #endif
