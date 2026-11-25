@@ -16,14 +16,26 @@ struct GuestConnection {
     }
 
     /// Connects over the relay with this install's device key. Constructing the
-    /// transport does not dial; each call opens its own relay socket.
+    /// transport does not dial; each call opens its own relay socket. An account-bound
+    /// share takes the signed-in account's statements for its hellos.
     static func open(_ access: GuestAccess) throws -> GuestConnection {
         let identity = try GuestDevice.identity()
         let features = GuestFeaturesModel()
-        let transport = access.transport(identity: identity, onFeatures: features.sink())
+        let transport = access.transport(identity: identity, statements: AccountGuestStatements(),
+                                         onFeatures: features.sink())
         // The share's own cache scope: its one agent's chat and last screen, nothing else.
         return GuestConnection(client: HerdrClient(transport: transport, contentCache: AppContentCache.scope(for: access)),
                                fingerprint: identity.fingerprint, features: features)
+    }
+}
+
+/// The signed-in account's statements (`HerdrUpAccount.statements`) for account-bound
+/// shares. Signed out, the cache's session throws `AccountError.signedOut`, which the
+/// share's calls report as `GuestError.accountStatement(.signedOut)`.
+struct AccountGuestStatements: GuestStatementSource {
+    func statement(for host: String) async throws -> StatementCache.Statement {
+        let cache = await MainActor.run { HerdrUpAccount.shared.statements }
+        return try await cache.statement(for: host)
     }
 }
 

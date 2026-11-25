@@ -28,6 +28,9 @@ public enum GuestError: Error, Equatable, CustomStringConvertible {
     case revoked
     /// The host does not allow guests to call this method (`guest_forbidden`).
     case forbidden
+    /// A hello that must carry this account's statement (an account-bound grant, or a
+    /// redemption that binds) could not get one. Never answered by a plain hello instead.
+    case accountStatement(AccountStatementFailure)
 
     /// The guest-access API error codes.
     public static func fromAPICode(_ code: String) -> GuestError? {
@@ -73,6 +76,7 @@ public enum GuestError: Error, Equatable, CustomStringConvertible {
         case .paused: return "the agent isn't running"
         case .revoked: return "your access was revoked"
         case .forbidden: return "guests can't do that"
+        case .accountStatement(let failure): return failure.description
         }
     }
 }
@@ -84,6 +88,22 @@ public enum GuestRefusal: Equatable, Sendable, CustomStringConvertible {
     case inviteUsed
     case inviteExpired
     case inviteInvalid
+    /// herdr's account codes (src/guest/account.rs `codes`), in a refused hello or as the
+    /// close reason of an account-bound session.
+    /// An account-bound share's hello carried no statement.
+    case accountRequired
+    /// Malformed, badly signed, or for another issuer, host or device.
+    case statementInvalid
+    /// Expired or not yet valid; also the close at an account-bound session's deadline.
+    case statementExpired
+    /// The host could not refresh the account keys recently enough; retry later.
+    case accountKeysStale
+    /// The host has `[guest] accounts = false`.
+    case accountsDisabled
+    /// The statement names another account than the share's.
+    case accountMismatch
+    /// The owner removed this device from the share.
+    case deviceRemoved
     case other(String)
 
     public init(code: String) {
@@ -93,6 +113,13 @@ public enum GuestRefusal: Equatable, Sendable, CustomStringConvertible {
         case "invite_used": self = .inviteUsed
         case "invite_expired": self = .inviteExpired
         case "invite_invalid": self = .inviteInvalid
+        case "account_required": self = .accountRequired
+        case "statement_invalid": self = .statementInvalid
+        case "statement_expired": self = .statementExpired
+        case "account_keys_stale": self = .accountKeysStale
+        case "accounts_disabled": self = .accountsDisabled
+        case "account_mismatch": self = .accountMismatch
+        case "device_removed": self = .deviceRemoved
         default: self = .other(code)
         }
     }
@@ -101,7 +128,7 @@ public enum GuestRefusal: Equatable, Sendable, CustomStringConvertible {
     /// revoked one: the owner removed them.
     public var meansRevoked: Bool {
         switch self {
-        case .unknown, .revoked: return true
+        case .unknown, .revoked, .deviceRemoved: return true
         default: return false
         }
     }
@@ -113,7 +140,55 @@ public enum GuestRefusal: Equatable, Sendable, CustomStringConvertible {
         case .inviteUsed: return "this invite was already used"
         case .inviteExpired: return "this invite has expired"
         case .inviteInvalid: return "this invite is not valid"
+        case .accountRequired: return "this share needs your HerdrUp account; sign in to open it"
+        case .statementInvalid: return "the machine didn't accept your account's proof for this device"
+        case .statementExpired: return "your account's proof for this device expired; try again"
+        case .accountKeysStale: return "the machine couldn't check your account right now; try again shortly"
+        case .accountsDisabled: return "this machine doesn't take HerdrUp accounts"
+        case .accountMismatch: return "this share belongs to another HerdrUp account"
+        case .deviceRemoved: return "the owner removed this device from the share"
         case .other(let code): return "the machine refused the connection (\(code))"
+        }
+    }
+}
+
+/// Why an account statement for a guest hello could not be had (`GuestError.accountStatement`).
+public enum AccountStatementFailure: Error, Equatable, Sendable, CustomStringConvertible {
+    /// No HerdrUp account is signed in on this device.
+    case signedOut
+    /// The account service could not be reached.
+    case unreachable
+    /// The account service refused, or answered without a statement for this host.
+    case refused(String)
+    /// The invite's host does not take statements (no `"acct": 1`).
+    case notOffered
+
+    /// Classifies what fetching a statement threw.
+    public init(_ error: Error) {
+        switch error {
+        case let failure as AccountStatementFailure: self = failure
+        case let account as AccountError:
+            switch account {
+            case .signedOut: self = .signedOut
+            case .unreachable: self = .unreachable
+            case .malformedResponse: self = .refused("malformed_response")
+            case .refused(_, let code, _, _): self = .refused(code)
+            }
+        case let cache as StatementCache.Failure:
+            switch cache {
+            case .invalidHostID: self = .refused("invalid_host_id")
+            case .missingStatement: self = .refused("missing_statement")
+            }
+        default: self = .unreachable
+        }
+    }
+
+    public var description: String {
+        switch self {
+        case .signedOut: return "sign in to your HerdrUp account to open this share"
+        case .unreachable: return "couldn't reach your HerdrUp account; check your connection and try again"
+        case .refused(let code): return "your HerdrUp account refused this device (\(code))"
+        case .notOffered: return "this machine doesn't take HerdrUp accounts"
         }
     }
 }

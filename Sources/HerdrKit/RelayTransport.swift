@@ -96,11 +96,21 @@ final class RelaySession: @unchecked Sendable {
     private var endedWhileIdle = false
     /// When the handshake completed: the features in `reply` are as of then.
     let opened = ContinuousClock.now
+    /// The last send handed to the socket. Each send encrypts under `lock` and then waits
+    /// for this one, so messages go out in nonce order even when a statement refresh
+    /// interleaves with a request.
+    private var sendTail: Task<Void, Error>?
+    /// Sends an account-bound session's statement refreshes (`keepStatementFresh`).
+    private var refresher: Task<Void, Never>?
 
     private init(socket: RelaySocket, noise: NoiseIK.Transport, reply: [String: Any]) {
         self.socket = socket
         self.noise = noise
         self.reply = reply
+    }
+
+    deinit {
+        refresher?.cancel()
     }
 
     /// Opens a socket and runs the IK handshake with `hello` as the message-1 payload.
@@ -147,15 +157,79 @@ final class RelaySession: @unchecked Sendable {
 
     /// Sends one request line, split into Noise messages that fit the relay limit.
     func sendLine(_ line: String) async throws {
-        let messages: [Data]
+        try await send(Data((line + "\n").utf8), chunked: true)
+    }
+
+    /// Encrypts `plaintext` (in chunks, or as one whole message) and sends it after every
+    /// earlier send.
+    private func send(_ plaintext: Data, chunked: Bool) async throws {
+        let task: Task<Void, Error>
         do {
-            messages = try lock.withLock { try noise.encryptChunked(Data((line + "\n").utf8)) }
+            task = try lock.withLock {
+                let messages = chunked ? try noise.encryptChunked(plaintext) : [try noise.encrypt(plaintext)]
+                let previous = sendTail
+                let next = Task { [socket] in
+                    _ = await previous?.result
+                    for message in messages {
+                        try await socket.send(message)
+                    }
+                }
+                sendTail = next
+                return next
+            }
         } catch let failure as NoiseIK.Failure {
             throw GuestError.secureChannelFailed(failure.description)
         }
-        for message in messages {
-            try await socket.send(message)
+        try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
         }
+    }
+
+    /// How long before a statement's `exp` an account-bound session sends the next one.
+    /// herdr ends the session 60 s after `exp` (`statement_expired`); `StatementCache`
+    /// fetches a new statement once less than two minutes remain, so asking 110 s before
+    /// `exp` gets a new one, with almost three minutes left to deliver it.
+    static let statementRefreshLead: TimeInterval = 110
+    /// After a failed fetch, the next try; it keeps trying until herdr's deadline passes.
+    static let statementRetryInterval: TimeInterval = 15
+
+    /// Keeps an account-bound session past `statement`'s expiry: before each deadline it
+    /// sends herdr's in-band `{"t":"account.refresh","account":"<jws>"}` with a newer
+    /// statement for `host`. When none can be had in time, herdr closes the session with
+    /// `statement_expired` and the next call's hello reports why.
+    func keepStatementFresh(_ statement: StatementCache.Statement, host: String, source: GuestStatementSource) {
+        let task = Task { [weak self] in
+            var expires = statement.expires
+            var wake = expires.addingTimeInterval(-Self.statementRefreshLead)
+            while true {
+                let wait = wake.timeIntervalSinceNow
+                if wait > 0 {
+                    guard (try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))) != nil else { return }
+                }
+                guard let session = self, !Task.isCancelled else { return }
+                let fresh = try? await source.statement(for: host)
+                guard let fresh, fresh.expires > expires else {
+                    // Past the host's deadline the session is gone.
+                    if Date().timeIntervalSince(expires) > 60 { return }
+                    wake = Date().addingTimeInterval(Self.statementRetryInterval)
+                    continue
+                }
+                do {
+                    try await session.send(GuestStatements.refreshMessage(fresh.jws), chunked: false)
+                } catch {
+                    return
+                }
+                expires = fresh.expires
+                wake = expires.addingTimeInterval(-Self.statementRefreshLead)
+            }
+        }
+        let previous = lock.withLock { () -> Task<Void, Never>? in
+            defer { refresher = task }
+            return refresher
+        }
+        previous?.cancel()
     }
 
     /// The next decrypted chunk of the host's byte stream, or nil after a normal close.
@@ -224,6 +298,11 @@ final class RelaySession: @unchecked Sendable {
     }
 
     func close() {
+        let refresher = lock.withLock { () -> Task<Void, Never>? in
+            defer { self.refresher = nil }
+            return self.refresher
+        }
+        refresher?.cancel()
         socket.close()
     }
 }
@@ -240,15 +319,26 @@ public struct RelayTransport: HerdrTransport {
     /// Hears each session's hello `features`, before the session's request is answered.
     let onFeatures: (@Sendable (GuestFeatures) -> Void)?
 
-    /// Encoded once per transport; every request authenticates the same grant.
-    private let returningHello: Data
+    /// Whether every hello carries the account's statement, and where it comes from.
+    public enum Account: Sendable {
+        /// A plain grant: the device key alone selects it.
+        case plain
+        /// An account-bound grant: each hello needs a statement from `source`, and each
+        /// session sends a newer one before the last expires. Nil (signed out) fails every
+        /// call with `GuestError.accountStatement(.signedOut)`.
+        case bound(GuestStatementSource?)
+    }
+
+    private let account: Account
     /// The session this guest keeps open to this host between calls, shared by every
     /// transport of the same guest, host and device key.
     private let reusable: ReusableSession
 
+    /// `{"v":1,"guest_id":…}`, plus `account` (the statement) for an account-bound grant.
     private struct ReturningHello: Encodable {
         let v = 1
         let guest_id: String
+        let account: String?
     }
 
     /// Raw bytes per `gram.upload_chunk` over the relay: 256 KiB. On a host without session
@@ -272,13 +362,13 @@ public struct RelayTransport: HerdrTransport {
     /// The relay is the guest's way in: its writes are never the owner's.
     public var actsAsGuest: Bool { true }
 
-    public init(guestID: String, endpoint: RelayEndpoint, identity: GuestIdentity, connector: RelaySocketConnector = URLSessionRelayConnector(),
+    public init(guestID: String, endpoint: RelayEndpoint, identity: GuestIdentity, account: Account = .plain,
+                connector: RelaySocketConnector = URLSessionRelayConnector(),
                 onFeatures: (@Sendable (GuestFeatures) -> Void)? = nil) {
         self.endpoint = endpoint
         self.identity = identity
         self.guestID = guestID
-        // These two primitive fields have no failing Encodable implementation.
-        self.returningHello = try! JSONEncoder().encode(ReturningHello(guest_id: guestID))
+        self.account = account
         self.connector = connector
         self.onFeatures = onFeatures
         self.reusable = ReusableSession.shared(
@@ -286,11 +376,23 @@ public struct RelayTransport: HerdrTransport {
     }
 
     private func open(through connector: RelaySocketConnector) async throws -> RelaySession {
+        var statement: StatementCache.Statement?
+        var source: GuestStatementSource?
+        if case .bound(let statements) = account {
+            // Never a plain hello for an account-bound grant: no statement, no session.
+            statement = try await GuestStatements.fetch(for: endpoint.hostID, from: statements)
+            source = statements
+        }
+        // A string and an optional string have no failing Encodable implementation.
+        let hello = try! JSONEncoder().encode(ReturningHello(guest_id: guestID, account: statement?.jws))
         let session = try await RelaySession.open(
-            endpoint: endpoint, identity: identity, hello: returningHello, connector: connector)
+            endpoint: endpoint, identity: identity, hello: hello, connector: connector)
         guard session.reply["guest_id"] as? String == guestID else {
             session.close()
             throw GuestError.revoked
+        }
+        if let statement, let source {
+            session.keepStatementFresh(statement, host: endpoint.hostID, source: source)
         }
         reusable.learn(multiRequest: session.multiRequest)
         onFeatures?(GuestFeatures(helloReply: session.reply))
@@ -463,6 +565,9 @@ public struct RelayTransport: HerdrTransport {
         switch error {
         case let guest as GuestError:
             if case .connectionClosed = guest { return true }
+            // herdr closed an account-bound session at its statement deadline: the next
+            // session's hello carries a fresh statement.
+            if case .refused(.statementExpired) = guest { return true }
             return false
         case let transport as TransportError:
             if case .closedBeforeResponse = transport { return true }
@@ -505,11 +610,20 @@ public struct RelayTransport: HerdrTransport {
         }
     }
 
+    /// herdr's account codes (src/guest/account.rs `codes`) a session can close with.
+    static let accountCloseReasons: Set<String> = [
+        "account_required", "statement_invalid", "statement_expired", "account_keys_stale",
+        "accounts_disabled", "account_mismatch", "device_removed",
+    ]
+
     /// Maps a WebSocket close the relay or host sent to a guest error. The relay refuses
     /// a guest upgrade by accepting it and closing at once with 4000 plus the HTTP status
     /// an older relay answered: 4429 `rate_limited`, 4503 `host_offline`, 4504 `host_busy`.
     static func error(forClose code: Int, reason: String?) -> Error {
         if reason == "host_busy" { return GuestError.hostBusy }
+        // herdr ends an account-bound session with its account code: at the statement
+        // deadline (`statement_expired`) or on a refused in-band refresh.
+        if let reason, accountCloseReasons.contains(reason) { return GuestError.refused(GuestRefusal(code: reason)) }
         switch code {
         case 1001, 4503: return GuestError.hostOffline
         case 4504: return GuestError.hostBusy

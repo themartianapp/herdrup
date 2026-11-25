@@ -109,6 +109,11 @@ final class FakeHost: @unchecked Sendable {
     private(set) var hellos: [[String: Any]] = []
     private(set) var guestStatics: [Data] = []
     private(set) var requests: [String] = []
+    /// Whole transport messages that were herdr's in-band `account.refresh`, as sent.
+    private(set) var refreshes: [Data] = []
+    /// The close reason for a refresh's statement, or nil to accept it (herdr's
+    /// `refresh_account` ends the session with its code).
+    var refuseRefresh: (String) -> String? = { _ in nil }
     /// Request lines whose reply the host holds until `release()`.
     var holdReply: (String) -> Bool = { _ in false }
     /// Request lines the host reads and then ends the session on, without a reply.
@@ -151,8 +156,18 @@ final class FakeHost: @unchecked Sendable {
                     }
                     return
                 }
-                pending += try session.decrypt(message)
+                let plaintext = try session.decrypt(message)
                 transport = session
+                // Like herdr (session.rs `refresh_statement`), one whole message that is
+                // `{"t":"account.refresh",…}` is the host's, never the API's.
+                if plaintext.first == UInt8(ascii: "{"),
+                   let object = (try? JSONSerialization.jsonObject(with: plaintext)) as? [String: Any],
+                   object["t"] as? String == "account.refresh", let jws = object["account"] as? String {
+                    refreshes.append(plaintext)
+                    if let code = refuseRefresh(jws) { socket.push(.closed(code: 1000, reason: code)) }
+                    return
+                }
+                pending += plaintext
                 // A host serving many requests per session reads them one line at a time.
                 while let newline = pending.firstIndex(of: UInt8(ascii: "\n")) {
                     let line = String(decoding: pending[..<newline], as: UTF8.self)
