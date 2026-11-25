@@ -360,7 +360,9 @@ private struct SheetButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(Typography.app(16, .semibold))
-            .foregroundStyle(filled ? Palette.onAccent : Palette.text)
+            // The filled button is drawn in the text colour (near white), so its label takes the
+            // ground colour, as the other filled buttons do (AddAccountSheet).
+            .foregroundStyle(filled ? Palette.ground : Palette.text)
             .frame(maxWidth: .infinity, minHeight: 50)
             .background(
                 RoundedRectangle(cornerRadius: 12)
