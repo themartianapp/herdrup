@@ -1,23 +1,39 @@
 import Foundation
+import UIKit
 import HerdrKit
 
+/// One machine in SHARED WITH YOU: the grants on it this device holds, and the ones the
+/// HerdrUp account holds that this device hasn't opened yet (`synced`, #700). One row per
+/// machine, however many agents.
 struct SharedMachineGroup: Identifiable {
     struct Identity: Hashable {
         let hostID: String
         let publicKey: Data
 
-        init(_ access: GuestAccess) {
-            hostID = access.endpoint.hostID
-            publicKey = access.endpoint.hostPublicKey
+        init(_ endpoint: RelayEndpoint) {
+            hostID = endpoint.hostID
+            publicKey = endpoint.hostPublicKey
         }
+
+        init(_ access: GuestAccess) { self.init(access.endpoint) }
     }
     let id: Identity
     var accesses: [GuestAccess]
+    var synced: [AccountShare] = []
+
+    var machineLabel: String { accesses.first?.machineLabel ?? synced.first?.machineLabel ?? "" }
+    var ownerName: String { accesses.first?.ownerName ?? synced.first?.ownerName ?? "" }
+    var agentNames: [String] { accesses.map(\.agentName) + synced.map(\.agentName) }
 }
 
 /// Machines someone else shared with this phone ("Shared with you"). Each entry is a
 /// grant for one agent on one machine; it holds no secret (the device key lives in
 /// the Keychain), so the list is plain JSON in UserDefaults.
+///
+/// Shares added to the HerdrUp account (#700) also live in the account's `shares`
+/// collection: accepting or leaving one here asks the account to sync (`AccountShareSync`
+/// pushes or deletes it), and the account's shares this device hasn't opened are listed as
+/// `accountShares` until they are.
 @MainActor
 final class SharedMachinesStore: ObservableObject {
     static let shared: SharedMachinesStore = {
@@ -30,7 +46,7 @@ final class SharedMachinesStore: ObservableObject {
             case .guestMachine: GuestMockTransport.machineAccesses
             default: []
             }
-            return SharedMachinesStore(defaults: nil, machines: seeded)
+            return SharedMachinesStore(defaults: nil, machines: seeded, firstOpen: GuestMockTransport.firstOpen)
         }
         #endif
         return SharedMachinesStore(defaults: ShareStorage.defaults)
@@ -40,8 +56,17 @@ final class SharedMachinesStore: ObservableObject {
 
     /// Nil keeps the list in memory only (screenshot mocks and UI tests).
     private let defaults: UserDefaults?
+    /// Opens an account share on this device for the first time; the relay unless a mock
+    /// stands in.
+    private let firstOpen: @MainActor (AccountShare) async throws -> GuestAccess
 
     @Published private(set) var machines: [GuestAccess]
+    /// The HerdrUp account's shares that this device hasn't opened (set by each sync;
+    /// empty when signed out).
+    @Published private(set) var accountShares: [AccountShare] = []
+
+    /// Nothing shared with this device, here or through the account.
+    var isEmpty: Bool { machines.isEmpty && accountShares.isEmpty }
 
     /// Display names are not identity: two hosts can use the same label.
     var groups: [SharedMachineGroup] {
@@ -56,11 +81,22 @@ final class SharedMachinesStore: ObservableObject {
                 groups.append(SharedMachineGroup(id: identity, accesses: [access]))
             }
         }
+        for share in accountShares {
+            let identity = SharedMachineGroup.Identity(share.endpoint)
+            if let index = indexes[identity] {
+                groups[index].synced.append(share)
+            } else {
+                indexes[identity] = groups.count
+                groups.append(SharedMachineGroup(id: identity, accesses: [], synced: [share]))
+            }
+        }
         return groups
     }
 
-    init(defaults: UserDefaults?, machines: [GuestAccess] = []) {
+    init(defaults: UserDefaults?, machines: [GuestAccess] = [],
+         firstOpen: @escaping @MainActor (AccountShare) async throws -> GuestAccess = SharedMachinesStore.openOverRelay) {
         self.defaults = defaults
+        self.firstOpen = firstOpen
         if let data = defaults?.data(forKey: Self.defaultsKey),
            let decoded = try? JSONDecoder().decode([GuestAccess].self, from: data) {
             self.machines = decoded
@@ -69,15 +105,42 @@ final class SharedMachinesStore: ObservableObject {
         }
     }
 
+    /// A first open over the relay: the account's statement for this device and the share's
+    /// `guest_id`, no invite.
+    static func openOverRelay(_ share: AccountShare) async throws -> GuestAccess {
+        try await GuestSession.open(share, identity: try GuestDevice.identity(), device: UIDevice.current.model,
+                                    statements: AccountGuestStatements())
+    }
+
     /// Adds a grant, replacing any earlier one with the same id (accepting a fresh
-    /// invite from the same host as the same guest refreshes it in place).
+    /// invite from the same host as the same guest refreshes it in place). One added to the
+    /// account is pushed to it.
     func add(_ access: GuestAccess) {
         if let index = machines.firstIndex(where: { $0.id == access.id }) {
             machines[index] = access
         } else {
             machines.append(access)
         }
+        accountShares.removeAll { $0.id == access.id }
         persist()
+        if access.accountBound { HerdrUpAccount.shared.sharesChanged() }
+    }
+
+    /// Opens a machine from SHARED WITH YOU. The account's shares on it that this device
+    /// hasn't opened are opened first, with nothing to accept; the result is the grant its
+    /// home starts from. A share that couldn't be opened stays listed, and throws only when
+    /// nothing on the machine could be.
+    func open(_ group: SharedMachineGroup) async throws -> GuestAccess {
+        var failure: Error?
+        for share in group.synced {
+            do {
+                add(try await firstOpen(share))
+            } catch {
+                failure = failure ?? error
+            }
+        }
+        if let access = machines.first(where: { SharedMachineGroup.Identity($0) == group.id }) { return access }
+        throw failure ?? GuestError.revoked
     }
 
     /// Saves what the host reports about a grant now (the owner renamed its agent). A grant
@@ -90,11 +153,30 @@ final class SharedMachinesStore: ObservableObject {
     }
 
     /// Removes a grant; its host stops pushing to this phone for it, and nothing it showed
-    /// stays on this phone.
+    /// stays on this phone. One in the account leaves the account too, so it leaves every
+    /// device.
     func remove(_ access: GuestAccess) {
-        GuestPushCenter.shared.leaving(access)
-        machines.removeAll { $0.id == access.id }
-        AppContentCache.wipe(share: access)
+        drop([access])
+        if access.accountBound { HerdrUpAccount.shared.sharesChanged() }
+    }
+
+    /// Removes grants left on another device of the account: nothing more to tell it.
+    func removeLeftElsewhere(_ ids: Set<String>) {
+        drop(machines.filter { ids.contains($0.id) })
+    }
+
+    func setAccountShares(_ shares: [AccountShare]) {
+        if accountShares != shares { accountShares = shares }
+    }
+
+    private func drop(_ accesses: [GuestAccess]) {
+        guard !accesses.isEmpty else { return }
+        for access in accesses {
+            GuestPushCenter.shared.leaving(access)
+            AppContentCache.wipe(share: access)
+        }
+        let ids = Set(accesses.map(\.id))
+        machines.removeAll { ids.contains($0.id) }
         persist()
     }
 

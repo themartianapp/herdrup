@@ -103,7 +103,13 @@ public struct AccountSyncSummary: Equatable, Sendable {
         switch body {
         case .host(let host)?: name = "Machine “\(host.nickname ?? host.host)”"
         case .prompt(let prompt)?: name = "Prompt “\(prompt.title ?? String(prompt.text.prefix(24)))”"
-        default: name = key.collection == .hosts ? "A machine" : "A prompt"
+        case .share(let share)?: name = "Share “\(share.agentName ?? "agent") on \(share.machineLabel ?? "a shared machine")”"
+        default:
+            switch key.collection {
+            case .hosts: name = "A machine"
+            case .shares: name = "A share"
+            default: name = "A prompt"
+            }
         }
         switch error {
         case .secretLike(let field):

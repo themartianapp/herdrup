@@ -482,6 +482,7 @@ final class HerdrUpAccount: ObservableObject {
                                    message: "Your machines and prompts stay on this \(Self.deviceKind), but the account's synced copy couldn't be deleted. herdrup tries again when it next opens.")
         }
         SavedStoresAccountLocal.forget(defaults)
+        SharedMachinesAccountLocal.forget(defaults, store: .shared)
         forgetProfile()
         signedIn = false
         rememberDisplayHint(nil)
@@ -526,6 +527,12 @@ final class HerdrUpAccount: ObservableObject {
         syncLoop.request()
     }
 
+    /// A share added to or left from the account here (#700): pushed, or deleted on every
+    /// device, by the next sync, which starts now.
+    func sharesChanged() {
+        localEditSync()
+    }
+
     /// Deletes a synced copy a sign-out left behind. True when there is none (any more).
     private func finishPendingCleanup() -> Bool {
         guard defaults.bool(forKey: Self.cleanupKey) else { return true }
@@ -548,7 +555,13 @@ final class HerdrUpAccount: ObservableObject {
             self?.applying = active
         }
         do {
-            let summary = try await run.run()
+            var summary = try await run.run()
+            // The shares after the machines and prompts, on the mirror that run just pulled.
+            let shares = try await AccountShareSync(
+                engine: sync, store: SharedMachinesAccountLocal(store: .shared, defaults: defaults)).run()
+            summary.rejected += shares.rejected
+            summary.conflicts += shares.conflicts
+            summary.overQuota = summary.overQuota || shares.overQuota
             lastSync = summary
             syncFailed = summary.overQuota
             let hosts = await sync.items(in: .hosts).count

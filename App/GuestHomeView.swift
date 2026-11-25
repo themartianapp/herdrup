@@ -214,6 +214,7 @@ struct GuestHomeView: View {
                             Text("You can see only the agents \(access.ownerName) shares with you.")
                         }
                         .padding(.top, 18)
+                        if access.accountBound { accountLine.padding(.top, 10) }
                     }
                     .padding(.bottom, 24)
                 }
@@ -222,6 +223,21 @@ struct GuestHomeView: View {
             }
         }
         .toolbar(showingPane ? .hidden : .automatic, for: .tabBar)
+    }
+
+    /// A share added to the HerdrUp account (#700) says so once, quietly: a dashed hairline,
+    /// dim text, nothing to tap.
+    private var accountLine: some View {
+        let account = HerdrUpAccount.shared.email.map { " (\($0))" } ?? ""
+        return Text("In your HerdrUp account\(account). Sign in on your other devices and \(access.agentName) is there, no new invite.")
+            .font(Typography.app(13)).foregroundStyle(Palette.textDim)
+            .lineSpacing(2.75)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14).padding(.vertical, 13.5)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Palette.hairline, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+            .padding(.horizontal, 16)
+            .accessibilityIdentifier("guest-home-account-line")
     }
 
     /// The owner's Agents bar: a small centred title, Back in its capsule. In an iPad window

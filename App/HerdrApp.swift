@@ -207,6 +207,13 @@ struct RootView: View {
             Text(pairing.failure ?? "")
         }
         .onAppear { autoOpenSharedMachine() }
+        // A share left on another device of the account (#700) leaves this one too: its open
+        // home closes once nothing on its machine remains.
+        .onChange(of: sharedMachines.machines) { _, machines in
+            guard let open = openGuest else { return }
+            let machine = SharedMachineGroup.Identity(open)
+            if !machines.contains(where: { SharedMachineGroup.Identity($0) == machine }) { openGuest = nil }
+        }
         // A tapped push for an agent shared with this phone opens that share (its home picks
         // the Gram tab or the terminal), in place of whatever screen is showing. A share the
         // phone no longer holds opens nothing.
@@ -384,9 +391,10 @@ struct RootView: View {
         GuestAcceptView(
             invite: invite,
             fingerprint: try? GuestDevice.identity().fingerprint,
-            accept: {
+            accept: { bind in
                 let identity = try GuestDevice.identity()
-                return try await GuestSession.accept(invite, identity: identity, device: UIDevice.current.model)
+                return try await GuestSession.accept(invite, identity: identity, device: UIDevice.current.model,
+                                                     bindToAccount: bind, statements: AccountGuestStatements())
             },
             onAccepted: { access in
                 sharedMachines.add(access)
@@ -650,7 +658,7 @@ struct RootView: View {
                 GuestAcceptView(
                     invite: GuestMockTransport.invite,
                     fingerprint: try? GuestDevice.identity().fingerprint,
-                    accept: { GuestMockTransport.access },
+                    accept: { bind in GuestMockTransport.accepted(bindToAccount: bind) },
                     onAccepted: { access in
                         sharedMachines.add(access)
                         openGuest = access
@@ -954,6 +962,10 @@ struct ConnectView: View {
     @State private var showingOwnerSetup = false
     /// Settings › HerdrUp account, opened from the account avatar (#698 host-status proposal 1).
     @State private var showingAccount = false
+    /// The shared machine whose account shares are being opened on this device, and why the
+    /// last one couldn't be.
+    @State private var openingShared: SharedMachineGroup.Identity?
+    @State private var openSharedError: String?
 
     var body: some View {
         ZStack {
@@ -964,7 +976,7 @@ struct ConnectView: View {
                     if !savedHosts.hosts.isEmpty {
                         savedHostsSection
                     }
-                    if sharedMachines.machines.isEmpty {
+                    if sharedMachines.isEmpty {
                         if savedHosts.hosts.isEmpty { emptyState }
                         scanButton
                         addHostButton
@@ -1012,30 +1024,70 @@ struct ConnectView: View {
         }) {
             GuestInviteScanSheet { scannedInvite = $0 }
         }
+        .alert("Couldn't open this share", isPresented: Binding(
+            get: { openSharedError != nil },
+            set: { if !$0 { openSharedError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(openSharedError ?? "")
+        }
     }
 
-    /// Machines other people shared: each opens its guest home over the relay.
+    /// Machines other people shared, one row per machine: each opens its guest home over the
+    /// relay. Shares from the HerdrUp account that this device hasn't opened list the same
+    /// way, and open with nothing to accept (#700); the note under the rows says so once.
     private var sharedSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let groups = sharedMachines.groups
+        let fromAccount = groups.filter { $0.accesses.isEmpty }
+        return VStack(alignment: .leading, spacing: 8) {
             connectSectionLabel("SHARED WITH YOU")
             VStack(spacing: 0) {
-                ForEach(Array(sharedMachines.groups.enumerated()), id: \.element.id) { index, group in
-                    let access = group.accesses[0]
+                ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
                     if index > 0 { connectRowDivider }
                     Button {
                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        onOpenShared(access)
+                        openShared(group)
                     } label: {
-                        connectRow(icon: "person.2", title: access.machineLabel,
-                                   subtitle: "\(group.accesses.map(\.agentName).joined(separator: ", ")) · shared by \(access.ownerName)")
+                        connectRow(icon: "person.2", title: group.machineLabel,
+                                   subtitle: "\(group.agentNames.joined(separator: ", ")) · shared by \(group.ownerName)",
+                                   connecting: openingShared == group.id)
                     }
                     .buttonStyle(ConnectRowButtonStyle(held: false))
-                    .disabled(connecting != nil)
+                    .disabled(connecting != nil || openingShared != nil)
                     .accessibilityIdentifier("shared-machine-row")
                 }
             }
             .settingsGroup(outline: true)
+            if !fromAccount.isEmpty {
+                let owners = Set(fromAccount.map(\.ownerName))
+                let owner = owners.count == 1 ? owners.first! : "The owner"
+                Text("From your HerdrUp account: nothing to accept here. \(owner) sees each device you open it on.")
+                    .font(connectFont(13)).foregroundStyle(Palette.textFaint)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 18)
+                    .accessibilityIdentifier("shared-from-account-note")
+            }
         }
+    }
+
+    /// A machine this device holds opens at once; one with account shares not opened here
+    /// opens them first (a hello with the account's statement), its row reading
+    /// "Connecting…" meanwhile.
+    private func openShared(_ group: SharedMachineGroup) {
+        guard group.synced.isEmpty, let access = group.accesses.first else {
+            openingShared = group.id
+            Task {
+                defer { openingShared = nil }
+                do {
+                    onOpenShared(try await sharedMachines.open(group))
+                } catch {
+                    openSharedError = GuestDevice.describe(error, machine: group.machineLabel)
+                }
+            }
+            return
+        }
+        onOpenShared(access)
     }
 
     // MARK: #374 inset groups (the Settings look of #357)
@@ -1160,7 +1212,7 @@ struct ConnectView: View {
                     .font(connectFont(34, .bold))
                     .foregroundStyle(Palette.text)
                     .accessibilityAddTraits(.isHeader)
-                Text(sharedMachines.machines.isEmpty ? "connect to your machine" : "your shared agents")
+                Text(sharedMachines.isEmpty ? "connect to your machine" : "your shared agents")
                     .font(connectFont(16))
                     .foregroundStyle(Palette.textDim)
             }
