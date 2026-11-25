@@ -509,8 +509,8 @@ struct ComposerQuickKeyLabel: View {
     var imageName: String?
     var primary = false
     var armed = false
-    /// Drawn inside a `ComposerKeyGroup`: the group owns the surface and the rounded outer
-    /// corners, so the cap only fills while armed or hovered.
+    /// Drawn inside a `ComposerKeyGroup`: the group owns the surface and the capsule's ends,
+    /// so the cap only fills while armed or hovered.
     var grouped = false
     var minWidth: CGFloat = 44
     @Environment(\.isEnabled) private var isEnabled
@@ -534,21 +534,25 @@ struct ComposerQuickKeyLabel: View {
         .foregroundStyle(primary || armed ? Palette.ground : Palette.textDim)
         .padding(.horizontal, 10)
         .frame(minWidth: minWidth, minHeight: 34)
-        .background(fill, in: RoundedRectangle(cornerRadius: grouped ? 0 : 8, style: .circular))
+        // All capsules (owner, 2026-11-24): a lone key, the pinned Return included, is a capsule;
+        // a grouped key fills square and the group's capsule clips it.
+        .background {
+            if grouped { Rectangle().fill(fill) } else { Capsule().fill(fill) }
+        }
         .opacity(isEnabled ? 1 : 0.4)
         .onHover { hovering = $0 }
     }
 }
 
-/// Related key caps sharing one rounded `surface` shape (#359): square joins inside, radius 8
-/// at the group's outer corners. Place a `ComposerKeyDivider` between caps.
+/// Related key caps sharing one `surface` capsule (#359; all capsules, owner 2026-11-24): square
+/// joins inside, the capsule's round ends outside. Place a `ComposerKeyDivider` between caps.
 struct ComposerKeyGroup<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
         HStack(spacing: 0) { content }
             .background(Palette.surface)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .circular))
+            .clipShape(Capsule())
     }
 }
 

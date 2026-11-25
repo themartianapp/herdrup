@@ -2612,9 +2612,15 @@ struct TerminalHomeView: View {
                     }
                 }
                 // #360: the sections live in the iPhone tab bar's shape at the bottom of the
-                // column. A safe-area inset (not an overlay) so the lists end above it and
-                // can still scroll their last row into view.
-                .safeAreaInset(edge: .bottom, spacing: 0) { sidebarTabBar }
+                // column, with the Topics switch notice above them. A safe-area inset (not an
+                // overlay) so the lists end above both and can still scroll their last row
+                // into view.
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    VStack(spacing: 0) {
+                        topicsSwitchNotice
+                        sidebarTabBar
+                    }
+                }
             }
             // Remembered width. SwiftUI exposes no way to READ a divider drag, so the
             // column measures itself and feeds the settled value back as `ideal` on the
@@ -2764,6 +2770,7 @@ struct TerminalHomeView: View {
                                     .background { Palette.groundMachine.ignoresSafeArea() }
                             } else {
                                 agentsTab
+                                    .safeAreaInset(edge: .bottom, spacing: 0) { topicsSwitchNotice }
                             }
                         }
                         // The tab owns native presentation; the pane tree stays in this
@@ -2789,6 +2796,7 @@ struct TerminalHomeView: View {
                              searchText: $gramSearch,
                              newestToken: gramNewestToken,
                              roster: orderedSiblings)
+                        .safeAreaInset(edge: .bottom, spacing: 0) { phoneTopicsSwitchNotice }
                         .tag(HomeTab.gram)
                         .tabItem { Label(HomeTab.gram.label, systemImage: HomeTab.gram.icon) }
                         .modifier(GramUnreadBadge(unread: gramUnread))
@@ -2803,6 +2811,7 @@ struct TerminalHomeView: View {
                         onReconnect: onReconnect,
                         detail: hSizeClass == .regular ? (settingsAnchor ?? .machines) : nil,
                         serverUpdate: serverUpdate)
+                        .safeAreaInset(edge: .bottom, spacing: 0) { phoneTopicsSwitchNotice }
                         .tag(HomeTab.settings)
                         .badge(settingsBadge)
                         .tabItem { Label(HomeTab.settings.label, systemImage: HomeTab.settings.icon) }
@@ -3562,6 +3571,27 @@ struct TerminalHomeView: View {
     /// spinner / error). It carries the connect lifecycle — load, fork-probe, the
     /// first-run gestures tutorial, and the push deep-link hooks. Terminal is not a
     /// tab; it fronts a keep-mounted pane over the whole TabView.
+    /// The Topics switch notice, 12 pt above the tab bar (owner picks 2026-11-24 item 16). A
+    /// bottom safe-area inset, not an overlay: on iPad it stacks over the sidebar's section bar,
+    /// on iPhone over the system tab bar in the Agents, Gram and Settings tabs, so those lists end
+    /// above it and its height is reserved while it shows. "Topics will turn on when X finishes."
+    /// · Cancel: the agent's current state drops the switch herdr holds (as the row menu's
+    /// Cancel pending switch).
+    private var topicsSwitchNotice: some View {
+        TopicsSwitchBanner(status: $topicsSwitchStatus) { scheduled in
+            let request = TopicsSwitchRequest(paneID: scheduled.paneID, title: scheduled.title,
+                                              enabled: !scheduled.enabled, cancelsPending: true)
+            Task { await cancelPendingTopicsSwitch(request) }
+        }
+    }
+
+    /// The notice inside a phone tab, above the system tab bar; regular widths show it in the
+    /// sidebar instead.
+    @ViewBuilder
+    private var phoneTopicsSwitchNotice: some View {
+        if hSizeClass != .regular { topicsSwitchNotice }
+    }
+
     /// The per-agent action presenters — the Restart / Swap-subscription confirmation dialogs and the
     /// Rename sheet — applied to BOTH `agentsTab` (iPhone) and `iPadLayout` (iPad/Mac). The shared
     /// `agentList` context menus set `restartCandidate` / `swapCandidate` / `renameTarget`; these
@@ -3570,15 +3600,6 @@ struct TerminalHomeView: View {
     @ViewBuilder
     private func agentActions<Content: View>(_ content: Content) -> some View {
         folderActions(content)
-            .overlay(alignment: .bottom) {
-                // "Topics will turn on when X finishes." · Cancel: the agent's current state
-                // drops the switch herdr holds (as the row menu's Cancel pending switch).
-                TopicsSwitchBanner(status: $topicsSwitchStatus) { scheduled in
-                    let request = TopicsSwitchRequest(paneID: scheduled.paneID, title: scheduled.title,
-                                                      enabled: !scheduled.enabled, cancelsPending: true)
-                    Task { await cancelPendingTopicsSwitch(request) }
-                }
-            }
             .confirmationDialog(
                 topicsSwitchCandidate.map { TopicsSwitchRequest.title($0) } ?? "",
                 isPresented: $topicsSwitchCandidate.isPresent(),
@@ -6171,7 +6192,6 @@ struct TerminalPaneContent: View {
                                        showsTopics: topicsAvailable, showsChat: chatAvailable)
                         .padding(.top, 2).padding(.bottom, 10)
                         .frame(maxWidth: .infinity)
-                        .overlay(alignment: .bottom) { Rectangle().fill(Palette.hairlineQuiet).frame(height: 1) }
                         .accessibilityHidden(!isForeground)
                 }
                 // A one-time, dismissible offer to move Claude Code off its laggy
@@ -6595,22 +6615,27 @@ struct TerminalPaneContent: View {
                                       fallbackTitle: title, isForeground: isForeground))
     }
 
-    /// The heading, with the agent's status underneath: pulsing dot + status word and the
-    /// live time in that status.
+    /// The heading, with the agent's status underneath (owner picks 2026-11-24, items 5 and 6, Apple
+    /// clean): the status in sentence case and dim text, the activity spinner while working, the amber
+    /// dot only while it needs you, no mark otherwise; then the live time in that status.
     private var titleBlock: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(heading).font(Typography.app(16, .semibold))
                 .foregroundStyle(Palette.text).lineLimit(1)
             if let group {
                 HStack(spacing: 6) {
-                    PulsingDot(color: group.color, active: group == .working)
-                    Text(group.sectionTitle).font(Typography.microLabel).tracking(1)
-                        .foregroundStyle(group.color)
+                    switch group {
+                    case .working: ActivitySpinner()
+                    case .needsYou: Circle().fill(Palette.waiting).frame(width: 7, height: 7)
+                    case .idle, .stopped, .unrecognised: EmptyView()
+                    }
+                    Text(group.sentenceLabel).font(Typography.app(13))
+                        .foregroundStyle(Palette.textDim)
                     if let sinceMs = statusSinceMs {
                         let start = Date(timeIntervalSince1970: Double(sinceMs) / 1000)
                         TimelineView(.periodic(from: .now, by: 1)) { ctx in
                             Text(elapsedLabel(ctx.date.timeIntervalSince(start)))
-                                .font(Typography.machine(11)).monospacedDigit()
+                                .font(Typography.app(13)).monospacedDigit()
                                 .foregroundStyle(Palette.textFaint)
                         }
                     }

@@ -169,14 +169,16 @@ final class TopicsTests: XCTestCase {
         XCTAssertTrue(row("t-new-1", in: app).exists(within: 8), "the list has the new topic")
     }
 
-    /// "About topics", a word at the foot of the list (no icon, "Topics · A, revised"), opens
+    /// About topics, the (i) beside the "Topics" heading (owner picks 2026-11-24, item 11), opens
     /// "About topics" (a sheet on iPhone, a popover on iPad); Done closes it.
     func testAboutTopicsOpensAndCloses() {
         let app = launch("chatview")
         openHerdrApp(app)
         _ = openTopics(app)
         let about = app.buttons["topics.about"]
-        XCTAssertTrue(about.exists(within: 8), "the list ends with About topics")
+        XCTAssertTrue(about.exists(within: 8), "the heading has About topics")
+        XCTAssertLessThan(about.frame.midY, app.textFields["topics-search-field"].frame.minY,
+                          "About sits in the bar, above the search field")
         XCTAssertEqual(about.label, "About topics")
         XCTAssertGreaterThanOrEqual(about.frame.width, 44, "a 44 pt target")
         XCTAssertGreaterThanOrEqual(about.frame.height, 44, "a 44 pt target")

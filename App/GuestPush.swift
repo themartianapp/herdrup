@@ -185,10 +185,10 @@ struct GuestPushPrompt: View {
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 10) {
                 Button("Not now", action: onDecline)
-                    .buttonStyle(GuestPillButtonStyle(primary: false))
+                    .buttonStyle(.capsule(.secondary, .large, fullWidth: true))
                     .accessibilityIdentifier("guest-push-not-now")
                 Button("Turn on", action: onEnable)
-                    .buttonStyle(GuestPillButtonStyle(primary: true))
+                    .buttonStyle(.capsule(.filled, .large, fullWidth: true))
                     .accessibilityIdentifier("guest-push-enable")
             }
             .padding(.top, 2)

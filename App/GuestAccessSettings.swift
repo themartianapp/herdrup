@@ -262,7 +262,7 @@ struct GuestAccessSection: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityElement(children: .combine)
                 Button("Revoke") { revoking = person }
-                    .buttonStyle(GuestDangerButtonStyle())
+                    .buttonStyle(.capsule(.destructive))
                     .accessibilityLabel("Revoke \(guest.name)")
                     .accessibilityIdentifier("guest-revoke-\(guest.name)")
             }
@@ -330,7 +330,7 @@ struct GuestAccessSection: View {
                     Button("Cancel") {
                         Task { await revoke(.invite(item.invite.inviteID), on: item.machine) }
                     }
-                    .buttonStyle(GuestDangerButtonStyle(quiet: true))
+                    .buttonStyle(.capsule(.secondary))
                     .accessibilityLabel("Cancel invite for \(item.invite.name)")
                     .accessibilityIdentifier("guest-cancel-\(item.invite.name)")
                 }
@@ -499,21 +499,6 @@ struct GuestLogRow: View {
         case .revoked: return "Access revoked"
         case .prompt, .upload, .other: return nil
         }
-    }
-}
-
-/// The red outlined "Revoke" pill (and its quiet "Cancel" sibling for invites).
-struct GuestDangerButtonStyle: ButtonStyle {
-    var quiet = false
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(Typography.app(13.5, .semibold))
-            .foregroundStyle(quiet ? Palette.textDim : Palette.died)
-            .padding(.horizontal, 14).frame(height: 34)
-            .overlay(Capsule().stroke(quiet ? Palette.hairline : Palette.died.opacity(0.45), lineWidth: 1))
-            .contentShape(Capsule())
-            .opacity(configuration.isPressed ? 0.7 : 1)
     }
 }
 

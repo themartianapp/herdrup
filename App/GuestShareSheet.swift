@@ -63,20 +63,6 @@ enum GuestStyle {
     }
 }
 
-/// The pill-shaped primary/quiet action used by the guest sheets.
-struct GuestPillButtonStyle: ButtonStyle {
-    var primary: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(Typography.app(16, .semibold))
-            .foregroundStyle(primary ? Palette.ground : Palette.text)
-            .frame(maxWidth: .infinity, minHeight: 50)
-            .background(Capsule().fill(primary ? Palette.text : Palette.surfaceRaised))
-            .opacity(configuration.isPressed ? 0.8 : 1)
-    }
-}
-
 /// Owner-facing wording for a failed guest RPC.
 enum GuestAdminError {
     static func message(_ error: Error, agentName: String? = nil) -> String {
@@ -196,9 +182,8 @@ struct GuestShareSheet: View {
                 } label: {
                     if creating { ProgressView().tint(Palette.ground) } else { Text("Create invite") }
                 }
-                .buttonStyle(GuestPillButtonStyle(primary: true))
+                .buttonStyle(.capsule(.filled, .large, fullWidth: true))
                 .disabled(!nameValid || !ownerValid || creating)
-                .opacity(nameValid && ownerValid ? 1 : 0.45)
                 .padding(.horizontal, 16).padding(.top, 16)
                 .accessibilityIdentifier("guest-share-create")
 
@@ -400,7 +385,7 @@ struct GuestInviteView: View {
                     } label: {
                         Text(copied ? "Copied" : "Copy link")
                     }
-                    .buttonStyle(GuestPillButtonStyle(primary: false))
+                    .buttonStyle(.capsule(.secondary, .large, fullWidth: true))
                     .accessibilityIdentifier("guest-invite-copy")
                     // One URL item in the path form: Messages splits a '#' link in two.
                     if let url = URL(string: created.shareableWebURL) {
@@ -408,7 +393,7 @@ struct GuestInviteView: View {
                                   message: Text("Join \(agentName) on HerdrUp")) {
                             Text("Send…")
                         }
-                        .buttonStyle(GuestPillButtonStyle(primary: true))
+                        .buttonStyle(.capsule(.filled, .large, fullWidth: true))
                         .accessibilityIdentifier("guest-invite-send")
                     }
                 }

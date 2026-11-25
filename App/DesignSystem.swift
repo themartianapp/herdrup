@@ -128,6 +128,9 @@ extension AgentGroup {
 
     /// Uppercase micro-label heading, from the model's own label.
     var sectionTitle: String { label.uppercased() }
+
+    /// The label in sentence case ("Needs you", "Working"): the agent header's status line.
+    var sentenceLabel: String { label.prefix(1).uppercased() + label.dropFirst() }
 }
 
 /// A subtle gradient carrying agent identity — the one place colour is allowed to
@@ -207,7 +210,7 @@ private struct StatusMotionKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
-    /// Whether `TurningRing` and `PulsingDot` may move. False where they stay built but are
+    /// Whether `TurningRing` and `ActivitySpinner` may move. False where they stay built but are
     /// not on screen: a kept-alive pane behind another tab or pane, a roster the pane covers.
     /// A repeating animation nobody can see still drives SwiftUI's display link every frame
     /// (#427: an idle Mac app at 66% CPU).
@@ -222,7 +225,7 @@ extension EnvironmentValues {
 /// It holds still while `statusMotion` is off.
 struct TurningRing: View {
     var color: Color
-    /// Sized like `PulsingDot.diameter`: the defaults are the inline badge size, so the
+    /// The defaults are the inline badge size, so the
     /// agent-list call site is unchanged. The sign-in flow's "starting" composition asks
     /// for a larger ring (30/2) because it is the only thing on the screen, and the same
     /// ring inline (13/1.6) while a code is in flight.
@@ -341,44 +344,52 @@ struct AgentAvatar: View {
     }
 }
 
-/// A filled status dot that softly pulses while `active` (i.e. working) and
-/// holds perfectly still otherwise. Reuses TurningRing's onAppear +
-/// repeatForever idiom; a fading scale reads "alive" without implying a
-/// duration. Colour still carries the meaning — only the working state moves.
-/// Like `TurningRing`, it holds still while `statusMotion` is off.
-struct PulsingDot: View {
-    var color: Color
-    var active: Bool
-    var diameter: CGFloat = 7
+/// The activity indicator (owner picks 2026-11-24, items 6 and 12): eight spokes in the working
+/// blue, fading round behind the leading one, one step per spoke, 0.8 s a turn. The in-progress
+/// mark beside "Working" in the agent's header, the topic rows and the topic's header; herdrup-desktop
+/// draws the same (`.activity-spinner`, src/buttons.css). Like `TurningRing`, it holds still while
+/// `statusMotion` is off, and in UI tests run with animations off (a clock that ticks forever would
+/// hold up XCUITest's idle wait).
+struct ActivitySpinner: View {
+    var color: Color = Palette.working
+    var diameter: CGFloat = 11
     @Environment(\.statusMotion) private var statusMotion
+
+    /// The spokes' opacities, leading spoke first (desktop's conic stops).
+    private static let fades: [Double] = [1, 0.86, 0.72, 0.58, 0.46, 0.36, 0.28, 0.22]
+    private static let step: TimeInterval = 0.1
+
     var body: some View {
-        let dot = Circle().fill(color).frame(width: diameter, height: diameter)
-        // Removed rather than reset when it stops, as in `TurningRing`; solid again at once.
         Group {
-            if active && statusMotion {
-                dot.modifier(Pulsing())
+            if statusMotion && !UITestMotion.off {
+                TimelineView(.periodic(from: .now, by: Self.step)) { context in
+                    spokes(Int(context.date.timeIntervalSinceReferenceDate / Self.step) % 8)
+                }
+                #if DEBUG
+                .modifier(StatusMotionTally())
+                #endif
             } else {
-                dot
+                spokes(0)
             }
         }
+        .frame(width: diameter, height: diameter)
         #if DEBUG
-        .modifier(StatusShapeID(id: "status-dot"))
+        .modifier(StatusShapeID(id: "status-spinner"))
         #endif
     }
-}
 
-private struct Pulsing: ViewModifier {
-    @State private var pulse = false
-    func body(content: Content) -> some View {
-        content
-            .opacity(pulse ? 0.4 : 1)
-            .scaleEffect(pulse ? 1.35 : 1)
-            .onAppear {
-                StatusMotion.start(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) { pulse = true }
+    /// The wheel with its leading spoke at `lead` (0 = 12 o'clock), the fade trailing anticlockwise.
+    private func spokes(_ lead: Int) -> some View {
+        ZStack {
+            ForEach(0..<8, id: \.self) { index in
+                Capsule()
+                    .fill(color.opacity(Self.fades[index]))
+                    .frame(width: max(1.5, diameter * 0.17), height: diameter * 0.3)
+                    .offset(y: -diameter * 0.33)
+                    .rotationEffect(.degrees(Double(lead - index) * 45))
             }
-            #if DEBUG
-            .modifier(StatusMotionTally())
-            #endif
+        }
+        .frame(width: diameter, height: diameter)
     }
 }
 
@@ -392,8 +403,8 @@ private enum StatusMotion {
 }
 
 #if DEBUG
-/// For the UI tests: how many `TurningRing`s and `PulsingDot`s are moving right now (their
-/// `Spinning`/`Pulsing` motion is in the view tree), so a test can hold a screen to
+/// For the UI tests: how many `TurningRing`s and `ActivitySpinner`s are moving right now (their
+/// `Spinning` motion or the spinner's clock is in the view tree), so a test can hold a screen to
 /// "nothing hidden animates" (`status-motion`). Whether a shown shape really moves, the
 /// tests see on screen.
 @MainActor
@@ -443,6 +454,165 @@ struct StatusMotionProbe: View {
     }
 }
 #endif
+
+// MARK: - Buttons
+
+/// The one button (owner, 2026-11-24: "Lets make all capsules"): every labelled button and text
+/// action is a capsule at rest, weight 600, in the heights herdrup-desktop uses (`src/buttons.css`):
+/// regular 34 pt / 14, large 44 pt / 15 (a sheet's or dialog's actions), compact 28 pt / 13 (an
+/// action in a line of text or a dense bar). The variant changes the fill, never the shape.
+/// Icon-only buttons are circles (`CircleIconButtonStyle`). List rows, menu items, cards, inputs
+/// and the segments of a segmented control draw their own shapes; system dialogs and toolbar
+/// items are drawn by iOS.
+enum CapsuleVariant {
+    /// Ink fill, ground label: the place's main action (Start, Create, Approve, Submit).
+    case filled
+    /// Raised fill, hairline, ink label: the default.
+    case secondary
+    /// A see-through ink tint, no border: text-weight actions (Copy, Dismiss, Back).
+    case plain
+    /// No fill, the died ink on the label and a tinted hairline (Revoke).
+    case destructive
+
+    var ink: Color {
+        switch self {
+        case .filled: return Palette.ground
+        case .secondary, .plain: return Palette.text
+        case .destructive: return Palette.died
+        }
+    }
+
+    var fill: Color {
+        switch self {
+        case .filled: return Palette.text
+        case .secondary: return Palette.surfaceRaised
+        case .plain: return Palette.text.opacity(0.08)
+        case .destructive: return .clear
+        }
+    }
+
+    var stroke: Color? {
+        switch self {
+        case .secondary: return Palette.hairline
+        case .destructive: return Palette.died.opacity(0.45)
+        case .filled, .plain: return nil
+        }
+    }
+}
+
+enum CapsuleSize {
+    case compact, regular, large
+
+    var height: CGFloat {
+        switch self {
+        case .compact: return 28
+        case .regular: return 34
+        case .large: return 44
+        }
+    }
+
+    var fontSize: CGFloat {
+        switch self {
+        case .compact: return 13
+        case .regular: return 14
+        case .large: return 15
+        }
+    }
+
+    var paddingX: CGFloat {
+        switch self {
+        case .compact: return 12
+        case .regular: return 16
+        case .large: return 22
+        }
+    }
+}
+
+/// The capsule's look on any label: `CapsuleButtonStyle`'s body, and the label of a control whose
+/// button is something larger (the install command's Copy, inside the command's card).
+struct CapsuleLook: ViewModifier {
+    var variant: CapsuleVariant
+    var size: CapsuleSize
+    var fullWidth = false
+    /// A place with its own text size (the chat's) scales the capsule with it.
+    var textScale: CGFloat = 1
+    @Environment(\.isEnabled) private var isEnabled
+
+    func body(content: Content) -> some View {
+        let height = (size.height * Typography.scale * textScale).rounded()
+        content
+            .font(Typography.app(size.fontSize * textScale, .semibold))
+            .foregroundStyle(variant.ink)
+            .padding(.horizontal, size.paddingX)
+            .frame(maxWidth: fullWidth ? .infinity : nil, minHeight: height)
+            .background(Capsule().fill(variant.fill))
+            .overlay {
+                if let stroke = variant.stroke { Capsule().strokeBorder(stroke, lineWidth: 1) }
+            }
+            // At least 44 pt to touch: the compact and regular capsules reach past their edges,
+            // up and down only, so a neighbour in the same row never loses its taps.
+            .contentShape(.interaction, TouchTarget(outset: max(0, (44 - height) / 2)))
+            .opacity(isEnabled ? 1 : 0.5)
+    }
+}
+
+/// A capsule's touch area: its frame, `outset` taller above and below.
+private struct TouchTarget: Shape {
+    var outset: CGFloat
+    func path(in rect: CGRect) -> Path {
+        Path(rect.insetBy(dx: 0, dy: -outset))
+    }
+}
+
+struct CapsuleButtonStyle: ButtonStyle {
+    var variant: CapsuleVariant = .secondary
+    var size: CapsuleSize = .regular
+    var fullWidth = false
+    var textScale: CGFloat = 1
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .modifier(CapsuleLook(variant: variant, size: size, fullWidth: fullWidth, textScale: textScale))
+            .opacity(configuration.isPressed ? 0.75 : 1)
+    }
+}
+
+extension ButtonStyle where Self == CapsuleButtonStyle {
+    /// `.buttonStyle(.capsule(.filled, .large))`: the one button, see `CapsuleVariant`.
+    static func capsule(_ variant: CapsuleVariant = .secondary, _ size: CapsuleSize = .regular,
+                        fullWidth: Bool = false, textScale: CGFloat = 1) -> CapsuleButtonStyle {
+        CapsuleButtonStyle(variant: variant, size: size, fullWidth: fullWidth, textScale: textScale)
+    }
+}
+
+/// An icon-only button: the capsule with equal width and height, a circle (owner, 2026-11-24).
+/// Touchable over at least 44 pt.
+struct CircleIconButtonStyle: ButtonStyle {
+    var variant: CapsuleVariant = .secondary
+    var diameter: CGFloat = 28
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        let size = (diameter * Typography.scale).rounded()
+        configuration.label
+            .font(.system(size: (size * 0.43).rounded(), weight: .semibold))
+            .foregroundStyle(variant.ink)
+            .frame(width: size, height: size)
+            .background(Circle().fill(variant.fill))
+            .overlay {
+                if let stroke = variant.stroke { Circle().strokeBorder(stroke, lineWidth: 1) }
+            }
+            .contentShape(.interaction, Circle().inset(by: -max(0, (44 - size) / 2)))
+            .opacity(isEnabled ? (configuration.isPressed ? 0.75 : 1) : 0.5)
+    }
+}
+
+extension ButtonStyle where Self == CircleIconButtonStyle {
+    /// `.buttonStyle(.circle())`: an icon-only button, see `CircleIconButtonStyle`.
+    static func circle(_ variant: CapsuleVariant = .secondary, diameter: CGFloat = 28) -> CircleIconButtonStyle {
+        CircleIconButtonStyle(variant: variant, diameter: diameter)
+    }
+}
 
 extension Binding {
     /// A `Bool` binding that is true while the wrapped optional holds a value, and clears it

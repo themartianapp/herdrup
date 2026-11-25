@@ -2757,20 +2757,14 @@ struct ChatAskCard: View {
         }
     }
 
-    /// "Dismiss": Esc on omp's dialog, so the ask ends cancelled. A secondary text button,
-    /// never a destructive colour.
+    /// "Dismiss": Esc on omp's dialog, so the ask ends cancelled. A plain capsule (all capsules,
+    /// owner 2026-11-24), never a destructive colour.
     private func dismissButton(_ action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text("Dismiss").font(Typography.app(14 * textScale, .semibold))
-                .foregroundStyle(Palette.textDim)
-                .padding(.vertical, 6)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(answering)
-        .opacity(answering ? 0.5 : 1)
-        .padding(.top, 8)
-        .accessibilityIdentifier("chat.ask.dismiss")
+        Button("Dismiss", action: action)
+            .buttonStyle(.capsule(.plain, textScale: textScale))
+            .disabled(answering)
+            .padding(.top, 8)
+            .accessibilityIdentifier("chat.ask.dismiss")
     }
 
     private var terminalButton: some View {

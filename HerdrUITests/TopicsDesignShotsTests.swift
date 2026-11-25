@@ -1,11 +1,11 @@
 import UIKit
 import XCTest
 
-/// "Topics · A, revised" (owner pick 2026-11-23): the Topics screens from the `chatview` mock
-/// (herdr-app with topics and suggestions), kept as attachments to compare with the design's
-/// PNGs (topics-A-v2-4-ipad.png, topics-A-v2-5-iphone.png). Each step also checks the controls
-/// the design adds: the column toggle and ⌥⌘T fold on iPad, "‹ Inbox", "‹ Topics", and the
-/// couldn't-start note's Dismiss.
+/// "Topics · A, revised" (owner pick 2026-11-23) as the owner's picks of 2026-11-24 left it: the
+/// Topics screens from the `chatview` mock (herdr-app with topics and suggestions), kept as
+/// attachments to compare with the desktop's. Each step also checks the controls the design adds:
+/// the column toggle and ⌥⌘T fold on iPad, "‹ Inbox", "‹ Topics", About beside the heading, and
+/// the couldn't-start note's Dismiss.
 final class TopicsDesignShotsTests: XCTestCase {
 
     override func setUp() { continueAfterFailure = false }
@@ -54,7 +54,8 @@ final class TopicsDesignShotsTests: XCTestCase {
         let diokan = app.buttons["topic-row-t-diokan"].firstMatch
         XCTAssertTrue(diokan.exists(within: 8), "the topics load")
         XCTAssertTrue(app.buttons["topics-inbox-row"].exists, "the Inbox is the first row")
-        XCTAssertTrue(app.buttons["topics-new"].exists, "New topic, a word")
+        XCTAssertTrue(app.buttons["topics-new"].exists, "New topic, a capsule")
+        XCTAssertTrue(app.buttons["topics.about"].exists, "About, beside the heading")
         XCTAssertEqual(app.buttons["topics-column-toggle"].exists, isPad, "the column toggle is iPad's")
         shot(app, "topics-a2-list")
 
@@ -108,17 +109,20 @@ final class TopicsDesignShotsTests: XCTestCase {
         shot(app, "topics-a2-continued")
     }
 
-    /// A start that could not happen (`seed_too_large`): one line under the card with a red
-    /// dot and Dismiss; Dismiss clears it and the card keeps Start.
+    /// A start that could not happen (`seed_too_large`): one dim line inside the card with its
+    /// Dismiss, above Not now and Start; Dismiss clears it and the card keeps Start.
     func testCouldNotStartNoteDismisses() {
         let app = launch(["HERDR_MOCK_TOPICS_SEED_TOO_LARGE": "1"])
         let card = any(app, "chat-topic-suggestion-sg-scroll")
         XCTAssertTrue(card.exists(within: 12))
         card.buttons["chat-topic-suggestion-start"].tap()
-        let note = any(app, "chat-topic-suggestion-problem")
-        XCTAssertTrue(note.exists(within: 10), "the note says why")
-        let dismiss = app.buttons["chat-topic-suggestion-problem-dismiss"]
+        let note = card.descendants(matching: .any)["chat-topic-suggestion-problem"].firstMatch
+        XCTAssertTrue(note.exists(within: 10), "the note says why, inside the card")
+        let dismiss = card.buttons["chat-topic-suggestion-problem-dismiss"]
         XCTAssertTrue(dismiss.exists, "the note has Dismiss")
+        XCTAssertTrue(card.buttons["chat-topic-suggestion-dismiss"].exists, "the card keeps Not now")
+        XCTAssertLessThan(note.frame.maxY, card.buttons["chat-topic-suggestion-start"].frame.minY,
+                          "the note sits above the card's buttons")
         shot(app, "topics-a2-couldnt-start")
         dismiss.tap()
         XCTAssertTrue(note.gone(within: 5), "Dismiss clears the note")

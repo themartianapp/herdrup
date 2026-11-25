@@ -7,7 +7,7 @@ import XCTest
 final class StatusMotionTests: XCTestCase {
     override func setUp() { super.setUp(); continueAfterFailure = false }
 
-    /// The DEBUG `status-motion` probe: how many `TurningRing`s and `PulsingDot`s are moving
+    /// The DEBUG `status-motion` probe: how many `TurningRing`s and `ActivitySpinner`s are moving
     /// (its label; polled every 250 ms, so read it after a pause).
     private func moving(_ app: XCUIApplication) -> Int {
         let probe = app.descendants(matching: .any)["status-motion"].firstMatch
@@ -30,7 +30,7 @@ final class StatusMotionTests: XCTestCase {
     /// Whether `shape` visibly moves on screen. Its frame is read once, after a 0.25 s settle
     /// (so a tab switch's own fade is over); the first photo follows, then four more 0.25 s
     /// apart; it moves when at least two of them differ from the first. A ring that turns once
-    /// per 0.9 s, or a dot that pulses every 0.8 s, never comes back to the same pixels; a
+    /// per 0.9 s, or a spinner that steps a spoke every 0.1 s, never comes back to the same pixels; a
     /// stuck one stays put, and a single late redraw cannot pass for motion. Counting the
     /// motion in the view tree (`moving`) cannot see a motion that never starts.
     ///
@@ -44,8 +44,8 @@ final class StatusMotionTests: XCTestCase {
     /// evaluating UI query" (runs 41812896614 and 42376372751: both spindumps hold the main
     /// thread in `writev` → `spec_write` under `-[XCTElementQuery _firstMatchingSnapshot…]`).
     /// One cut still sees both motions: the ring's frame stays 24.5 pt while it turns, and the
-    /// dot's frame swells with its pulse (7.0–9.4 pt in run 42376372751) while its opacity
-    /// changes inside any of those frames. A stuck shape's pixels stay identical.
+    /// spinner's stays 11 pt while its spokes step round inside it. A stuck shape's pixels stay
+    /// identical.
     private func moves(_ shape: XCUIElement) -> Bool {
         XCTAssertTrue(shape.exists(within: 10), "the status shape should be on screen")
         usleep(250_000)   // Kept: photos over time are the measurement of motion.
@@ -93,12 +93,13 @@ final class StatusMotionTests: XCTestCase {
         shape(app, "status-ring")
     }
 
-    private func dot(_ app: XCUIApplication) -> XCUIElement {
-        shape(app, "status-dot")
+    /// The working pane header's activity spinner (owner picks 2026-11-24, item 6).
+    private func spinner(_ app: XCUIApplication) -> XCUIElement {
+        shape(app, "status-spinner")
     }
 
     /// iPhone: whether the row just tapped brought its pane to the front. Existence cannot
-    /// tell: a kept-alive pane's terminal surface and dot stay in the accessibility tree behind
+    /// tell: a kept-alive pane's terminal surface and spinner stay in the accessibility tree behind
     /// the roster. The tab bar can: it is in the tree exactly while no pane is fronted (every
     /// full tree of run 42376372751). In run 40472854194 the re-tapped row left the roster on
     /// screen, `terminalSurface` was found anyway, `moving` counted the roster's ring as the
@@ -124,32 +125,32 @@ final class StatusMotionTests: XCTestCase {
         app.terminate()
     }
 
-    /// The working pane's header dot, left for Gram and fronted again (iPhone: back to the
+    /// The working pane's header spinner, left for Gram and fronted again (iPhone: back to the
     /// roster and the row again; iPad: the pane stays beside the roster).
-    func testPaneDotPulsesAfterGram() {
+    func testPaneSpinnerTurnsAfterGram() {
         let pad = UIDevice.current.userInterfaceIdiom == .pad
         let app = launchList()
         let row = app.staticTexts["herdr-app"].firstMatch
         row.tap()
         XCTAssertTrue(app.terminalSurface.exists(within: 10),
                       "the pane should open")
-        XCTAssertTrue(moves(dot(app)), "the working pane's dot pulses")
+        XCTAssertTrue(moves(spinner(app)), "the working pane's spinner turns")
 
         if !pad { app.buttons["Back"].firstMatch.tap() }
         app.buttons["Gram"].firstMatch.tap()
-        sleep(1)   // Kept: a real stay on Gram, so the pane's dot stops before it restarts.
+        sleep(1)   // Kept: a real stay on Gram, so the pane's spinner stops before it restarts.
         app.buttons["Agents"].firstMatch.tap()
         if !pad {
             row.tap()
             XCTAssertTrue(paneInFront(app), "the kept-alive pane should come back to the front")
         }
-        XCTAssertTrue(moves(dot(app)), "back from Gram, the working pane's dot pulses again")
+        XCTAssertTrue(moves(spinner(app)), "back from Gram, the working pane's spinner turns again")
         app.terminate()
     }
 
     /// The list mock has one working agent, herdr-app: its roster ring turns, its open pane's
-    /// dot pulses. Covered by the pane (iPhone) the ring stops; behind Gram and Settings the
-    /// kept-alive pane's dot stops too. Back on Agents, and back from the Home screen, the
+    /// spinner turns. Covered by the pane (iPhone) the ring stops; behind Gram and Settings the
+    /// kept-alive pane's spinner stops too. Back on Agents, and back from the Home screen, the
     /// same shapes move again.
     func testHiddenStatusShapesHoldStill() {
         let pad = UIDevice.current.userInterfaceIdiom == .pad
@@ -172,8 +173,8 @@ final class StatusMotionTests: XCTestCase {
         XCTAssertTrue(app.terminalSurface.exists(within: 10),
                       "the pane should open")
         sleep(1)
-        // iPad / Mac keep the roster beside the pane: its ring and the pane's dot. iPhone covers
-        // the roster: the dot alone.
+        // iPad / Mac keep the roster beside the pane: its ring and the pane's spinner. iPhone
+        // covers the roster: the spinner alone.
         XCTAssertEqual(moving(app), pad ? 2 : 1, "only what is on screen moves with the pane open")
 
         if !pad { app.buttons["Back"].firstMatch.tap() }
@@ -194,8 +195,8 @@ final class StatusMotionTests: XCTestCase {
             row.tap()
             XCTAssertTrue(paneInFront(app), "the kept-alive pane should come back to the front")
             sleep(1)
-            XCTAssertEqual(moving(app), 1, "the kept-alive pane's dot pulses again in front")
-            XCTAssertTrue(moves(dot(app)), "the kept-alive pane's dot pulses on screen")
+            XCTAssertEqual(moving(app), 1, "the kept-alive pane's spinner turns again in front")
+            XCTAssertTrue(moves(spinner(app)), "the kept-alive pane's spinner turns on screen")
         }
 
         // Everything holds still while the scene is not active, and resumes together.
@@ -204,7 +205,7 @@ final class StatusMotionTests: XCTestCase {
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 5))
         sleep(1)
         XCTAssertEqual(moving(app), pad ? 2 : 1, "back from the Home screen, the same shapes move again")
-        XCTAssertTrue(moves(pad ? ring(app) : dot(app)), "back from the Home screen, they move on screen")
+        XCTAssertTrue(moves(pad ? ring(app) : spinner(app)), "back from the Home screen, they move on screen")
         app.terminate()
     }
 }

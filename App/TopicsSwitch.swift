@@ -90,41 +90,44 @@ enum TopicsSwitchStatus: Equatable {
     }
 }
 
-/// The switch's progress and result at the foot of the agents list: one plain line of muted
-/// text over a hairline ("Topics · A, revised"), at most one status dot, and "Cancel" while
+/// The switch's progress and result, 12 pt above the tab bar (the sidebar's section bar on iPad):
+/// a centred neutral capsule (surface + hairline, owner picks 2026-11-24 item 16) with at most one
+/// mark (the activity spinner while working, a red dot on failure) and a "Cancel" capsule while
 /// herdr holds a switch for when the agent finishes. A result clears itself after a few seconds.
+/// The home places it as a bottom safe-area inset, so the roster, Gram and Settings end above it.
 struct TopicsSwitchBanner: View {
     @Binding var status: TopicsSwitchStatus?
     /// Drops a switch herdr holds for when the agent finishes; nil where it cannot be cancelled.
     var onCancel: ((TopicsSwitchRequest) -> Void)? = nil
 
+    /// The gap between the capsule and the tab bar below it.
+    static let bottomGap: CGFloat = 12
+
     var body: some View {
         if let status {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
+            HStack(spacing: 8) {
                 if status.isWorking {
-                    ProgressView().controlSize(.mini).tint(Palette.textDim)
+                    ActivitySpinner(diameter: 12)
                 } else if case .failed = status {
                     Circle().fill(Palette.died).frame(width: 6, height: 6)
                 }
-                Text(status.text).font(Typography.app(13)).foregroundStyle(Palette.textDim)
+                Text(status.text).font(Typography.app(13)).foregroundStyle(Palette.text)
                     .lineSpacing(3)
                     .lineLimit(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("topics-switch-status")
                 if case .scheduled(let request) = status, let onCancel {
-                    Button { onCancel(request) } label: {
-                        Text("Cancel").font(Typography.app(13, .medium)).foregroundStyle(Palette.text)
-                            .frame(minHeight: 44)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("topics-switch-cancel")
+                    Button("Cancel") { onCancel(request) }
+                        .buttonStyle(.capsule(.secondary, .compact))
+                        .accessibilityIdentifier("topics-switch-cancel")
                 }
             }
-            .padding(.horizontal, 20).padding(.vertical, 10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Palette.ground)
-            .overlay(alignment: .top) { Rectangle().fill(Palette.hairlineQuiet).frame(height: 1) }
+            .padding(.horizontal, 14).padding(.vertical, 9)
+            .background(Capsule().fill(Palette.surface))
+            .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+            .padding(.horizontal, 16)
+            .padding(.bottom, Self.bottomGap)
+            .frame(maxWidth: .infinity)
             .accessibilityElement(children: .contain)
             .task(id: status) {
                 guard !status.isWorking else { return }
