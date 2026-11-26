@@ -35,6 +35,7 @@ import SwiftUI
 ///   device asks, and a mock approver ("Jerry's iPhone") claims, approves and retries build-box
 ///   (`HERDR_MOCK_PAIR_OUTCOME=denied` denies); `fixture-pair-expected-code` reads its code.
 ///   `HERDR_MOCK_PAIR_UNREACHABLE`: hosts the reachability probe says no to (comma-separated).
+///   `HERDR_MOCK_PAIR_CANCEL=1` (approver): the new device cancels while the code is typed.
 /// - `HERDR_MOCK_ACCOUNT_SHARES`: `enyo` or `several`, the account holds guest shares accepted
 ///   on another device (and no machines); SHARED WITH YOU lists them, and a row opens them
 ///   with `GuestMockTransport.firstOpen` into the machine's guest home.
@@ -185,6 +186,8 @@ final class MockAccountServer: @unchecked Sendable {
         let me = try? GuestDevice.identity()
         let requesterPub = Self.pairRequesterKey.publicKey.rawRepresentation
         let live = ["claimed", "revealed"].contains(pairState)
+        // After a cancel every step on the request answers 410 cancelled (GET shows the state).
+        if pairState == "cancelled", method != "GET", path.hasPrefix(base + "/") { return refusal(410, "cancelled") }
         switch (method, path) {
         case ("GET", "/v1/approvals") where query.contains(where: { $0.name == "kind" && $0.value == "any" }):
             // `HERDR_MOCK_PAIR_UNLISTED=1`: the list never shows it, so only its push opens it.
@@ -212,7 +215,14 @@ final class MockAccountServer: @unchecked Sendable {
             var answer: [String: Any] = ["expires_in": 540, "kind": "pair"]
             if role == "approver" {
                 // The mock new device reveals as soon as it sees the claim.
-                if pairState == "claimed" { pairState = "revealed" }
+                if pairState == "claimed" {
+                    pairState = "revealed"
+                } else if pairState == "revealed", env["HERDR_MOCK_PAIR_CANCEL"] == "1" {
+                    // `HERDR_MOCK_PAIR_CANCEL=1`: the mock new device cancels three reads after
+                    // it revealed, while the code is being typed.
+                    pairReads += 1
+                    if pairReads >= 3 { pairState = "cancelled" }
+                }
                 let commit = (try? PairV1.commit(requesterPub: requesterPub, sshPub: Self.pairRequesterSSH,
                                                  nonceB: Self.pairRequesterNonce)) ?? Data()
                 answer["commit"] = Base64URL.encode(commit)
@@ -697,8 +707,11 @@ enum PairMachinesMock {
                     throw WebAccessApproval.Failure.timedOut
                 }
                 let params = request["params"] as? [String: Any] ?? [:]
-                let label = params["label"] as? String ?? ""
-                return #"{"id":"\#(id)","result":{"added":true,"fingerprint":"SHA256:mock","label":"\#(label)"}}"#
+                // herdr keeps only [A-Za-z0-9 -_.'] of the label, at most 48, and answers that.
+                let stored = String((params["label"] as? String ?? "").filter {
+                    $0.isASCII && ($0.isLetter || $0.isNumber || " -_.'".contains($0))
+                }.prefix(48))
+                return #"{"id":"\#(id)","result":{"type":"pair_key_added","added":true,"already":false,"fingerprint":"SHA256:mock","label":"\#(stored)"}}"#
             default:
                 return #"{"id":"\#(id)","error":{"code":"unknown_method","message":"not in the pair mock"}}"#
             }

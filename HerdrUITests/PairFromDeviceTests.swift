@@ -76,6 +76,21 @@ final class PairFromDeviceTests: XCTestCase {
         XCTAssertTrue(sheet.gone(within: 5))
     }
 
+    /// The new device cancels while this one is on the code (`HERDR_MOCK_PAIR_CANCEL`): the
+    /// sheet's watch reads the request and says it was cancelled, with nothing left to approve.
+    func testACancelWhileTypingTheCodeEndsTheSheet() throws {
+        let app = launch(["HERDR_MOCK_ACCOUNT_PAIR": "approver", "HERDR_MOCK_PAIR_CANCEL": "1"])
+        let sheet = app.descendants(matching: .any)["pair-approve-sheet"]
+        XCTAssertTrue(sheet.exists(within: 20), "the sheet opens by itself while a device asks")
+        XCTAssertTrue(app.textFields["pair-approve-code"].waitForHittable(timeout: 10), "the code field opens")
+        let ended = app.descendants(matching: .any)["pair-approve-ended"]
+        XCTAssertTrue(ended.exists(within: 15), "the cancel reaches the open sheet")
+        XCTAssertEqual(ended.label, "This request was cancelled.")
+        XCTAssertFalse(app.textFields["pair-approve-code"].exists, "no code is taken any more")
+        XCTAssertFalse(app.buttons["pair-approve-continue"].exists)
+        attach(app, "pair-approve-cancelled")
+    }
+
     /// The service doesn't list the request (`HERDR_MOCK_PAIR_UNLISTED`): only its push opens
     /// the sheet. Deny ends it, and Settings › HerdrUp account shows REQUESTS.
     func testAPairPushOpensTheRequestAndDenyEndsIt() throws {

@@ -217,6 +217,7 @@ final class PairApprovalModel: ObservableObject {
     @Published private(set) var storedLabel: String?
     private var waiting: Task<Void, Never>?
     private var checks: Task<Void, Never>?
+    private var watch: Task<Void, Never>?
 
     init(request: PairRequest, entries: [PairApprovalEntry]) {
         self.request = request
@@ -265,6 +266,7 @@ final class PairApprovalModel: ObservableObject {
                 do {
                     try await approval.awaitReveal()
                     self?.phase = .enterCode
+                    self?.watchOpen(approval)
                 } catch is CancellationError {
                 } catch {
                     self?.phase = .ended(Self.endedLine(error))
@@ -313,10 +315,40 @@ final class PairApprovalModel: ObservableObject {
         }
     }
 
+    /// While the code is typed and the machines ticked, the request is read on the foreground
+    /// poll's cadence: a cancel or an expiry ends the sheet as soon as the service says so.
+    private func watchOpen(_ approval: PairApproval) {
+        watch?.cancel()
+        watch = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.watchInterval)
+                guard let self, !Task.isCancelled, !self.finished else { return }
+                guard self.phase == .enterCode || self.phase == .matched else { continue }
+                do {
+                    try await approval.stillOpen()
+                } catch let error where error is BrowserApproval.Failure {
+                    guard self.phase == .enterCode || self.phase == .matched else { continue }
+                    self.phase = .ended(Self.endedLine(error))
+                    return
+                } catch {
+                    // A failed read: the next one tells.
+                }
+            }
+        }
+    }
+
+    private static var watchInterval: UInt64 {
+        #if DEBUG
+        if ScreenshotMock.mode != nil { return 1_000_000_000 }
+        #endif
+        return PairApprovals.pollInterval
+    }
+
     /// The sheet closed: stop waiting and close the connections.
     func stop() {
         waiting?.cancel()
         checks?.cancel()
+        watch?.cancel()
         let open = Array(links.values)
         links = [:]
         Task { for link in open { await link.close() } }
