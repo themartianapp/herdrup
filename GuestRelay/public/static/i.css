@@ -8,6 +8,9 @@
   --ground:#13162A;--surface:#1D2038;--raised:#262A45;--hair:#2E3358;--hairq:#232742;
   --ink:#EEF0F7;--dim:#99A0BC;--faint:#666D91;--brand:#7A6FF0;--amber:#E9A63C;
   --app:"Geist",-apple-system,system-ui,sans-serif;--mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+  /* The agent identity gradients (DesignTokens.AgentGradient; herdrup-desktop style.css). */
+  --agent-gradient-default:linear-gradient(135deg,#8b79f6,#5b44c9);--agent-gradient-claude:linear-gradient(135deg,#ce58a4,#a32e77);
+  --agent-gradient-codex:linear-gradient(135deg,#e8923c,#c5622a);--agent-gradient-gemini:linear-gradient(135deg,#4c6ef5,#2e44c4);
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{min-height:100%;background:var(--ground);color:var(--ink);font-family:var(--app);-webkit-font-smoothing:antialiased}
@@ -18,8 +21,14 @@ main{max-width:440px;min-height:100vh;min-height:100dvh;margin:0 auto;display:fl
 .you{color:var(--ink)}
 
 .hero{margin:30px 24px 0;text-align:center}
+/* Before an invite renders (or without one), the default tile, as the desktop's tile for no agent. */
 .ava{width:72px;height:72px;border-radius:18px;margin:0 auto 16px;display:grid;place-items:center;
-  font:700 34px var(--app);color:#fff;background:linear-gradient(160deg,#9486ff,#6a5ce6)}
+  font:700 34px var(--app);color:#fff;background:var(--agent-gradient-default)}
+/* An invite's agent: its own gradient (invite.js tintIndex), as in the agent lists. */
+.ava.tint-0{background:var(--agent-gradient-default)}
+.ava.tint-1{background:var(--agent-gradient-claude)}
+.ava.tint-2{background:var(--agent-gradient-codex)}
+.ava.tint-3{background:var(--agent-gradient-gemini)}
 .hero h1{font:700 24px var(--app);letter-spacing:-.01em;overflow-wrap:anywhere}
 .hero p{font:400 15px var(--app);color:var(--dim);margin-top:8px;line-height:1.5}
 

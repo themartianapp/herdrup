@@ -93,6 +93,21 @@ export function accountLink(payload, provider) {
 }
 
 /**
+ * Which of the four agent gradients an agent's avatar tile uses (0 default, 1 claude, 2 codex,
+ * 3 gemini), from its name: FNV-1a 64 over the UTF-8 bytes, the high bits folded down, mod 4.
+ * The same function as HerdrKit AgentPresentation.colorIndex and herdrup-desktop
+ * internal/herdr/board.go TintIndex (src/web/board.ts tintIndex), so the invite shows the
+ * colour the agent lists show.
+ * @param {string} name
+ * @returns {number}
+ */
+export function tintIndex(name) {
+  var h = 0xcbf29ce484222325n;
+  for (var b of new TextEncoder().encode(name)) h = BigInt.asUintN(64, (h ^ BigInt(b)) * 0x100000001b3n);
+  return Number((h ^ (h >> 32n)) % 4n);
+}
+
+/**
  * Which HerdrUp this browser's device installs: "ios" on an iPhone or iPad (iPadOS Safari
  * reports a Mac, told apart by its touch screen), "desktop" on a Windows, Mac or Linux
  * computer (HerdrUp Desktop), "" anywhere else, such as Android, which has no HerdrUp.

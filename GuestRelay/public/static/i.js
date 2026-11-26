@@ -5,7 +5,7 @@
 // Every field is written with textContent, and only a b64url payload is ever placed in the
 // app link and the browser links (/web/#<payload>, and /web/#<payload>&bind=1&provider=… for an
 // account invite), which all carry it in the fragment, so no request ever sends it to a server.
-import { accountInvite, accountLink, browserLink, installTarget, invitePayload, openShortInvite, shortInvite } from "./invite.js";
+import { accountInvite, accountLink, browserLink, installTarget, invitePayload, openShortInvite, shortInvite, tintIndex } from "./invite.js";
 
 (async function () {
   var APP_LINK = "herdrup://guest-invite#";
@@ -119,6 +119,8 @@ import { accountInvite, accountLink, browserLink, installTarget, invitePayload, 
 
   document.title = invite.owner_name + " shared " + invite.agent_name + " with you · HerdrUp";
   $("avatar").textContent = Array.from(invite.agent_name)[0].toUpperCase();
+  // The agent's own gradient, as its avatar tile in the agent lists.
+  $("avatar").classList.add("tint-" + tintIndex(invite.agent_name));
   $("title").textContent = invite.owner_name + " shared " + invite.agent_name + " with you";
   $("lead").textContent = "You'll be able to watch it work and send it messages and files from this " + device + ".";
   $("machine").textContent = invite.machine_label;
