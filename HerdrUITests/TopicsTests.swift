@@ -708,6 +708,37 @@ final class TopicsTests: XCTestCase {
         XCTAssertEqual(gramPosts(in: app), 0, "nothing was sent")
     }
 
+    /// A send still running when the reader opens the Terminal and comes back: the remounted
+    /// chat shows it running, Send held, until it settles; one Gram and one message, not two.
+    func testASendInFlightIsNotSentAgainAfterTheTerminal() {
+        let app = launch("chatview", ["HERDR_MOCK_PICKED_FILE": "1", "HERDR_MOCK_TOPICS_SEND_DELAY": "12"])
+        let chip = openTopicWithAFile("t-board", "Q4 board pack", in: app)
+        let field = app.textViews["topic-composer-input"]
+        field.tap()
+        field.typeText("Only once")
+        app.buttons["topic-send-button"].tap()
+        XCTAssertTrue(poll(10, every: 0.25) { gramPosts(in: app) == 1 }, "the file posts, the message waits")
+        if isPad {
+            app.buttons["chat-switch-terminal"].tap()
+        } else {
+            app.buttons["topic-terminal"].tap()
+        }
+        let terminalSegment = app.buttons["chat-switch-terminal"]
+        XCTAssertTrue(poll(8, every: 0.3) { terminalSegment.exists && terminalSegment.isSelected }, "on the terminal")
+        app.buttons["chat-switch-topics"].tap()
+        XCTAssertTrue(topicChatOpen("Q4 board pack", in: app), "Topics brings the topic back")
+        let send = app.buttons["topic-send-button"]
+        XCTAssertTrue(send.exists(within: 5), "the file is still in the draft while its send runs")
+        XCTAssertEqual(probe("topic-send-calls", in: app).label, "none", "the message is still on its way")
+        XCTAssertFalse(send.isEnabled, "Send waits for the running send")
+        send.tap()
+        XCTAssertTrue(poll(25, every: 0.3) { !chip.exists }, "the send settles and the chip clears")
+        let sends = probe("topic-send-calls", in: app)
+        XCTAssertTrue(poll(5, every: 0.3) { sends.label.contains("Only once") }, "the message reached the topic")
+        XCTAssertFalse(sends.label.contains("\n---\n"), "once: \(sends.label)")
+        XCTAssertEqual(gramPosts(in: app), 1, "one Gram")
+    }
+
     /// Opens a topic and stages the attach sheet's file (`HERDR_MOCK_PICKED_FILE`); its chip.
     private func openTopicWithAFile(_ id: String, _ title: String, in app: XCUIApplication) -> XCUIElement {
         openHerdrApp(app)

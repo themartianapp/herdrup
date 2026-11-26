@@ -393,18 +393,22 @@ final class SettingsTests: XCTestCase {
             }
 
             func choose(_ option: String) {
-                // Tap the item once it is hittable; reopen if the first tap hit the dismissing
-                // backdrop (see testSettingsDefaultDecidesWhereOmpOpens) or the menu closed
-                // before the tap landed.
-                for _ in 0..<3 where picker.value as? String != option {
+                // Tap the item once the menu has settled: it exists, is hittable and its frame
+                // held still between two reads (the menu animates in). Reopen once if the first
+                // tap hit the dismissing backdrop (see testSettingsDefaultDecidesWhereOmpOpens).
+                for _ in 0..<2 where picker.value as? String != option {
                     picker.tap()
                     let choice = item(option)
-                    XCTAssertTrue(poll(5, every: 0.2) { choice.exists && !choice.frame.isEmpty && choice.isHittable },
-                                  "the menu should offer \(option)")
+                    var lastFrame = CGRect.null
+                    XCTAssertTrue(poll(5, every: 0.2) {
+                        guard choice.exists, choice.isHittable, !choice.frame.isEmpty else { return false }
+                        defer { lastFrame = choice.frame }
+                        return choice.frame == lastFrame
+                    }, "the menu should offer \(option)")
                     for other in ["Off", "Only my requests", "Always"] {
                         XCTAssertTrue(item(other).exists, "the menu should offer \(other)")
                     }
-                    if choice.isHittable { choice.tap() }
+                    choice.tap()
                     _ = poll(3, every: 0.3) { picker.value as? String == option }
                 }
                 XCTAssertEqual(picker.value as? String, option)

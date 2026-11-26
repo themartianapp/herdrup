@@ -363,41 +363,47 @@ final class TopicsModel: ObservableObject {
     }
 
     /// Draws a message to one topic in its chat at once, as a Chat send does (the caller
-    /// animates it), with the files going with it; `prepare`, then `deliver`, send it. Nil
-    /// when the message it goes out as (`wireText`: the text and the files' download
-    /// references) is too long to send.
-    func stage(topicID: String, text: String, wireText: String, author: TranscriptAuthor,
-               files: [ComposerAttachment] = []) -> String? {
+    /// animates it), with the files going with it; `send` then sends it. Nil when its text
+    /// alone is too long to send.
+    func stage(topicID: String, text: String, author: TranscriptAuthor, files: [ComposerAttachment] = []) -> String? {
         sendNotes[topicID] = nil
-        guard wireText.utf8.count <= Self.maxMessageBytes else {
+        guard text.utf8.count <= Self.maxMessageBytes else {
             sendNotes[topicID] = Self.tooLong
             return nil
         }
         return chatModel(for: topicID).stageOutgoing(text: text, author: author, files: files)
     }
 
-    /// Before anything of a staged message leaves (its files' Grams included): the topic's
-    /// chat has its first snapshot, so the send can be matched in it. False marks the bubble
-    /// not delivered, as the Inbox's composer does before it posts.
-    func prepare(client: HerdrClient, topicID: String, outgoingID id: String) async -> Bool {
-        await chatModel(for: topicID).prepareOutgoing(id, client: client)
-    }
-
-    /// Sends a prepared message to its topic (`agent.topics.send`); the bubble settles as the
-    /// topic's transcript shows it. False only when it surely did not reach the topic, so
-    /// the caller may keep the draft for a retry.
+    /// Sends a staged message to its topic, in the one order that holds: the chat's preflight
+    /// (it can show the send) before anything leaves, as the Inbox's composer checks before it
+    /// posts (herdrup#853); then `attach`, which posts the files' Grams and gives the message
+    /// as it goes out (nil when a file did not post); then the size gate on that message and
+    /// `agent.topics.send`. The bubble settles as the topic's transcript shows it. False only
+    /// when it surely did not reach the topic, so the caller may keep the draft for a retry.
     @discardableResult
-    func deliver(client: HerdrClient, topicID: String, outgoingID id: String, text: String) async -> Bool {
+    func send(client: HerdrClient, topicID: String, outgoingID id: String, text: String,
+              attach: (@MainActor () async -> String?)? = nil) async -> Bool {
         let chat = chatModel(for: topicID)
-        guard text.utf8.count <= Self.maxMessageBytes else {
+        guard await chat.prepareOutgoing(id, client: client) else { return false }
+        var message = text
+        if let attach {
+            guard let composed = await attach() else {
+                chat.updateOutgoing(id, state: .notDelivered("Attachment upload did not complete."))
+                return false
+            }
+            message = composed
+        }
+        // The message as it goes out, the files' download references included (herdrup#852):
+        // herdr refuses one over the limit before the topic sees it.
+        guard message.utf8.count <= Self.maxMessageBytes else {
             chat.updateOutgoing(id, state: .notDelivered(Self.tooLong))
             sendNotes[topicID] = Self.tooLong
             return false
         }
-        chat.updateOutgoing(id, state: .sending, wireText: text)
+        chat.updateOutgoing(id, state: .sending, wireText: message)
         var reached = true
         do {
-            let mode = try await client.agentTopicsSend(target: target, topicID: topicID, message: text)
+            let mode = try await client.agentTopicsSend(target: target, topicID: topicID, message: message)
             chat.updateOutgoing(id, state: .submitted)
             if mode == .queued { sendNotes[topicID] = "Queued: the topic reads it when its current turn ends." }
         } catch let error as AgentTopicsError {
@@ -1423,6 +1429,13 @@ final class TopicDraft: ObservableObject {
     @Published var reply = ""
     @Published var attachments: [ComposerAttachment] = []
     let uploader = ComposerUploader()
+    /// A send of this draft is running: Send and chip removal wait for it to settle, also in
+    /// a chat mounted after the one that started it (the Inbox keeps its `sending` beside its
+    /// draft the same way).
+    @Published var sending = false
+    /// The file being posted, and the one whose post failed, for the chips.
+    @Published var sendingAttachmentID: UUID?
+    @Published var failedAttachmentID: UUID?
 }
 
 // MARK: - A topic's chat
@@ -1456,7 +1469,11 @@ private struct TopicChat: View {
     }
     @State private var focused = false
     @State private var dictating = false
-    @State private var sending = false
+    /// A send of this draft is running (`TopicDraft.sending`).
+    private var sending: Bool {
+        get { draft.sending }
+        nonmutating set { draft.sending = newValue }
+    }
     @State private var sendPresses = 0
     @State private var actionNote: String?
     /// The draft's files: the paperclip's picks, pastes and drops, each uploading to the
@@ -1468,8 +1485,14 @@ private struct TopicChat: View {
     @State private var loadingAttachment = false
     @State private var showAttachSheet = false
     private var uploader: ComposerUploader { draft.uploader }
-    @State private var sendingAttachmentID: UUID?
-    @State private var failedAttachmentID: UUID?
+    private var sendingAttachmentID: UUID? {
+        get { draft.sendingAttachmentID }
+        nonmutating set { draft.sendingAttachmentID = newValue }
+    }
+    private var failedAttachmentID: UUID? {
+        get { draft.failedAttachmentID }
+        nonmutating set { draft.failedAttachmentID = newValue }
+    }
     #if DEBUG
     /// The `callsProbe` labels.
     @State private var sendCallsProbe = ""
@@ -1902,61 +1925,43 @@ private struct TopicChat: View {
         }
     }
 
-    /// Stands in for a Gram id not posted yet when Send sizes the message: longer than herdr's
-    /// ids, so a message that fits with it fits once the Grams are posted.
-    private static let unpostedGramID = String(repeating: "0", count: 64)
-
     private func send() {
         guard canCompose, !sending, !dictating, !loadingAttachment, hasContent else { return }
         let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
         let batch = attachments
-        // Sized as it goes out, with the files' download references (herdrup#852): a message
-        // over the limit stops here, before any Gram is posted.
-        let wireText = batch.isEmpty ? text : GramAttachmentPrompt.text(text, delivered: batch.map {
-            GramAttachmentPrompt.Delivered(name: $0.name, isImage: $0.isImage,
-                                           messageID: $0.messageID ?? Self.unpostedGramID)
-        })
         // The bubble enters (and the chat follows it) on the send motion; staged now.
         guard let id = withAnimation(ChatSendMotion.bubble(reduceMotion: reduceMotion), {
-            model.stage(topicID: topic.id, text: text, wireText: wireText, author: author, files: batch)
+            model.stage(topicID: topic.id, text: text, author: author, files: batch)
         }) else { return }
         sending = true
         actionNote = nil
         if ChatSendMotion.acceptSend(reduceMotion: reduceMotion) { sendPresses += 1 }
         let clearedReply = reply
         ChatSendMotion.clearComposer(inChat: true) { reply = "" }
+        // The send runs on in the draft's state: leaving the topic (the Terminal, the
+        // background) does not end it, and a chat mounted meanwhile shows it running, Send and
+        // chip removal held, until it settles.
         Task {
             defer { sending = false; sendingAttachmentID = nil }
             failedAttachmentID = nil
-            // Not delivered: the chips (their Grams remembered) and the text stay for a retry.
-            func keepDraft() { if !batch.isEmpty, reply.isEmpty { reply = clearedReply } }
-            // The chat must be able to show the send before anything leaves, as in the Inbox:
-            // a Gram posted for a message that is then not sent stays behind (herdrup#853).
-            guard await model.prepare(client: client, topicID: topic.id, outgoingID: id) else {
-                keepDraft()
-                return
-            }
             // The Inbox's way: each file posts as a Gram to the agent, then one message names
             // them all with how to fetch them (`GramAttachmentPrompt`). The topic runs in the
             // agent's own omp, so `herdr gram get-file` finds them there too.
-            var message = text
-            if !batch.isEmpty {
-                guard let delivered = await postAttachments(batch) else {
-                    chat.updateOutgoing(id, state: .notDelivered("Attachment upload did not complete."))
-                    keepDraft()
-                    return
-                }
-                message = GramAttachmentPrompt.text(text, delivered: delivered)
+            let attach: (@MainActor () async -> String?)? = batch.isEmpty ? nil : {
+                guard let delivered = await postAttachments(batch) else { return nil }
+                return GramAttachmentPrompt.text(text, delivered: delivered)
             }
-            let reached = await model.deliver(client: client, topicID: topic.id, outgoingID: id, text: message)
+            let reached = await model.send(client: client, topicID: topic.id, outgoingID: id, text: text,
+                                           attach: attach)
             guard !batch.isEmpty else { return }
             if reached {
                 // Each file's staged bytes went when its Gram posted: nothing left to discard.
                 let sentIDs = Set(batch.map(\.id))
                 attachments.removeAll { sentIDs.contains($0.id) }
                 uploader.forget(sentIDs)
-            } else {
-                keepDraft()
+            } else if reply.isEmpty {
+                // Not delivered: the chips (their Grams remembered) and the text stay for a retry.
+                reply = clearedReply
             }
         }
     }
