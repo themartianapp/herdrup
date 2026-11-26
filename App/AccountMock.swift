@@ -29,6 +29,9 @@ import SwiftUI
 ///   macOS") waits for approval; it reveals as soon as this device claims. The sheet's
 ///   `fixture-browser-code` element reads the code the browser shows. The machines are
 ///   `OwnerAccessMock`'s.
+/// - `HERDR_MOCK_ACCOUNT_SHARES`: `enyo` or `several`, the account holds guest shares accepted
+///   on another device (and no machines); SHARED WITH YOU lists them, and a row opens them
+///   with `GuestMockTransport.firstOpen` into the machine's guest home.
 /// - Saved machines on this device: the `-dev.herdr.savedHosts.v1` launch argument
 ///   (SavedHostMissingSecretTests' pattern); mock runs never write the saved list.
 ///
@@ -134,6 +137,26 @@ final class MockAccountServer: @unchecked Sendable {
     }
 
     init() {
+        // `HERDR_MOCK_ACCOUNT_SHARES`: the account holds shares accepted on another device
+        // and no machines, so the list is a guest's (`enyo`: jerry's enyo on hetzner;
+        // `several`: also his orgstudio there, and maya's landing on atlas-mini).
+        if let shares = env["HERDR_MOCK_ACCOUNT_SHARES"] {
+            func share(_ hostID: String, _ nodePub: String, _ guestID: String, _ agent: String, _ owner: String, _ machine: String) {
+                rev += 1
+                items.append(SyncItem(key: .share(hostID: hostID, guestID: guestID), rev: rev, updatedMs: 1_795_000_000_000,
+                                      body: .share(SyncShare(relay: "https://guest.herdrup.app", hostID: hostID, nodePub: nodePub,
+                                                             guestID: guestID, agentName: agent, ownerName: owner,
+                                                             machineLabel: machine))))
+            }
+            let hetzner = ("aGV0em5lci1ob3N0LWlkMQ", "ISEhISEhISEhISEhISEhISEhISEhISEhISEhISEhISE")
+            share(hetzner.0, hetzner.1, "Z3Vlc3QtbmlrZS1lbnlvMQ", "enyo", "jerry", "hetzner")
+            if shares == "several" {
+                share(hetzner.0, hetzner.1, "Z3Vlc3QtbmlrZS1vcmdzMQ", "orgstudio", "jerry", "hetzner")
+                share("YXRsYXMtbWluaS1ob3N0MQ", "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI",
+                      "Z3Vlc3QtbmlrZS1sYW5kMQ", "landing", "maya", "atlas-mini")
+            }
+            return
+        }
         func host(_ id: String, _ body: SyncHost) {
             rev += 1
             items.append(SyncItem(key: SyncKey(.hosts, id), rev: rev, updatedMs: 1_795_000_000_000, body: .host(body)))
@@ -330,20 +353,34 @@ final class MockAccountURLProtocol: URLProtocol {
 }
 
 /// The `account` mock's root: the machine list behind the first-launch gate (1B), exactly as
-/// the app shows it, with a Settings button standing in for the connected home's tab.
+/// the app shows it, with a Settings button standing in for the connected home's tab. A
+/// shared machine opened from the list shows its guest home over `GuestMockTransport`.
 struct AccountMockRoot: View {
     @ObservedObject private var account = HerdrUpAccount.shared
     @State private var showSettings = false
+    @State private var openShare: GuestAccess?
+    private let sharesMock = ProcessInfo.processInfo.environment["HERDR_MOCK_ACCOUNT_SHARES"] != nil
 
     var body: some View {
+        if let openShare {
+            SharedMachineHomeView(access: openShare, connect: GuestMockTransport.connection(for:),
+                                  onBack: { self.openShare = nil }, onLeave: { self.openShare = nil })
+        } else {
+            gate
+        }
+    }
+
+    private var gate: some View {
         AccountOnboardingGate {
-            ConnectView { _ in }
+            ConnectView(onConnect: { _ in }, onOpenShared: { openShare = $0 })
                 // Bottom trailing: the logo row's trailing edge is the account avatar's.
                 .overlay(alignment: .bottomTrailing) {
-                    Button("Settings") { showSettings = true }
-                        .accessibilityIdentifier("fixture-open-settings")
-                        .buttonStyle(.bordered)
-                        .padding(.bottom, 8).padding(.trailing, 20)
+                    if !sharesMock {
+                        Button("Settings") { showSettings = true }
+                            .accessibilityIdentifier("fixture-open-settings")
+                            .buttonStyle(.bordered)
+                            .padding(.bottom, 8).padding(.trailing, 20)
+                    }
                 }
                 .overlay(alignment: .bottomLeading) {
                     // What the hint store holds, for the tests (re-read whenever the account

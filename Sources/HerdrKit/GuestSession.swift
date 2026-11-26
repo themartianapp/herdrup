@@ -126,18 +126,57 @@ public struct GuestFeatures: Equatable, Hashable, Sendable {
 }
 
 public enum GuestSession {
-    private struct AcceptHello: Encodable {
+    /// The guest's first message inside the Noise channel (herdr src/guest/mod.rs). An accept
+    /// redeems `invite_id` and `secret`; a returning hello names `guest_id`. `account` is the
+    /// account's statement for the host (an account-bound share); `device` names this device
+    /// in the owner's list (an accept, or an account share's first open here). Absent fields
+    /// are left out.
+    struct Hello: Encodable {
         let v = 1
-        let inviteID: String
-        let secret: String
-        let device: String
-        /// This account's statement for the host: redeeming with it binds the share to the
-        /// account ("Add to my account"). Absent for a plain share.
-        let account: String?
+        var inviteID: String?
+        var secret: String?
+        var guestID: String?
+        var device: String?
+        var account: String?
 
         enum CodingKeys: String, CodingKey {
             case v, secret, device, account
             case inviteID = "invite_id"
+            case guestID = "guest_id"
+        }
+
+        static func accept(_ invite: GuestInvite, device: String, account: String?) -> Hello {
+            Hello(inviteID: invite.inviteID, secret: invite.secret, device: device, account: account)
+        }
+
+        static func returning(_ guestID: String, account: String?, device: String? = nil) -> Hello {
+            Hello(guestID: guestID, device: device, account: account)
+        }
+    }
+
+    /// What the guest knows of a grant before the host answers: the invite's labels, or the
+    /// account item's for a share opened from the account. The host's reply wins where it
+    /// names something.
+    struct ExpectedGrant {
+        /// The grant a returning hello selected: the reply must name it.
+        var guestID: String?
+        /// Nil when only the host can say (a share opened from the account).
+        var guestName: String?
+        var machineLabel: String
+        var ownerName: String
+        var agentName: String
+
+        init(guestID: String? = nil, guestName: String?, machineLabel: String, ownerName: String, agentName: String) {
+            self.guestID = guestID
+            self.guestName = guestName
+            self.machineLabel = machineLabel
+            self.ownerName = ownerName
+            self.agentName = agentName
+        }
+
+        init(_ invite: GuestInvite) {
+            self.init(guestName: invite.guestName, machineLabel: invite.machineLabel,
+                      ownerName: invite.ownerName, agentName: invite.agentName)
         }
     }
 
@@ -161,30 +200,35 @@ public enum GuestSession {
             guard invite.acceptsAccount else { throw GuestError.accountStatement(.notOffered) }
             account = try await GuestStatements.fetch(for: invite.hostID, from: statements).jws
         }
-        let hello = try JSONEncoder().encode(AcceptHello(
-            inviteID: invite.inviteID, secret: invite.secret, device: device, account: account))
+        let hello = try JSONEncoder().encode(Hello.accept(invite, device: device, account: account))
         let session = try await RelaySession.open(endpoint: endpoint, identity: identity, hello: hello, connector: connector)
         session.close()
-        return try access(from: session.reply, invite: invite, endpoint: endpoint, now: now, accountBound: account != nil)
+        return try access(from: session.reply, expecting: ExpectedGrant(invite), endpoint: endpoint, now: now,
+                          accountBound: account != nil)
     }
 
+    /// The grant the host's hello reply describes. Throws `GuestError.revoked` when the reply
+    /// names another grant than the one selected.
     static func access(
-        from reply: [String: Any], invite: GuestInvite, endpoint: RelayEndpoint, now: Date, accountBound: Bool = false
+        from reply: [String: Any], expecting expected: ExpectedGrant, endpoint: RelayEndpoint, now: Date,
+        accountBound: Bool
     ) throws -> GuestAccess {
         func text(_ value: Any?) -> String? {
             guard let string = value as? String, !string.isEmpty else { return nil }
             return string
         }
         let agent = reply["agent"] as? [String: Any]
-        guard let guestID = text(reply["guest_id"]), let target = text(agent?["target"]) else {
-            throw GuestError.secureChannelFailed("the host's acceptance is incomplete")
+        guard let guestID = text(reply["guest_id"]), let target = text(agent?["target"]),
+              let guestName = text(reply["name"]) ?? expected.guestName else {
+            throw GuestError.secureChannelFailed("the host's answer is incomplete")
         }
+        if let selected = expected.guestID, guestID != selected { throw GuestError.revoked }
         return GuestAccess(
             guestID: guestID,
-            guestName: text(reply["name"]) ?? invite.guestName,
-            machineLabel: text(reply["machine_label"]) ?? invite.machineLabel,
-            ownerName: text(reply["owner_name"]) ?? invite.ownerName,
-            agentName: text(agent?["name"]) ?? invite.agentName,
+            guestName: guestName,
+            machineLabel: text(reply["machine_label"]) ?? expected.machineLabel,
+            ownerName: text(reply["owner_name"]) ?? expected.ownerName,
+            agentName: text(agent?["name"]) ?? expected.agentName,
             agentTarget: target,
             endpoint: endpoint,
             acceptedAt: now,
