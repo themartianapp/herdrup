@@ -406,7 +406,7 @@ struct PairApprovalSheet: View {
 
     private var denyButton: some View {
         Button("Deny") {
-            Task { if await model.deny() { onClose() } }
+            Task { () async -> Void in if await model.deny() { onClose() } }
         }
         .buttonStyle(.capsule(.secondary, .large, fullWidth: true))
         .disabled(model.phase == .working)

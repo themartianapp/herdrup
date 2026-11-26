@@ -216,15 +216,15 @@ final class PairFromDeviceTests: XCTestCase {
 
     /// A fixture's label once `ready` accepts it.
     private func fixture(_ app: XCUIApplication, _ id: String, ready: (String) -> Bool) -> String {
-        let element = element(app, id)
-        if let label = poll(15, { element.exists && ready(element.label) ? element.label : nil }) { return label }
-        XCTFail("\(id) never got ready: \(element.exists ? element.label : "missing")")
+        let node = element(app, id)
+        if let label = poll(15, { node.exists && ready(node.label) ? node.label : nil }) { return label }
+        XCTFail("\(id) never got ready: \(node.exists ? node.label : "missing")")
         return ""
     }
 
     private func waitValue(_ app: XCUIApplication, _ id: String, _ value: String, timeout: TimeInterval = 10) -> Bool {
-        let element = element(app, id)
-        return poll(timeout) { element.exists && (element.value as? String) == value ? true : nil } ?? false
+        let node = element(app, id)
+        return poll(timeout) { node.exists && (node.value as? String) == value ? true : nil } ?? false
     }
 
     private func poll<T>(_ timeout: TimeInterval, _ read: () -> T?) -> T? {

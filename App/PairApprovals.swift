@@ -40,7 +40,7 @@ final class PairApprovals: ObservableObject {
         loop?.cancel()
         loop = nil
         guard active else { return }
-        loop = Task { [weak self] in
+        loop = Task { [weak self] () async -> Void in
             while !Task.isCancelled {
                 await self?.refresh()
                 try? await Task.sleep(nanoseconds: Self.pollInterval)
@@ -102,7 +102,7 @@ final class PairApprovals: ObservableObject {
         guard available, case .enrolled(let device) = account.enrolment,
               let token = PushCenter.shared.deviceToken else { return }
         let registration = pushRegistration
-        Task {
+        Task { () async -> Void in
             guard let capability = await PushCenter.relay.capability(kind: .device, token: token) else { return }
             _ = await registration.register(capability: capability, deviceID: device.id)
         }
@@ -262,7 +262,7 @@ final class PairApprovalModel: ObservableObject {
             self.approval = approval
             expires = approval.expires
             phase = .waitingForDevice
-            waiting = Task { [weak self] in
+            waiting = Task { [weak self] () async -> Void in
                 do {
                     try await approval.awaitReveal()
                     self?.phase = .enterCode
@@ -280,7 +280,7 @@ final class PairApprovalModel: ObservableObject {
     /// Probes every machine while the code is typed: reachable ones are ticked (unless the
     /// user already changed them) and keep their connection for the add.
     private func startChecks() {
-        checks = Task { [weak self] in
+        checks = Task { [weak self] () async -> Void in
             guard let entries = self?.entries else { return }
             await withTaskGroup(of: (String, PairMachineCheck, PairLink?).self) { group in
                 for entry in entries {
@@ -319,7 +319,7 @@ final class PairApprovalModel: ObservableObject {
     /// poll's cadence: a cancel or an expiry ends the sheet as soon as the service says so.
     private func watchOpen(_ approval: PairApproval) {
         watch?.cancel()
-        watch = Task { [weak self] in
+        watch = Task { [weak self] () async -> Void in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: Self.watchInterval)
                 guard let self, !Task.isCancelled, !self.finished else { return }

@@ -318,7 +318,7 @@ final class MockAccountServer: @unchecked Sendable {
             }
             return (200, answer)
         case ("PUT", "/v1/devices/self/push"), ("DELETE", "/v1/devices/self/push"):
-            return (204, [:])
+            return (204, [String: Any]())
         default:
             return nil
         }

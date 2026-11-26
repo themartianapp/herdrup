@@ -75,7 +75,7 @@ final class DevicePairing: ObservableObject {
         task?.cancel()
         phase = .asking
         let session = account.session
-        task = Task { [weak self] in
+        task = Task { [weak self] () async -> Void in
             do {
                 let identity = try GuestDevice.identity()
                 let requester = try await PairRequester.start(session: session, identity: identity,
@@ -215,7 +215,7 @@ final class DevicePairing: ObservableObject {
         for entry in probe {
             guard let saved = store.hosts.first(where: { $0.id == entry.id }),
                   let endpoint = HostEndpoint.parse(saved.host) else { continue }
-            Task { [weak self] in
+            Task { [weak self] () async -> Void in
                 let reachable = await PairReachability.reachable(host: endpoint.host, port: endpoint.port)
                 guard let self, let index = self.paired.firstIndex(where: { $0.id == entry.id }) else { return }
                 self.paired[index].reach = reachable ? .reachable : .unreachable
