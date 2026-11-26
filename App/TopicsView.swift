@@ -1941,19 +1941,20 @@ private struct TopicChat: View {
         // The send runs on in the draft's state: leaving the topic (the Terminal, the
         // background) does not end it, and a chat mounted meanwhile shows it running, Send and
         // chip removal held, until it settles.
-        Task {
+        Task { () async -> Void in
             defer { sending = false; sendingAttachmentID = nil }
             failedAttachmentID = nil
             // The Inbox's way: each file posts as a Gram to the agent, then one message names
             // them all with how to fetch them (`GramAttachmentPrompt`). The topic runs in the
             // agent's own omp, so `herdr gram get-file` finds them there too.
-            let attach: (@MainActor () async -> String?)? = batch.isEmpty ? nil : {
+            guard !batch.isEmpty else {
+                await model.send(client: client, topicID: topic.id, outgoingID: id, text: text)
+                return
+            }
+            let reached = await model.send(client: client, topicID: topic.id, outgoingID: id, text: text) {
                 guard let delivered = await postAttachments(batch) else { return nil }
                 return GramAttachmentPrompt.text(text, delivered: delivered)
             }
-            let reached = await model.send(client: client, topicID: topic.id, outgoingID: id, text: text,
-                                           attach: attach)
-            guard !batch.isEmpty else { return }
             if reached {
                 // Each file's staged bytes went when its Gram posted: nothing left to discard.
                 let sentIDs = Set(batch.map(\.id))
