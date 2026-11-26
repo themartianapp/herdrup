@@ -157,7 +157,9 @@ final class AccountSharesTests: XCTestCase {
         XCTAssertTrue(app.buttons["guest-agent-row"].exists(within: 10))
 
         // A tap on the tab bar right after launch can be swallowed while it settles.
-        let settingsTab = app.tabBars.firstMatch.buttons["Settings"]
+        // On iPad the tabs may sit outside a tab bar element.
+        let inTabBar = app.tabBars.firstMatch.buttons["Settings"]
+        let settingsTab = inTabBar.exists ? inTabBar : app.buttons["Settings"].firstMatch
         for _ in 0..<3 where !settingsTab.isSelected {
             settingsTab.tap()
             _ = poll(3, every: 0.25) { settingsTab.isSelected }

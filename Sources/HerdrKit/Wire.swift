@@ -19,6 +19,12 @@ public struct APIError: Error, Decodable, Equatable, Sendable, CustomStringConve
     public let code: String
     public let message: String
     public var description: String { "\(code): \(message)" }
+
+    /// herdr from before this method: serde rejects the request line with `invalid_request`
+    /// naming the unknown variant, so the answer means "update herdr", not a real failure.
+    public var isUnknownMethod: Bool {
+        code == "invalid_request" && message.contains("unknown variant")
+    }
 }
 
 struct ErrorEnvelope: Decodable {

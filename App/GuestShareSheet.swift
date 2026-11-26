@@ -82,7 +82,7 @@ enum GuestAdminError {
             return "Guest access needs Herdr on macOS or Linux."
         case "forbidden":
             return "Only the machine's owner can manage guests."
-        case "invalid_request" where api.message.contains("unknown variant"):
+        case "invalid_request" where api.isUnknownMethod:
             return "Update Herdr on this machine to share agents."
         default:
             return api.description

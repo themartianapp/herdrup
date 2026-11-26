@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 
 /// The owner's guest-access flow over the stateful `share` / `sharedaccess` mocks: sharing an
@@ -161,13 +162,38 @@ final class GuestShareTests: XCTestCase {
         XCTAssertTrue(text(containing: "PEOPLE").exists(within: Self.actionTimeout), "Shared access did not open")
     }
 
+    /// Opens a PEOPLE row's page, where the guest's agents, devices and removal live.
+    private func openPerson(_ name: String) {
+        let row = element("guest-person-\(name)")
+        XCTAssertTrue(row.exists(within: Self.actionTimeout), "\(name) should be listed")
+        row.tap()
+        XCTAssertTrue(element("guest-person-header").exists(within: Self.actionTimeout), "\(name)'s page did not open")
+    }
+
+    /// Remove <name> on the open person page, through its confirmation; the page closes.
+    private func removePerson(_ name: String, shot: String? = nil) {
+        let remove = element("guest-person-remove")
+        XCTAssertTrue(remove.exists(within: Self.actionTimeout))
+        for _ in 0..<3 where !remove.isHittable { app.swipeUp() }
+        remove.tap()
+        // iOS 27 nests a button of the same label inside each alert action: `.firstMatch`
+        // or the tap fails on "Multiple matching elements found".
+        let confirm = app.alerts.buttons["Remove \(name)"].firstMatch
+        XCTAssertTrue(confirm.exists(within: Self.actionTimeout), "removing must ask for confirmation")
+        XCTAssertTrue(app.staticTexts["Remove \(name)?"].exists)
+        if let shot { shoot(shot) }
+        XCTAssertTrue(remove.exists, "nothing is revoked before the confirmation")
+        confirm.tap()
+        XCTAssertTrue(remove.gone(within: Self.actionTimeout), "the page closes once \(name) is gone")
+    }
+
     func testSharedAccessListsPeopleAndTheActivityLog() {
         launch("sharedaccess")
         openSharedAccess()
-        XCTAssertTrue(element("guest-revoke-plotarmordev").exists(within: Self.actionTimeout))
+        XCTAssertTrue(element("guest-person-plotarmordev").exists(within: Self.actionTimeout))
         XCTAssertTrue(text(containing: "llm-opt on Jerry's Mac Studio").exists)
+        XCTAssertTrue(text(containing: "Only this device · iPhone").exists, "a share from before accounts is one device")
         XCTAssertTrue(text(containing: "active · 2 min ago").exists)
-        XCTAssertTrue(text(containing: "SHA256:9f3a·e71c·04bd·c21e").exists, "the key fingerprint must be shown")
 
         // The log, newest first: upload, prompt, joined.
         let entries = app.descendants(matching: .any).matching(identifier: "guest-log-entry")
@@ -176,24 +202,20 @@ final class GuestShareTests: XCTestCase {
         XCTAssertTrue(entries.element(boundBy: 1).label.contains("rerun the TensorFold bench"))
         XCTAssertTrue(entries.element(boundBy: 2).label.contains("Accepted your invite"))
         shoot("owner-3-shared-access")
+
+        openPerson("plotarmordev")
+        XCTAssertTrue(element("guest-device-iPhone").label.contains("SHA256:9f3a·e71c·04bd·c21e"),
+                      "the device's key fingerprint must be shown")
     }
 
     func testRevokeAsksFirstThenRemovesThePersonAndLogsIt() {
         launch("sharedaccess")
         openSharedAccess()
-        let revoke = element("guest-revoke-plotarmordev")
-        XCTAssertTrue(revoke.exists(within: Self.actionTimeout))
-        revoke.tap()
+        openPerson("plotarmordev")
+        removePerson("plotarmordev", shot: "owner-5-revoke-confirm")
 
-        let confirm = app.buttons["Revoke"].firstMatch
-        XCTAssertTrue(app.staticTexts["Revoke plotarmordev?"].exists(within: Self.actionTimeout),
-                      "revoking must ask for confirmation")
-        shoot("owner-5-revoke-confirm")
-        XCTAssertTrue(revoke.exists, "nothing is revoked before the confirmation")
-        confirm.tap()
-
-        XCTAssertTrue(element("guest-revoke-plotarmordev").gone(within: Self.actionTimeout))
-        XCTAssertTrue(text(containing: "Nobody has access").exists)
+        XCTAssertTrue(text(containing: "Nobody has access").exists(within: Self.actionTimeout))
+        XCTAssertFalse(element("guest-person-plotarmordev").exists)
         XCTAssertTrue(text(containing: "Access revoked").exists(within: Self.actionTimeout),
                       "the revoke must show up in the activity log")
     }
@@ -208,7 +230,7 @@ final class GuestShareTests: XCTestCase {
         cancel.tap()
         XCTAssertTrue(cancel.gone(within: Self.actionTimeout))
         XCTAssertFalse(text(containing: "PENDING INVITES").exists)
-        XCTAssertTrue(element("guest-revoke-plotarmordev").exists, "cancelling an invite must not touch guests")
+        XCTAssertTrue(element("guest-person-plotarmordev").exists, "cancelling an invite must not touch guests")
     }
 
     /// mcb-air is a saved machine with no agents, so nothing in the agent list names it. Its
@@ -216,15 +238,14 @@ final class GuestShareTests: XCTestCase {
     func testAGuestOnASavedMachineWithoutAgentsIsListedAndRevocable() {
         launch("sharedaccess", environment: ["HERDR_MOCK_SAVED_PEER_GUEST": "1"])
         openSharedAccess()
-        let revoke = element("guest-revoke-sam")
-        XCTAssertTrue(revoke.exists(within: Self.actionTimeout),
+        let row = element("guest-person-sam")
+        XCTAssertTrue(row.exists(within: Self.actionTimeout),
                       "a guest on an agent-less saved machine must be listed")
         XCTAssertTrue(text(containing: "notes on mcb-air").exists, "the row must name the machine that holds it")
-        revoke.tap()
-        XCTAssertTrue(app.staticTexts["Revoke sam?"].exists(within: Self.actionTimeout))
-        app.buttons["Revoke"].firstMatch.tap()
-        XCTAssertTrue(revoke.gone(within: Self.actionTimeout))
-        XCTAssertTrue(element("guest-revoke-plotarmordev").exists, "only sam is revoked")
+        openPerson("sam")
+        removePerson("sam")
+        XCTAssertTrue(element("guest-person-plotarmordev").exists(within: Self.actionTimeout), "only sam is revoked")
+        XCTAssertFalse(row.exists)
     }
 
     /// A failed guest.audit must read as a failure, not as a guest who did nothing, and must
@@ -237,7 +258,7 @@ final class GuestShareTests: XCTestCase {
         XCTAssertTrue(failure.label.contains("Couldn't load the activity log"))
         XCTAssertTrue(failure.label.contains("audit.jsonl is unreadable"), "the reason must be shown: \(failure.label)")
         XCTAssertFalse(text(containing: "Nothing yet").exists, "a failed log is not an empty one")
-        XCTAssertTrue(element("guest-revoke-plotarmordev").exists, "people still load")
+        XCTAssertTrue(element("guest-person-plotarmordev").exists, "people still load")
         XCTAssertTrue(element("guest-cancel-sam").exists, "invites still load")
         shoot("owner-7-audit-failed")
     }
@@ -276,9 +297,150 @@ final class GuestShareTests: XCTestCase {
     func testSharedAccessTurnsShareGramOnForAnExistingGuest() {
         launch("sharedaccess")
         openSharedAccess()
-        XCTAssertEqual(element("guest-share-gram-plotarmordev").value as? String, "0")
-        setSwitch("guest-share-gram-plotarmordev", on: true)
-        XCTAssertTrue(text(containing: "llm-opt on Jerry's Mac Studio · Gram shared").exists(within: Self.actionTimeout), "the reloaded list shows the guest.update")
+        openPerson("plotarmordev")
+        XCTAssertEqual(element("guest-share-gram-llm-opt").value as? String, "0")
+        setSwitch("guest-share-gram-llm-opt", on: true)
+        XCTAssertTrue(text(containing: "on Jerry's Mac Studio · since").exists, "the agent row names the machine")
+        XCTAssertTrue(text(containing: "· Gram shared").exists(within: Self.actionTimeout),
+                      "the reloaded page shows the guest.update")
         shoot("guest-gram-owner-guest-toggle")
+    }
+
+    // MARK: People with a HerdrUp account (account-linked shares, frames o1-o3)
+
+    /// The account-shares design's people (`HERDR_MOCK_ACCOUNT_PEOPLE=1`): Nike holds llm-opt
+    /// and orgstudio on her HerdrUp account (iPhone, MacBook, a browser), sam a plain share on
+    /// one iPhone.
+    private func openAccountPeople(_ environment: [String: String] = [:]) {
+        launch("sharedaccess", environment: environment.merging(["HERDR_MOCK_ACCOUNT_PEOPLE": "1"]) { _, new in new })
+        openSharedAccess()
+    }
+
+    /// A design comparison shot, kept as `iphone-`/`ipad-` + `name` (as TopicsDesignShotsTests).
+    private func designShot(_ name: String) {
+        attach(app.screenshot(), (UIDevice.current.userInterfaceIdiom == .pad ? "ipad-" : "iphone-") + name)
+    }
+
+    private func reveal(_ element: XCUIElement) {
+        for _ in 0..<4 where !element.isHittable { app.swipeUp() }
+    }
+
+    /// o1: one row per person. Nike's two shares are one row naming both agents and every
+    /// device; sam's plain share says it is one device; the log has Nike's added device.
+    func testPeopleListOneRowPerPersonWithTheirDevices() {
+        openAccountPeople()
+        let nike = element("guest-person-Nike")
+        XCTAssertTrue(nike.exists(within: Self.actionTimeout))
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "guest-person-Nike").count, 1,
+                       "two shares of one account are one person")
+        XCTAssertTrue(nike.label.contains("llm-opt, orgstudio on Jerry's Mac Studio"), nike.label)
+        XCTAssertTrue(nike.label.contains("HerdrUp account · iPhone, MacBook, Browser (Chrome on macOS)"), nike.label)
+        XCTAssertTrue(nike.label.contains("active"), nike.label)
+
+        let sam = element("guest-person-sam")
+        XCTAssertTrue(sam.exists)
+        XCTAssertTrue(sam.label.contains("llm-opt on Jerry's Mac Studio"), sam.label)
+        XCTAssertTrue(sam.label.contains("Only this device · iPhone"), sam.label)
+        XCTAssertTrue(text(containing: "2 people · 2 agents").exists, "the header counts people, not shares")
+
+        let added = text(containing: "Nike added a device")
+        XCTAssertTrue(added.exists, "the activity log shows the added device")
+        XCTAssertTrue(added.label.contains("Browser (Chrome on macOS)"), added.label)
+        designShot("shares-o1-people")
+    }
+
+    /// o2: Nike's page lists both agents and all three devices; ⋯ → Remove device takes the
+    /// MacBook off every share it may use.
+    func testPersonPageListsAgentsAndDevicesAndRemovesADevice() {
+        openAccountPeople()
+        openPerson("Nike")
+        let header = element("guest-person-header")
+        XCTAssertTrue(header.label.contains("HerdrUp account · 3 devices"), header.label)
+        XCTAssertTrue(header.label.contains("Active now on iPhone"), header.label)
+        for agent in ["llm-opt", "orgstudio"] {
+            XCTAssertTrue(element("guest-agent-\(agent)").exists, "\(agent) is listed")
+            XCTAssertTrue(element("guest-agent-remove-\(agent)").exists, "\(agent) has its own Remove")
+        }
+        for device in ["iPhone", "MacBook", "Browser (Chrome on macOS)"] {
+            XCTAssertTrue(element("guest-device-\(device)").exists, "\(device) is listed")
+            XCTAssertTrue(element("guest-device-menu-\(device)").exists, "\(device) has its ⋯")
+        }
+        XCTAssertTrue(element("guest-device-iPhone").label.contains("active now"))
+        XCTAssertTrue(text(containing: "signs in to HerdrUp there and opens a share").exists)
+        XCTAssertFalse(text(containing: "notification").exists, "a new device sends the owner no push")
+        XCTAssertTrue(element("guest-person-remove").exists)
+        designShot("shares-o2-person")
+
+        let menu = element("guest-device-menu-MacBook")
+        reveal(menu)
+        menu.tap()
+        let remove = app.buttons["Remove device"].firstMatch
+        XCTAssertTrue(remove.exists(within: Self.actionTimeout), "⋯ offers Remove device")
+        remove.tap()
+        XCTAssertTrue(element("guest-device-MacBook").gone(within: Self.actionTimeout), "the MacBook is removed")
+        XCTAssertTrue(element("guest-device-iPhone").exists && element("guest-device-Browser (Chrome on macOS)").exists,
+                      "the other devices keep the share")
+        XCTAssertTrue(header.label.contains("HerdrUp account · 2 devices"), header.label)
+    }
+
+    /// An agent's Remove ends that one share only, and its confirmation names the devices
+    /// that share reaches: the browser never opened orgstudio.
+    func testRemovingOneAgentKeepsTheOther() {
+        openAccountPeople()
+        openPerson("Nike")
+        let remove = element("guest-agent-remove-orgstudio")
+        XCTAssertTrue(remove.exists)
+        remove.tap()
+        let confirm = app.alerts.buttons["Remove orgstudio"].firstMatch
+        XCTAssertTrue(confirm.exists(within: Self.actionTimeout), "removing an agent asks first")
+        XCTAssertTrue(text(containing: "Nike loses orgstudio on Jerry's Mac Studio on all 2 devices (MacBook, iPhone)").exists,
+                      "the confirmation names orgstudio's own devices")
+        confirm.tap()
+        XCTAssertTrue(element("guest-agent-orgstudio").gone(within: Self.actionTimeout))
+        XCTAssertTrue(element("guest-agent-llm-opt").exists, "Nike keeps llm-opt")
+    }
+
+    /// A reload that fails after an action says nothing about who has access: the page stays
+    /// with the action's error and says it may be out of date, instead of closing as if Nike
+    /// were gone.
+    func testAFailedReloadKeepsThePersonPageAndItsError() {
+        openAccountPeople(["HERDR_MOCK_GOES_DOWN": "1"])
+        openPerson("Nike")
+        element("guest-agent-remove-orgstudio").tap()
+        let confirm = app.alerts.buttons["Remove orgstudio"].firstMatch
+        XCTAssertTrue(confirm.exists(within: Self.actionTimeout))
+        confirm.tap()
+        let ok = app.alerts.buttons["OK"].firstMatch
+        XCTAssertTrue(ok.exists(within: Self.actionTimeout), "the failed removal says so")
+        XCTAssertTrue(text(containing: "connection refused").exists)
+        ok.tap()
+        XCTAssertTrue(element("guest-person-stale").exists(within: Self.actionTimeout),
+                      "the page stays and says it may be out of date")
+        XCTAssertTrue(element("guest-person-header").exists)
+        XCTAssertTrue(element("guest-agent-orgstudio").exists, "nothing says orgstudio went")
+    }
+
+    /// o3: Remove Nike asks first, naming the agents, the machine and every device, then
+    /// revokes the person: the page closes and her row is gone, sam's stays.
+    func testRemovingAPersonAsksThenRemovesEveryShare() {
+        openAccountPeople()
+        openPerson("Nike")
+        let remove = element("guest-person-remove")
+        reveal(remove)
+        remove.tap()
+        let confirm = app.alerts.buttons["Remove Nike"].firstMatch
+        XCTAssertTrue(confirm.exists(within: Self.actionTimeout), "removing Nike asks first")
+        XCTAssertTrue(app.staticTexts["Remove Nike?"].exists)
+        XCTAssertTrue(text(containing: "Nike loses llm-opt and orgstudio on Jerry's Mac Studio on all 3 devices").exists,
+                      "the confirmation names what goes")
+        XCTAssertTrue(app.alerts.buttons["Cancel"].firstMatch.exists)
+        designShot("shares-o3-confirm")
+        confirm.tap()
+
+        XCTAssertTrue(remove.gone(within: Self.actionTimeout), "the page closes once Nike is gone")
+        XCTAssertTrue(element("guest-person-sam").exists(within: Self.actionTimeout), "sam keeps his share")
+        XCTAssertFalse(element("guest-person-Nike").exists, "Nike's row is gone")
+        XCTAssertTrue(text(containing: "Access revoked").exists(within: Self.actionTimeout),
+                      "the revoke shows in the activity log")
     }
 }
