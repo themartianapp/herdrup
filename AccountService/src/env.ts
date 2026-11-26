@@ -31,4 +31,6 @@ export interface Env {
   GOOGLE_WEB_CLIENT_SECRET?: string;
   /** The web guest's origin (var): the only CORS origin, and where the web flow returns to. */
   WEB_ORIGIN?: string;
+  /** PushRelay's base URL (var), for pair-request alerts (src/push.ts). Unset: no pushes are sent. */
+  PUSH_RELAY_URL?: string;
 }

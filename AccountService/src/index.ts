@@ -3,7 +3,8 @@
 // the short-lived statements hosts check (step 2); sync of non-secret settings (step 3);
 // account deletion, with Apple's revoke and server-to-server notifications (step 4); the web
 // sign-in flow for the desktop and the web guest, with its handoff, cookie and CORS (step 5);
-// browser approval for owner access, protocol approve-v1 (src/approvals.ts).
+// browser approval for owner access, protocol approve-v1, and pairing an app device with the
+// owner's machines, pair-v1 (src/approvals.ts), with pair-request pushes (src/push.ts).
 // Log lines carry only endpoint and outcome (src/http.ts): never tokens, nonces, provider user
 // ids or their hashes, emails, account, session or device ids, device keys, host ids, IPs,
 // bodies or URLs.
@@ -15,7 +16,9 @@ import {
   handleFinish,
   handleGetRequest,
   handleListRequests,
+  handlePairSelf,
   handlePutEnvelope,
+  handlePutPairEnvelope,
   handleReveal,
   handleWithdrawals,
 } from "./approvals";
@@ -26,6 +29,7 @@ import { cleanup } from "./cleanup";
 import { handleChallenge, handleDevice, handleEnrol, handleListDevices } from "./devices";
 import type { Env } from "./env";
 import { errorResponse, json, log, type Endpoint } from "./http";
+import { handlePushCapability } from "./push";
 import { handleJwks, handleStatements } from "./statements";
 import { handlePull, handlePush } from "./sync";
 import { corsHeaders, preflight } from "./browser";
@@ -42,7 +46,7 @@ import { VERSION } from "./version";
  */
 async function features(env: Env): Promise<string[]> {
   const set = (value: string | undefined) => (value?.trim() ?? "").length > 0;
-  const list = ["native_sign_in", "devices", "statements", "sync", "delete", "web_approve", "approval_expiry_final"];
+  const list = ["native_sign_in", "devices", "statements", "sync", "delete", "web_approve", "approval_expiry_final", "pair_v1"];
   // The iOS client's own Google sign-in (ASWebAuthenticationSession + PKCE), which needs only its client id.
   if (set(env.GOOGLE_IOS_CLIENT_ID)) list.push("native_sign_in_google");
   const webApple = set(env.APPLE_WEB_CLIENT_ID);
@@ -81,10 +85,12 @@ const ROUTES: Record<string, Route> = {
   "/v1/apple/notifications": { methods: ["POST"], endpoint: "/v1/apple/notifications" },
   "/v1/devices/challenge": { methods: ["POST"], endpoint: "/v1/devices/challenge" },
   "/v1/devices": { methods: ["GET", "POST"], endpoint: "/v1/devices" },
+  "/v1/devices/self/push": { methods: ["PUT", "DELETE"], endpoint: "/v1/devices/self/push" },
   "/v1/statements": { methods: ["POST"], endpoint: "/v1/statements" },
   "/v1/sync": { methods: ["GET", "POST"], endpoint: "/v1/sync" },
   "/v1/approvals": { methods: ["GET", "POST"], endpoint: "/v1/approvals" },
   "/v1/browsers/self": { methods: ["GET"], endpoint: "/v1/browsers/self" },
+  "/v1/pairs/self": { methods: ["GET"], endpoint: "/v1/pairs/self" },
   "/v1/withdrawals": { methods: ["GET"], endpoint: "/v1/withdrawals" },
   "/.well-known/jwks.json": { methods: ["GET"], endpoint: "/.well-known/jwks.json" },
 };
@@ -96,6 +102,7 @@ const ID_PATHS: { pattern: RegExp; route: Route }[] = [
   { pattern: /^\/v1\/approvals\/([A-Za-z0-9_-]{22})\/claim$/, route: { methods: ["POST"], endpoint: "/v1/approvals/:id/claim" } },
   { pattern: /^\/v1\/approvals\/([A-Za-z0-9_-]{22})\/reveal$/, route: { methods: ["POST"], endpoint: "/v1/approvals/:id/reveal" } },
   { pattern: /^\/v1\/approvals\/([A-Za-z0-9_-]{22})\/finish$/, route: { methods: ["POST"], endpoint: "/v1/approvals/:id/finish" } },
+  { pattern: /^\/v1\/approvals\/([A-Za-z0-9_-]{22})\/envelope$/, route: { methods: ["PUT"], endpoint: "/v1/approvals/:id/envelope" } },
   { pattern: /^\/v1\/browsers\/([A-Za-z0-9_-]{22})\/envelope$/, route: { methods: ["PUT"], endpoint: "/v1/browsers/:id/envelope" } },
 ];
 
@@ -133,18 +140,18 @@ const WEB_GUEST_CALLS: Partial<Record<RoutedEndpoint, string[]>> = {
 };
 
 /** handleRequest, with CORS preflights and headers on the web guest's calls. */
-async function serve(request: Request, env: Env): Promise<Response> {
+async function serve(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const route = resolve(new URL(request.url).pathname)?.route;
   const methods = route === undefined ? undefined : WEB_GUEST_CALLS[route.endpoint];
-  if (methods === undefined) return handleRequest(request, env);
+  if (methods === undefined) return handleRequest(request, env, ctx);
   if (request.method === "OPTIONS") return preflight(request, env, methods);
-  const response = await handleRequest(request, env);
+  const response = await handleRequest(request, env, ctx);
   if (!methods.includes(request.method)) return response;
   for (const [name, value] of Object.entries(corsHeaders(request, env))) response.headers.set(name, value);
   return response;
 }
 
-async function handleRequest(request: Request, env: Env): Promise<Response> {
+async function handleRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const resolved = resolve(new URL(request.url).pathname);
   if (resolved === undefined) return errorResponse(404, "not_found");
   const { route, id } = resolved;
@@ -186,12 +193,14 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         return request.method === "GET" ? await handleListDevices(request, env, now) : await handleEnrol(request, env, now);
       case "/v1/devices/:id":
         return await handleDevice(request, env, id, now);
+      case "/v1/devices/self/push":
+        return await handlePushCapability(request, env, now);
       case "/v1/statements":
         return await handleStatements(request, env, now);
       case "/v1/sync":
         return request.method === "GET" ? await handlePull(request, env, now) : await handlePush(request, env, now);
       case "/v1/approvals":
-        return request.method === "GET" ? await handleListRequests(request, env, now) : await handleCreateRequest(request, env, now);
+        return request.method === "GET" ? await handleListRequests(request, env, now) : await handleCreateRequest(request, env, ctx, now);
       case "/v1/approvals/:id":
         return await handleGetRequest(request, env, id, now);
       case "/v1/approvals/:id/claim":
@@ -200,10 +209,14 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         return await handleReveal(request, env, id, now);
       case "/v1/approvals/:id/finish":
         return await handleFinish(request, env, id, now);
+      case "/v1/approvals/:id/envelope":
+        return await handlePutPairEnvelope(request, env, id, now);
       case "/v1/browsers/:id/envelope":
         return await handlePutEnvelope(request, env, id, now);
       case "/v1/browsers/self":
         return await handleBrowserSelf(request, env, now);
+      case "/v1/pairs/self":
+        return await handlePairSelf(request, env, now);
       case "/v1/withdrawals":
         return await handleWithdrawals(request, env, now);
       case "/.well-known/jwks.json":
@@ -217,8 +230,8 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
 }
 
 export default {
-  fetch(request: Request, env: Env): Promise<Response> {
-    return serve(request, env);
+  fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    return serve(request, env, ctx);
   },
   async scheduled(controller: ScheduledController, env: Env): Promise<void> {
     try {

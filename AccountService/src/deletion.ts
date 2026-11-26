@@ -42,6 +42,7 @@ export const ACCOUNT_TABLES = [
   "browser_envelopes",
   "browser_access",
   "withdrawals",
+  "push_capabilities",
   "sessions",
   "devices",
   "identities",

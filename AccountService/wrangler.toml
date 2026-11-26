@@ -118,6 +118,9 @@ STATEMENT_REVOKED_KIDS = ""
 # The web guest (DESIGN.md §2.5, §2.6): the only origin CORS allows, with credentials, and
 # where the web sign-in flow returns to (/web/?account=1).
 WEB_ORIGIN = "https://guest.herdrup.app"
+# PushRelay (herdrup-push, PushRelay/README.md): pair-request alerts go to its /v1/send with the
+# capability each iOS device stored (DESIGN.md §13.4). Empty: no pushes are sent.
+PUSH_RELAY_URL = "https://push.herdrup.app"
 
 # Secrets (wrangler secret put), never in this file:
 #   ACCOUNT_HMAC_KEY   32 random bytes, standard base64. Keys the sign-in nonces and the stored
