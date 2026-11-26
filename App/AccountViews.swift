@@ -194,6 +194,7 @@ struct HerdrUpAccountContent: View {
     @State private var confirmSignOut = false
     @State private var confirmDelete = false
     @ObservedObject private var webAccess = WebAccessApprovals.shared
+    @ObservedObject private var pairs = PairApprovals.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -212,7 +213,11 @@ struct HerdrUpAccountContent: View {
         .onDisappear { account.screenVisible = false }
         .accountNoticeAlert(account)
         .webAccessApprovalSheet(webAccess, active: true)
-        .task(id: account.signedIn) { await webAccess.refresh() }
+        .pairApprovalSheet(pairs, active: true)
+        .task(id: account.signedIn) {
+            await webAccess.refresh()
+            await pairs.refresh()
+        }
         .alert("Rename device", isPresented: $renaming.isPresent()) {
             TextField("Name", text: $newName)
                 .accessibilityIdentifier("account-rename-field")
@@ -318,29 +323,28 @@ struct HerdrUpAccountContent: View {
                 row("Loading devices…", systemImage: "iphone") { ProgressView().tint(Palette.textDim) }
             }
         }
-        if webAccess.available {
-            group("WEB ACCESS") {
-                if webAccess.requests.isEmpty {
-                    row("No browser is asking", systemImage: "globe",
-                        subtitle: "A browser signed in to your account at herdrup.app asks here to reach your machines.") { EmptyView() }
-                        .accessibilityElement(children: .combine)
-                        .accessibilityIdentifier("account-web-access-none")
-                }
-                ForEach(Array(webAccess.requests.enumerated()), id: \.element.id) { index, request in
+        if pairs.available {
+            // Devices asking to be paired, then browsers asking to reach the machines.
+            group("REQUESTS") {
+                ForEach(Array(pairs.requests.enumerated()), id: \.element.id) { index, request in
                     if index > 0 { divider }
-                    Button { webAccess.open(request) } label: {
-                        row(request.browser.name, systemImage: "globe",
-                            subtitle: webAccess.machines.isEmpty
-                                ? "Add a machine with its key or password to approve it"
-                                : "Asks to reach your machines") {
+                    Button { pairs.open(request) } label: {
+                        row(request.device.name, systemImage: Self.icon(for: request.device.platform),
+                            subtitle: "Asks to pair with your machines") {
                             Text("Approve…").font(Typography.app(15)).foregroundStyle(Palette.textDim)
                         }
                     }
                     .buttonStyle(.plain)
-                    .disabled(webAccess.machines.isEmpty)
                     .accessibilityElement(children: .combine)
-                    .accessibilityIdentifier("account-web-access-request")
+                    .accessibilityIdentifier("account-pair-request")
                 }
+                if !pairs.requests.isEmpty { divider }
+                browserRows(none: "Browsers ask here too")
+            }
+            footnote("The sheet opens by itself while HerdrUp is in front. Requests last 10 minutes.")
+        } else if webAccess.available {
+            group("WEB ACCESS") {
+                browserRows(none: "A browser signed in to your account at herdrup.app asks here to reach your machines.")
             }
         }
         group(nil) {
@@ -370,6 +374,33 @@ struct HerdrUpAccountContent: View {
             .accessibilityIdentifier("account-delete")
         }
         footnote("Deleting removes the account and everything synced to it from HerdrUp's servers. Machines and prompts stay on this \(HerdrUpAccount.deviceKind).")
+    }
+
+    /// Browsers asking to reach the machines; with none asking, one row says so (`none` is its
+    /// second line). Without `web_approve` only that row shows.
+    @ViewBuilder
+    private func browserRows(none: String) -> some View {
+        let requests = webAccess.available ? webAccess.requests : []
+        if requests.isEmpty {
+            row("No browser is asking", systemImage: "globe", subtitle: none) { EmptyView() }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("account-web-access-none")
+        }
+        ForEach(Array(requests.enumerated()), id: \.element.id) { index, request in
+            if index > 0 { divider }
+            Button { webAccess.open(request) } label: {
+                row(request.browser.name, systemImage: "globe",
+                    subtitle: webAccess.machines.isEmpty
+                        ? "Add a machine with its key or password to approve it"
+                        : "Asks to reach your machines") {
+                    Text("Approve…").font(Typography.app(15)).foregroundStyle(Palette.textDim)
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(webAccess.machines.isEmpty)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("account-web-access-request")
+        }
     }
 
     private func deviceRow(_ device: AccountDevice) -> some View {
