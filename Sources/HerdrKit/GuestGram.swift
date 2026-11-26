@@ -253,12 +253,18 @@ public enum PushTapTarget: Equatable, Sendable {
     case ownerGram
     /// The owner's pane.
     case ownerPane(String)
+    /// Another device of the HerdrUp account asks to be paired (category `pair_request`,
+    /// the request id in `request_id`): open "Pair ‹device›?" on it.
+    case pairRequest(String)
     /// Nothing to open.
     case none
 
     public init(userInfo: [AnyHashable: Any]) {
         if userInfo["herdr_guest"] != nil {
             self = GuestPushRoute(userInfo: userInfo).map(PushTapTarget.guest) ?? .droppedGuest
+        } else if (userInfo["aps"] as? [String: Any])?["category"] as? String == "pair_request" {
+            let id = userInfo["request_id"] as? String ?? ""
+            self = id.isEmpty ? .none : .pairRequest(id)
         } else if userInfo["gram"] as? Bool == true {
             self = .ownerGram
         } else if let paneID = userInfo["pane_id"] as? String, !paneID.isEmpty {

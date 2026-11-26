@@ -23,6 +23,8 @@ public struct PairingKey: Sendable {
     /// The SHA256 fingerprint of the PUBLIC key, in OpenSSH's display form
     /// (`SHA256:<base64 without padding>`), for showing the user which key was added.
     public let publicKeyFingerprint: String
+    /// The raw 32-byte ed25519 public key (pair-v1's S).
+    public let publicKey: Data
 
     /// Generate a fresh keypair. The comment lands in both the private key and the
     /// `authorized_keys` line, so a person reading either can tell where it came from
@@ -42,6 +44,14 @@ public struct PairingKey: Sendable {
         self.privateKeyPEM = key.makeSSHRepresentation(comment: comment)
         self.authorizedKeysLine = Self.authorizedKeysLine(for: key.publicKey, comment: comment)
         self.publicKeyFingerprint = Self.fingerprint(for: key.publicKey)
+        self.publicKey = key.publicKey.rawRepresentation
+    }
+
+    /// `ssh-ed25519 <base64 blob>` for a raw 32-byte ed25519 key, with no comment: what
+    /// `pair.add_key` takes. Nil for a key that isn't 32 bytes.
+    public static func publicKeyLine(raw: Data) -> String? {
+        guard let key = try? Curve25519.Signing.PublicKey(rawRepresentation: raw) else { return nil }
+        return authorizedKeysLine(for: key, comment: "")
     }
 
     /// The wire encoding of an ed25519 public key: `string "ssh-ed25519"` followed by

@@ -625,6 +625,9 @@ final class HerdrUpAccount: ObservableObject {
 
     /// The device's name as the account lists it.
     static var deviceName: String {
+        #if DEBUG
+        if let name = mockDeviceName { return name }
+        #endif
         let name = UIDevice.current.name.trimmingCharacters(in: .whitespacesAndNewlines)
         return String((name.isEmpty ? deviceKind : name).prefix(64))
     }

@@ -52,13 +52,25 @@ final class WebAccessApprovals: ObservableObject {
         }
     }
 
-    /// Lists the waiting requests and opens the sheet for a new one.
+    /// Lists the waiting requests and opens the sheet for a new one. With pair-v1 the pair
+    /// poll reads both kinds at once (`kind=any`) and hands browsers to `take`.
     func refresh() async {
         guard available else {
             requests = []
             return
         }
+        // The pair poll's `kind=any` read lists browsers too.
+        if PairApprovals.shared.available { return }
         guard let list = try? await BrowserApproval.pending(session: account.session) else { return }
+        take(list)
+    }
+
+    /// The browsers waiting, from either list read.
+    func take(_ list: [ApprovalRequest]) {
+        guard available else {
+            requests = []
+            return
+        }
         // One claimed here is answered in its open sheet; one claimed elsewhere isn't ours.
         requests = list.filter { $0.claimed == "no" }
         if presented == nil,

@@ -153,9 +153,43 @@ public final class PinningHostKeyValidator: NIOSSHClientServerAuthenticationDele
         let fingerprint = sshHostKeyFingerprintSHA256(hostKey)
         switch policy.evaluate(host: host, port: port, presented: fingerprint) {
         case .trust:
+            (policy as? HostKeyRecorder)?.record(String(openSSHPublicKey: hostKey))
             validationCompletePromise.succeed(())
         case .reject:
             validationCompletePromise.fail(TransportError.hostKeyRejected(host: host, fingerprint: fingerprint))
         }
+    }
+}
+
+/// A `HostKeyPolicy` that decides exactly as `base` does and keeps the key it trusted, as one
+/// OpenSSH line ("ssh-ed25519 AAAA…"). An approver pairing another device sends that line
+/// with each machine, so the new device pins the very key this one checked.
+public final class HostKeyRecorder: HostKeyPolicy, @unchecked Sendable {
+    private let base: HostKeyPolicy
+    private let lock = NSLock()
+    private var line: String?
+
+    public init(_ base: HostKeyPolicy) {
+        self.base = base
+    }
+
+    public func evaluate(host: String, port: UInt16, presented: String) -> HostKeyDecision {
+        base.evaluate(host: host, port: port, presented: presented)
+    }
+
+    /// The host key of the last connection `base` trusted, or nil before one.
+    public var trustedKey: String? { lock.withLock { line } }
+
+    func record(_ openSSHLine: String) {
+        lock.withLock { line = openSSHLine }
+    }
+
+    /// The pin `base` keeps for an OpenSSH host key line (`sshHostKeyFingerprintSHA256`), or
+    /// nil for a line that isn't one.
+    public static func fingerprint(ofOpenSSHKey line: String) -> String? {
+        guard let key = try? NIOSSHPublicKey(openSSHPublicKey: line.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return nil
+        }
+        return sshHostKeyFingerprintSHA256(key)
     }
 }

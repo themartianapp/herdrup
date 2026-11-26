@@ -36,6 +36,9 @@ final class PushCenter: ObservableObject {
     /// The root view opens that share and its home opens the Gram tab or the terminal, then
     /// clears it. Never routed to an owner screen.
     @Published var pendingGuest: GuestPushRoute?
+    /// A pair request's push (`category: pair_request`), tapped or arriving in the foreground:
+    /// the root view opens "Pair ‹device›?" for it, then clears it.
+    @Published var pendingPairRequest: String?
     /// A guest Gram push arrived (tapped or shown in the foreground): an open guest Gram tab
     /// for that host refreshes.
     @Published private(set) var guestGramArrival: (hostID: String, seq: Int)?

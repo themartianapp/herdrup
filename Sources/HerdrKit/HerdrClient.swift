@@ -2456,6 +2456,15 @@ public actor HerdrClient {
         try await call("owner_access.remove", OwnerAccessRemoveParams(devicePub: devicePub),
                        as: OwnerAccessRemoved.self).removed
     }
+
+    // MARK: - Pairing another device (pair-from-device PLAN, herdr `pair.add_key`)
+
+    /// Adds an ssh-ed25519 key to this machine's `~/.ssh/authorized_keys`, marked
+    /// `herdr-pair:<label>` as `herdr pair` marks its keys (`pair.add_key`, owner only, herdr's
+    /// `pair_add_key` capability). A key already there is not added again (`already`).
+    public func pairAddKey(publicKey: String, label: String) async throws -> PairKeyAdded {
+        try await call("pair.add_key", PairAddKeyParams(publicKey: publicKey, label: label), as: PairKeyAdded.self)
+    }
 }
 
 /// Who the app reports as the actor when it archives an agent, and why.
