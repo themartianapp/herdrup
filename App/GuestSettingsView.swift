@@ -69,7 +69,9 @@ struct SharedWithYouContent: View {
             .buttonStyle(.plain)
             .padding(.horizontal, 16).padding(.top, 30)
             .accessibilityIdentifier("guest-leave")
-            Text("You stop seeing \(access.agentName). To come back, \(access.ownerName) has to send a new invite.")
+            Text(access.accountBound
+                 ? "You stop seeing \(access.agentName) on all your devices. To come back, \(access.ownerName) has to send a new invite."
+                 : "You stop seeing \(access.agentName). To come back, \(access.ownerName) has to send a new invite.")
                 .font(Typography.app(13)).foregroundStyle(Palette.textFaint)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 30).padding(.top, 10)
@@ -78,8 +80,18 @@ struct SharedWithYouContent: View {
         .confirmationDialog("Leave \(access.machineLabel)?", isPresented: $confirmingLeave, titleVisibility: .visible) {
             Button("Leave share", role: .destructive, action: share.onLeave)
         } message: {
-            Text("\(access.agentName) disappears from this phone.")
+            Text(leaveMessage)
         }
+    }
+
+    /// Signed out, a share in the account leaves this device now and the account at the next
+    /// sign-in to it (the ledger keeps the leave).
+    private var leaveMessage: String {
+        guard access.accountBound else { return "\(access.agentName) disappears from this phone." }
+        guard HerdrUpAccount.shared.signedIn else {
+            return "\(access.agentName) disappears from this phone now, and from your other devices when you sign in to HerdrUp here again."
+        }
+        return "\(access.agentName) disappears from every device of your HerdrUp account."
     }
 
     private func value(_ text: String) -> some View {

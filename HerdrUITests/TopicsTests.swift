@@ -232,7 +232,8 @@ final class TopicsTests: XCTestCase {
         XCTAssertTrue(poll(8, every: 0.3) { board.label == "Board pack Q4" }, "renamed: \(board.label)")
     }
 
-    /// `topics_unreachable` keeps the last list on screen and says the agent can't be reached.
+    /// `topics_unreachable` keeps the last list on screen, and with topics listed no problem
+    /// line shows over them (owner, 2026-11-25: the red-dot line over a list that was there).
     func testUnreachableAgentKeepsTheLastList() {
         let app = launch("chatview", ["HERDR_MOCK_TOPICS_UNREACHABLE": "1"])
         openHerdrApp(app)
@@ -240,10 +241,13 @@ final class TopicsTests: XCTestCase {
         let diokan = row("t-diokan", in: app)
         XCTAssertTrue(diokan.exists(within: 8))
         app.buttons["terminal-refresh"].tap()
-        let problem = app.descendants(matching: .any)["topics-problem"].firstMatch
-        XCTAssertTrue(problem.exists(within: 8), "the refresh's failure is shown")
-        XCTAssertTrue(problem.label.contains("Agent not reachable"), problem.label)
+        // Kept: a negative check; the refresh's failed list must have had time to answer.
+        Thread.sleep(forTimeInterval: 3)
+        XCTAssertFalse(app.descendants(matching: .any)["topics-problem"].exists,
+                       "no problem line over a list that is there")
         XCTAssertTrue(diokan.exists, "the last list stays")
+        XCTAssertTrue(row("t-board", in: app).exists)
+        attach(app, "topics-kept-without-problem")
     }
 
     // MARK: Guest
@@ -423,21 +427,209 @@ final class TopicsTests: XCTestCase {
 
     /// #777: Topics were offered, then the list Topics asks for on opening finds the pane
     /// without its agent (`agent_not_found`, the agent restarting). The page keeps Topics and
-    /// the last list with a passing problem, and the next list clears it.
+    /// the last list, with no problem line over it, and the next list keeps both.
     func testTopicsStayAfterTheAgentIsBrieflyGoneWhileOffered() {
         let app = launch("chatview", ["HERDR_MOCK_TOPICS_GONE_AT": "2", "HERDR_MOCK_TOPICS_DISCOVERY_SECONDS": "3"])
         openHerdrApp(app)
         _ = openTopics(app)
         let diokan = row("t-diokan", in: app)
         XCTAssertTrue(diokan.exists(within: 8))
-        let problem = app.descendants(matching: .any)["topics-problem"].firstMatch
-        XCTAssertTrue(problem.exists(within: 8), "the failed list shows as a problem")
-        XCTAssertTrue(problem.label.contains("This agent is gone."), problem.label)
+        // Kept: a negative check; the failed list on opening must have had time to answer.
+        Thread.sleep(forTimeInterval: 3)
+        XCTAssertFalse(app.descendants(matching: .any)["topics-problem"].exists,
+                       "no problem line over a list that is there")
         XCTAssertTrue(diokan.exists, "the last list stays")
         XCTAssertTrue(app.buttons["chat-switch-topics"].isSelected, "and so does Topics")
         app.buttons["terminal-refresh"].tap()
-        XCTAssertTrue(problem.gone(within: 8), "the agent is back: the next list clears the problem")
-        XCTAssertTrue(diokan.exists)
+        XCTAssertTrue(diokan.exists(within: 8))
         XCTAssertTrue(app.buttons["chat-switch-topics"].isSelected)
+    }
+
+    // MARK: A topic behaves like the Inbox chat (2026-11-25)
+
+    /// A working topic shows the Inbox's working dots in its chat, and the model line under
+    /// it from the topic's page; an idle one shows no dots.
+    func testATopicShowsTheWorkingDotsAndTheModel() {
+        let app = launch("chatview")
+        openHerdrApp(app)
+        _ = openTopics(app)
+        let diokan = row("t-diokan", in: app)
+        XCTAssertTrue(diokan.exists(within: 8))
+        diokan.tap()
+        XCTAssertTrue(topicChatOpen("Diokan term sheet", in: app))
+        let dots = app.descendants(matching: .any)["chat-working"].firstMatch
+        XCTAssertTrue(dots.exists(within: 10), "a running topic shows the working dots, as the Inbox does")
+        let model = app.descendants(matching: .any)["chat-model"].firstMatch
+        XCTAssertTrue(model.exists(within: 10), "the topic's model line shows")
+        XCTAssertTrue(model.label.contains("mock-topic-model"), model.label)
+        attach(app, "topics-working-dots")
+
+        if !isPad {
+            app.buttons["topic-back"].tap()
+        }
+        let board = row("t-board", in: app)
+        XCTAssertTrue(board.exists(within: 8))
+        board.tap()
+        XCTAssertTrue(topicChatOpen("Q4 board pack", in: app))
+        XCTAssertTrue(app.staticTexts["Liquidity page drafted; waiting on the November actuals."]
+            .firstMatch.exists(within: 10))
+        XCTAssertFalse(dots.exists, "an idle topic shows no dots")
+    }
+
+    /// iPhone: a topic is full screen, without the page's switch, so its header has Terminal,
+    /// which opens the agent's pane; Topics brings the topic back. iPad keeps the switch.
+    func testPhoneTopicHeaderOpensTheTerminal() {
+        let app = launch("chatview")
+        openHerdrApp(app)
+        _ = openTopics(app)
+        let diokan = row("t-diokan", in: app)
+        XCTAssertTrue(diokan.exists(within: 8))
+        diokan.tap()
+        XCTAssertTrue(topicChatOpen("Diokan term sheet", in: app))
+        let terminal = app.buttons["topic-terminal"]
+        if isPad {
+            XCTAssertFalse(terminal.exists, "iPad keeps the page's switch beside the topic")
+            XCTAssertTrue(app.buttons["chat-switch-terminal"].exists)
+            return
+        }
+        XCTAssertTrue(terminal.exists(within: 5), "the topic's header offers the Terminal")
+        XCTAssertTrue(terminal.isHittable)
+        attach(app, "topics-phone-terminal-button")
+        terminal.tap()
+        let terminalSegment = app.buttons["chat-switch-terminal"]
+        XCTAssertTrue(terminalSegment.exists(within: 8), "the page and its switch are back")
+        XCTAssertTrue(poll(8, every: 0.3) { terminalSegment.isSelected }, "on the agent's terminal")
+        app.buttons["chat-switch-topics"].tap()
+        XCTAssertTrue(topicChatOpen("Diokan term sheet", in: app), "Topics brings the open topic back")
+    }
+
+    /// The agent is busy: every list times out. The session file's topics (`topic_sessions`
+    /// on `agent.list`) fill the list at once, with no problem line, and open their chats.
+    func testTopicsFillFromTheSessionFileWhileTheAgentIsBusy() {
+        let app = launch("chatview", ["HERDR_MOCK_TOPICS_SESSIONS": "1", "HERDR_MOCK_TOPICS_FAIL_FIRST": "1000",
+                                      "HERDR_MOCK_TOPICS_FAIL_CODE": "topics_timeout"])
+        openHerdrApp(app)
+        _ = openTopics(app)
+        let diokan = row("t-diokan", in: app)
+        XCTAssertTrue(diokan.exists(within: 8), "the session file's topics are listed")
+        XCTAssertEqual(diokan.label, "Diokan term sheet")
+        XCTAssertTrue(row("t-board", in: app).exists)
+        XCTAssertTrue(row("t-nippon", in: app).exists)
+        // Kept: a negative check; the timed-out lists must have had time to answer.
+        Thread.sleep(forTimeInterval: 3)
+        XCTAssertFalse(app.descendants(matching: .any)["topics-problem"].exists,
+                       "no problem line over the listed topics")
+        attach(app, "topics-from-session-file")
+        diokan.tap()
+        XCTAssertTrue(topicChatOpen("Diokan term sheet", in: app))
+        XCTAssertTrue(app.staticTexts["Draft the term sheet comparison for Diokan."]
+            .firstMatch.exists(within: 10), "the topic's conversation reads from its file")
+    }
+
+    /// herdr answers `topics_unsupported` while it does not find the agent in its pane for a
+    /// moment. With topics in the session file that is not "no topics": Topics and its list stay.
+    func testTopicsUnsupportedDoesNotHideTopicsTheSessionFileLists() {
+        let app = launch("chatview", ["HERDR_MOCK_TOPICS_SESSIONS": "1", "HERDR_MOCK_TOPICS_FAIL_FIRST": "1000",
+                                      "HERDR_MOCK_TOPICS_FAIL_CODE": "topics_unsupported"])
+        openHerdrApp(app)
+        _ = openTopics(app)
+        let diokan = row("t-diokan", in: app)
+        XCTAssertTrue(diokan.exists(within: 8))
+        app.buttons["terminal-refresh"].tap()
+        // Kept: a negative check; the refused lists must have had time to answer.
+        Thread.sleep(forTimeInterval: 3)
+        XCTAssertTrue(app.buttons["chat-switch-topics"].isSelected, "Topics stays")
+        XCTAssertTrue(diokan.exists, "and so does its list")
+    }
+
+    /// The topic's composer has the Inbox's pull-to-expand editor: three lines offer the
+    /// handle, and a tap opens a taller editor.
+    func testTopicComposerOffersTheExpandHandle() {
+        let app = launch("chatview")
+        openHerdrApp(app)
+        _ = openTopics(app)
+        let board = row("t-board", in: app)
+        XCTAssertTrue(board.exists(within: 8))
+        board.tap()
+        XCTAssertTrue(topicChatOpen("Q4 board pack", in: app))
+        let field = app.textViews["topic-composer-input"]
+        XCTAssertTrue(field.exists(within: 8))
+        field.tap()
+        field.typeText("one")
+        field.waitForSettledFrame()
+        let oneLine = field.frame
+        field.typeText("\ntwo\nthree")
+        _ = poll(5, every: 0.1) { field.frame.height > oneLine.height }
+        field.waitForSettledFrame()
+        let threeLines = field.frame
+        XCTAssertGreaterThan(threeLines.height, oneLine.height)
+        let handle = app.descendants(matching: .any)["composer-expand-handle"].firstMatch
+        XCTAssertTrue(handle.exists(within: 3), "three lines offer the expand handle in a topic")
+        handle.tap()
+        _ = poll(5, every: 0.1) { field.frame.height > threeLines.height + 20 }
+        XCTAssertGreaterThan(field.frame.height, threeLines.height + 20, "tapping the handle opens the editor")
+        attach(app, "topics-composer-editor")
+    }
+
+    /// A message the Inbox handed the topic (`relay`) reads as the agent's text under "From
+    /// Inbox", not as the owner's bubble, folded after about six lines until "Show all".
+    func testAHandedOverMessageReadsFromTheInbox() {
+        let app = launch("chatview", ["HERDR_MOCK_TOPICS_RELAY": "1"])
+        openHerdrApp(app)
+        _ = openTopics(app)
+        let diokan = row("t-diokan", in: app)
+        XCTAssertTrue(diokan.exists(within: 8))
+        diokan.tap()
+        XCTAssertTrue(topicChatOpen("Diokan term sheet", in: app))
+        let from = app.staticTexts["chat-relay-from"].firstMatch
+        XCTAssertTrue(from.exists(within: 10), "the handed-over message names its sender")
+        XCTAssertEqual(from.label, "From Inbox")
+        let toggle = app.buttons["chat-relay-toggle"].firstMatch
+        XCTAssertTrue(toggle.exists(within: 5), "a long one is folded")
+        XCTAssertEqual(toggle.label, "Show all")
+        let relay = app.descendants(matching: .any)["chat-relay"].firstMatch
+        let folded = relay.frame.height
+        attach(app, "topics-relay-folded")
+        toggle.tap()
+        XCTAssertTrue(poll(5, every: 0.2) { toggle.label == "Show less" })
+        XCTAssertTrue(poll(5, every: 0.2) { relay.frame.height > folded + 20 }, "Show all unfolds it")
+    }
+
+    /// The topic's composer is the Inbox's: Saved Prompts in Send's slot while the draft is
+    /// empty, the paperclip's sheet with files and photos, a chip that uploads at once, and on
+    /// Send the file posted as a Gram and named in the message the topic gets.
+    func testATopicTakesAttachmentsLikeTheInbox() {
+        let app = launch("chatview", ["HERDR_MOCK_PICKED_FILE": "1"])
+        openHerdrApp(app)
+        _ = openTopics(app)
+        let board = row("t-board", in: app)
+        XCTAssertTrue(board.exists(within: 8))
+        board.tap()
+        XCTAssertTrue(topicChatOpen("Q4 board pack", in: app))
+        XCTAssertTrue(app.descendants(matching: .any)["topic-saved-prompts"].exists(within: 5),
+                      "an empty draft offers Saved Prompts where Send goes, as in the Inbox")
+        let paperclip = app.buttons["topic-attach-button"]
+        XCTAssertTrue(paperclip.exists(within: 8), "the topic's composer has the paperclip")
+        XCTAssertTrue(poll(10, every: 0.25) { paperclip.isEnabled }, "attach opens once the topics have loaded")
+        paperclip.tap()
+        let file = app.buttons["composer-attach-file"]
+        XCTAssertTrue(file.exists(within: 5), "the paperclip opens the Inbox's attach sheet")
+        XCTAssertTrue(app.buttons["composer-attach-photos"].exists, "with the photo library as well as files")
+        file.tap()
+        let chip = app.descendants(matching: .any)["topic-attachment"].firstMatch
+        XCTAssertTrue(chip.exists(within: 10), "the picked file stages a chip")
+        XCTAssertTrue(app.staticTexts["picked-notes.txt"].firstMatch.exists)
+        attach(app, "topics-attachment-chip")
+
+        let field = app.textViews["topic-composer-input"]
+        field.tap()
+        field.typeText("Use these numbers")
+        app.buttons["topic-send-button"].tap()
+        let sent = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Use these numbers"))
+        XCTAssertTrue(sent.firstMatch.exists(within: 15), "the message reaches the topic")
+        XCTAssertTrue(poll(15, every: 0.25) { !chip.exists }, "the chip clears once the file is delivered")
+        let note = app.staticTexts["topic-send-note"]
+        XCTAssertFalse(note.exists, "the send does not fail: \(note.exists ? note.label : "")")
+        attach(app, "topics-attachment-sent")
     }
 }

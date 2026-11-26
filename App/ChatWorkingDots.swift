@@ -8,7 +8,9 @@ struct ChatWorkingDots: View {
 
     var body: some View {
         HStack(spacing: 9) {
-            TimelineView(.animation(minimumInterval: 0.1, paused: reduceMotion || scenePhase != .active)) { context in
+            // Still in UI tests that hold motion still (`UITestMotion`), as `ActivitySpinner`.
+            TimelineView(.animation(minimumInterval: 0.1,
+                                    paused: reduceMotion || scenePhase != .active || UITestMotion.off)) { context in
                 let phase = context.date.timeIntervalSinceReferenceDate * 4.5
                 HStack(spacing: 4) {
                     ForEach(0..<3) { index in

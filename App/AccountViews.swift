@@ -14,7 +14,7 @@ struct AccountOnboardingGate<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        if account.shouldOnboard(hasMachines: !hosts.hosts.isEmpty, hasShares: !shares.machines.isEmpty) {
+        if account.shouldOnboard(hasMachines: !hosts.hosts.isEmpty, hasShares: !shares.isEmpty) {
             AccountOnboardingView(account: account)
         } else {
             content()

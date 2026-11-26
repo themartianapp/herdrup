@@ -87,6 +87,8 @@ struct GuestMockTransport: HerdrTransport {
             hostPublicKey: Data(repeating: 7, count: 32)),
         acceptedAt: Date(timeIntervalSince1970: 1_790_000_000))
 
+    /// `HERDR_MOCK_GUEST_ACCT=1`: the host takes HerdrUp accounts (`"acct": 1`), so Accept
+    /// offers 2A (Add to my account / Only this device).
     static let invite = GuestInvite(
         relay: access.endpoint.relay,
         hostID: access.endpoint.hostID,
@@ -97,7 +99,27 @@ struct GuestMockTransport: HerdrTransport {
         ownerName: access.ownerName,
         agentName: access.agentName,
         guestName: access.guestName,
-        expires: Date(timeIntervalSince1970: 4_102_444_800))
+        expires: Date(timeIntervalSince1970: 4_102_444_800),
+        acceptsAccount: ProcessInfo.processInfo.environment["HERDR_MOCK_GUEST_ACCT"] == "1")
+
+    /// What the `guestaccept` mock's Accept redeems: `access`, or bound to the account with a
+    /// host-shaped guest id (22 b64url characters, as the `shares` collection requires), so
+    /// the account's sync takes the item.
+    static func accepted(bindToAccount: Bool) async throws -> GuestAccess {
+        guard bindToAccount else { return access }
+        return GuestAccess(guestID: "Z3Vlc3QtbW9jay1sbG1vMQ", guestName: access.guestName,
+                           machineLabel: access.machineLabel, ownerName: access.ownerName,
+                           agentName: access.agentName, agentTarget: access.agentTarget,
+                           endpoint: access.endpoint, acceptedAt: Date(), accountBound: true)
+    }
+
+    /// The first open of an account share (`MockAccountServer`'s `shares`) on this device: the
+    /// hello the host answers, without the relay. Its agent is listed under an `acct-` target.
+    static func firstOpen(_ share: AccountShare) async throws -> GuestAccess {
+        GuestAccess(guestID: share.guestID, guestName: "Nike", machineLabel: share.machineLabel,
+                    ownerName: share.ownerName, agentName: share.agentName, agentTarget: "acct-\(share.agentName)",
+                    endpoint: share.endpoint, acceptedAt: Date(), accountBound: true)
+    }
 
     /// The `guestmachine` mock's three grants on one machine: llm-opt, then two agents both
     /// named enyo-ui. The first enyo-ui is listed and idle; the second's terminal is gone, so
@@ -442,9 +464,19 @@ struct GuestMockTransport: HerdrTransport {
         let shared: String? = switch share.agentTarget {
         case Self.access.agentTarget: sharedAgentJSON
         case "w2-4": Self.enyoAgentJSON
+        case let target where target.hasPrefix("acct-"): accountAgentJSON
         default: nil
         }
         return [shared, Self.otherAgentJSON].compactMap { $0 }.joined(separator: ",")
+    }
+
+    /// The agent of an account share opened by `firstOpen`, as its host lists it: enyo is a
+    /// working claude (idle under `HERDR_MOCK_STILL`), any other an idle codex.
+    private var accountAgentJSON: String {
+        let enyo = share.agentName == "enyo"
+        let status = enyo && !Self.still ? "working" : "idle"
+        let kind = enyo ? "claude" : "codex"
+        return #"{"terminal_id":"\#(share.agentTarget)","pane_id":"\#(share.agentTarget)","name":"\#(share.agentName)","agent":"\#(kind)","display_agent":"\#(kind)","agent_status":"\#(status)","guest_running":true}"#
     }
 
     private static let esc = "\u{1b}["

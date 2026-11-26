@@ -710,7 +710,7 @@ struct ChatMockTransport: HerdrTransport {
         // `HERDR_MOCK_TOPICS_SWITCH_BUSY` / `_IDLE`: herdr-app's status for the switch's wait-or-now
         // choice (idle once a held switch was applied).
         let status = TopicsMock.owner.switchAgentStatus ?? (ChatMockConversation.owner.isAnswered ? working : "blocked")
-        return #"{"pane_id":"\#(paneID)","name":"herdr-app","agent":"omp","agent_status":"\#(status)","cwd":"/root/herdr","terminal_title_stripped":"Merge #305 and update the servers?"\#(TopicsMock.owner.topicsEnabledJSON)}"#
+        return #"{"pane_id":"\#(paneID)","name":"herdr-app","agent":"omp","agent_status":"\#(status)","cwd":"/root/herdr","terminal_title_stripped":"Merge #305 and update the servers?"\#(TopicsMock.owner.topicsEnabledJSON)\#(TopicsMock.owner.topicSessionsJSON)}"#
     }
 }
 #endif

@@ -16,6 +16,14 @@ final class TopicsMock: @unchecked Sendable {
     /// (an agent that offers its topics only a moment later), so discovery has to retry.
     private static let failsFirst = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_FAIL_FIRST"]
         .flatMap(Int.init) ?? 0
+    /// `HERDR_MOCK_TOPICS_FAIL_CODE=<code>`: the lists `_UNREACHABLE` and `_FAIL_FIRST` fail
+    /// answer this code instead (`topics_timeout`: a busy agent; `topics_unsupported`: herdr
+    /// not finding the agent in its pane for a moment).
+    private static let failCode = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_FAIL_CODE"]
+        ?? "topics_unreachable"
+    /// `HERDR_MOCK_TOPICS_SESSIONS=1`: herdr-app's `agent.list` row carries `topic_sessions`,
+    /// the board's topics as the session file records them (id, title, created).
+    static let sessions = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_SESSIONS"] != nil
     /// `HERDR_MOCK_TOPICS_GONE_AT=<n>[,<n>…]`: those list calls (counted from 1) answer
     /// `agent_not_found`, as an agent that restarts and leaves its pane without one for a moment
     /// (herdrup#777).
@@ -120,8 +128,24 @@ final class TopicsMock: @unchecked Sendable {
     }
 
     /// Who wrote a message: the owner (the written history), the one reading this mock (the
-    /// owner, or the guest under its name), or the topic itself.
-    private enum Speaker { case owner, reader, agent }
+    /// owner, or the guest under its name), the topic itself, or the Inbox handing it a message.
+    private enum Speaker { case owner, reader, agent, inbox }
+
+    /// `HERDR_MOCK_TOPICS_RELAY=1`: Diokan's conversation ends with a long message the Inbox
+    /// handed it (`relay`), as a herdr that recognises omp's handover wrapper sends it.
+    private static let relays = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_RELAY"] != nil
+    private static let relayText = """
+    Nicola asked for the lender comparison before Friday. Please cover:
+
+    - the covenant headroom on the base case
+    - the second draw and its conditions
+    - fees, upfront and running
+    - the margin ratchet
+    - security and guarantees
+    - the prepayment terms
+    - reporting duties
+    - anything that blocks signing this month
+    """
 
     private struct Topic {
         let id: String
@@ -178,6 +202,7 @@ final class TopicsMock: @unchecked Sendable {
                   messages: [(.owner, "Track the Nippon data room.", now - 600 * hour),
                              (.agent, "41 of 57 items in; legal folder still empty.", now - 500 * hour)]),
         ]
+        if Self.relays { topics[0].messages.append((.inbox, Self.relayText, now - 2 * hour)) }
     }
 
     private static func now() -> UInt64 { UInt64(max(Date().timeIntervalSince1970, 0) * 1000) }
@@ -250,7 +275,7 @@ final class TopicsMock: @unchecked Sendable {
                     return ChatMockConversation.error(id: id, code: "agent_not_found", message: "no such agent")
                 }
                 if (Self.goesUnreachable && listCalls > 1) || listCalls <= Self.failsFirst {
-                    return ChatMockConversation.error(id: id, code: "topics_unreachable",
+                    return ChatMockConversation.error(id: id, code: Self.failCode,
                                                       message: "the agent has not offered its topics")
                 }
                 var result: [String: Any] = [
@@ -438,6 +463,21 @@ final class TopicsMock: @unchecked Sendable {
         }
     }
 
+    /// herdr-app's `topic_sessions` for the agents list (`HERDR_MOCK_TOPICS_SESSIONS`): every
+    /// topic of the board, as the session file has it; empty without the flag.
+    var topicSessionsJSON: String {
+        guard Self.enabled, Self.sessions else { return "" }
+        let sessions = lock.withLock {
+            topics.map { topic -> [String: Any] in
+                ["topic_id": topic.id, "path": "/root/.omp/sessions/herdr-app/\(topic.id).jsonl",
+                 "title": topic.title, "created_unix_ms": topic.createdMs]
+            }
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: sessions),
+              let json = String(data: data, encoding: .utf8) else { return "" }
+        return #","topic_sessions":"# + json
+    }
+
     /// herdr-app's status for the switch tests (`HERDR_MOCK_TOPICS_SWITCH_BUSY` / `_IDLE`),
     /// idle once a held switch was applied; nil leaves the chat mock's own status.
     var switchAgentStatus: String? { lock.withLock { currentSwitchStatus } }
@@ -529,6 +569,10 @@ final class TopicsMock: @unchecked Sendable {
                                     "text": message.text, "final": true])
                     entries.append(["id": "\(topic.id)-\(index)e", "ts_ms": message.ms + 1, "kind": "turn_end",
                                     "status": "done"])
+                case .inbox:
+                    entries.append(["id": "\(topic.id)-\(index)h", "ts_ms": message.ms, "kind": "relay",
+                                    "from": "Inbox", "topic_id": topic.id, "direction": "to_topic",
+                                    "text": message.text])
                 }
             }
             return ChatMockConversation.encode(id: id, result: [
@@ -539,6 +583,8 @@ final class TopicsMock: @unchecked Sendable {
                 "after": "a\(topic.messages.count)",
                 "working": NSNull(),
                 "pending_ask": NSNull(),
+                // A topic's page carries its session's model, as the Inbox's does.
+                "model": ["provider": "mock", "id": "mock-topic-model", "thinking_level": "high"],
             ])
         }
     }

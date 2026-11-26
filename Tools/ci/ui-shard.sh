@@ -1010,6 +1010,14 @@ case "$shard" in
     # the classes above). 10m: p95 2.9 min, slowest pass 4.2 (n=151).
     run_suite iPadAgentListChrome "$IPAD_UDID" 10m -only-testing:HerdrUITests/AgentListChromeTests || failed=1
     check_classes_ran TestReceipts/iPadAgentListChrome-first.xcresult AgentListChromeTests || failed=1
+    # Account shares (#700): the guest's accept, SHARED WITH YOU and the opened share, kept as
+    # ipad-shares-* screenshots. The iPhone runs the whole class in the catch-all.
+    run_suite iPadAccountShares "$IPAD_UDID" 10m \
+      -only-testing:HerdrUITests/AccountSharesTests/testSignedOutTheInviteOffersTheAccountOrThisDeviceOnly \
+      -only-testing:HerdrUITests/AccountSharesTests/testSignedInAddToMyAccountOpensTheShareInTheAccount \
+      -only-testing:HerdrUITests/AccountSharesTests/testAnAccountShareOpensWithNothingToAccept \
+      -only-testing:HerdrUITests/AccountSharesTests/testSeveralSharesStayOneRowPerMachine || failed=1
+    check_classes_ran TestReceipts/iPadAccountShares-first.xcresult AccountSharesTests || failed=1
     ;;
   settings-stack)
     # Three things in one short script shard (macserve-script-shard.sh checks the built

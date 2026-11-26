@@ -90,6 +90,9 @@ final class HerdrUpAccount: ObservableObject {
     /// True while a sync applies the account's copy to the local stores, so those changes
     /// don't count as local edits to push.
     private var applying = false
+    /// The signed-in account's id, known from the first sync of this process on. Shares added
+    /// here are claimed for it (`AccountShareLedger`).
+    private var accountID: String?
     /// The file the sync state lives in, so a sign-out that couldn't delete it can retry.
     private let syncStore: SyncStateStore
     /// Where the session's display hint lives: the Keychain item beside the refresh token.
@@ -482,6 +485,10 @@ final class HerdrUpAccount: ObservableObject {
                                    message: "Your machines and prompts stay on this \(Self.deviceKind), but the account's synced copy couldn't be deleted. herdrup tries again when it next opens.")
         }
         SavedStoresAccountLocal.forget(defaults)
+        // The ledger stays with the shares: which account each belongs to, and leaves still
+        // to write (#849 review F1).
+        SharedMachinesStore.shared.setAccountShares([])
+        accountID = nil
         forgetProfile()
         signedIn = false
         rememberDisplayHint(nil)
@@ -548,7 +555,11 @@ final class HerdrUpAccount: ObservableObject {
             self?.applying = active
         }
         do {
-            let summary = try await run.run()
+            var summary = try await run.run()
+            // The shares after the machines and prompts, on the mirror that run just pulled.
+            let account = try await session.requireAccountID()
+            accountID = account
+            summary.absorb(try await AccountShareSync(engine: sync, store: SharedMachinesStore.shared, account: account).run())
             lastSync = summary
             syncFailed = summary.overQuota
             let hosts = await sync.items(in: .hosts).count
@@ -581,6 +592,18 @@ final class HerdrUpAccount: ObservableObject {
             .filter { [weak self] in self?.applying == false && self?.signedIn == true }
             .debounce(for: .seconds(3), scheduler: RunLoop.main)
             .sink { [weak self] in self?.localEditSync() }
+            .store(in: &cancellables)
+
+        // A share added to or left from the account here (#700) is claimed for this account at
+        // once, then pushed, or deleted on every device, by a sync that starts now.
+        SharedMachinesStore.shared.$machines.dropFirst()
+            .map { Set($0.filter(\.accountBound).map(\.id)) }
+            .removeDuplicates()
+            .sink { [weak self] bound in
+                guard let self, signedIn else { return }
+                if let accountID { SharedMachinesStore.shared.ledger.claim(bound, account: accountID) }
+                localEditSync()
+            }
             .store(in: &cancellables)
     }
 
