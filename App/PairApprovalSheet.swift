@@ -437,6 +437,7 @@ struct PairApprovalSheet: View {
     }
 }
 
+@MainActor
 private extension PairApprovalEntry {
     func isAdded(_ model: PairApprovalModel) -> Bool {
         if case .done(let status, _) = model.states[id] { return status != .failed }
