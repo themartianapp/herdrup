@@ -15,15 +15,29 @@ import { accountInvite, accountLink, browserLink, installTarget, invitePayload, 
   // The App Store app is for iPhone and iPad only; a computer gets HerdrUp Desktop instead.
   var target = installTarget(navigator.userAgent, navigator.maxTouchPoints);
   var device = target === "ios" ? "phone" : target === "desktop" ? "computer" : "device";
-  if (target === "ios") {
-    $("store").hidden = false;
-  } else if (target === "desktop") {
-    $("desktop").hidden = false;
+  var install = target === "ios" ? $("store") : target === "desktop" ? $("desktop") : null;
+  if (target === "desktop") {
     $("lead").textContent = "Open this link on the computer or iPhone where HerdrUp is installed.";
     $("hint").textContent = "No HerdrUp yet? Click Open in browser, or install HerdrUp for desktop, then come back to this page and click Open in HerdrUp.";
-  } else {
+  } else if (target !== "ios") {
     $("lead").textContent = "Open this link on the iPhone or computer where HerdrUp is installed.";
     $("hint").textContent = "No HerdrUp for this device? Tap Open in browser.";
+  }
+
+  // Where to get HerdrUp, chosen once the page knows what it shows (an invite, or a problem):
+  // under an account invite's choice, one line naming the install capsule's own link and words;
+  // anywhere else, the capsule and the hint.
+  function offerInstall(account) {
+    if (!account) {
+      if (install !== null) install.hidden = false;
+      return;
+    }
+    $("hint").hidden = true;
+    if (install === null) return;
+    var getLink = $("get-link");
+    getLink.href = install.href;
+    getLink.textContent = install.textContent;
+    $("get").hidden = false;
   }
 
   function decode(payload) {
@@ -48,6 +62,7 @@ import { accountInvite, accountLink, browserLink, installTarget, invitePayload, 
     var el = $("problem");
     el.textContent = text;
     el.hidden = false;
+    offerInstall(false);
   }
 
   function expiryText(expiresUnix) {
@@ -104,7 +119,6 @@ import { accountInvite, accountLink, browserLink, installTarget, invitePayload, 
   open.hidden = false;
   var browser = $("browser");
   browser.href = browserLink(payload);
-  browser.hidden = false;
 
   var invite;
   try {
@@ -113,6 +127,7 @@ import { accountInvite, accountLink, browserLink, installTarget, invitePayload, 
     invite = null;
   }
   if (!validInvite(invite)) {
+    browser.hidden = false;
     problem("This invite link looks incomplete. Try opening it in HerdrUp, or ask for the link again.");
     return;
   }
@@ -142,23 +157,16 @@ import { accountInvite, accountLink, browserLink, installTarget, invitePayload, 
 
   // An account invite (acct: 1) offers the browser's ways to keep it, after Open in HerdrUp: in
   // the guest's HerdrUp account, through Apple or Google (the browser guest signs in with it
-  // first when it must), or on this device only. The page never signs in itself. The install
-  // capsules shrink to one line under them. Other invites keep the single Open in browser.
-  if (accountInvite(invite)) {
-    browser.hidden = true;
+  // first when it must), or on this device only. The page never signs in itself. Other invites
+  // keep the single Open in browser.
+  var account = accountInvite(invite);
+  if (account) {
     $("apple").href = accountLink(payload, "apple");
     $("google").href = accountLink(payload, "google");
     $("device").href = browserLink(payload);
     $("choice").hidden = false;
-    $("store").hidden = true;
-    $("desktop").hidden = true;
-    $("hint").hidden = true;
-    var install = target === "ios" ? $("store") : target === "desktop" ? $("desktop") : null;
-    if (install !== null) {
-      var getLink = $("get-link");
-      getLink.href = install.href;
-      getLink.textContent = target === "ios" ? "Get it on the App Store" : "Get HerdrUp for desktop";
-      $("get").hidden = false;
-    }
+  } else {
+    browser.hidden = false;
   }
+  offerInstall(account);
 })();
