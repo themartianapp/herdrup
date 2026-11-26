@@ -1107,8 +1107,8 @@ ship separately from the Worker, so an app offers a feature only when the live W
 The names are a stable contract:
 
 - `native_sign_in`, `devices`, `statements`, `sync`, `delete`, `web_approve` (browser
-  approval, §12) and `approval_expiry_final` (a reported `expired` is final, §12.2) are always
-  listed.
+  approval, §12), `approval_expiry_final` (a reported `expired` is final, §12.2) and `pair_v1`
+  (pairing an app device by code, with pair-request pushes, §13) are always listed.
 - `native_sign_in_google` is listed when `GOOGLE_IOS_CLIENT_ID` is set. It tells the iOS app it
   may offer native Google sign-in (ASWebAuthenticationSession with PKCE against the iOS client,
   then `POST /v1/auth/google`), which needs no client secret. `web_sign_in_google` doesn't cover
@@ -1434,3 +1434,137 @@ canonical, so comparing the strings compares the keys.
 | `withdrawals` | removed browsers' keys and fingerprints, 35 days |
 
 All four carry `account_id` and are in `ACCOUNT_TABLES`, so account deletion sweeps them.
+
+## 13. Pairing an app device with the owner's machines (pair-v1, 26 Nov)
+
+Built from the herdr-app pair plan (`ui-proposals-20261125-pair/PLAN.md`, option B, code-first,
+owner decisions 25 and 26 Nov). This is the account service's slice. Code: `src/approvals.ts`
+(shared with approve-v1) and `src/push.ts`, migration `0008_pair.sql`.
+
+### 13.1 What it is
+
+A new device N (the iOS or desktop app, signed in and enrolled with its X25519 key B) asks an
+approver A (another app device of the account, key T) to add a new SSH key S to the owner's
+machines. A adds S with herdr's `pair.add_key` over its own SSH session to each machine it
+ticks. Then it seals the machine list (host, port, user, pinned host key, nickname, status) for
+N. As in §12, the service is a **mailbox, never authority**. It never sees a machine address or
+a per-machine result, and it can't add a key anywhere. A browser is never a pair requester
+(browsers use owner access, §12), and never a pair approver.
+
+### 13.2 Commit, then reveal, with S bound
+
+S is the 32 raw bytes of N's new ed25519 public key, made for this request.
+
+```
+commit = SHA-256("herdrup-pair-v1|commit" ‖ 0x00 ‖ B ‖ S ‖ nonce_b)
+h      = SHA-256("herdrup-pair-v1|sas"    ‖ 0x00 ‖ B ‖ S ‖ T ‖ nonce_b ‖ nonce_t)
+code   = uint32_be(h[0..4]) mod 10000, 4 digits, zero-padded
+```
+
+S is in both hashes. If a service swapped the S that A reads, A's code would differ from N's,
+and the reveal would not open N's commit. N posts `{kind: "pair", commit, ssh_pub: S}` to
+`POST /v1/approvals`. Every step after that is §12.2's, with the same endpoints, order, guards
+and errors:
+
+- claim → reveal → finish, each once, in order, guarded in its updating statement;
+- **the requester is an app device** (`403 not_native` for a browser). A request without `kind`
+  is still approve-v1 and still needs a browser (`403 not_a_browser`);
+- **the approver is an app device other than the requester**: a browser gets
+  `403 not_an_approver`, and the requester claiming its own request gets `403 own_request`.
+  The claim's statement itself requires `browser_device_id <> approver`;
+- the requester reveals (`POST /v1/approvals/<id>/reveal`), and the service checks the reveal
+  against the pair commit over B and S. A mismatch is `400 reveal_mismatch` and ends the request;
+- 10 minutes, one live request per requester (a new one replaces it, whatever its kind), the
+  same hourly cap summed over the account, and **a reported expiry is final** (storeExpiry runs
+  first in every read, and every step requires `outcome IS NULL`);
+- another account's devices see nothing (`404`).
+- **the requester may cancel** at any step before the finish:
+  `POST /v1/approvals/<id>/cancel` → `{state: "cancelled"}`. Only the requester can cancel
+  (`404` for anyone else, `403 not_native` for a browser), and only pair requests can be
+  cancelled. The cancel stores outcome `cancelled`, readable for 10 minutes like any outcome,
+  with `outcome_stored: true`. Its update requires `outcome IS NULL`, as every step's does. So
+  of a cancel and a finish that race, exactly one lands, and a reported `cancelled` is final.
+  Every later step (claim, reveal, finish or deny, envelope, cancel) answers `410 cancelled`.
+  A cancel after the finish answers `409 already_finished`. This matters after the reveal: an
+  approver who already has the code can no longer finish, so it adds no key.
+
+`GET /v1/approvals` still lists browser requests only, in the same shape. Apps from before
+pair-v1 call it without a parameter, so they must never be offered a pair request as a
+browser's. Pair requests are listed by `GET /v1/approvals?kind=pair`:
+`{id, kind: "pair", device: {device_id, device_pub, name, platform, created_ms}, commit, ssh_pub,
+claimed, expires_in}`. `GET /v1/approvals?kind=any` lists both kinds in one answer, so a new
+approver polls once (one `APPROVAL_LIMIT` call). Pair requests keep their shape there, and each
+browser request gains `kind: "browser"`. The caller's own request is never listed. `GET /v1/approvals/<id>` on a
+pair request adds `kind`, `commit`, `ssh_pub` and `device`, so an approver opening it from a
+push needs no list. A pair request's claim leaves no `approval_claimed_ms` mark and its device's
+removal no withdrawal: what A adds is an SSH key, which the owner revokes on the machine
+(`herdr pair --revoke`). Devices shows no access state for an app device.
+
+### 13.3 The envelope and its retries
+
+```
+ikm    = X25519(t, B) = X25519(b, T)          (abort if all zero)
+k      = HKDF-SHA256(ikm, salt = B ‖ T, info = "herdrup-pair-v1|envelope", 32)
+aad    = "herdrup-pair-v1|envelope" ‖ 0x00 ‖ B ‖ T ‖ S ‖ request_id ‖ uint64_be(seq)
+sealed = b64url(iv(12) ‖ AES-256-GCM(k, iv, aad, json))
+json   = {"v":1,"machines":[{"nickname","host","port","user","host_key","status","reason"?}]}
+```
+
+This is §12.3 with the pair label, and with S (32 bytes) and the request id (its 22 ASCII
+characters, as on the wire) also in the AAD. The key is still §12.3's, over B and T. Without
+them, the service could hand N an older approved envelope from the same B and T (another
+request, another S) as this request's. With them, an envelope opens only as the request it was
+sealed for.
+
+**seq is per request.** The finish's envelope has `seq ≥ 1`, and the apps start at 1. Each retry
+(`PUT …/envelope`) must be higher than the stored one. A new request starts again at 1. Browser
+envelopes (§12.3), which live across requests per approver, keep their own seq rule.
+
+- `finish` is `{outcome: "approved", seq, sealed}` with `seq ≥ 1` (no scope or expiry: a key
+  has none), or `{outcome: "denied"}`. One statement is both the single-use gate and the write.
+  It stores the envelope on the request row (`seq`, `sealed`, at most 16 KB) and marks the row
+  `approved` for 10 minutes. A finish that loses to another, or to a stored expiry, writes
+  nothing.
+- `PUT /v1/approvals/<id>/envelope {seq, sealed}` lets the claimant replace it with a higher
+  seq while those 10 minutes last, to retry the machines that failed (`409 stale_seq`,
+  `410 expired` after the 10 minutes, `409 not_approved` before an approval). Nobody else can
+  write it (`404`).
+- N reads it with `GET /v1/pairs/self`:
+  `{request?: {id, state, expires_in, outcome_stored?}, envelopes: [{request_id, ssh_pub,
+  approver_pub, approver_name, seq, sealed}]}`. There is at most one envelope: its request's,
+  at the latest seq. A new request replaces the row and its envelope, so N saves the machines
+  first. A browser gets `403 not_native`.
+
+`test/vectors/pair-v1.json` is the vector for the apps. It was generated independently in
+Python (`cryptography`) and `test/pairs.test.ts` regenerates it in TypeScript and asserts it
+byte for byte. It uses §12.3's RFC 7748 §6.1 keys (B = the "browser" key, T = the approver's),
+S = the RFC 8032 test 1 public key, request id `UFBQUFBQUFBQUFBQUFBQUA` (16 bytes of 0x50),
+nonce_b 0x11×32, nonce_t 0x22×32, an envelope at seq 7, and iv 0x33×12.
+
+### 13.4 Pair-request pushes
+
+- `PUT /v1/devices/self/push {capability}` stores the calling device's PushRelay device
+  capability (`hpr1.…`, at most 512 characters, the relay's own bound), and
+  `DELETE /v1/devices/self/push` clears it. Both answer `204`. iOS and iPadOS devices only
+  (`403 not_ios`): they run the iOS app, the only client with an APNs token. The capability is
+  sealed by PushRelay, so this service never holds an APNs token.
+- When a pair request is created, each other iOS device of the account with a capability gets
+  an alert through `POST $PUSH_RELAY_URL/v1/send` (`https://push.herdrup.app`):
+  `{"aps": {"alert": {"body": "‹N name› wants to pair with your machines"}, "sound":
+  "default", "category": "pair_request"}, "request_id": "<id>"}`, priority 10, with APNs
+  expiration at the request's end. The requester itself is never alerted.
+- A `410` from the relay (APNs says the token is gone) deletes that capability, if it is still
+  the one sent. Any other failure is logged as `push_failed`, with no ids.
+- Pushes run in `ctx.waitUntil` after the answer. A slow or failing relay never fails or delays
+  the request. Desktop approvers see requests through their list while open.
+
+### 13.5 Data
+
+| Table | Holds |
+|---|---|
+| `approval_requests` | also pair requests: `kind` (`browser` \| `pair`, default `browser`), `ssh_pub`, the envelope (`seq`, `sealed`), and outcome `cancelled` (pair requests only) |
+| `push_capabilities` | one PushRelay capability per iOS device, opaque |
+
+Both carry `account_id` and are in `ACCOUNT_TABLES`, so account deletion sweeps them. A
+device's capability and requests go with the device (`ON DELETE CASCADE`), and the hourly cron
+deletes pair requests as it does browser requests (§12.2).

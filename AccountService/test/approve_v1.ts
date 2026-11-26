@@ -1,12 +1,15 @@
-// The client side of approve-v1 (src/approvals.ts, DESIGN.md §12), as the browser and the
-// approving device run it, for the tests: the service itself never computes the code or touches
-// an envelope. herdrup-desktop's Go implementation (internal/account/approve.go) produced
-// test/vectors/approve-v1.json; test/approvals.test.ts regenerates that file with this code.
+// The client side of approve-v1 (src/approvals.ts, DESIGN.md §12) and pair-v1 (§13), as the
+// requester and the approving device run it, for the tests: the service itself never computes
+// the code or touches an envelope. herdrup-desktop's Go implementation
+// (internal/account/approve.go) produced test/vectors/approve-v1.json; test/approvals.test.ts
+// regenerates that file with this code, and test/pairs.test.ts generates pair-v1.json.
 import { b64url, fromB64url, utf8 } from "../src/bytes";
 import { labelled } from "../src/approvals";
 
 export const APPROVE_CODE_LABEL = "herdrup-approve-v1|sas";
 export const APPROVE_ENVELOPE_LABEL = "herdrup-approve-v1|envelope";
+export const PAIR_CODE_LABEL = "herdrup-pair-v1|sas";
+export const PAIR_ENVELOPE_LABEL = "herdrup-pair-v1|envelope";
 const X25519_PKCS8_PREFIX = Uint8Array.from([0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x04, 0x22, 0x04, 0x20]);
 
 export interface X25519Key {
@@ -26,22 +29,32 @@ export async function x25519Key(rawPrivate?: Uint8Array): Promise<X25519Key> {
   return { privateKey, pub: fromB64url(jwk.x ?? "")! };
 }
 
-/** The 4 digits both sides show: uint32_be(h[0..4]) mod 10000, zero-padded. */
-export async function approveCode(browserPub: Uint8Array, approverPub: Uint8Array, nonceB: Uint8Array, nonceT: Uint8Array): Promise<string> {
-  const h = new Uint8Array(await crypto.subtle.digest("SHA-256", labelled(APPROVE_CODE_LABEL, browserPub, approverPub, nonceB, nonceT)));
+/** uint32_be(h[0..4]) mod 10000, zero-padded, of h = SHA-256(label ‖ 0x00 ‖ parts…). */
+async function code(label: string, ...parts: Uint8Array[]): Promise<string> {
+  const h = new Uint8Array(await crypto.subtle.digest("SHA-256", labelled(label, ...parts)));
   return String(new DataView(h.buffer).getUint32(0) % 10000).padStart(4, "0");
 }
 
+/** The 4 digits both sides show (approve-v1). */
+export async function approveCode(browserPub: Uint8Array, approverPub: Uint8Array, nonceB: Uint8Array, nonceT: Uint8Array): Promise<string> {
+  return code(APPROVE_CODE_LABEL, browserPub, approverPub, nonceB, nonceT);
+}
+
+/** The 4 digits both sides show (pair-v1): S, the requester's new SSH key, is bound after B. */
+export async function pairCode(devicePub: Uint8Array, sshPub: Uint8Array, approverPub: Uint8Array, nonceB: Uint8Array, nonceT: Uint8Array): Promise<string> {
+  return code(PAIR_CODE_LABEL, devicePub, sshPub, approverPub, nonceB, nonceT);
+}
+
 /** The AES-256-GCM key between the two verified keys; `own` is whichever side holds a private key. */
-async function envelopeKey(own: CryptoKey, peerPub: Uint8Array, browserPub: Uint8Array, approverPub: Uint8Array): Promise<CryptoKey> {
+async function envelopeKey(label: string, own: CryptoKey, peerPub: Uint8Array, browserPub: Uint8Array, approverPub: Uint8Array): Promise<CryptoKey> {
   const peer = await crypto.subtle.importKey("raw", peerPub, { name: "X25519" }, true, []);
   // The runtime reads `public`; workers-types spells that member `$public` (src/devices.ts).
   const algorithm = { name: "X25519", public: peer };
   const ikm = new Uint8Array(await crypto.subtle.deriveBits(algorithm, own, 256));
-  if (ikm.every((byte) => byte === 0)) throw new Error("approve-v1: all-zero shared secret");
+  if (ikm.every((byte) => byte === 0)) throw new Error(`${label}: all-zero shared secret`);
   const hkdf = await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveKey"]);
   return crypto.subtle.deriveKey(
-    { name: "HKDF", hash: "SHA-256", salt: Uint8Array.from([...browserPub, ...approverPub]), info: utf8(APPROVE_ENVELOPE_LABEL) },
+    { name: "HKDF", hash: "SHA-256", salt: Uint8Array.from([...browserPub, ...approverPub]), info: utf8(label) },
     hkdf,
     { name: "AES-GCM", length: 256 },
     false,
@@ -49,30 +62,60 @@ async function envelopeKey(own: CryptoKey, peerPub: Uint8Array, browserPub: Uint
   );
 }
 
-function envelopeAad(browserPub: Uint8Array, approverPub: Uint8Array, seq: number): Uint8Array {
+/** label ‖ 0x00 ‖ B ‖ T ‖ bound ‖ uint64_be(seq); `bound` is empty for approve-v1, S ‖ request_id for pair-v1. */
+function envelopeAad(label: string, browserPub: Uint8Array, approverPub: Uint8Array, bound: Uint8Array, seq: number): Uint8Array {
   const seqBytes = new Uint8Array(8);
   new DataView(seqBytes.buffer).setBigUint64(0, BigInt(seq));
-  return labelled(APPROVE_ENVELOPE_LABEL, browserPub, approverPub, seqBytes);
+  return labelled(label, browserPub, approverPub, bound, seqBytes);
 }
 
-/** The approver seals `json` to the browser at `seq`: b64url(iv ‖ AES-256-GCM). */
-export async function sealEnvelope(approver: X25519Key, browserPub: Uint8Array, seq: number, json: string, iv?: Uint8Array): Promise<string> {
-  const key = await envelopeKey(approver.privateKey, browserPub, browserPub, approver.pub);
+async function seal(label: string, bound: Uint8Array, approver: X25519Key, browserPub: Uint8Array, seq: number, json: string, iv?: Uint8Array): Promise<string> {
+  const key = await envelopeKey(label, approver.privateKey, browserPub, browserPub, approver.pub);
   const nonce = iv ?? crypto.getRandomValues(new Uint8Array(12));
   const sealed = new Uint8Array(
-    await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce, additionalData: envelopeAad(browserPub, approver.pub, seq) }, key, utf8(json)),
+    await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce, additionalData: envelopeAad(label, browserPub, approver.pub, bound, seq) }, key, utf8(json)),
   );
   return b64url(Uint8Array.from([...nonce, ...sealed]));
 }
 
-/** The browser opens an envelope from `approverPub` at `seq`; throws when it doesn't verify. */
-export async function openEnvelope(browser: X25519Key, approverPub: Uint8Array, seq: number, sealed: string): Promise<string> {
+async function open(label: string, bound: Uint8Array, browser: X25519Key, approverPub: Uint8Array, seq: number, sealed: string): Promise<string> {
   const raw = fromB64url(sealed)!;
-  const key = await envelopeKey(browser.privateKey, approverPub, browser.pub, approverPub);
+  const key = await envelopeKey(label, browser.privateKey, approverPub, browser.pub, approverPub);
   const plain = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: raw.slice(0, 12), additionalData: envelopeAad(browser.pub, approverPub, seq) },
+    { name: "AES-GCM", iv: raw.slice(0, 12), additionalData: envelopeAad(label, browser.pub, approverPub, bound, seq) },
     key,
     raw.slice(12),
   );
   return new TextDecoder().decode(plain);
+}
+
+/** approve-v1: the approver seals `json` to the browser at `seq`: b64url(iv ‖ AES-256-GCM). */
+export async function sealEnvelope(approver: X25519Key, browserPub: Uint8Array, seq: number, json: string, iv?: Uint8Array): Promise<string> {
+  return seal(APPROVE_ENVELOPE_LABEL, new Uint8Array(0), approver, browserPub, seq, json, iv);
+}
+
+/** approve-v1: the browser opens an envelope from `approverPub` at `seq`; throws when it doesn't verify. */
+export async function openEnvelope(browser: X25519Key, approverPub: Uint8Array, seq: number, sealed: string): Promise<string> {
+  return open(APPROVE_ENVELOPE_LABEL, new Uint8Array(0), browser, approverPub, seq, sealed);
+}
+
+/** What pair-v1's AAD binds after B ‖ T: S, then the request id's 22 ASCII characters. */
+const pairBound = (sshPub: Uint8Array, requestId: string): Uint8Array => Uint8Array.from([...sshPub, ...utf8(requestId)]);
+
+/** pair-v1: the approver seals `json` to the new device for request `requestId` (S = `sshPub`) at `seq`. */
+export async function sealPairEnvelope(
+  approver: X25519Key,
+  devicePub: Uint8Array,
+  sshPub: Uint8Array,
+  requestId: string,
+  seq: number,
+  json: string,
+  iv?: Uint8Array,
+): Promise<string> {
+  return seal(PAIR_ENVELOPE_LABEL, pairBound(sshPub, requestId), approver, devicePub, seq, json, iv);
+}
+
+/** pair-v1: the new device opens its request's envelope; throws when it doesn't verify. */
+export async function openPairEnvelope(device: X25519Key, approverPub: Uint8Array, sshPub: Uint8Array, requestId: string, seq: number, sealed: string): Promise<string> {
+  return open(PAIR_ENVELOPE_LABEL, pairBound(sshPub, requestId), device, approverPub, seq, sealed);
 }

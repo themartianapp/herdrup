@@ -24,6 +24,7 @@ declare namespace Cloudflare {
     STATEMENT_REVOKED_KIDS: string;
     GOOGLE_WEB_CLIENT_SECRET?: string;
     WEB_ORIGIN: string;
+    PUSH_RELAY_URL: string;
   }
 }
 

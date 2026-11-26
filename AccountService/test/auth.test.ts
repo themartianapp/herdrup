@@ -118,7 +118,7 @@ describe("routing", () => {
     const config = env as unknown as Record<string, string | undefined>;
     const names = ["GOOGLE_IOS_CLIENT_ID", "APPLE_WEB_CLIENT_ID", "GOOGLE_WEB_CLIENT_ID", "GOOGLE_WEB_CLIENT_SECRET", "APPLE_SIWA_P8", "APPLE_KEY_ID"];
     const saved = Object.fromEntries(names.map((name) => [name, config[name]]));
-    const ALWAYS = ["native_sign_in", "devices", "statements", "sync", "delete", "web_approve", "approval_expiry_final"];
+    const ALWAYS = ["native_sign_in", "devices", "statements", "sync", "delete", "web_approve", "approval_expiry_final", "pair_v1"];
     const listed = async (values: Record<string, string | undefined>) => {
       for (const name of names) config[name] = values[name];
       const response = await get("/v1/health");

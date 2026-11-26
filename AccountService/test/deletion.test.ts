@@ -129,6 +129,13 @@ async function populate(who: Identity): Promise<{ first: Session; second: Sessio
       Date.now(),
     ),
     env.DB.prepare("UPDATE sessions SET device_id = ? WHERE id = ?").bind(deviceId, second.access.split(".")[1]),
+    // The phone's PushRelay capability for pair-request alerts (test/pairs.test.ts stores one through the API).
+    env.DB.prepare("INSERT INTO push_capabilities (device_id, account_id, capability, updated_ms) VALUES (?, ?, ?, ?)").bind(
+      deviceId,
+      first.accountId,
+      `hpr1.${randomB64url(60)}`,
+      Date.now(),
+    ),
     // A desktop web sign-in waiting for its handoff (test/web.test.ts runs the real flow).
     env.DB.prepare(
       "INSERT INTO handoffs (code_hash, account_id, handoff_challenge, platform, created, display_hint, exp_ms) VALUES (?, ?, ?, 'macos', 0, NULL, ?)",
