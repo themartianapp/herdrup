@@ -85,21 +85,22 @@ public enum ApproveV1 {
         try open(label: envelopeLabel, requester: browser, approverPub: approverPub, seq: seq, sealed: sealed)
     }
 
-    /// The §12.3 envelope under `label`: approve-v1's, or pair-v1's (`PairV1`), which differ
-    /// only in the label. The requester's key comes first in the salt and the AAD.
+    /// The §12.3 envelope under `label`: approve-v1's, or pair-v1's (`PairV1`), which also binds
+    /// `bound` (S and the request id) in the AAD before the seq. The requester's key comes first
+    /// in the salt and the AAD.
     static func seal(label: String, approver: Curve25519.KeyAgreement.PrivateKey, requesterPub: Data, seq: UInt64,
-                     plaintext: Data, iv: Data?) throws -> String {
+                     bound: Data = Data(), plaintext: Data, iv: Data?) throws -> String {
         let approverPub = approver.publicKey.rawRepresentation
         let key = try envelopeKey(label: label, privateKey: approver, peerPub: requesterPub,
                                   browserPub: requesterPub, approverPub: approverPub)
         let nonce = try iv.map { try AES.GCM.Nonce(data: $0) } ?? AES.GCM.Nonce()
-        let box = try AES.GCM.seal(plaintext, using: key, nonce: nonce,
-                                   authenticating: aad(label: label, browserPub: requesterPub, approverPub: approverPub, seq: seq))
+        let aad = aad(label: label, browserPub: requesterPub, approverPub: approverPub, bound: bound, seq: seq)
+        let box = try AES.GCM.seal(plaintext, using: key, nonce: nonce, authenticating: aad)
         return Base64URL.encode(Data(nonce) + box.ciphertext + box.tag)
     }
 
     static func open(label: String, requester: Curve25519.KeyAgreement.PrivateKey, approverPub: Data, seq: UInt64,
-                     sealed: String) throws -> Data {
+                     bound: Data = Data(), sealed: String) throws -> Data {
         let requesterPub = requester.publicKey.rawRepresentation
         let key = try envelopeKey(label: label, privateKey: requester, peerPub: approverPub,
                                   browserPub: requesterPub, approverPub: approverPub)
@@ -108,7 +109,8 @@ public enum ApproveV1 {
             let box = try AES.GCM.SealedBox(nonce: AES.GCM.Nonce(data: raw.prefix(12)),
                                             ciphertext: raw.dropFirst(12).dropLast(16), tag: raw.suffix(16))
             return try AES.GCM.open(box, using: key,
-                                    authenticating: aad(label: label, browserPub: requesterPub, approverPub: approverPub, seq: seq))
+                                    authenticating: aad(label: label, browserPub: requesterPub, approverPub: approverPub,
+                                                        bound: bound, seq: seq))
         } catch {
             throw Failure.malformedEnvelope
         }
@@ -149,8 +151,8 @@ public enum ApproveV1 {
                                       info: Data(label.utf8), outputByteCount: 32)
     }
 
-    private static func aad(label: String, browserPub: Data, approverPub: Data, seq: UInt64) -> Data {
-        var aad = Data(label.utf8) + [0] + browserPub + approverPub
+    private static func aad(label: String, browserPub: Data, approverPub: Data, bound: Data, seq: UInt64) -> Data {
+        var aad = Data(label.utf8) + [0] + browserPub + approverPub + bound
         withUnsafeBytes(of: seq.bigEndian) { aad.append(contentsOf: $0) }
         return aad
     }

@@ -11,7 +11,7 @@ import XCTest
 final class PairV1Tests: XCTestCase {
     struct Vector: Decodable {
         let requesterPriv, approverPriv, requesterPub, approverPub, sshPub: String
-        let nonceB, nonceT, commit, code: String
+        let nonceB, nonceT, commit, code, requestID: String
         let seq: UInt64
         let envelopeJSON: String
         let sealed: String
@@ -24,6 +24,7 @@ final class PairV1Tests: XCTestCase {
             case approverPub = "approver_pub"
             case sshPub = "ssh_pub"
             case nonceB = "nonce_b"
+            case requestID = "request_id"
             case nonceT = "nonce_t"
             case envelopeJSON = "envelope_json"
         }
@@ -56,13 +57,23 @@ final class PairV1Tests: XCTestCase {
                        v.code)
 
         let iv = try XCTUnwrap(Base64URL.decode(v.sealed)).prefix(12)
-        let sealed = try PairV1.seal(approver: approver, requesterPub: B, seq: v.seq,
+        let sealed = try PairV1.seal(approver: approver, requesterPub: B, sshPub: S, requestID: v.requestID, seq: v.seq,
                                      plaintext: Data(v.envelopeJSON.utf8), iv: Data(iv))
         XCTAssertEqual(sealed, v.sealed)
 
-        let plain = try PairV1.openEnvelope(requester: requester, approverPub: T, seq: v.seq, sealed: v.sealed)
+        let plain = try PairV1.openEnvelope(requester: requester, approverPub: T, sshPub: S, requestID: v.requestID,
+                                            seq: v.seq, sealed: v.sealed)
         XCTAssertEqual(String(decoding: plain, as: UTF8.self), v.envelopeJSON)
-        XCTAssertThrowsError(try PairV1.openEnvelope(requester: requester, approverPub: T, seq: v.seq + 1, sealed: v.sealed))
+        XCTAssertThrowsError(try PairV1.openEnvelope(requester: requester, approverPub: T, sshPub: S, requestID: v.requestID,
+                                                     seq: v.seq + 1, sealed: v.sealed))
+        // S and the request id are bound: the same sealed list doesn't open for another key or
+        // replayed onto another request.
+        let otherS = Curve25519.Signing.PrivateKey().publicKey.rawRepresentation
+        XCTAssertThrowsError(try PairV1.openEnvelope(requester: requester, approverPub: T, sshPub: otherS,
+                                                     requestID: v.requestID, seq: v.seq, sealed: v.sealed))
+        let otherID = String(v.requestID.dropLast()) + (v.requestID.hasSuffix("A") ? "B" : "A")
+        XCTAssertThrowsError(try PairV1.openEnvelope(requester: requester, approverPub: T, sshPub: S,
+                                                     requestID: otherID, seq: v.seq, sealed: v.sealed))
         // The envelope is pair-v1's: approve-v1's label doesn't open it.
         XCTAssertThrowsError(try ApproveV1.openEnvelope(browser: requester, approverPub: T, seq: v.seq, sealed: v.sealed))
         let machines = try PairEnvelope.parse(plain).machines

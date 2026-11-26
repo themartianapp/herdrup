@@ -164,11 +164,16 @@ public struct AccountClient: Sendable {
                        body: ["kind": "pair", "commit": Base64URL.encode(commit), "ssh_pub": Base64URL.encode(sshPub)])
     }
 
-    /// `GET /v1/approvals?kind=pair`: the account's other devices asking to be paired.
-    public func pairRequests(accessToken: String) async throws -> [PairRequest] {
-        let answer: PairRequestList = try await send("GET", "v1/approvals", query: [URLQueryItem(name: "kind", value: "pair")],
-                                                     bearer: accessToken)
-        return answer.requests
+    /// `GET /v1/approvals?kind=any`: browsers and devices waiting, in one list, each with its
+    /// `kind`. An approver polls this one read for both (pair-v1 services).
+    public func approvalInbox(accessToken: String) async throws -> ApprovalInbox {
+        try await send("GET", "v1/approvals", query: [URLQueryItem(name: "kind", value: "any")], bearer: accessToken)
+    }
+
+    /// `POST /v1/approvals/<id>/cancel`, as the requester: withdraws its pair request (outcome
+    /// `cancelled`).
+    public func cancelPair(id: String, accessToken: String) async throws {
+        try await sendNoContent("POST", "v1/approvals/\(id)/cancel", bearer: accessToken)
     }
 
     /// `POST /v1/approvals/<id>/reveal {nonce_b}`, as the requester, once its request is claimed.

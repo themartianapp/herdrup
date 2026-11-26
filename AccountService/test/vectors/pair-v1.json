@@ -5,11 +5,12 @@
  "requester_pub": "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",
  "approver_pub": "3p7bfXt9wbTTW2HC7OQ1Nz-DQ8hbeGdNrfx-FG-IK08",
  "ssh_pub": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+ "request_id": "UFBQUFBQUFBQUFBQUFBQUA",
  "nonce_b": "ERERERERERERERERERERERERERERERERERERERERERE",
  "nonce_t": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI",
  "commit": "M43rUpHp5QWJIrMpSx3U6NygqEvyjwrqtoZzmv3DOGM",
  "code": "8780",
  "seq": 7,
  "envelope_json": "{\"v\":1,\"machines\":[{\"nickname\":\"dev2306\",\"host\":\"100.64.0.7\",\"port\":22,\"user\":\"jerry\",\"host_key\":\"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID1AF8PoQ4lakrcKp00bfrycmCzPLsSWjMDNVfEq9GYM\",\"status\":\"added\"}]}",
- "sealed": "MzMzMzMzMzMzMzMzQj4ZPyVDXw71L1igevo7RpLia_rk-SJPif-pWnhYHzNH_l16iWY81Oy5UPW3g-5FWEWm8FU1c5dKgpgTMMxk2WejLLo40p9F8u6apsA6nCJyoAkm5VCjXnnewWHsQhRu1zENT9zd4wlIkPgpYAcjoPrjo1omzVWKjiXbUJiN2knxuqH5i99GmAEhkZgrwUPGBU1YNMMPuCzJ5uVcOSvy0WAnmwxJ67NCnT4GdbZZhruzRCTcoj7VsMMSd4FyHU6Tp29sFStRXrcqvkkGiVHILC_hN3VVVMU"
+ "sealed": "MzMzMzMzMzMzMzMzQj4ZPyVDXw71L1igevo7RpLia_rk-SJPif-pWnhYHzNH_l16iWY81Oy5UPW3g-5FWEWm8FU1c5dKgpgTMMxk2WejLLo40p9F8u6apsA6nCJyoAkm5VCjXnnewWHsQhRu1zENT9zd4wlIkPgpYAcjoPrjo1omzVWKjiXbUJiN2knxuqH5i99GmAEhkZgrwUPGBU1YNMMPuCzJ5uVcOSvy0WAnmwxJ67NCnT4GdbZZhruzRCTcoj7VsMMSd4FyHU6Tp29sFStRXpNZNc4h00T16Gl6HDjoPiM"
 }

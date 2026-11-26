@@ -35,6 +35,8 @@ public actor PairApproval {
     private var locked = false
     private var done = false
     private var denied = false
+    /// The new device cancelled the request.
+    private var withdrawn = false
     /// The seq of the last envelope the service took; 0 before the finish.
     private var seq: UInt64 = 0
     /// A finish whose outcome is unknown was sent.
@@ -57,10 +59,10 @@ public actor PairApproval {
         expires = now().addingTimeInterval(TimeInterval(request.expiresIn))
     }
 
-    /// The devices of this account waiting to be paired.
-    public static func pending(session: AccountSession) async throws -> [PairRequest] {
+    /// The browsers and devices of this account waiting for an approval, in one read.
+    public static func inbox(session: AccountSession) async throws -> ApprovalInbox {
         let client = session.client
-        return try await session.authorized { try await client.pairRequests(accessToken: $0) }
+        return try await session.authorized { try await client.approvalInbox(accessToken: $0) }
     }
 
     /// The pair request a push named. Throws `.ended` when it is over or isn't a pair request.
@@ -72,6 +74,7 @@ public actor PairApproval {
         } catch let error as AccountError where BrowserApproval.gone(error) {
             throw BrowserApproval.Failure.ended
         }
+        if status.state == .cancelled { throw BrowserApproval.Failure.cancelled }
         guard let request = PairRequest(id: id, status: status), status.state == .waiting else {
             throw BrowserApproval.Failure.ended
         }
@@ -117,6 +120,10 @@ public actor PairApproval {
                     return try await revealed(status.nonceB)
                 case .waiting, .claimed:
                     failures = 0
+                case .cancelled:
+                    withdrawn = true
+                    end()
+                    throw BrowserApproval.Failure.cancelled
                 default:
                     end()
                     throw BrowserApproval.Failure.ended
@@ -175,6 +182,7 @@ public actor PairApproval {
 
     /// Whether keys may be added for this request now: the code matched and nothing ended it.
     public func ready() throws {
+        if withdrawn { throw BrowserApproval.Failure.cancelled }
         if locked || done { throw BrowserApproval.Failure.ended }
         guard matched else { throw BrowserApproval.Failure.codeNotChecked }
     }
@@ -195,8 +203,7 @@ public actor PairApproval {
         }
         let sealed: String
         do {
-            sealed = try PairV1.seal(approver: identity.privateKey, requesterPub: requesterPub, seq: 1,
-                                     plaintext: try envelope.json())
+            sealed = try seal(envelope, seq: 1)
         } catch {
             throw BrowserApproval.NotRecorded(reason: error)
         }
@@ -211,7 +218,15 @@ public actor PairApproval {
             let refused = (error as? AccountError).flatMap(\.status).map { (400..<500).contains($0) && $0 != 429 } ?? false
             let earlier = unsure
             unsure = unsure || !refused
-            if refused && !earlier { throw BrowserApproval.NotRecorded(reason: error) }
+            if refused && !earlier {
+                // A request the new device cancelled meanwhile answers `410 cancelled`: say so.
+                if (error as? AccountError)?.code == "cancelled" {
+                    withdrawn = true
+                    end()
+                    throw BrowserApproval.NotRecorded(reason: BrowserApproval.Failure.cancelled)
+                }
+                throw BrowserApproval.NotRecorded(reason: error)
+            }
             return try await settle(error)
         }
         seq = 1
@@ -223,8 +238,7 @@ public actor PairApproval {
     public func resend(_ envelope: PairEnvelope) async throws {
         guard seq > 0 else { throw BrowserApproval.Failure.codeNotChecked }
         let next = seq + 1
-        let sealed = try PairV1.seal(approver: identity.privateKey, requesterPub: requesterPub, seq: next,
-                                     plaintext: try envelope.json())
+        let sealed = try seal(envelope, seq: next)
         guard sealed.utf8.count <= ApproveV1.maxSealedLength else { throw PairMachines.Failure.tooManyMachines }
         let client = session.client
         let id = request.id
@@ -253,6 +267,10 @@ public actor PairApproval {
             case .denied:
                 end()
                 throw BrowserApproval.NotRecorded(reason: finishError)
+            case .cancelled:
+                withdrawn = true
+                end()
+                throw BrowserApproval.NotRecorded(reason: BrowserApproval.Failure.cancelled)
             case .expired where !unsure || status.outcomeStored:
                 end()
                 throw BrowserApproval.NotRecorded(reason: finishError)
@@ -280,10 +298,41 @@ public actor PairApproval {
         end()
     }
 
+    /// Reads the request and throws once it is over: `.cancelled` when the new device withdrew
+    /// it, `.ended` when it was denied, expired or is gone. Run before adding keys and while the
+    /// sheet waits on the user, so a withdrawn request adds nothing. A failed read is thrown as is.
+    public func stillOpen() async throws {
+        if withdrawn { throw BrowserApproval.Failure.cancelled }
+        if done { throw BrowserApproval.Failure.ended }
+        let status: ApprovalStatus
+        do {
+            status = try await state()
+        } catch let error as AccountError where BrowserApproval.gone(error) {
+            end()
+            throw BrowserApproval.Failure.ended
+        }
+        switch status.state {
+        case .waiting, .claimed, .revealed:
+            return
+        case .cancelled:
+            withdrawn = true
+            end()
+            throw BrowserApproval.Failure.cancelled
+        case .denied, .approved, .expired:
+            end()
+            throw BrowserApproval.Failure.ended
+        }
+    }
+
     private func state() async throws -> ApprovalStatus {
         let client = session.client
         let id = request.id
         return try await session.authorized { try await client.approvalState(id: id, accessToken: $0) }
+    }
+
+    private func seal(_ envelope: PairEnvelope, seq: UInt64) throws -> String {
+        try PairV1.seal(approver: identity.privateKey, requesterPub: requesterPub, sshPub: sshPub, requestID: request.id,
+                        seq: seq, plaintext: try envelope.json())
     }
 
     private func end() {
@@ -392,11 +441,22 @@ public enum PairMachines {
         }
     }
 
+    /// What adding the key on one machine came to.
+    public struct Added: Sendable {
+        /// The machine as the envelope carries it.
+        public let machine: PairEnvelope.Machine
+        /// The label herdr stored beside the key (its own cleaned form of the one sent), to
+        /// show; nil when herdr didn't answer the add.
+        public let storedLabel: String?
+        /// The connection, kept for trying the machine again.
+        public let link: PairLink?
+    }
+
     /// Adds `publicKeyLine` on `machine` over `link` (or a fresh connection) and says how it
     /// went, as the envelope carries it. A host key the connection didn't record fails the
     /// machine: the new device would have nothing to pin.
     public static func add(_ machine: PairMachine, link: PairLink?, publicKeyLine: String, label: String,
-                           timeout: TimeInterval = PairMachines.timeout) async -> (PairEnvelope.Machine, PairLink?) {
+                           timeout: TimeInterval = PairMachines.timeout) async -> Added {
         func failed(_ reason: String, hostKey: String = "") -> PairEnvelope.Machine {
             PairEnvelope.Machine(nickname: machine.label, host: machine.host, port: machine.port, user: machine.user,
                                  hostKey: hostKey, status: .failed, reason: reason)
@@ -408,22 +468,23 @@ public enum PairMachines {
                     if case .success(let link) = late { await link.close() }
                 }
             } catch {
-                return (failed(describe(error)), nil)
+                return Added(machine: failed(describe(error)), storedLabel: nil, link: nil)
             }
         }
-        guard let link = opened else { return (failed("couldn't be reached"), nil) }
+        guard let link = opened else { return Added(machine: failed("couldn't be reached"), storedLabel: nil, link: nil) }
         do {
             let client = link.client
-            let added = try await WebAccessApproval.withDeadline(timeout, {
+            let reply = try await WebAccessApproval.withDeadline(timeout, {
                 try await client.pairAddKey(publicKey: publicKeyLine, label: label)
             }, late: { _ in })
             guard let hostKey = link.hostKey(), !hostKey.isEmpty else {
-                return (failed("its host key wasn't recorded"), link)
+                return Added(machine: failed("its host key wasn't recorded"), storedLabel: reply.label, link: link)
             }
-            return (PairEnvelope.Machine(nickname: machine.label, host: machine.host, port: machine.port, user: machine.user,
-                                         hostKey: hostKey, status: added.added ? .added : .already), link)
+            let entry = PairEnvelope.Machine(nickname: machine.label, host: machine.host, port: machine.port,
+                                             user: machine.user, hostKey: hostKey, status: reply.added ? .added : .already)
+            return Added(machine: entry, storedLabel: reply.label, link: link)
         } catch {
-            return (failed(describe(error), hostKey: link.hostKey() ?? ""), link)
+            return Added(machine: failed(describe(error), hostKey: link.hostKey() ?? ""), storedLabel: nil, link: link)
         }
     }
 
@@ -449,18 +510,21 @@ struct PairAddKeyParams: Encodable {
     }
 }
 
-/// `pair.add_key`'s answer: whether the key was added now (false: it was already there), its
-/// fingerprint ("SHA256:…") and the label written.
+/// `pair.add_key`'s answer (`pair_key_added`): whether the key was added now or was `already`
+/// there, its fingerprint ("SHA256:…") and the label herdr stored. herdr keeps only
+/// `[A-Za-z0-9 -_.']` of the label sent, at most 48 characters, so show this one.
 public struct PairKeyAdded: Decodable, Equatable, Sendable {
     public let added: Bool
+    public let already: Bool
     public let fingerprint: String
     public let label: String
 
-    enum CodingKeys: String, CodingKey { case added, fingerprint, label }
+    enum CodingKeys: String, CodingKey { case added, already, fingerprint, label }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         added = try c.decode(Bool.self, forKey: .added)
+        already = try c.decodeIfPresent(Bool.self, forKey: .already) ?? !added
         fingerprint = try c.decodeIfPresent(String.self, forKey: .fingerprint) ?? ""
         label = try c.decodeIfPresent(String.self, forKey: .label) ?? ""
     }

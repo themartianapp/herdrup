@@ -64,6 +64,10 @@ final class FakePairService: @unchecked Sendable {
         guard isRequester || isApprover else { return .error(401, "invalid_token") }
         let base = "/v1/approvals/\(Self.requestID)"
         let live = state == "claimed" || state == "revealed"
+        // After a cancel every step on the request answers 410 cancelled; GET shows the state.
+        if state == "cancelled", request.method != "GET", request.path.hasPrefix(base + "/") {
+            return .error(410, "cancelled")
+        }
         switch (request.method, request.path) {
         case ("POST", "/v1/approvals"):
             guard isRequester, request.json["kind"] as? String == "pair",
@@ -78,19 +82,27 @@ final class FakePairService: @unchecked Sendable {
             envelope = nil
             return .json(201, ["id": Self.requestID, "expires_in": 600])
         case ("GET", "/v1/approvals"):
-            guard isApprover, request.query["kind"] == "pair" else { return .json(200, ["requests": []]) }
-            let listed: [[String: Any]] = state == "waiting" || live
-                ? [["id": Self.requestID, "kind": "pair", "device": device(), "commit": Base64URL.encode(commit),
-                    "ssh_pub": Base64URL.encode(listedSSHPub ?? sshPub),
-                    "claimed": state == "waiting" ? "no" : "you", "expires_in": 600]]
-                : []
+            guard isApprover, request.query["kind"] == "any" else { return .json(200, ["requests": []]) }
+            var listed: [[String: Any]] = [
+                ["id": "WebReqAAAAAAAAAAAAAAAA", "kind": "browser", "commit": Base64URL.encode(Data(count: 32)),
+                 "browser": ["device_id": "dev_web", "device_pub": Base64URL.encode(Data(count: 32)),
+                             "name": "Chrome on macOS", "platform": "web", "created_ms": 1_800_000_000_000],
+                 "claimed": "no", "expires_in": 600],
+                // A kind this build doesn't know is skipped, not a failed list.
+                ["id": "LaterReqAAAAAAAAAAAAAA", "kind": "later", "claimed": "no", "expires_in": 600],
+            ]
+            if state == "waiting" || live {
+                listed.append(["id": Self.requestID, "kind": "pair", "device": device(), "commit": Base64URL.encode(commit),
+                               "ssh_pub": Base64URL.encode(listedSSHPub ?? sshPub),
+                               "claimed": state == "waiting" ? "no" : "you", "expires_in": 600])
+            }
             return .json(200, ["requests": listed])
         case ("GET", base):
             var body: [String: Any] = ["state": state, "expires_in": 600]
             if state != "waiting" {
                 body["approver"] = ["device_pub": Base64URL.encode(approver.publicKey), "name": approverName]
             }
-            if ["approved", "denied", "expired"].contains(state) { body["outcome_stored"] = true }
+            if ["approved", "denied", "expired", "cancelled"].contains(state) { body["outcome_stored"] = true }
             if live, let nonceT { body["nonce_t"] = Base64URL.encode(nonceT) }
             if isApprover {
                 body["kind"] = "pair"
@@ -117,6 +129,11 @@ final class FakePairService: @unchecked Sendable {
             nonceB = nonce
             state = "revealed"
             return .json(200, ["state": "revealed"])
+        case ("POST", base + "/cancel"):
+            guard isRequester else { return .error(404, "not_found") }
+            guard state == "waiting" || live else { return .error(409, "already_finished") }
+            state = "cancelled"
+            return .json(200, ["state": "cancelled"])
         case ("POST", base + "/finish"):
             guard isApprover else { return .error(403, "forbidden") }
             let json = request.json
@@ -193,7 +210,9 @@ final class FakePairHerdr: HerdrTransport, @unchecked Sendable {
                 if !seen { added.append((key, label)) }
                 return seen
             }
-            return #"{"id":"\#(id)","result":{"added":\#(!already),"fingerprint":"SHA256:x","label":"\#(label)"}}"#
+            // herdr stores only [A-Za-z0-9 -_.'] of the label, at most 48, and answers that.
+            let stored = String(label.filter { $0.isASCII && ($0.isLetter || $0.isNumber || " -_.'".contains($0)) }.prefix(48))
+            return #"{"id":"\#(id)","result":{"type":"pair_key_added","added":\#(!already),"already":\#(already),"fingerprint":"SHA256:x","label":"\#(stored)"}}"#
         default:
             return #"{"id":"\#(id)","error":{"code":"unknown_method","message":""}}"#
         }
@@ -220,10 +239,11 @@ final class PairFlowTests: XCTestCase {
         let requester = try await PairRequester.start(session: service.session(FakePairService.requesterSession),
                                                       identity: service.requester, keyComment: "MacBook Air", poll: fastPoll)
         let approverSession = service.session(FakePairService.approverSession)
-        let pending = try await PairApproval.pending(session: approverSession)
-        XCTAssertEqual(pending.map(\.device.name), ["MacBook Air"])
+        let inbox = try await PairApproval.inbox(session: approverSession)
+        XCTAssertEqual(inbox.pairs.map(\.device.name), ["MacBook Air"])
+        XCTAssertEqual(inbox.browsers.map(\.browser.name), ["Chrome on macOS"], "one read lists both kinds")
         let approval = try await PairApproval.start(session: approverSession, identity: service.approver,
-                                                    request: try XCTUnwrap(pending.first), poll: fastPoll)
+                                                    request: try XCTUnwrap(inbox.pairs.first), poll: fastPoll)
         async let shown = requester.awaitCode()
         try await approval.awaitReveal()
         let (code, approverName) = try await shown
@@ -248,13 +268,20 @@ final class PairFlowTests: XCTestCase {
         XCTAssertNil(oldLink)
         let (fleetCheck, fleetLink) = await PairMachines.check(fleet.machine("fleet-hel1"))
         XCTAssertEqual(fleetCheck, .ready)
-        let (entry, _) = await PairMachines.add(fleet.machine("fleet-hel1"), link: fleetLink,
-                                                publicKeyLine: approval.publicKeyLine, label: label)
+        let added = await PairMachines.add(fleet.machine("fleet-hel1"), link: fleetLink,
+                                           publicKeyLine: approval.publicKeyLine, label: label)
+        let entry = added.machine
         XCTAssertEqual(entry.status, .added)
-        // herdr got exactly N's key (S, with no comment) and the label.
+        // herdr got exactly N's key (S, with no comment) and the label; the label shown is the
+        // one herdr stored.
         XCTAssertEqual(fleet.keys.map(\.key), [try XCTUnwrap(PairingKey.publicKeyLine(raw: requester.sshKey.publicKey))])
         XCTAssertEqual(fleet.keys.map(\.label), ["MacBook Air (approved on Jerry's iPhone)"])
+        XCTAssertEqual(added.storedLabel, "MacBook Air approved on Jerry's iPhone")
         XCTAssertTrue(old.keys.isEmpty)
+        let again = await PairMachines.add(fleet.machine("fleet-hel1"), link: nil,
+                                           publicKeyLine: approval.publicKeyLine, label: label)
+        XCTAssertEqual(again.machine.status, .already)
+        XCTAssertEqual(fleet.keys.count, 1)
 
         try await approval.approve(PairEnvelope(machines: [entry]))
         let result = try await requester.awaitResult()
@@ -274,8 +301,8 @@ final class PairFlowTests: XCTestCase {
         let box = FakePairHerdr()
         box.delay = 2
         let machine = box.machine("build-box")
-        let (failed, _) = await PairMachines.add(machine, link: nil, publicKeyLine: approval.publicKeyLine,
-                                                 label: "x", timeout: 0.2)
+        let failed = await PairMachines.add(machine, link: nil, publicKeyLine: approval.publicKeyLine,
+                                            label: "x", timeout: 0.2).machine
         XCTAssertEqual(failed.status, .failed)
         XCTAssertEqual(failed.reason, "timed out")
         try await approval.approve(PairEnvelope(machines: [failed]))
@@ -285,7 +312,7 @@ final class PairFlowTests: XCTestCase {
         XCTAssertNil(none, "no newer envelope yet")
 
         box.delay = 0
-        let (added, _) = await PairMachines.add(machine, link: nil, publicKeyLine: approval.publicKeyLine, label: "x")
+        let added = await PairMachines.add(machine, link: nil, publicKeyLine: approval.publicKeyLine, label: "x").machine
         XCTAssertEqual(added.status, .added)
         XCTAssertEqual(box.keys.count, 1, "the timed-out call was dropped, not left running")
         try await approval.resend(PairEnvelope(machines: [added]))
@@ -305,8 +332,8 @@ final class PairFlowTests: XCTestCase {
         let requester = try await PairRequester.start(session: service.session(FakePairService.requesterSession),
                                                       identity: service.requester, keyComment: "x", poll: fastPoll)
         let approverSession = service.session(FakePairService.approverSession)
-        let pending = try await PairApproval.pending(session: approverSession)
-        let request = try XCTUnwrap(pending.first)
+        let listed = try await PairApproval.inbox(session: approverSession).pairs
+        let request = try XCTUnwrap(listed.first)
         let approval = try await PairApproval.start(session: approverSession, identity: service.approver,
                                                     request: request, poll: fastPoll)
         async let shown = requester.awaitCode()
@@ -357,6 +384,62 @@ final class PairFlowTests: XCTestCase {
             XCTAssertTrue(error is BrowserApproval.NotRecorded, "\(error)")
         }
         XCTAssertEqual(service.currentState, "revealed")
+    }
+
+    /// N cancels after A matched the code. A check before adding keys says so; a finish sent
+    /// anyway is refused and reported as cancelled, never approved.
+    func testACancelledRequestTellsTheApproverAndIsNeverApproved() async throws {
+        let (requester, approval, code) = try await startBoth()
+        _ = try await approval.checkCode(code)
+        try await approval.stillOpen()
+        try await requester.cancel()
+        XCTAssertEqual(service.currentState, "cancelled")
+        do {
+            try await approval.approve(PairEnvelope(machines: []))
+            XCTFail("expected not recorded")
+        } catch let error as BrowserApproval.NotRecorded {
+            XCTAssertEqual(error.reason as? BrowserApproval.Failure, .cancelled)
+        }
+        XCTAssertEqual(service.currentState, "cancelled")
+        do {
+            try await approval.stillOpen()
+            XCTFail("expected cancelled")
+        } catch {
+            XCTAssertEqual(error as? BrowserApproval.Failure, .cancelled)
+        }
+        // Cancelling again (the answer was lost) is not an error.
+        try await requester.cancel()
+
+        // Another approval of a fresh request: the check alone catches the cancel.
+        let (second, secondApproval, secondCode) = try await startBoth()
+        _ = try await secondApproval.checkCode(secondCode)
+        try await second.cancel()
+        do {
+            try await secondApproval.stillOpen()
+            XCTFail("expected cancelled")
+        } catch {
+            XCTAssertEqual(error as? BrowserApproval.Failure, .cancelled)
+        }
+    }
+
+    /// N cancels before revealing: A, waiting for the code, is told it was cancelled.
+    func testCancellingBeforeTheCodeEndsTheApproversWait() async throws {
+        let requester = try await PairRequester.start(session: service.session(FakePairService.requesterSession),
+                                                      identity: service.requester, keyComment: "x", poll: fastPoll)
+        let approverSession = service.session(FakePairService.approverSession)
+        let listed = try await PairApproval.inbox(session: approverSession).pairs
+        let request = try XCTUnwrap(listed.first)
+        let approval = try await PairApproval.start(session: approverSession, identity: service.approver,
+                                                    request: request, poll: fastPoll)
+        try await requester.cancel()
+        do {
+            try await approval.awaitReveal()
+            XCTFail("expected cancelled")
+        } catch {
+            XCTAssertEqual(error as? BrowserApproval.Failure, .cancelled)
+        }
+        let inbox = try await PairApproval.inbox(session: approverSession)
+        XCTAssertTrue(inbox.pairs.isEmpty, "a cancelled request leaves the list")
     }
 
     /// An envelope that names another approver than the one N showed its code to is refused,

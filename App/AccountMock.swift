@@ -164,6 +164,7 @@ final class MockAccountServer: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard pairSeq > 0, let me = try? GuestDevice.identity(),
               let plain = try? PairV1.openEnvelope(requester: Self.pairRequesterKey, approverPub: me.publicKey,
+                                                   sshPub: Self.pairRequesterSSH, requestID: Self.pairID,
                                                    seq: pairSeq, sealed: pairSealed),
               let envelope = try? PairEnvelope.parse(plain) else { return pairSeq > 0 ? "unreadable" : nil }
         let machines = envelope.machines.map { machine in
@@ -185,7 +186,7 @@ final class MockAccountServer: @unchecked Sendable {
         let requesterPub = Self.pairRequesterKey.publicKey.rawRepresentation
         let live = ["claimed", "revealed"].contains(pairState)
         switch (method, path) {
-        case ("GET", "/v1/approvals") where query.contains(where: { $0.name == "kind" && $0.value == "pair" }):
+        case ("GET", "/v1/approvals") where query.contains(where: { $0.name == "kind" && $0.value == "any" }):
             // `HERDR_MOCK_PAIR_UNLISTED=1`: the list never shows it, so only its push opens it.
             guard role == "approver", pairState == "waiting" || live, env["HERDR_MOCK_PAIR_UNLISTED"] != "1" else {
                 return (200, ["requests": []])
@@ -242,6 +243,13 @@ final class MockAccountServer: @unchecked Sendable {
             pairNonceT = Base64URL.decode(json["nonce_t"] as? String ?? "")
             pairState = "claimed"
             return (200, ["state": "claimed"])
+        case ("POST", base + "/cancel"):
+            guard role == "new" else { return refusal(404, "not_found") }
+            guard pairState == "waiting" || live else {
+                return pairState == "cancelled" ? refusal(410, "cancelled") : refusal(409, "already_finished")
+            }
+            pairState = "cancelled"
+            return (200, ["state": "cancelled"])
         case ("POST", base + "/reveal"):
             guard role == "new", let me else { return refusal(403, "forbidden") }
             guard pairState == "claimed" else { return refusal(409, pairState == "revealed" ? "already_revealed" : "not_claimed") }
@@ -321,8 +329,8 @@ final class MockAccountServer: @unchecked Sendable {
             machine("laptop", "laptop", Self.hostKeyB, .added),
         ])
         guard let plain = try? envelope.json(),
-              let sealed = try? PairV1.seal(approver: Self.pairApproverKey, requesterPub: requesterPub, seq: seq,
-                                            plaintext: plain) else { return }
+              let sealed = try? PairV1.seal(approver: Self.pairApproverKey, requesterPub: requesterPub, sshPub: pairSSHPub,
+                                            requestID: Self.pairID, seq: seq, plaintext: plain) else { return }
         pairSeq = seq
         pairSealed = sealed
     }

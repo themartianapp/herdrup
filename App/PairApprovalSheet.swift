@@ -128,7 +128,9 @@ struct PairApprovalSheet: View {
         case .results:
             let added = model.resultEntries.filter { $0.isAdded(model) }.map(\.label)
             if added.isEmpty { return "No machine took its key." }
-            return "It can open \(Self.list(added)) with its own key now."
+            let opens = "It can open \(Self.list(added)) with its own key now."
+            guard let stored = model.storedLabel else { return opens }
+            return opens + " The key is listed as “\(stored)” (herdr pair --list)."
         }
     }
 

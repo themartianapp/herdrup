@@ -48,7 +48,9 @@ final class PairApprovals: ObservableObject {
         }
     }
 
-    /// Lists the waiting requests and opens the sheet for a new one.
+    /// Lists the waiting requests and opens the sheet for a new one. One `kind=any` read
+    /// serves browsers too: their list goes to `WebAccessApprovals`, which doesn't poll itself
+    /// while this one is available.
     func refresh() async {
         guard available else {
             requests = []
@@ -58,8 +60,9 @@ final class PairApprovals: ObservableObject {
             pushed = nil
             await openPushed(id)
         }
-        guard let list = try? await PairApproval.pending(session: account.session) else { return }
-        requests = list.filter { $0.claimed == "no" }
+        guard let inbox = try? await PairApproval.inbox(session: account.session) else { return }
+        WebAccessApprovals.shared.take(inbox.browsers)
+        requests = inbox.pairs.filter { $0.claimed == "no" }
         if presented == nil, let next = requests.first(where: { !shown.contains($0.id) }) {
             shown.insert(next.id)
             presented = next
@@ -210,6 +213,8 @@ final class PairApprovalModel: ObservableObject {
     private var untouched: Set<String>
     /// The envelope's machines, in checklist order.
     private var sent: [String: PairEnvelope.Machine] = [:]
+    /// The label herdr stored beside the key (its reply's, not the one sent), for the results.
+    @Published private(set) var storedLabel: String?
     private var waiting: Task<Void, Never>?
     private var checks: Task<Void, Never>?
 
@@ -348,17 +353,24 @@ final class PairApprovalModel: ObservableObject {
         phase = .working
         problem = nil
         if !unsure {
+            // A request the new device cancelled (or that ended) adds nothing.
+            do {
+                try await approval.stillOpen()
+            } catch let error where error is BrowserApproval.Failure {
+                phase = .ended(Self.endedLine(error))
+                return
+            } catch {
+                // A failed read: the finish tells.
+            }
             let machines = chosen
             for entry in machines { states[entry.id] = .waiting }
             let label = PairMachines.label(requester: request.device.name, approver: HerdrUpAccount.deviceName)
             for entry in machines {
                 guard let machine = entry.machine else { continue }
                 states[entry.id] = .adding
-                let (result, link) = await PairMachines.add(machine, link: links[entry.id],
-                                                            publicKeyLine: approval.publicKeyLine, label: label)
-                links[entry.id] = link
-                sent[entry.id] = result
-                states[entry.id] = .done(result.status, result.reason)
+                let added = await PairMachines.add(machine, link: links[entry.id],
+                                                   publicKeyLine: approval.publicKeyLine, label: label)
+                record(added, for: entry)
             }
         }
         do {
@@ -371,8 +383,9 @@ final class PairApprovalModel: ObservableObject {
             phase = before
         } catch {
             problem = BrowserApproval.describe(error)
-            if case BrowserApproval.Failure.ended = (error as? BrowserApproval.NotRecorded)?.reason ?? error {
-                phase = .ended(problem ?? "")
+            let reason = (error as? BrowserApproval.NotRecorded)?.reason ?? error
+            if let failure = reason as? BrowserApproval.Failure, failure == .ended || failure == .cancelled {
+                phase = .ended(Self.endedLine(failure))
             } else {
                 phase = before
             }
@@ -386,17 +399,22 @@ final class PairApprovalModel: ObservableObject {
         problem = nil
         states[entry.id] = .adding
         let label = PairMachines.label(requester: request.device.name, approver: HerdrUpAccount.deviceName)
-        let (result, link) = await PairMachines.add(machine, link: links[entry.id], publicKeyLine: approval.publicKeyLine,
-                                                    label: label)
-        links[entry.id] = link
-        sent[entry.id] = result
-        states[entry.id] = .done(result.status, result.reason)
+        let added = await PairMachines.add(machine, link: links[entry.id], publicKeyLine: approval.publicKeyLine,
+                                           label: label)
+        record(added, for: entry)
         do {
             try await approval.resend(envelope())
         } catch {
             problem = "Couldn’t send it to \(request.device.name): \(BrowserApproval.describe(error))"
         }
         retrying = nil
+    }
+
+    private func record(_ added: PairMachines.Added, for entry: PairApprovalEntry) {
+        links[entry.id] = added.link
+        sent[entry.id] = added.machine
+        states[entry.id] = .done(added.machine.status, added.machine.reason)
+        if let stored = added.storedLabel, !stored.isEmpty { storedLabel = stored }
     }
 
     private func envelope() -> PairEnvelope {
@@ -422,6 +440,7 @@ final class PairApprovalModel: ObservableObject {
     private static func endedLine(_ error: Error) -> String {
         switch error {
         case BrowserApproval.Failure.ended: return "This request ended: it was answered elsewhere, or it expired before anyone approved it."
+        case BrowserApproval.Failure.cancelled: return "This request was cancelled."
         default: return BrowserApproval.describe(error)
         }
     }

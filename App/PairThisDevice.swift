@@ -80,7 +80,11 @@ final class DevicePairing: ObservableObject {
                 let identity = try GuestDevice.identity()
                 let requester = try await PairRequester.start(session: session, identity: identity,
                                                               keyComment: HerdrUpAccount.deviceName)
-                guard let self, !Task.isCancelled else { return }
+                guard let self, !Task.isCancelled else {
+                    try? await requester.cancel()
+                    return
+                }
+                self.requester = requester
                 self.expires = requester.expires
                 self.phase = .waiting(code: nil, approver: nil)
                 let (code, approver) = try await requester.awaitCode()
@@ -97,12 +101,20 @@ final class DevicePairing: ObservableObject {
         }
     }
 
-    /// Cancel: stop waiting. The request expires by itself on the service.
+    /// Cancel: stop waiting and withdraw the request, so an approver with it open is told it
+    /// was cancelled and adds nothing.
     func cancel() {
         task?.cancel()
         task = nil
         phase = .idle
+        if let requester {
+            self.requester = nil
+            Task { try? await requester.cancel() }
+        }
     }
+
+    /// The live request, for Cancel.
+    private var requester: PairRequester?
 
     /// Done on the approved card: the card goes, the retry watch stays.
     func dismissCard() {

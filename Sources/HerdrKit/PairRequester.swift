@@ -8,6 +8,7 @@ import Foundation
 //     POST /v1/approvals          {kind: "pair", commit, ssh_pub} → 201 {id, expires_in}
 //     GET  /v1/approvals/<id>     → {state, expires_in, approver?, nonce_t?, …}
 //     POST /v1/approvals/<id>/reveal {nonce_b}
+//     POST /v1/approvals/<id>/cancel  (this device withdraws it; approvers see `cancelled`)
 //     GET  /v1/pairs/self         → {request?, envelopes: [{request_id, ssh_pub, approver_pub, approver_name, seq, sealed}]}
 
 /// `POST /v1/approvals` for a pair request.
@@ -21,8 +22,9 @@ public struct PairRequestCreated: Decodable, Equatable, Sendable {
     }
 }
 
-/// One device of the account asking to be paired (`GET /v1/approvals?kind=pair`), or the same
-/// read from `GET /v1/approvals/<id>` when a push opened it.
+/// One device of the account asking to be paired (a `kind: "pair"` entry of
+/// `GET /v1/approvals?kind=any`), or the same read from `GET /v1/approvals/<id>` when a push
+/// opened it.
 public struct PairRequest: Decodable, Equatable, Sendable, Identifiable {
     /// The device asking.
     public struct Device: Decodable, Equatable, Sendable {
@@ -81,8 +83,47 @@ public struct PairRequest: Decodable, Equatable, Sendable, Identifiable {
     }
 }
 
-struct PairRequestList: Decodable {
-    let requests: [PairRequest]
+/// `GET /v1/approvals?kind=any`: the browsers (`kind: "browser"`) and devices (`kind: "pair"`)
+/// waiting for this account, from one read. An entry of a kind this build doesn't know is skipped.
+public struct ApprovalInbox: Decodable, Equatable, Sendable {
+    public let browsers: [ApprovalRequest]
+    public let pairs: [PairRequest]
+
+    public init(browsers: [ApprovalRequest], pairs: [PairRequest]) {
+        self.browsers = browsers
+        self.pairs = pairs
+    }
+
+    private enum Entry: Decodable {
+        case browser(ApprovalRequest)
+        case pair(PairRequest)
+        case unknown
+
+        private enum Keys: String, CodingKey { case kind }
+
+        init(from decoder: Decoder) throws {
+            switch try decoder.container(keyedBy: Keys.self).decodeIfPresent(String.self, forKey: .kind) ?? "browser" {
+            case "browser": self = .browser(try ApprovalRequest(from: decoder))
+            case "pair": self = .pair(try PairRequest(from: decoder))
+            default: self = .unknown
+            }
+        }
+    }
+
+    enum CodingKeys: String, CodingKey { case requests }
+
+    public init(from decoder: Decoder) throws {
+        var browsers: [ApprovalRequest] = []
+        var pairs: [PairRequest] = []
+        for entry in try decoder.container(keyedBy: CodingKeys.self).decode([Entry].self, forKey: .requests) {
+            switch entry {
+            case .browser(let request): browsers.append(request)
+            case .pair(let request): pairs.append(request)
+            case .unknown: break
+            }
+        }
+        self.init(browsers: browsers, pairs: pairs)
+    }
 }
 
 /// A pair finish or envelope replacement: `{outcome: "approved", seq, sealed}` or `{seq, sealed}`.
@@ -238,6 +279,8 @@ public actor PairRequester {
                 throw Failure.denied
             case .expired:
                 throw Failure.expired
+            case .cancelled:
+                throw Failure.ended
             case .approved:
                 // Approved before this device saw the claim: only possible after a reveal it
                 // sent, so the claim it read then holds.
@@ -293,6 +336,18 @@ public actor PairRequester {
         try open(try await pairsSelf())
     }
 
+    /// Withdraws the request (Cancel on this device): an approver with it open is told it was
+    /// cancelled and adds nothing. A request already over needs no cancel.
+    public func cancel() async throws {
+        let client = session.client
+        let id = self.id
+        do {
+            try await session.authorized { try await client.cancelPair(id: id, accessToken: $0) }
+        } catch let error as AccountError where BrowserApproval.gone(error) || error.status == 409 {
+            // Already denied, approved, expired or cancelled.
+        }
+    }
+
     private func pairsSelf() async throws -> PairsSelf {
         let client = session.client
         return try await session.authorized { try await client.pairsSelf(accessToken: $0) }
@@ -308,8 +363,8 @@ public actor PairRequester {
         else { throw Failure.tampered }
         let machines: [PairEnvelope.Machine]
         do {
-            let plain = try PairV1.openEnvelope(requester: identity.privateKey, approverPub: t, seq: envelope.seq,
-                                                sealed: envelope.sealed)
+            let plain = try PairV1.openEnvelope(requester: identity.privateKey, approverPub: t, sshPub: sshKey.publicKey,
+                                                requestID: id, seq: envelope.seq, sealed: envelope.sealed)
             machines = try PairEnvelope.parse(plain).machines
         } catch {
             throw Failure.tampered

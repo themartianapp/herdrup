@@ -65,7 +65,8 @@ public struct ApprovalRequest: Decodable, Equatable, Sendable, Identifiable {
 /// `GET /v1/approvals/<id>` as either side reads it.
 public struct ApprovalStatus: Decodable, Equatable, Sendable {
     public enum State: String, Decodable, Sendable {
-        case waiting, claimed, revealed, denied, approved, expired
+        /// `cancelled`: a pair request its new device withdrew (`POST /v1/approvals/<id>/cancel`).
+        case waiting, claimed, revealed, denied, approved, expired, cancelled
     }
 
     /// The claimant, once there is one.
@@ -170,6 +171,8 @@ public actor BrowserApproval {
         case tampered
         /// The request ran out before the browser showed its code.
         case expired
+        /// The device asking cancelled its request (pair requests only).
+        case cancelled
     }
 
     /// An approval the service didn't record: it refused it, or the request ended without it.
@@ -499,6 +502,7 @@ public actor BrowserApproval {
         case Failure.ending: return "This request is about to expire. Ask the browser for a new one."
         case Failure.tampered: return "This request was tampered with. It was denied."
         case Failure.expired: return "This request expired before the browser showed its code."
+        case Failure.cancelled: return "This request was cancelled."
         case let error as NotRecorded: return describe(error.reason)
         case let error as OutcomeUnknown: return "Couldn't tell whether the browser was approved (\(describe(error.reason)))."
         case AccountError.unreachable: return "The HerdrUp account service can't be reached."

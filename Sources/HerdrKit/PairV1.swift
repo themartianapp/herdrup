@@ -11,10 +11,13 @@ import Foundation
 ///     commit = SHA-256("herdrup-pair-v1|commit" ‖ 0x00 ‖ B ‖ S ‖ nonce_b)
 ///     h      = SHA-256("herdrup-pair-v1|sas"    ‖ 0x00 ‖ B ‖ S ‖ T ‖ nonce_b ‖ nonce_t)
 ///     code   = uint32_be(h[0..4]) mod 10000, 4 digits, zero-padded
-///     sealed = approve-v1's envelope (§12.3) under "herdrup-pair-v1|envelope"
+///     sealed = approve-v1's envelope (§12.3) under "herdrup-pair-v1|envelope", with
+///     aad    = "herdrup-pair-v1|envelope" ‖ 0x00 ‖ B ‖ T ‖ S ‖ request_id ‖ uint64_be(seq)
 ///
 /// S is the raw 32-byte ed25519 public key. It is bound in both hashes, so the service can't
-/// swap the key the approver adds. AccountService/test/vectors/pair-v1.json pins it.
+/// swap the key the approver adds, and in the envelope with the request id (its 22 ASCII
+/// characters), so a sealed list can't be replayed onto another request or key.
+/// AccountService/test/vectors/pair-v1.json pins it.
 public enum PairV1 {
     static let commitLabel = "herdrup-pair-v1|commit"
     static let codeLabel = "herdrup-pair-v1|sas"
@@ -44,18 +47,31 @@ public enum PairV1 {
         return String(repeating: "0", count: 4 - digits.count) + digits
     }
 
-    /// Seals the envelope JSON from `approver` to N (`requesterPub`) at `seq`. `iv` is for the
-    /// vectors; leave it nil.
-    public static func seal(approver: Curve25519.KeyAgreement.PrivateKey, requesterPub: Data, seq: UInt64,
-                            plaintext: Data, iv: Data? = nil) throws -> String {
+    /// Seals the envelope JSON from `approver` to N (`requesterPub`) for S (`sshPub`) and
+    /// request `requestID` at `seq`. `iv` is for the vectors; leave it nil.
+    public static func seal(approver: Curve25519.KeyAgreement.PrivateKey, requesterPub: Data, sshPub: Data,
+                            requestID: String, seq: UInt64, plaintext: Data, iv: Data? = nil) throws -> String {
         try ApproveV1.seal(label: envelopeLabel, approver: approver, requesterPub: requesterPub, seq: seq,
-                           plaintext: plaintext, iv: iv)
+                           bound: try bound(sshPub: sshPub, requestID: requestID), plaintext: plaintext, iv: iv)
     }
 
-    /// Opens an envelope as N (holding `b`) from `approverPub` at `seq`.
-    public static func openEnvelope(requester: Curve25519.KeyAgreement.PrivateKey, approverPub: Data, seq: UInt64,
-                                    sealed: String) throws -> Data {
-        try ApproveV1.open(label: envelopeLabel, requester: requester, approverPub: approverPub, seq: seq, sealed: sealed)
+    /// Opens an envelope as N (holding `b`) from `approverPub` for S and `requestID` at `seq`.
+    public static func openEnvelope(requester: Curve25519.KeyAgreement.PrivateKey, approverPub: Data, sshPub: Data,
+                                    requestID: String, seq: UInt64, sealed: String) throws -> Data {
+        try ApproveV1.open(label: envelopeLabel, requester: requester, approverPub: approverPub, seq: seq,
+                           bound: try bound(sshPub: sshPub, requestID: requestID), sealed: sealed)
+    }
+
+    /// The service's request ids: 22 ASCII characters (128 bits, base64url).
+    static let requestIDLength = 22
+
+    /// `S ‖ request_id` for the envelope's AAD.
+    private static func bound(sshPub: Data, requestID: String) throws -> Data {
+        let id = Data(requestID.utf8)
+        guard sshPub.count == ApproveV1.keySize, id.count == requestIDLength, id.allSatisfy({ $0 < 0x80 }) else {
+            throw ApproveV1.Failure.badSize
+        }
+        return sshPub + id
     }
 }
 
