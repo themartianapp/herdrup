@@ -6,7 +6,8 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test scripts/web-bundle.test.mjs && vitest run",
+    "test": "node --test scripts/web-bundle.test.mjs && vitest run && npm run test:web-fragment",
+    "test:web-fragment": "node --test scripts/web-fragment.test.mjs",
     "typecheck": "tsc --noEmit",
     "deploy": "wrangler deploy"
   },

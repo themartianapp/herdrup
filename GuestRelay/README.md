@@ -340,6 +340,14 @@ rm -rf GuestRelay/public/web && cp -r herdrup-desktop/dist-web GuestRelay/public
 node GuestRelay/scripts/web-bundle.mjs
 ```
 
+`npm test` then runs `scripts/web-fragment.test.mjs` (`npm run test:web-fragment`), which
+loads `public/web` in headless Chrome (set `CHROME` if it isn't at a usual path) with every
+fragment the invite landing links: `<payload>`, `<payload>&bind=1` and
+`<payload>&bind=1&provider=apple|google`. The plain link must reach the invite's host; a bind
+link must show the invite for the account choice. Every host but the local server fails to
+resolve, so nothing reaches the network. A bundle built before herdrup-desktop #543 (account
+shares, step 6) fails the bind links.
+
 `public/_headers` sends every `/web/` response the policy below, `Referrer-Policy:
 no-referrer` and `X-Content-Type-Options: nosniff`. `index.html` is `Cache-Control:
 no-store`; `/web/assets/*`, whose names carry a content hash, are cached for a year as
@@ -361,7 +369,7 @@ requires it.
 ```sh
 cd GuestRelay
 npm install
-npm test                 # public/web against its manifest, then vitest in workerd
+npm test                 # public/web against its manifest, vitest in workerd, then the bundle's invite links in Chrome
 npm run typecheck
 npx wrangler deploy --dry-run --outdir /tmp/guestrelay-dry   # bundle check only
 wrangler deploy
