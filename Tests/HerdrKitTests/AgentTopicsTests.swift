@@ -93,6 +93,35 @@ final class AgentTopicsTests: XCTestCase {
         XCTAssertNil(try older.last().params["relay_entries"], "not advertised: not sent")
     }
 
+    /// The Inbox's first page went out before the client knew the server offers relays, so
+    /// it came without them. Once a topic's page learns the capability, the Inbox's next
+    /// refresh reloads the newest page with `relay_entries`, once, and sends no `ping` of
+    /// its own; after that it polls `after` again.
+    @MainActor
+    func testALegacyInboxSnapshotReloadsOnceWhenRelaysAreLearned() async throws {
+        let relayPong =
+            #"{"id":"x","result":{"type":"pong","version":"0.9.9","protocol":22,"capabilities":{"agent_transcript":true,"agent_topics":true,"agent_transcript_topic":true,"transcript_relay_entries":true}}}"#
+        let transport = RecordingTransport { method, _ in method == "ping" ? relayPong : Self.emptyPage }
+        let client = HerdrClient(transport: transport)
+        let inbox = TranscriptStore(target: "w1:p1")
+        await inbox.refresh(client: client)
+        XCTAssertNil(try transport.last().params["relay_entries"], "nothing learned yet: a legacy page")
+        await inbox.refresh(client: client)
+        XCTAssertEqual(try transport.last().params["after"] as? String, "a", "unchanged: it polls after")
+
+        _ = try await client.agentTranscript(target: "w1:p1", topic: "t1")
+        let pings = transport.requests.filter { $0.method == "ping" }.count
+        XCTAssertEqual(pings, 1, "the topic's page learned the capability")
+
+        await inbox.refresh(client: client)
+        let reload = try transport.last()
+        XCTAssertNil(reload.params["after"], "the legacy snapshot is reloaded")
+        XCTAssertEqual(reload.params["relay_entries"] as? Bool, true)
+        await inbox.refresh(client: client)
+        XCTAssertEqual(try transport.last().params["after"] as? String, "a", "once: then it polls after")
+        XCTAssertEqual(transport.requests.filter { $0.method == "ping" }.count, pings, "no ping of its own")
+    }
+
     // MARK: Discovery schedule (#758)
 
     /// `topics_unsupported` and a server without `agent_topics` stop discovery for good, on the

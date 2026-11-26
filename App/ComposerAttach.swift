@@ -117,9 +117,14 @@ extension ComposerUploader {
 
     /// Starts uploading newly staged files; each host id lands in `list` (`record(into:)`).
     func start(_ files: [ComposerAttachment], client: HerdrClient, into list: Binding<[ComposerAttachment]>) {
+        start(files, client: client, uploaded: Self.record(into: list))
+    }
+
+    /// Starts uploading newly staged files; each host id goes to `uploaded`, which must not
+    /// hold the uploader's owner strongly (the uploader keeps it while the file is staged).
+    func start(_ files: [ComposerAttachment], client: HerdrClient, uploaded: @escaping Uploaded) {
         for file in files {
-            start(file, upload: Self.upload(to: client), uploaded: Self.record(into: list),
-                  discard: Self.discard(on: client))
+            start(file, upload: Self.upload(to: client), uploaded: uploaded, discard: Self.discard(on: client))
         }
     }
 
@@ -131,9 +136,18 @@ extension ComposerUploader {
         client: HerdrClient, into list: Binding<[ComposerAttachment]>,
         post: @escaping GramAttachmentSender.Post
     ) -> GramAttachmentSender {
+        sender(client: client, uploaded: Self.record(into: list), post: post)
+    }
+
+    /// `sender(client:into:post:)` with the host ids going to `uploaded` (see
+    /// `start(_:client:uploaded:)`).
+    func sender(
+        client: HerdrClient, uploaded: @escaping Uploaded,
+        post: @escaping GramAttachmentSender.Post
+    ) -> GramAttachmentSender {
         GramAttachmentSender(
             upload: { [self] file in
-                try await upload(file, using: Self.upload(to: client), uploaded: Self.record(into: list),
+                try await upload(file, using: Self.upload(to: client), uploaded: uploaded,
                                  discard: Self.discard(on: client))
             },
             preUploaded: { [self] file in try await waitForUpload(file.id) },

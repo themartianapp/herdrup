@@ -685,6 +685,21 @@ final class TopicsTests: XCTestCase {
         XCTAssertEqual(probe("topic-send-calls", in: app).label, "none")
     }
 
+    /// herdrup#863: a caption that fits alone but not with its file's reference is refused
+    /// before the file's Gram is posted; the caption and the file stay.
+    func testAMessageTooLongWithItsFilePostsNoGram() {
+        let bytes = 32_700
+        let app = launch("chatview", ["HERDR_MOCK_PICKED_FILE": "1", "HERDR_MOCK_TOPICS_DRAFT_BYTES": "\(bytes)"])
+        let chip = openTopicWithAFile("t-board", "Q4 board pack", in: app)
+        app.buttons["topic-send-button"].tap()
+        XCTAssertTrue(app.staticTexts["topic-send-note"].exists(within: 15), "the limit is said")
+        XCTAssertEqual(probe("topic-gram-posts", in: app).label, "none", "no Gram for a message that cannot fit")
+        XCTAssertEqual(probe("topic-send-calls", in: app).label, "none")
+        XCTAssertTrue(chip.exists, "the file stays")
+        let field = app.textViews["topic-composer-input"]
+        XCTAssertTrue(poll(10, every: 0.25) { (field.value as? String ?? "").count == bytes }, "and so does the caption")
+    }
+
     /// The Terminal and back: the topic's draft, its text and its file, is still there (#854).
     func testTheTerminalKeepsTheTopicsDraft() {
         let app = launch("chatview", ["HERDR_MOCK_PICKED_FILE": "1"])

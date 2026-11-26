@@ -259,6 +259,14 @@ public actor HerdrClient {
         return try? await capabilityFlight.value
     }
 
+    /// The server offers `relay` entries, as far as this client has learned; never a `ping`.
+    /// A store whose snapshot was fetched before that was known reloads it once
+    /// (`TranscriptStore`).
+    public func learnedRelayEntries() -> Bool {
+        if case .probed(let capabilities) = capabilityCache { return capabilities?.transcriptRelayEntries == true }
+        return false
+    }
+
     /// The server's version string and capabilities from one `ping`, uncached: an update
     /// replaces the server under the same client. The answer also replaces the cached
     /// capabilities, so the openers see what the server that answered supports.
@@ -2137,10 +2145,12 @@ public actor HerdrClient {
         // is not kept: the cache holds one page per agent (and subagent), the Inbox's.
         let keeper = before == nil && after == nil && topic == nil ? contentCache : nil
         do {
-            return try await call("agent.transcript", params, as: AgentTranscriptPage.self,
-                                  record: keeper.map { cache in { line, _ in
-                                      cache.recordTranscript(line, target: target, subagent: subagent)
-                                  } })
+            var page = try await call("agent.transcript", params, as: AgentTranscriptPage.self,
+                                      record: keeper.map { cache in { line, _ in
+                                          cache.recordTranscript(line, target: target, subagent: subagent)
+                                      } })
+            page.askedForRelays = relayEntries == true
+            return page
         } catch let error as APIError {
             switch error.code {
             case "agent_not_found": throw AgentTranscriptError.agentNotFound

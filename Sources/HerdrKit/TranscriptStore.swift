@@ -273,6 +273,10 @@ public final class TranscriptStore {
     private var refreshAgain = false
     private var refreshWaiters: [CheckedContinuation<Void, Never>] = []
     private var hasSnapshot = false
+    /// The snapshot was fetched without `relay` entries: once the client learns the server
+    /// offers them (a later request's capability discovery, never a `ping` of its own), the
+    /// next refresh reloads the newest page with them, once.
+    private var snapshotWithoutRelays = false
     /// Answers sent from this device that the server has not reported yet, so the card
     /// does not flash its buttons back between the tap and the next refresh.
     private var localAnswers: [String: LocalAnswer] = [:]
@@ -340,7 +344,8 @@ public final class TranscriptStore {
     }
 
     private func refreshOnce(client: HerdrClient) async {
-        guard let after = afterCursor else {
+        let relaysLearned = snapshotWithoutRelays ? await client.learnedRelayEntries() : false
+        guard let after = afterCursor, !relaysLearned else {
             await reload(client: client)
             return
         }
@@ -508,6 +513,7 @@ public final class TranscriptStore {
             && page.pendingAsk == pendingAsk && page.working == working
             && page.sessionID == sessionID && outbox == outboxBefore
         hasSnapshot = true
+        snapshotWithoutRelays = !page.askedForRelays
         model = page.model
         plan = page.plan
         subagents = page.subagents ?? []

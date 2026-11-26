@@ -863,6 +863,10 @@ public struct AgentTranscriptPage: Decodable, Sendable, Equatable {
     /// marks, steps whose status changed) rather than appended since; every other entry is
     /// new. nil from a herdr that does not say (see `TranscriptStore.mergeAfter`).
     public let resent: [String]?
+    /// The request asked for `relay` entries (`HerdrClient` sets it; not on the wire). A
+    /// snapshot fetched without them is reloaded once the client learns the server offers
+    /// them (`TranscriptStore`).
+    public internal(set) var askedForRelays = false
 
     public init(agent: String? = nil, paneID: String? = nil, sessionID: String? = nil,
                 entries: [TranscriptEntry], before: String? = nil, after: String? = nil,

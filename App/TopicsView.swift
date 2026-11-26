@@ -376,15 +376,22 @@ final class TopicsModel: ObservableObject {
 
     /// Sends a staged message to its topic, in the one order that holds: the chat's preflight
     /// (it can show the send) before anything leaves, as the Inbox's composer checks before it
-    /// posts (herdrup#853); then `attach`, which posts the files' Grams and gives the message
-    /// as it goes out (nil when a file did not post); then the size gate on that message and
-    /// `agent.topics.send`. The bubble settles as the topic's transcript shows it. False only
-    /// when it surely did not reach the topic, so the caller may keep the draft for a retry.
+    /// posts (herdrup#853); then the size gate on `shortest`, the least the message can go
+    /// out as, so a message that cannot fit posts no Gram (herdrup#863); then `attach`, which
+    /// posts the files' Grams and gives the message as it goes out (nil when a file did not
+    /// post); then the exact size gate on that message and `agent.topics.send`. The bubble
+    /// settles as the topic's transcript shows it. False only when it surely did not reach
+    /// the topic, so the caller may keep the draft for a retry.
     @discardableResult
     func send(client: HerdrClient, topicID: String, outgoingID id: String, text: String,
-              attach: (@MainActor () async -> String?)? = nil) async -> Bool {
+              shortest: String? = nil, attach: (@MainActor () async -> String?)? = nil) async -> Bool {
         let chat = chatModel(for: topicID)
         guard await chat.prepareOutgoing(id, client: client) else { return false }
+        guard (shortest ?? text).utf8.count <= Self.maxMessageBytes else {
+            chat.updateOutgoing(id, state: .notDelivered(Self.tooLong))
+            sendNotes[topicID] = Self.tooLong
+            return false
+        }
         var message = text
         if let attach {
             guard let composed = await attach() else {
@@ -436,6 +443,12 @@ final class TopicsModel: ObservableObject {
     func draft(for topicID: String) -> TopicDraft {
         if let draft = drafts[topicID] { return draft }
         let draft = TopicDraft()
+        #if DEBUG
+        // UI tests: a caption this many bytes long, too long to type (herdrup#863).
+        if let bytes = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_DRAFT_BYTES"].flatMap(Int.init) {
+            draft.reply = String(repeating: "x", count: bytes)
+        }
+        #endif
         drafts[topicID] = draft
         return draft
     }
@@ -1429,6 +1442,10 @@ final class TopicDraft: ObservableObject {
     @Published var reply = ""
     @Published var attachments: [ComposerAttachment] = []
     let uploader = ComposerUploader()
+    /// A pick, paste or drop is being staged: attaching and Send wait for it, also in a chat
+    /// mounted after the one that started it, so its files join this draft within the cap
+    /// and before a send takes the batch (herdrup#862).
+    @Published var loadingAttachment = false
     /// A send of this draft is running: Send and chip removal wait for it to settle, also in
     /// a chat mounted after the one that started it (the Inbox keeps its `sending` beside its
     /// draft the same way).
@@ -1436,6 +1453,16 @@ final class TopicDraft: ObservableObject {
     /// The file being posted, and the one whose post failed, for the chips.
     @Published var sendingAttachmentID: UUID?
     @Published var failedAttachmentID: UUID?
+
+    /// Where the uploader records a landed upload's host id. Weak: the uploader keeps this
+    /// for as long as the file is staged, and a strong draft would keep the uploader alive
+    /// with it, so leaving the page would never cancel or discard the uploads (herdrup#861).
+    var recordUpload: ComposerUploader.Uploaded {
+        { [weak self] id, uploadID in
+            guard let self, let index = self.attachments.firstIndex(where: { $0.id == id }) else { return }
+            self.attachments[index].uploadID = uploadID
+        }
+    }
 }
 
 // MARK: - A topic's chat
@@ -1463,36 +1490,11 @@ private struct TopicChat: View {
     @StateObject private var keyboard = ComposerKeyboard()
     /// The topic's draft, kept by the page's model (`TopicsModel.draft(for:)`).
     @ObservedObject var draft: TopicDraft
-    private var reply: String {
-        get { draft.reply }
-        nonmutating set { draft.reply = newValue }
-    }
     @State private var focused = false
     @State private var dictating = false
-    /// A send of this draft is running (`TopicDraft.sending`).
-    private var sending: Bool {
-        get { draft.sending }
-        nonmutating set { draft.sending = newValue }
-    }
     @State private var sendPresses = 0
     @State private var actionNote: String?
-    /// The draft's files: the paperclip's picks, pastes and drops, each uploading to the
-    /// machine from the moment it is added, as in the Inbox's composer.
-    private var attachments: [ComposerAttachment] {
-        get { draft.attachments }
-        nonmutating set { draft.attachments = newValue }
-    }
-    @State private var loadingAttachment = false
     @State private var showAttachSheet = false
-    private var uploader: ComposerUploader { draft.uploader }
-    private var sendingAttachmentID: UUID? {
-        get { draft.sendingAttachmentID }
-        nonmutating set { draft.sendingAttachmentID = newValue }
-    }
-    private var failedAttachmentID: UUID? {
-        get { draft.failedAttachmentID }
-        nonmutating set { draft.failedAttachmentID = newValue }
-    }
     #if DEBUG
     /// The `callsProbe` labels.
     @State private var sendCallsProbe = ""
@@ -1519,9 +1521,9 @@ private struct TopicChat: View {
 
     private var closed: Bool { topic.state == .closed }
     private var canCompose: Bool { live && !closed }
-    private var canAttach: Bool { canCompose && !sending && !loadingAttachment }
+    private var canAttach: Bool { canCompose && !draft.sending && !draft.loadingAttachment }
     private var hasContent: Bool {
-        !attachments.isEmpty || !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !draft.attachments.isEmpty || !draft.reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     private var author: TranscriptAuthor {
         if case .guest(let name, _) = viewer { return .guest(name: name) }
@@ -1736,9 +1738,9 @@ private struct TopicChat: View {
     /// Saved Prompts in Send's slot while the draft is empty, and the pull-to-expand editor.
     private var composer: some View {
         AdaptiveComposer(
-            text: reply,
+            text: draft.reply,
             isFocused: focused,
-            hasAccessory: !attachments.isEmpty || loadingAttachment,
+            hasAccessory: !draft.attachments.isEmpty || draft.loadingAttachment,
             showsLeading: keyboard.isVisible && focused,
             isRecording: dictating
         ) { editorHeight in
@@ -1758,7 +1760,7 @@ private struct TopicChat: View {
             )
             .frame(minWidth: 0, maxWidth: .infinity)
             .overlay(alignment: .leading) {
-                if reply.isEmpty && !dictating {
+                if draft.reply.isEmpty && !dictating {
                     Text(closed ? "Closed. Reopen it to continue." : "Message \(topic.title.isEmpty ? "this topic" : topic.title)")
                         .font(Typography.app(16)).foregroundStyle(Palette.textDim)
                         .lineLimit(1).allowsHitTesting(false)
@@ -1774,31 +1776,32 @@ private struct TopicChat: View {
             .accessibilityLabel("Collapse keyboard")
         } actions: {
             HStack(spacing: 4) {
-                ComposerAttachButton(busy: loadingAttachment) { openAttachSheet() }
+                ComposerAttachButton(busy: draft.loadingAttachment) { openAttachSheet() }
                     .disabled(!canAttach)
                     .accessibilityIdentifier("topic-attach-button")
                 MicButton(text: $draft.reply, isActive: isActive, recording: $dictating)
                     .fixedSize()
-                    .disabled(!canCompose || sending)
+                    .disabled(!canCompose || draft.sending)
                 // One slot for Send and Saved Prompts, so the Send press survives the swap
                 // the clearing composer makes in the same frame.
                 ZStack {
                     if hasContent {
                         Button { send() } label: {
-                            ComposerActionIcon(image: Image("ComposerSend"), primary: true, busy: sending,
-                                               progress: uploader.sendProgress(attachments, sending: sending))
+                            ComposerActionIcon(image: Image("ComposerSend"), primary: true, busy: draft.sending,
+                                               progress: draft.uploader.sendProgress(draft.attachments,
+                                                                                     sending: draft.sending))
                         }
-                        .disabled(!canCompose || sending || dictating || loadingAttachment)
+                        .disabled(!canCompose || draft.sending || dictating || draft.loadingAttachment)
                         .fixedSize()
                         .accessibilityLabel("Send to topic")
                         .accessibilityIdentifier("topic-send-button")
                     } else {
                         // A saved prompt fills the composer and goes to this topic, like a typed one.
                         SavedPromptsMenu { prompt in
-                            reply = prompt.text
+                            draft.reply = prompt.text
                             send()
                         }
-                        .disabled(!canCompose || sending || dictating || loadingAttachment)
+                        .disabled(!canCompose || draft.sending || dictating || draft.loadingAttachment)
                         .accessibilityIdentifier("topic-saved-prompts")
                     }
                 }
@@ -1818,23 +1821,23 @@ private struct TopicChat: View {
             }
         }
         .composerAttachPicker(
-            isPresented: $showAttachSheet, loading: $loadingAttachment,
-            room: { ComposerStaging.maxAttachments - attachments.count }
+            isPresented: $showAttachSheet, loading: $draft.loadingAttachment,
+            room: { ComposerStaging.maxAttachments - draft.attachments.count }
         ) { outcome in addPicked(outcome) }
         // Leaving the topic, for the list, the Terminal or the background, stops its uploads
         // (a send waiting on one keeps it) and keeps them: coming back resumes them. The
         // page's end releases the uploader, which cancels and discards them.
-        .onDisappear { uploader.pause() }
-        .onAppear { uploader.resume() }
+        .onDisappear { draft.uploader.pause() }
+        .onAppear { draft.uploader.resume() }
     }
 
     @ViewBuilder
     private var attachmentStrip: some View {
-        if !attachments.isEmpty || loadingAttachment {
+        if !draft.attachments.isEmpty || draft.loadingAttachment {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    ForEach(attachments) { attachmentChip($0) }
-                    if loadingAttachment {
+                    ForEach(draft.attachments) { attachmentChip($0) }
+                    if draft.loadingAttachment {
                         HStack(spacing: 8) {
                             ProgressView().controlSize(.small)
                             Text("Adding attachment…").font(Typography.app(12))
@@ -1852,15 +1855,15 @@ private struct TopicChat: View {
 
     private func attachmentChip(_ file: ComposerAttachment) -> some View {
         let state = ComposerAttachmentState.for(
-            file, upload: uploader.phase(of: file.id), sending: sending,
-            sendingID: sendingAttachmentID, failedID: failedAttachmentID)
+            file, upload: draft.uploader.phase(of: file.id), sending: draft.sending,
+            sendingID: draft.sendingAttachmentID, failedID: draft.failedAttachmentID)
         // A file still uploading can go: removing it cancels its upload. Only a send in
         // flight holds the strip, so the batch it is delivering stays whole.
         return ComposerAttachmentChip(
             name: file.name, size: file.staged.size, isImage: file.isImage, state: state,
-            canRemove: !sending,
+            canRemove: !draft.sending,
             onRemove: { removeAttachment(file) },
-            onRetry: { uploader.retry(file.id) }
+            onRetry: { draft.uploader.retry(file.id) }
         )
         .accessibilityIdentifier("topic-attachment")
     }
@@ -1870,7 +1873,7 @@ private struct TopicChat: View {
     private var attachTarget: String? { model.agentName.isEmpty ? nil : model.agentName }
 
     private func takesAttachment() -> Bool {
-        guard attachments.count < ComposerStaging.maxAttachments else {
+        guard draft.attachments.count < ComposerStaging.maxAttachments else {
             actionNote = "Up to \(ComposerStaging.maxAttachments) attachments at a time."
             return false
         }
@@ -1892,11 +1895,11 @@ private struct TopicChat: View {
     private func stageFiles(_ providers: [NSItemProvider]) -> Bool {
         let files = TerminalFileDrop.files(in: providers)
         guard canAttach, !files.isEmpty, takesAttachment() else { return false }
-        let room = ComposerStaging.maxAttachments - attachments.count
-        loadingAttachment = true
+        let room = ComposerStaging.maxAttachments - draft.attachments.count
+        draft.loadingAttachment = true
         Task { @MainActor in
             let outcome = await PastedFile.stageAll(files, room: room)
-            loadingAttachment = false
+            draft.loadingAttachment = false
             addPicked(outcome)
         }
         return true
@@ -1908,16 +1911,16 @@ private struct TopicChat: View {
         let picked = outcome.files.map {
             ComposerAttachment(name: $0.name, mime: $0.mime, isImage: $0.isImage, staged: $0.staged)
         }
-        attachments += picked
-        uploader.start(picked, client: client, into: $draft.attachments)
+        draft.attachments += picked
+        draft.uploader.start(picked, client: client, uploaded: draft.recordUpload)
         actionNote = outcome.note
     }
 
     private func removeAttachment(_ file: ComposerAttachment) {
-        guard let current = attachments.first(where: { $0.id == file.id }) else { return }
-        attachments.removeAll { $0.id == file.id }
+        guard let current = draft.attachments.first(where: { $0.id == file.id }) else { return }
+        draft.attachments.removeAll { $0.id == file.id }
         // Cancels a running upload, deletes the staged bytes, and discards a finished upload.
-        uploader.remove(current)
+        draft.uploader.remove(current)
         // A file dropped after its Gram posted (a batch that failed halfway) must not stay
         // behind in the agent's Gram inbox.
         if let messageID = current.messageID, !viewer.isGuest {
@@ -1926,24 +1929,24 @@ private struct TopicChat: View {
     }
 
     private func send() {
-        guard canCompose, !sending, !dictating, !loadingAttachment, hasContent else { return }
-        let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
-        let batch = attachments
+        guard canCompose, !draft.sending, !dictating, !draft.loadingAttachment, hasContent else { return }
+        let text = draft.reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        let batch = draft.attachments
         // The bubble enters (and the chat follows it) on the send motion; staged now.
         guard let id = withAnimation(ChatSendMotion.bubble(reduceMotion: reduceMotion), {
             model.stage(topicID: topic.id, text: text, author: author, files: batch)
         }) else { return }
-        sending = true
+        draft.sending = true
         actionNote = nil
         if ChatSendMotion.acceptSend(reduceMotion: reduceMotion) { sendPresses += 1 }
-        let clearedReply = reply
-        ChatSendMotion.clearComposer(inChat: true) { reply = "" }
+        let clearedReply = draft.reply
+        ChatSendMotion.clearComposer(inChat: true) { draft.reply = "" }
         // The send runs on in the draft's state: leaving the topic (the Terminal, the
         // background) does not end it, and a chat mounted meanwhile shows it running, Send and
         // chip removal held, until it settles.
         Task { () async -> Void in
-            defer { sending = false; sendingAttachmentID = nil }
-            failedAttachmentID = nil
+            defer { draft.sending = false; draft.sendingAttachmentID = nil }
+            draft.failedAttachmentID = nil
             // The Inbox's way: each file posts as a Gram to the agent, then one message names
             // them all with how to fetch them (`GramAttachmentPrompt`). The topic runs in the
             // agent's own omp, so `herdr gram get-file` finds them there too.
@@ -1951,18 +1954,24 @@ private struct TopicChat: View {
                 await model.send(client: client, topicID: topic.id, outgoingID: id, text: text)
                 return
             }
-            let reached = await model.send(client: client, topicID: topic.id, outgoingID: id, text: text) {
+            // The least the message can go out as: the files' references with the ids already
+            // known, the rest left empty, so no Gram is posted for a message that cannot fit.
+            let shortest = GramAttachmentPrompt.text(text, delivered: batch.map {
+                GramAttachmentPrompt.Delivered(name: $0.name, isImage: $0.isImage, messageID: $0.messageID ?? "")
+            })
+            let reached = await model.send(client: client, topicID: topic.id, outgoingID: id, text: text,
+                                           shortest: shortest) {
                 guard let delivered = await postAttachments(batch) else { return nil }
                 return GramAttachmentPrompt.text(text, delivered: delivered)
             }
             if reached {
                 // Each file's staged bytes went when its Gram posted: nothing left to discard.
                 let sentIDs = Set(batch.map(\.id))
-                attachments.removeAll { sentIDs.contains($0.id) }
-                uploader.forget(sentIDs)
-            } else if reply.isEmpty {
+                draft.attachments.removeAll { sentIDs.contains($0.id) }
+                draft.uploader.forget(sentIDs)
+            } else if draft.reply.isEmpty {
                 // Not delivered: the chips (their Grams remembered) and the text stay for a retry.
-                reply = clearedReply
+                draft.reply = clearedReply
             }
         }
     }
@@ -1976,7 +1985,7 @@ private struct TopicChat: View {
         }
         let guestName: String? = { if case .guest(let name, _) = viewer { return name } else { return nil } }()
         let topicTitle = title
-        let sender = uploader.sender(client: client, into: $draft.attachments, post: { [client] _, attachment in
+        let sender = draft.uploader.sender(client: client, uploaded: draft.recordUpload, post: { [client] _, attachment in
             if let guestName {
                 return try await client.guestGramPost(
                     text: "Attachment from \(guestName) for the topic \(topicTitle).", to: target,
@@ -1987,15 +1996,15 @@ private struct TopicChat: View {
                 text: "Attachment for the topic \(topicTitle).", to: target, attachment: attachment
             ).id
         })
-        let result = await sender.send(batch, sending: { sendingAttachmentID = $0.id }) { file in
-            guard let index = attachments.firstIndex(where: { $0.id == file.id }) else { return }
-            attachments[index] = file
+        let result = await sender.send(batch, sending: { draft.sendingAttachmentID = $0.id }) { file in
+            guard let index = draft.attachments.firstIndex(where: { $0.id == file.id }) else { return }
+            draft.attachments[index] = file
         }
         switch result {
         case .success(let delivered):
             return delivered
         case .failure(let failure):
-            failedAttachmentID = failure.attachment.id
+            draft.failedAttachmentID = failure.attachment.id
             actionNote = failure.note("Send failed: \(failure.error)")
             return nil
         }
