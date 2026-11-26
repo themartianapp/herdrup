@@ -1,5 +1,6 @@
 // node --test: the bundle check passes on public/web as committed, and fails on each way a
-// copy can drift from its manifest; public/_headers allows exactly the relays in relays.json.
+// copy can drift from its manifest; public/_headers allows exactly the relays in relays.json;
+// the same-origin files index.html links to exist in public.
 // Runs in Node, not workerd: it reads the file tree.
 import assert from "node:assert/strict";
 import { appendFileSync, cpSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
@@ -7,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { checkRelayHeaders, checkWebBundle, relaySources, withRelaySources } from "./web-bundle.mjs";
+import { checkRelayHeaders, checkSiteAssets, checkWebBundle, relaySources, withRelaySources } from "./web-bundle.mjs";
 
 const WEB = fileURLToPath(new URL("../public/web", import.meta.url));
 const HEADERS = fileURLToPath(new URL("../public/_headers", import.meta.url));
@@ -114,4 +115,36 @@ test("a wss source in any case outside relays.json fails the check and is remove
   const rewritten = withRelaySources(headers, relaySources(WEB));
   assert.ok(!/evil\.example/i.test(rewritten));
   assert.equal(rewritten, readFileSync(HEADERS, "utf8"));
+});
+
+/** A copy of all of public (bundle plus the Worker's own files), with its web directory. */
+function publicCopy() {
+  const root = join(copy, "public");
+  cpSync(fileURLToPath(new URL("../public", import.meta.url)), root, { recursive: true });
+  return join(root, "web");
+}
+
+test("every same-origin file index.html links to exists in public", () => {
+  assert.deepEqual(checkSiteAssets(WEB), []);
+});
+
+test("a root-relative icon missing from public fails the check", () => {
+  const web = publicCopy();
+  unlinkSync(join(web, "..", "static", "apple-touch-icon.png"));
+  assert.deepEqual(checkSiteAssets(web), [
+    "index.html: /static/apple-touch-icon.png is not in public/static/apple-touch-icon.png",
+  ]);
+});
+
+test("an absolute link on a relay origin is checked; other origins are not", () => {
+  const web = publicCopy();
+  const html = readFileSync(join(web, "index.html"), "utf8").replace(
+    "</head>",
+    '<meta property="og:x" content="https://guest.herdrup.themartian.app/static/gone.png">' +
+      '<link rel="preconnect" href="https://fonts.example.com/static/gone.png"></head>',
+  );
+  writeFileSync(join(web, "index.html"), html);
+  assert.deepEqual(checkSiteAssets(web), [
+    "index.html: https://guest.herdrup.themartian.app/static/gone.png is not in public/static/gone.png",
+  ]);
 });
