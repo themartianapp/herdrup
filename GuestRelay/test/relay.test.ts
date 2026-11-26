@@ -262,7 +262,7 @@ describe("routing", () => {
 
     const css = await (await env.ASSETS.fetch(`${ORIGIN}/static/i.css`)).text();
     const refs = [...html.matchAll(/(?:src|href)="(\/[^"]+)"/g), ...css.matchAll(/url\((\/[^)]+)\)/g)].map((m) => m[1]);
-    expect(refs).toEqual(expect.arrayContaining(["/static/i.js", "/static/i.css", "/fonts/Geist-Regular.woff2"]));
+    expect(refs).toEqual(expect.arrayContaining(["/static/i.js", "/static/i.css", "/fonts/Geist-Regular.woff2", "/static/apple.svg", "/static/google.svg"]));
     const js = await (await env.ASSETS.fetch(`${ORIGIN}/static/i.js`)).text();
     const imports = [...js.matchAll(/from "\.\/([^"]+)"/g)].map((m) => `/static/${m[1]}`);
     expect(imports).toEqual(["/static/invite.js"]);

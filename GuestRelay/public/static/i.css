@@ -65,4 +65,4 @@ main{max-width:440px;min-height:100vh;min-height:100dvh;margin:0 auto;display:fl
 .sec.or::before{content:"";flex:1;height:1px;background:var(--hairq)}
 .choice-lead{font:400 14px var(--app);color:var(--dim);text-align:center;margin-bottom:2px}
 .btn.provider{display:flex;align-items:center;justify-content:center;gap:9px;border:1px solid var(--hair)}
-.btn.provider svg{flex:none}
+.btn.provider img{flex:none}
