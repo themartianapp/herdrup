@@ -330,7 +330,9 @@ reads. Without it they are 404 and everything else works.
 contract, "Hosting"), copied unchanged from that repo's `dist-web/`. Its `manifest.json`
 names the source commit, the build command and every file's SHA-256. `npm test` runs
 `scripts/web-bundle.mjs` under `node --test`, which fails when a file differs from the
-manifest, is missing, or isn't listed in it. To update it, build at a herdrup-desktop
+manifest, is missing, or isn't listed in it, and when `index.html` links to a same-origin file
+outside the bundle (`/static/*`, `/favicon.ico`, or one on a `relays.json` origin) that
+`public/` doesn't have. To update it, build at a herdrup-desktop
 commit on `main` and replace the directory:
 
 ```sh

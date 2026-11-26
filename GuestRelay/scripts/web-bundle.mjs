@@ -1,13 +1,14 @@
 // Checks the browser guest bundle in public/web against its manifest.json, written by
 // herdrup-desktop's `bun run build:guest-web` (web guest contract, "Hosting"): every file
-// the manifest lists is present with its SHA-256, and no other file is. It also checks that the
-// /web/* Content-Security-Policy in public/_headers lets the page reach exactly the relays the
-// bundle's relays.json lists, so the two cannot drift. Run by `npm test`.
+// the manifest lists is present with its SHA-256, and no other file is; every same-origin file
+// its index.html links to (the icons under /static, /favicon.ico) exists in public. It also checks
+// that the /web/* Content-Security-Policy in public/_headers lets the page reach exactly the relays
+// the bundle's relays.json lists, so the two cannot drift. Run by `npm test`.
 //   node scripts/web-bundle.mjs [--write-headers] [public/web]
 // --write-headers first rewrites the wss:// sources of that policy's connect-src from relays.json.
 
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -129,6 +130,33 @@ export function checkRelayHeaders(dir, headersPath) {
   }
 }
 
+/**
+ * The files that dir/index.html links to on the relay's own origin but outside the bundle
+ * (the tab icon, Open Graph image: /static/*, /favicon.ico) are served from dir's parent, the
+ * Worker's public directory, which the manifest does not cover. One line per link whose file is
+ * not there: a root-relative src, href or content value, or one on a relays.json origin.
+ * @param {string} dir
+ * @returns {string[]}
+ */
+export function checkSiteAssets(dir) {
+  const html = readFileSync(join(dir, "index.html"), "utf8");
+  const origins = new Set(relaySources(dir).map((source) => source.replace(/^wss:/, "https:")));
+  const publicDir = join(dir, "..");
+  const problems = [];
+  for (const [, value] of html.matchAll(/\b(?:src|href|content)\s*=\s*["']([^"']*)["']/gi)) {
+    let path;
+    if (value.startsWith("/") && !value.startsWith("//")) path = new URL(value, "https://relay.invalid").pathname;
+    else {
+      const url = URL.parse(value);
+      if (url === null || !origins.has(url.origin)) continue;
+      path = url.pathname;
+    }
+    const file = decodeURIComponent(path).replace(/\/$/, "/index.html");
+    if (!existsSync(join(publicDir, file))) problems.push(`index.html: ${value} is not in public${file}`);
+  }
+  return problems;
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
   const write = args[0] === "--write-headers";
@@ -137,8 +165,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (write) {
     writeFileSync(headersPath, withRelaySources(readFileSync(headersPath, "utf8"), relaySources(dir)));
   }
-  const problems = [...checkWebBundle(dir), ...checkRelayHeaders(dir, headersPath)];
+  const problems = [...checkWebBundle(dir), ...checkRelayHeaders(dir, headersPath), ...checkSiteAssets(dir)];
   for (const problem of problems) console.error(problem);
   if (problems.length > 0) process.exit(1);
-  console.log("public/web matches manifest.json, and _headers allows the relays in relays.json");
+  console.log("public/web matches manifest.json, its same-origin links exist, and _headers allows the relays in relays.json");
 }
