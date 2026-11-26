@@ -650,6 +650,20 @@ struct AccountMockRoot: View {
     }
 }
 
+extension HerdrUpAccount {
+    /// This device's name under the pair mock (`HERDR_MOCK_ACCOUNT_PAIR`), so the screens read
+    /// as they will for users rather than naming the simulator: "Jerry's iPhone" approving
+    /// MacBook Air, or "Jerry's new iPhone" asking the mock "Jerry's iPhone". Nil otherwise.
+    static var mockDeviceName: String? {
+        guard ScreenshotMock.mode != nil else { return nil }
+        switch ProcessInfo.processInfo.environment["HERDR_MOCK_ACCOUNT_PAIR"] {
+        case "approver": return "Jerry's \(deviceKind)"
+        case "new": return "Jerry's new \(deviceKind)"
+        default: return nil
+        }
+    }
+}
+
 /// The approver's machines under `HERDR_MOCK_ACCOUNT_PAIR=approver`, as in the option B frames:
 /// fleet-hel1 and studio take the key, build-box (a password login) times out the first time
 /// and takes it on "Try build-box again", laptop can't be reached, and old-pi runs herdr 0.9.2,

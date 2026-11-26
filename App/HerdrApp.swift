@@ -1438,12 +1438,15 @@ struct ConnectView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(saved.label).font(connectFont(17)).foregroundStyle(Palette.textFaint).lineLimit(1)
                     Text("Join its network to connect").font(connectFont(14)).foregroundStyle(Palette.textFaint)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("paired-machine-\(saved.label)")
                 Spacer(minLength: 8)
                 Button("Use herdr pair") { PairingRouter.shared.scan() }
                     .buttonStyle(.capsule(.secondary))
+                    .lineLimit(1)
+                    .fixedSize()
                     .accessibilityIdentifier("paired-use-herdr-pair-\(saved.label)")
             }
             .padding(.horizontal, 18).padding(.vertical, 10)
