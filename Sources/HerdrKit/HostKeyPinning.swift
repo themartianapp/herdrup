@@ -185,11 +185,12 @@ public final class HostKeyRecorder: HostKeyPolicy, @unchecked Sendable {
     }
 
     /// The pin `base` keeps for an OpenSSH host key line (`sshHostKeyFingerprintSHA256`), or
-    /// nil for a line that isn't one.
+    /// nil for a line that isn't one. A host certificate pins the key it certifies: this app
+    /// never negotiates certificate host-key algorithms, so the host shows it that plain key.
     public static func fingerprint(ofOpenSSHKey line: String) -> String? {
         guard let key = try? NIOSSHPublicKey(openSSHPublicKey: line.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             return nil
         }
-        return sshHostKeyFingerprintSHA256(key)
+        return sshHostKeyFingerprintSHA256(NIOSSHCertifiedPublicKey(key)?.key ?? key)
     }
 }
