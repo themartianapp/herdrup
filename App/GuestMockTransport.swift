@@ -257,7 +257,8 @@ struct GuestMockTransport: HerdrTransport {
             return #"{"id":"\#(id)","result":{"type":"pong"}}"#
         case "agent.transcript":
             if let topic = params["topic"] as? String {
-                return TopicsMock.guest.transcript(id: id, topic: topic)
+                return TopicsMock.guest.transcript(id: id, topic: topic,
+                                                   relayEntries: params["relay_entries"] as? Bool == true)
             }
             return ChatMockConversation.guest.transcript(id: id, params: params)
         case _ where method.hasPrefix("agent.topics."):

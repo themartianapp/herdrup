@@ -564,7 +564,7 @@ final class TopicsMock: @unchecked Sendable {
     /// message (the reader's prompt, the topic's reply).
     /// `relayEntries`: the request carried `relay_entries: true` (herdr #521); without it a
     /// handover comes back as a `user` entry, as from a herdr without relays.
-    func transcript(id: String, topic topicID: String, relayEntries: Bool = false) -> String {
+    func transcript(id: String, topic topicID: String, relayEntries: Bool) -> String {
         lock.withLock {
             guard let topic = topics.first(where: { $0.id == topicID }) else {
                 return ChatMockConversation.error(id: id, code: "topic_not_found", message: "no such topic")
