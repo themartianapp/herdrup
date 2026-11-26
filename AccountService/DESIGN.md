@@ -1478,12 +1478,23 @@ and errors:
   same hourly cap summed over the account, and **a reported expiry is final** (storeExpiry runs
   first in every read, and every step requires `outcome IS NULL`);
 - another account's devices see nothing (`404`).
+- **the requester may cancel** at any step before the finish:
+  `POST /v1/approvals/<id>/cancel` → `{state: "cancelled"}`. Only the requester can cancel
+  (`404` for anyone else, `403 not_native` for a browser), and only pair requests can be
+  cancelled. The cancel stores outcome `cancelled`, readable for 10 minutes like any outcome,
+  with `outcome_stored: true`. Its update requires `outcome IS NULL`, as every step's does. So
+  of a cancel and a finish that race, exactly one lands, and a reported `cancelled` is final.
+  Every later step (claim, reveal, finish or deny, envelope, cancel) answers `410 cancelled`.
+  A cancel after the finish answers `409 already_finished`. This matters after the reveal: an
+  approver who already has the code can no longer finish, so it adds no key.
 
 `GET /v1/approvals` still lists browser requests only, in the same shape. Apps from before
 pair-v1 call it without a parameter, so they must never be offered a pair request as a
 browser's. Pair requests are listed by `GET /v1/approvals?kind=pair`:
 `{id, kind: "pair", device: {device_id, device_pub, name, platform, created_ms}, commit, ssh_pub,
-claimed, expires_in}`. The caller's own request is not listed. `GET /v1/approvals/<id>` on a
+claimed, expires_in}`. `GET /v1/approvals?kind=any` lists both kinds in one answer, so a new
+approver polls once (one `APPROVAL_LIMIT` call). Pair requests keep their shape there, and each
+browser request gains `kind: "browser"`. The caller's own request is never listed. `GET /v1/approvals/<id>` on a
 pair request adds `kind`, `commit`, `ssh_pub` and `device`, so an approver opening it from a
 push needs no list. A pair request's claim leaves no `approval_claimed_ms` mark and its device's
 removal no withdrawal: what A adds is an SSH key, which the owner revokes on the machine
@@ -1494,13 +1505,20 @@ removal no withdrawal: what A adds is an SSH key, which the owner revokes on the
 ```
 ikm    = X25519(t, B) = X25519(b, T)          (abort if all zero)
 k      = HKDF-SHA256(ikm, salt = B ‖ T, info = "herdrup-pair-v1|envelope", 32)
-aad    = "herdrup-pair-v1|envelope" ‖ 0x00 ‖ B ‖ T ‖ uint64_be(seq)
+aad    = "herdrup-pair-v1|envelope" ‖ 0x00 ‖ B ‖ T ‖ S ‖ request_id ‖ uint64_be(seq)
 sealed = b64url(iv(12) ‖ AES-256-GCM(k, iv, aad, json))
 json   = {"v":1,"machines":[{"nickname","host","port","user","host_key","status","reason"?}]}
 ```
 
-This is §12.3 with the pair label. S is not in the key or the AAD: N holds the request's S
-itself, and the code already binds it.
+This is §12.3 with the pair label, and with S (32 bytes) and the request id (its 22 ASCII
+characters, as on the wire) also in the AAD. The key is still §12.3's, over B and T. Without
+them, the service could hand N an older approved envelope from the same B and T (another
+request, another S) as this request's. With them, an envelope opens only as the request it was
+sealed for.
+
+**seq is per request.** The finish's envelope has `seq ≥ 1`, and the apps start at 1. Each retry
+(`PUT …/envelope`) must be higher than the stored one. A new request starts again at 1. Browser
+envelopes (§12.3), which live across requests per approver, keep their own seq rule.
 
 - `finish` is `{outcome: "approved", seq, sealed}` with `seq ≥ 1` (no scope or expiry: a key
   has none), or `{outcome: "denied"}`. One statement is both the single-use gate and the write.
@@ -1517,10 +1535,11 @@ itself, and the code already binds it.
   at the latest seq. A new request replaces the row and its envelope, so N saves the machines
   first. A browser gets `403 not_native`.
 
-`test/vectors/pair-v1.json` is the vector for the apps, generated and checked by
-`test/pairs.test.ts`. It uses §12.3's RFC 7748 §6.1 keys (B = the "browser" key, T = the
-approver's), S = the RFC 8032 test 1 public key, nonce_b 0x11×32, nonce_t 0x22×32, an
-envelope at seq 7, and iv 0x33×12.
+`test/vectors/pair-v1.json` is the vector for the apps. It was generated independently in
+Python (`cryptography`) and `test/pairs.test.ts` regenerates it in TypeScript and asserts it
+byte for byte. It uses §12.3's RFC 7748 §6.1 keys (B = the "browser" key, T = the approver's),
+S = the RFC 8032 test 1 public key, request id `UFBQUFBQUFBQUFBQUFBQUA` (16 bytes of 0x50),
+nonce_b 0x11×32, nonce_t 0x22×32, an envelope at seq 7, and iv 0x33×12.
 
 ### 13.4 Pair-request pushes
 
@@ -1543,7 +1562,7 @@ envelope at seq 7, and iv 0x33×12.
 
 | Table | Holds |
 |---|---|
-| `approval_requests` | also pair requests: `kind` (`browser` \| `pair`, default `browser`), `ssh_pub`, and the envelope (`seq`, `sealed`) |
+| `approval_requests` | also pair requests: `kind` (`browser` \| `pair`, default `browser`), `ssh_pub`, the envelope (`seq`, `sealed`), and outcome `cancelled` (pair requests only) |
 | `push_capabilities` | one PushRelay capability per iOS device, opaque |
 
 Both carry `account_id` and are in `ACCOUNT_TABLES`, so account deletion sweeps them. A

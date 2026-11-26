@@ -2,8 +2,9 @@
 // device with the owner's machines, pair-v1 (DESIGN.md §13):
 //
 //   POST /v1/approvals                    requester {commit} | {kind: "pair", commit, ssh_pub} → 201 {id, expires_in}
-//   GET  /v1/approvals[?kind=pair]        approver  → {requests: [{id, browser, commit, claimed, expires_in}]}
+//   GET  /v1/approvals[?kind=pair|any]    approver  → {requests: [{id, browser, commit, claimed, expires_in}]}
 //                                                   | {requests: [{id, kind: "pair", device, commit, ssh_pub, claimed, expires_in}]}
+//                                                   | any: both, each browser request with kind: "browser"
 //   POST /v1/approvals/<id>/claim         approver  {nonce_t} → {state: "claimed"}
 //   GET  /v1/approvals/<id>               either    → {state, expires_in, outcome_stored?, approver?, nonce_t?, nonce_b?}
 //                                                     (+ {kind: "pair", commit, ssh_pub, device} for a pair request)
@@ -12,6 +13,7 @@
 //                                                   | pair: {outcome: "approved", seq, sealed}
 //                                                   | {outcome: "denied"} → {state}
 //   PUT  /v1/approvals/<id>/envelope      claimant  pair: {seq, sealed} → {seq}, 10 minutes after the finish
+//   POST /v1/approvals/<id>/cancel        requester pair, before the finish → {state: "cancelled"}
 //   PUT  /v1/browsers/<device_id>/envelope approver {scope, expires_ms, seq, sealed} → {seq}
 //   GET  /v1/browsers/self                browser   → {access?, envelopes: [{approver_pub, seq, sealed}]}
 //   GET  /v1/pairs/self                   app       → {request?, envelopes: [{request_id, ssh_pub, approver_pub, approver_name, seq, sealed}]}
@@ -49,12 +51,15 @@
 // pair-v1 binds S in both hashes, so this service can't swap the key the approver adds:
 //   commit = SHA-256("herdrup-pair-v1|commit" ‖ 0x00 ‖ B ‖ S ‖ nonce_b)
 //   h      = SHA-256("herdrup-pair-v1|sas" ‖ 0x00 ‖ B ‖ S ‖ T ‖ nonce_b ‖ nonce_t)
-// and the envelope is approve-v1's with the label "herdrup-pair-v1|envelope". A pair request
-// writes no browser access, envelope row or claim mark (its grants are SSH keys the owner
-// revokes on the machine): the claimant's sealed machine list sits on the request row
+// and the envelope is approve-v1's with the label "herdrup-pair-v1|envelope" and an AAD that
+// also binds S and the request id, so no envelope of another request opens as this one's:
+//   aad = "herdrup-pair-v1|envelope" ‖ 0x00 ‖ B ‖ T ‖ S ‖ request_id (22 ASCII) ‖ uint64_be(seq)
+// A pair request writes no browser access, envelope row or claim mark (its grants are SSH keys
+// the owner revokes on the machine): the claimant's sealed machine list sits on the request row
 // (seq, sealed), the finish writes it, and for 10 minutes after the finish the claimant may
 // replace it with a higher seq (retries of failed machines). The requester reads it with
-// GET /v1/pairs/self. A new pair request alerts the account's other iOS devices (src/push.ts).
+// GET /v1/pairs/self, and may cancel the request at any step before the finish. A new pair
+// request alerts the account's other iOS devices (src/push.ts).
 import { b64url, bytes32, fromB64url, hex, randomB64url, utf8 } from "./bytes";
 import { openAccountRequest } from "./auth";
 import type { Env } from "./env";
@@ -195,12 +200,13 @@ interface RequestRow {
   approver_device_id: string | null;
   nonce_t: string | null;
   nonce_b: string | null;
-  outcome: "approved" | "denied" | "expired" | null;
+  /** 'cancelled' only for a pair request, by its requester before the finish. */
+  outcome: "approved" | "denied" | "expired" | "cancelled" | null;
   exp_ms: number;
   seq: number | null;
 }
 
-type RequestState = "waiting" | "claimed" | "revealed" | "denied" | "approved" | "expired";
+type RequestState = "waiting" | "claimed" | "revealed" | "denied" | "approved" | "expired" | "cancelled";
 
 function requestState(row: Pick<RequestRow, "outcome" | "exp_ms" | "nonce_b" | "approver_device_id">, nowMs: number): RequestState {
   if (row.outcome !== null) return row.outcome;
@@ -222,9 +228,10 @@ async function findRequest(env: Env, caller: Caller, id: string, nowMs: number):
   return found.results[0] ?? null;
 }
 
-/** Why a step can't run on a request that isn't live: its 10 minutes are up, or it finished. */
+/** Why a step can't run on a request that isn't live: its 10 minutes are up, its requester cancelled it, or it finished. */
 function notLive(row: RequestRow, nowMs: number): Response | null {
   if (row.outcome === "expired" || (row.outcome === null && row.exp_ms <= nowMs)) return errorResponse(410, "expired");
+  if (row.outcome === "cancelled") return errorResponse(410, "cancelled");
   if (row.outcome !== null) return errorResponse(409, "already_finished");
   return null;
 }
@@ -273,12 +280,14 @@ export async function handleCreateRequest(request: Request, env: Env, ctx: Execu
 export async function handleListRequests(request: Request, env: Env, nowMs: number): Promise<Response> {
   const caller = await openApprovalRequest(request, env, "/v1/approvals", nowMs, "approver");
   if (caller instanceof Response) return caller;
-  // Browser requests unless the caller asks for pair requests: an app from before pair-v1 lists
-  // without the parameter and must never offer a pair request as a browser's.
+  // Browser requests unless the caller asks for pair requests (kind=pair) or both (kind=any):
+  // an app from before pair-v1 lists without the parameter and must never offer a pair request
+  // as a browser's.
   const kind = new URL(request.url).searchParams.get("kind") ?? "browser";
-  if (kind !== "browser" && kind !== "pair") return errorResponse(400, "bad_request");
+  if (kind !== "browser" && kind !== "pair" && kind !== "any") return errorResponse(400, "bad_request");
   const [, { results }] = await env.DB.batch<{
     id: string;
+    kind: Kind;
     commit: string;
     ssh_pub: string | null;
     approver_device_id: string | null;
@@ -291,10 +300,10 @@ export async function handleListRequests(request: Request, env: Env, nowMs: numb
   }>([
     storeExpiry(env.DB, caller.principal.accountId, nowMs),
     env.DB.prepare(
-      `SELECT r.id, r."commit" AS "commit", r.ssh_pub, r.approver_device_id, r.exp_ms,
+      `SELECT r.id, r.kind, r."commit" AS "commit", r.ssh_pub, r.approver_device_id, r.exp_ms,
               d.id AS device_id, d.device_pub, d.name, d.platform, d.created_ms
          FROM approval_requests r JOIN devices d ON d.id = r.browser_device_id
-        WHERE r.account_id = ?1 AND r.kind = ?3 AND r.browser_device_id <> ?4 AND r.outcome IS NULL AND r.exp_ms > ?2
+        WHERE r.account_id = ?1 AND (?3 = 'any' OR r.kind = ?3) AND r.browser_device_id <> ?4 AND r.outcome IS NULL AND r.exp_ms > ?2
         ORDER BY r.created_ms, r.id`,
     ).bind(caller.principal.accountId, nowMs, kind, caller.device.id),
   ]);
@@ -303,9 +312,9 @@ export async function handleListRequests(request: Request, env: Env, nowMs: numb
       const requester = { device_id: row.device_id, device_pub: row.device_pub, name: row.name, platform: row.platform, created_ms: row.created_ms };
       const claimed = row.approver_device_id === null ? "no" : row.approver_device_id === caller.device.id ? "you" : "other";
       const expires = expiresIn(row.exp_ms, nowMs);
-      return kind === "browser"
-        ? { id: row.id, browser: requester, commit: row.commit, claimed, expires_in: expires }
-        : { id: row.id, kind, device: requester, commit: row.commit, ssh_pub: row.ssh_pub, claimed, expires_in: expires };
+      if (row.kind === "pair") return { id: row.id, kind: row.kind, device: requester, commit: row.commit, ssh_pub: row.ssh_pub, claimed, expires_in: expires };
+      // The plain list keeps approve-v1's shape exactly; the mixed one tags each request.
+      return { id: row.id, ...(kind === "any" ? { kind: row.kind } : {}), browser: requester, commit: row.commit, claimed, expires_in: expires };
     }),
   });
 }
@@ -631,6 +640,7 @@ export async function handlePutPairEnvelope(request: Request, env: Env, id: stri
   if (envelope === null) return errorResponse(400, "bad_request");
   const row = await findRequest(env, caller, id, nowMs);
   if (row === null || row.kind !== "pair" || row.approver_device_id !== caller.device.id) return errorResponse(404, "not_found");
+  if (row.outcome === "cancelled") return errorResponse(410, "cancelled");
   if (row.outcome === "expired" || row.exp_ms <= nowMs) return errorResponse(410, "expired");
   if (row.outcome !== "approved") return errorResponse(409, "not_approved");
   if (row.seq !== null && envelope.seq <= row.seq) return errorResponse(409, "stale_seq");
@@ -641,6 +651,30 @@ export async function handlePutPairEnvelope(request: Request, env: Env, id: stri
     .bind(envelope.seq, envelope.sealed, id, caller.device.id, nowMs)
     .first();
   return stored === null ? errorResponse(409, "stale_seq") : json(200, { seq: envelope.seq });
+}
+
+/**
+ * The requester withdraws its pair request at any step before the finish. Stored as outcome
+ * 'cancelled' and readable for 10 minutes, like any outcome; every later step answers
+ * 410 cancelled. The update requires outcome IS NULL, as every step's does, so of a cancel and
+ * a finish racing, exactly one lands, and a reported 'cancelled' is final.
+ */
+export async function handleCancel(request: Request, env: Env, id: string, nowMs: number): Promise<Response> {
+  const caller = await openApprovalRequest(request, env, "/v1/approvals/:id/cancel", nowMs, "app");
+  if (caller instanceof Response) return caller;
+  const row = await findRequest(env, caller, id, nowMs);
+  if (row === null || row.kind !== "pair" || row.browser_device_id !== caller.device.id) return errorResponse(404, "not_found");
+  const stale = notLive(row, nowMs);
+  if (stale !== null) return stale;
+  const cancelled = await env.DB.prepare(
+    `UPDATE approval_requests SET outcome = 'cancelled', exp_ms = ?1
+      WHERE id = ?2 AND browser_device_id = ?3 AND kind = 'pair' AND outcome IS NULL AND exp_ms > ?4 RETURNING id`,
+  )
+    .bind(nowMs + OUTCOME_KEEP_MS, id, caller.device.id, nowMs)
+    .first();
+  if (cancelled !== null) return json(200, { state: "cancelled" });
+  const now = await findRequest(env, caller, id, nowMs);
+  return (now === null ? null : notLive(now, nowMs)) ?? errorResponse(409, "already_finished");
 }
 
 /**

@@ -11,6 +11,7 @@
 import { appleSigner } from "./apple";
 import {
   handleBrowserSelf,
+  handleCancel,
   handleClaim,
   handleCreateRequest,
   handleFinish,
@@ -103,6 +104,7 @@ const ID_PATHS: { pattern: RegExp; route: Route }[] = [
   { pattern: /^\/v1\/approvals\/([A-Za-z0-9_-]{22})\/reveal$/, route: { methods: ["POST"], endpoint: "/v1/approvals/:id/reveal" } },
   { pattern: /^\/v1\/approvals\/([A-Za-z0-9_-]{22})\/finish$/, route: { methods: ["POST"], endpoint: "/v1/approvals/:id/finish" } },
   { pattern: /^\/v1\/approvals\/([A-Za-z0-9_-]{22})\/envelope$/, route: { methods: ["PUT"], endpoint: "/v1/approvals/:id/envelope" } },
+  { pattern: /^\/v1\/approvals\/([A-Za-z0-9_-]{22})\/cancel$/, route: { methods: ["POST"], endpoint: "/v1/approvals/:id/cancel" } },
   { pattern: /^\/v1\/browsers\/([A-Za-z0-9_-]{22})\/envelope$/, route: { methods: ["PUT"], endpoint: "/v1/browsers/:id/envelope" } },
 ];
 
@@ -211,6 +213,8 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
         return await handleFinish(request, env, id, now);
       case "/v1/approvals/:id/envelope":
         return await handlePutPairEnvelope(request, env, id, now);
+      case "/v1/approvals/:id/cancel":
+        return await handleCancel(request, env, id, now);
       case "/v1/browsers/:id/envelope":
         return await handlePutEnvelope(request, env, id, now);
       case "/v1/browsers/self":

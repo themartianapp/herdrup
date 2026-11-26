@@ -5,7 +5,7 @@ import { handleFinish, pairCommit } from "../src/approvals";
 import { b64url, fromB64url, randomB64url } from "../src/bytes";
 import { enrolMac, x25519 } from "../src/devices";
 import { openSession, type Platform } from "../src/sessions";
-import { openEnvelopeAs, pairCode, PAIR_ENVELOPE_LABEL, sealEnvelopeAs, x25519Key, type X25519Key } from "./approve_v1";
+import { openEnvelope, openPairEnvelope, pairCode, sealPairEnvelope, x25519Key, type X25519Key } from "./approve_v1";
 import pairVectorText from "./vectors/pair-v1.json?raw";
 
 // pair-v1 (DESIGN.md §13) against the real Worker and a local D1 in workerd. Each party is a
@@ -86,13 +86,14 @@ const machines = (status: string) =>
   JSON.stringify({ v: 1, machines: [{ nickname: "dev2306", host: "100.64.0.7", port: 22, user: "jerry", host_key: HOST_KEY, status }] });
 const HOST_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID1AF8PoQ4lakrcKp00bfrycmCzPLsSWjMDNVfEq9GYM";
 
-async function envelope(approver: Party, requester: Party, seq: number, status = "added") {
-  return { seq, sealed: await sealEnvelopeAs(PAIR_ENVELOPE_LABEL, approver.key, requester.key.pub, seq, machines(status)) };
+/** The approver's sealed machine list for `pending` (its id and S) at `seq`. */
+async function envelope(approver: Party, requester: Party, pending: { id: string; sshPub: Uint8Array }, seq: number, status = "added") {
+  return { seq, sealed: await sealPairEnvelope(approver.key, requester.key.pub, pending.sshPub, pending.id, seq, machines(status)) };
 }
 
 async function approved(requester: Party, approver: Party): Promise<Pending> {
   const pending = await revealed(requester, approver);
-  const finish = await call("POST", `/v1/approvals/${pending.id}/finish`, approver, { outcome: "approved", ...(await envelope(approver, requester, 1)) });
+  const finish = await call("POST", `/v1/approvals/${pending.id}/finish`, approver, { outcome: "approved", ...(await envelope(approver, requester, pending, 1)) });
   expect(finish.status).toBe(200);
   return pending;
 }
@@ -114,9 +115,11 @@ describe("pair-v1 vector", () => {
     const sshPub = Uint8Array.from(atob("11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo="), (c) => c.charCodeAt(0));
     const nonceB = new Uint8Array(32).fill(0x11);
     const nonceT = new Uint8Array(32).fill(0x22);
+    // The request id is 16 bytes of 0x50 in base64url, 22 characters like every request id.
+    const requestId = b64url(new Uint8Array(16).fill(0x50));
     const seq = 7;
     const envelopeJson = machines("added");
-    const sealed = await sealEnvelopeAs(PAIR_ENVELOPE_LABEL, approver, requester.pub, seq, envelopeJson, new Uint8Array(12).fill(0x33));
+    const sealed = await sealPairEnvelope(approver, requester.pub, sshPub, requestId, seq, envelopeJson, new Uint8Array(12).fill(0x33));
     const generated = {
       source: "AccountService test/pairs.test.ts, pair-v1 (RFC 7748 6.1 keys, S = RFC 8032 7.1 test 1 public key)",
       requester_priv: "dwdtCnMYpX08FsFyUbJmRd9ML4frwJkqsXf7pR25LCo",
@@ -124,6 +127,7 @@ describe("pair-v1 vector", () => {
       requester_pub: b64url(requester.pub),
       approver_pub: b64url(approver.pub),
       ssh_pub: b64url(sshPub),
+      request_id: requestId,
       nonce_b: b64url(nonceB),
       nonce_t: b64url(nonceT),
       commit: b64url(await pairCommit(requester.pub, sshPub, nonceB)),
@@ -133,10 +137,14 @@ describe("pair-v1 vector", () => {
       sealed,
     };
     expect(`${JSON.stringify(generated, null, 1)}\n`).toBe(pairVectorText);
-    expect(await openEnvelopeAs(PAIR_ENVELOPE_LABEL, requester, approver.pub, seq, vector.sealed as string)).toBe(envelopeJson);
-    // seq is in the AAD, and the label is pair-v1's: approve-v1's key doesn't open it.
-    await expect(openEnvelopeAs(PAIR_ENVELOPE_LABEL, requester, approver.pub, seq + 1, sealed)).rejects.toThrow();
-    await expect(openEnvelopeAs("herdrup-approve-v1|envelope", requester, approver.pub, seq, sealed)).rejects.toThrow();
+    expect(await openPairEnvelope(requester, approver.pub, sshPub, requestId, seq, vector.sealed as string)).toBe(envelopeJson);
+    // seq, S and the request id are in the AAD, and the label is pair-v1's: none of the others opens it.
+    const otherS = Uint8Array.from(sshPub, (byte, i) => (i === 0 ? byte ^ 1 : byte));
+    const otherId = b64url(new Uint8Array(16).fill(0x51));
+    await expect(openPairEnvelope(requester, approver.pub, sshPub, requestId, seq + 1, sealed)).rejects.toThrow();
+    await expect(openPairEnvelope(requester, approver.pub, otherS, requestId, seq, sealed)).rejects.toThrow();
+    await expect(openPairEnvelope(requester, approver.pub, sshPub, otherId, seq, sealed)).rejects.toThrow();
+    await expect(openEnvelope(requester, approver.pub, seq, sealed)).rejects.toThrow();
   });
 
   it("binds S: another key gives another commit and another code", async () => {
@@ -210,7 +218,7 @@ describe("pair requests", () => {
     expect((await call("GET", `/v1/approvals/${id}`, browser)).status).toBe(404);
 
     // 5. A finishes with the sealed machine list.
-    const sealed = await envelope(approver, requester, 1);
+    const sealed = await envelope(approver, requester, { id, sshPub }, 1);
     expect(await (await call("POST", `/v1/approvals/${id}/finish`, approver, { outcome: "approved", ...sealed })).json()).toEqual({ state: "approved" });
     expect(await (await call("GET", `/v1/approvals/${id}`, requester)).json()).toMatchObject({ state: "approved", outcome_stored: true });
 
@@ -220,7 +228,7 @@ describe("pair requests", () => {
       request: { id, state: "approved", expires_in: expect.any(Number), outcome_stored: true },
       envelopes: [{ request_id: id, ssh_pub: b64url(sshPub), approver_pub: approver.pub, approver_name: "Jerry's MacBook", seq: 1, sealed: sealed.sealed }],
     });
-    expect(JSON.parse(await openEnvelopeAs(PAIR_ENVELOPE_LABEL, requester.key, approver.key.pub, 1, self.envelopes[0].sealed))).toMatchObject({
+    expect(JSON.parse(await openPairEnvelope(requester.key, approver.key.pub, sshPub, id, 1, self.envelopes[0].sealed))).toMatchObject({
       v: 1,
       machines: [{ nickname: "dev2306", host_key: HOST_KEY, status: "added" }],
     });
@@ -313,7 +321,7 @@ describe("pair requests", () => {
       new Request(`${ORIGIN}/v1/approvals/${pending.id}/finish`, {
         method: "POST",
         headers: { "content-type": "application/json", Authorization: `Bearer ${approver.access}` },
-        body: JSON.stringify({ outcome: "approved", ...(await envelope(approver, requester, 1)) }),
+        body: JSON.stringify({ outcome: "approved", ...(await envelope(approver, requester, pending, 1)) }),
       }),
       env,
       pending.id,
@@ -325,7 +333,7 @@ describe("pair requests", () => {
       seq: null,
       sealed: null,
     });
-    expect(await rejection(await call("PUT", `/v1/approvals/${pending.id}/envelope`, approver, await envelope(approver, requester, 2)))).toEqual({
+    expect(await rejection(await call("PUT", `/v1/approvals/${pending.id}/envelope`, approver, await envelope(approver, requester, pending, 2)))).toEqual({
       status: 410,
       error: "expired",
     });
@@ -339,24 +347,25 @@ describe("pair requests", () => {
 
     // Before the finish there is nothing to replace.
     const early = await revealed(requester, approver);
-    expect(await rejection(await call("PUT", `/v1/approvals/${early.id}/envelope`, approver, await envelope(approver, requester, 2)))).toEqual({
+    expect(await rejection(await call("PUT", `/v1/approvals/${early.id}/envelope`, approver, await envelope(approver, requester, early, 2)))).toEqual({
       status: 409,
       error: "not_approved",
     });
-    expect((await call("POST", `/v1/approvals/${early.id}/finish`, approver, { outcome: "approved", ...(await envelope(approver, requester, 0)) })).status).toBe(400);
+    expect((await call("POST", `/v1/approvals/${early.id}/finish`, approver, { outcome: "approved", ...(await envelope(approver, requester, early, 0)) })).status).toBe(400);
 
-    const { id } = await approved(requester, approver);
-    const put = async (caller: Party, seq: number) => call("PUT", `/v1/approvals/${id}/envelope`, caller, await envelope(approver, requester, seq, "added"));
+    const done = await approved(requester, approver);
+    const { id } = done;
+    const put = async (caller: Party, seq: number) => call("PUT", `/v1/approvals/${id}/envelope`, caller, await envelope(approver, requester, done, seq, "added"));
     expect(await rejection(await put(approver, 1))).toEqual({ status: 409, error: "stale_seq" });
     expect(await (await put(approver, 3)).json()).toEqual({ seq: 3 });
     expect(await rejection(await put(approver, 2))).toEqual({ status: 409, error: "stale_seq" });
     // Only the claimant.
     expect((await put(other, 4)).status).toBe(404);
-    expect((await call("POST", `/v1/approvals/${id}/finish`, approver, { outcome: "approved", ...(await envelope(approver, requester, 5)) })).status).toBe(409);
+    expect((await call("POST", `/v1/approvals/${id}/finish`, approver, { outcome: "approved", ...(await envelope(approver, requester, done, 5)) })).status).toBe(409);
 
     const self = await pairSelf(requester);
     expect(self.envelopes.map(({ seq }) => seq)).toEqual([3]);
-    expect(await openEnvelopeAs(PAIR_ENVELOPE_LABEL, requester.key, approver.key.pub, 3, self.envelopes[0].sealed)).toBe(machines("added"));
+    expect(await openPairEnvelope(requester.key, approver.key.pub, done.sshPub, id, 3, self.envelopes[0].sealed)).toBe(machines("added"));
 
     // 10 minutes after the finish, the envelope is fixed.
     await env.DB.prepare("UPDATE approval_requests SET exp_ms = ? WHERE id = ?").bind(Date.now() - 1, id).run();
@@ -364,8 +373,103 @@ describe("pair requests", () => {
     expect((await pairSelf(requester)).envelopes.map(({ seq }) => seq)).toEqual([3]);
 
     // A new request replaces the old one and its envelope.
-    await ask(requester);
+    const next = await ask(requester);
     expect((await pairSelf(requester)).envelopes).toEqual([]);
+    // A service that served the old request's envelope as the new one's: it doesn't open, because
+    // the AAD binds the request id and S.
+    await env.DB.prepare("UPDATE approval_requests SET seq = 3, sealed = ? WHERE id = ?").bind(self.envelopes[0].sealed, next.id).run();
+    await expect(openPairEnvelope(requester.key, approver.key.pub, next.sshPub, next.id, 3, self.envelopes[0].sealed)).rejects.toThrow();
+    await expect(openPairEnvelope(requester.key, approver.key.pub, done.sshPub, next.id, 3, self.envelopes[0].sealed)).rejects.toThrow();
+  });
+
+  it("lets the requester cancel at any step before the finish, and the cancellation is final", async () => {
+    const approver = await party("macos");
+    const requester = await party("ios", approver.accountId);
+    const other = await party("windows", approver.accountId);
+    const cancel = (caller: Party, id: string) => call("POST", `/v1/approvals/${id}/cancel`, caller);
+
+    // Waiting: nobody claimed it yet; the approver's list drops it and a claim is refused.
+    const waiting = await ask(requester);
+    expect((await cancel(approver, waiting.id)).status).toBe(404);
+    expect(await (await cancel(requester, waiting.id)).json()).toEqual({ state: "cancelled" });
+    expect((await (await call("GET", "/v1/approvals?kind=pair", approver)).json<{ requests: unknown[] }>()).requests).toEqual([]);
+    expect(await rejection(await call("POST", `/v1/approvals/${waiting.id}/claim`, approver, { nonce_t: b64url(waiting.nonceT) }))).toEqual({
+      status: 410,
+      error: "cancelled",
+    });
+    expect(await rejection(await cancel(requester, waiting.id))).toEqual({ status: 410, error: "cancelled" });
+
+    // Revealed: the approver has the code, and still can't finish or write an envelope.
+    const revealedOne = await revealed(requester, approver);
+    expect((await cancel(other, revealedOne.id)).status).toBe(404);
+    expect((await cancel(requester, revealedOne.id)).status).toBe(200);
+    expect(await (await call("GET", `/v1/approvals/${revealedOne.id}`, approver)).json()).toMatchObject({ state: "cancelled", outcome_stored: true });
+    const finish = { outcome: "approved", ...(await envelope(approver, requester, revealedOne, 1)) };
+    expect(await rejection(await call("POST", `/v1/approvals/${revealedOne.id}/finish`, approver, finish))).toEqual({ status: 410, error: "cancelled" });
+    expect(await rejection(await call("POST", `/v1/approvals/${revealedOne.id}/finish`, approver, { outcome: "denied" }))).toEqual({
+      status: 410,
+      error: "cancelled",
+    });
+    expect(await rejection(await call("PUT", `/v1/approvals/${revealedOne.id}/envelope`, approver, await envelope(approver, requester, revealedOne, 2)))).toEqual({
+      status: 410,
+      error: "cancelled",
+    });
+    expect(await pairSelf(requester)).toEqual({ request: { id: revealedOne.id, state: "cancelled", expires_in: expect.any(Number), outcome_stored: true }, envelopes: [] });
+
+    // After the finish there is nothing left to cancel.
+    const done = await approved(requester, approver);
+    expect(await rejection(await cancel(requester, done.id))).toEqual({ status: 409, error: "already_finished" });
+    expect((await pairSelf(requester)).envelopes).toHaveLength(1);
+
+    // Browser requests and browsers have no cancel.
+    const browser = await party("web", approver.accountId);
+    const { id: browserId } = await (await call("POST", "/v1/approvals", browser, { commit: b64url(random32()) })).json<{ id: string }>();
+    expect(await rejection(await cancel(browser, browserId))).toEqual({ status: 403, error: "not_native" });
+    expect((await cancel(approver, browserId)).status).toBe(404);
+  });
+
+  it("lists browser and pair requests together for kind=any, each with its kind", async () => {
+    const approver = await party("macos");
+    const browser = await party("web", approver.accountId, "Chrome on macOS");
+    const requester = await party("ios", approver.accountId, "Jerry's iPhone");
+    const browserCommit = b64url(random32());
+    const { id: browserId } = await (await call("POST", "/v1/approvals", browser, { commit: browserCommit })).json<{ id: string }>();
+    const pending = await ask(requester);
+    const list = async (caller: Party, query: string) => (await (await call("GET", `/v1/approvals${query}`, caller)).json<{ requests: { id: string }[] }>()).requests;
+
+    const any = await list(approver, "?kind=any");
+    expect(any).toEqual([
+      {
+        id: browserId,
+        kind: "browser",
+        browser: { device_id: browser.id, device_pub: browser.pub, name: "Chrome on macOS", platform: "web", created_ms: expect.any(Number) },
+        commit: browserCommit,
+        claimed: "no",
+        expires_in: expect.any(Number),
+      },
+      {
+        id: pending.id,
+        kind: "pair",
+        device: { device_id: requester.id, device_pub: requester.pub, name: "Jerry's iPhone", platform: "ios", created_ms: expect.any(Number) },
+        commit: expect.any(String),
+        ssh_pub: b64url(pending.sshPub),
+        claimed: "no",
+        expires_in: expect.any(Number),
+      },
+    ]);
+    // The plain list is approve-v1's, untagged; the pair list is pair requests only.
+    expect(await list(approver, "")).toEqual([
+      {
+        id: browserId,
+        browser: { device_id: browser.id, device_pub: browser.pub, name: "Chrome on macOS", platform: "web", created_ms: expect.any(Number) },
+        commit: browserCommit,
+        claimed: "no",
+        expires_in: expect.any(Number),
+      },
+    ]);
+    expect((await list(approver, "?kind=pair")).map(({ id }) => id)).toEqual([pending.id]);
+    // The requester sees its own request in none of them.
+    expect((await list(requester, "?kind=any")).map(({ id }) => id)).toEqual([browserId]);
   });
 
   it("shows another account's devices nothing", async () => {
@@ -385,7 +489,7 @@ describe("pair requests", () => {
       });
       expect((await call("POST", `/v1/approvals/${id}/reveal`, strangerPhone, { nonce_b: b64url(random32()) })).status).toBe(404);
       expect((await call("POST", `/v1/approvals/${id}/finish`, stranger, { outcome: "denied" })).status).toBe(404);
-      expect((await call("PUT", `/v1/approvals/${id}/envelope`, stranger, await envelope(stranger, requester, 9))).status).toBe(404);
+      expect((await call("PUT", `/v1/approvals/${id}/envelope`, stranger, await envelope(stranger, requester, pending, 9))).status).toBe(404);
     }
     expect(await pairSelf(strangerPhone)).toEqual({ envelopes: [] });
     expect((await call("GET", `/v1/approvals/${fresh.id}`, approver)).status).toBe(200);

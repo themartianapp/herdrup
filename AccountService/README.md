@@ -39,11 +39,13 @@ own deploys, so a bug or rollback here can't drop a guest session.
 | `POST /v1/approvals` | bearer, browser; `{commit}`, or an app device (pair-v1); `{kind: "pair", commit, ssh_pub}` | 201 `{id, expires_in: 600}`; replaces the requester's request; `403 not_a_browser`, `403 not_native` (a browser asking to pair), `429 too_many_requests`. A pair request alerts the account's other iOS devices (`PUT /v1/devices/self/push`) |
 | `GET /v1/approvals` | bearer, approver | `{requests: [{id, browser: {device_id, device_pub, name, platform, created_ms}, commit, claimed: "no"\|"you"\|"other", expires_in}]}`: browser requests only |
 | `GET /v1/approvals?kind=pair` | bearer, approver | `{requests: [{id, kind: "pair", device: {device_id, device_pub, name, platform, created_ms}, commit, ssh_pub, claimed, expires_in}]}`: other app devices' pair requests |
+| `GET /v1/approvals?kind=any` | bearer, approver | both lists in one: pair requests as above, browser requests with `kind: "browser"` added |
 | `POST /v1/approvals/<id>/claim` | bearer, approver; `{nonce_t}` | `{state: "claimed"}`; `409 already_claimed`, `403 own_request` |
-| `GET /v1/approvals/<id>` | bearer, the requester or an approver | `{state: "waiting"\|"claimed"\|"revealed"\|"denied"\|"approved"\|"expired", expires_in, outcome_stored?: true, approver?: {device_pub, name}, nonce_t?, nonce_b?}`, and for a pair request `kind: "pair", commit, ssh_pub, device: {device_id, device_pub, name, platform}`; `expired` is stored before it is answered, so it is final. `outcome_stored: true` comes with every `expired`, `approved` or `denied` read from the stored row and never while the request is pending; a Worker that predates it never sends it, so treat a state as final only from a read that carries it |
+| `GET /v1/approvals/<id>` | bearer, the requester or an approver | `{state: "waiting"\|"claimed"\|"revealed"\|"denied"\|"approved"\|"expired"\|"cancelled" (pair only), expires_in, outcome_stored?: true, approver?: {device_pub, name}, nonce_t?, nonce_b?}`, and for a pair request `kind: "pair", commit, ssh_pub, device: {device_id, device_pub, name, platform}`; `expired` is stored before it is answered, so it is final. `outcome_stored: true` comes with every `expired`, `approved`, `denied` or `cancelled` read from the stored row and never while the request is pending; a Worker that predates it never sends it, so treat a state as final only from a read that carries it |
 | `POST /v1/approvals/<id>/reveal` | bearer, the requester; `{nonce_b}` | `{state: "revealed"}`; `409 not_claimed`, `400 reveal_mismatch` (the request ends) |
 | `POST /v1/approvals/<id>/finish` | bearer, the claimant; `{outcome: "approved", scope, expires_ms, seq, sealed}`, for a pair request `{outcome: "approved", seq (≥ 1), sealed}`, or `{outcome: "denied"}` | `{state}`; `409 not_revealed`, `409 stale_seq` |
-| `PUT /v1/approvals/<id>/envelope` | bearer, a pair request's claimant; `{seq, sealed}` | `{seq}`, for 10 minutes after an approved finish; `410 expired`, `409 not_approved`, `409 stale_seq` |
+| `PUT /v1/approvals/<id>/envelope` | bearer, a pair request's claimant; `{seq, sealed}` | `{seq}`, for 10 minutes after an approved finish; `410 expired`, `410 cancelled`, `409 not_approved`, `409 stale_seq` |
+| `POST /v1/approvals/<id>/cancel` | bearer, a pair request's requester, before the finish | `{state: "cancelled"}`; every later step answers `410 cancelled`; `409 already_finished` |
 | `PUT /v1/browsers/<device_id>/envelope` | bearer, an approver the browser verified; `{scope, expires_ms, seq, sealed}` | `{seq}`; `403 not_approver`, `409 stale_seq` |
 | `GET /v1/browsers/self` | bearer, browser | `{access?: {state, scope?, expires_ms?}, envelopes: [{approver_pub, seq, sealed}]}` |
 | `GET /v1/pairs/self` | bearer, app device | `{request?: {id, state, expires_in, outcome_stored?}, envelopes: [{request_id, ssh_pub, approver_pub, approver_name, seq, sealed}]}`; `403 not_native` |
@@ -385,11 +387,11 @@ For the stored approval expiry (`approval_expiry_final`): apply the migrations
 `outcome` may be `expired`), then deploy. No new secret, var or binding. The migration also works
 with the previous build, so apply it first.
 
-For pair-v1 (`pair_v1`): apply the migrations (`0008_pair.sql`, which adds columns to
-`approval_requests` with defaults that keep every row a browser request, and the
-`push_capabilities` table), then deploy. It adds the var `PUSH_RELAY_URL`
-(`https://push.herdrup.app`) and needs no secret or binding. The migration also works with the
-previous build, so apply it first.
+For pair-v1 (`pair_v1`): apply the migrations (`0008_pair.sql`, which rebuilds
+`approval_requests` with the same rows, its new columns defaulting every row to a browser
+request, and an `outcome` that may also be `cancelled`, and adds the `push_capabilities` table),
+then deploy. It adds the var `PUSH_RELAY_URL` (`https://push.herdrup.app`) and needs no secret
+or binding. The migration also works with the previous build, so apply it first.
 
 ### Rotate the statement key
 

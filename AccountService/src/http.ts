@@ -29,6 +29,7 @@ export type Endpoint =
   | "/v1/approvals/:id/reveal"
   | "/v1/approvals/:id/finish"
   | "/v1/approvals/:id/envelope"
+  | "/v1/approvals/:id/cancel"
   | "/v1/browsers/:id/envelope"
   | "/v1/browsers/self"
   | "/v1/pairs/self"
