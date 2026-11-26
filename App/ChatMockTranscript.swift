@@ -641,7 +641,8 @@ struct ChatMockTransport: HerdrTransport {
             let target = params["target"] as? String
             // `HERDR_MOCK_TOPICS`: herdr-app's topics, each its own conversation.
             if let topic = params["topic"] as? String, target == Self.paneID || target == "herdr-app" {
-                return TopicsMock.owner.transcript(id: id, topic: topic)
+                return TopicsMock.owner.transcript(id: id, topic: topic,
+                                                   relayEntries: params["relay_entries"] as? Bool == true)
             }
             // Under `HERDR_MOCK_CHAT_GROWTH` llm-opt (w9:p3) serves the same conversation, so the
             // stress run keeps two chats open at once.

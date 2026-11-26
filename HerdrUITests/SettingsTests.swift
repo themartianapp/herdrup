@@ -379,21 +379,36 @@ final class SettingsTests: XCTestCase {
             let manage = app.staticTexts["Notifications"].firstMatch
             XCTAssertTrue(manage.exists(within: 15), "Settings should list Notifications")
             manage.tap()
-            let picker = app.buttons["settings-notify-finishes"]
+            // By identifier, whatever type it reads as: the menu Picker is a PopUpButton to the
+            // modern attributes and a Button to the legacy ones, and XCTest alternates.
+            let picker = app.descendants(matching: .any)["settings-notify-finishes"].firstMatch
             XCTAssertTrue(picker.exists(within: 10), "\"An agent finishes\" should be a picker")
 
+            // An option of the open menu, as any element type (a button or a menu item), never
+            // the picker itself.
+            func item(_ option: String) -> XCUIElement {
+                app.descendants(matching: .any).matching(NSPredicate(
+                    format: "label == %@ AND identifier != %@", option, "settings-notify-finishes"
+                )).firstMatch
+            }
+
             func choose(_ option: String) {
-                // Tap the item once it is hittable; reopen if the first tap hit the dismissing
-                // backdrop (see testSettingsDefaultDecidesWhereOmpOpens).
+                // Tap the item once the menu has settled: it exists, is hittable and its frame
+                // held still between two reads (the menu animates in). Reopen once if the first
+                // tap hit the dismissing backdrop (see testSettingsDefaultDecidesWhereOmpOpens).
                 for _ in 0..<2 where picker.value as? String != option {
                     picker.tap()
-                    let item = app.buttons[option].firstMatch
-                    XCTAssertTrue(poll(5, every: 0.2) { item.exists && !item.frame.isEmpty && item.isHittable },
-                                  "the menu should offer \(option)")
+                    let choice = item(option)
+                    var lastFrame = CGRect.null
+                    XCTAssertTrue(poll(5, every: 0.2) {
+                        guard choice.exists, choice.isHittable, !choice.frame.isEmpty else { return false }
+                        defer { lastFrame = choice.frame }
+                        return choice.frame == lastFrame
+                    }, "the menu should offer \(option)")
                     for other in ["Off", "Only my requests", "Always"] {
-                        XCTAssertTrue(app.buttons[other].firstMatch.exists, "the menu should offer \(other)")
+                        XCTAssertTrue(item(other).exists, "the menu should offer \(other)")
                     }
-                    item.tap()
+                    choice.tap()
                     _ = poll(3, every: 0.3) { picker.value as? String == option }
                 }
                 XCTAssertEqual(picker.value as? String, option)

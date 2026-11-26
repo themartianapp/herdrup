@@ -630,6 +630,143 @@ final class TopicsTests: XCTestCase {
         XCTAssertTrue(poll(15, every: 0.25) { !chip.exists }, "the chip clears once the file is delivered")
         let note = app.staticTexts["topic-send-note"]
         XCTAssertFalse(note.exists, "the send does not fail: \(note.exists ? note.label : "")")
+        // What the topic accepted, not the optimistic bubble: the caption and how to fetch
+        // the Gram that was posted (the mock's post answers id gp1).
+        let sends = probe("topic-send-calls", in: app)
+        XCTAssertTrue(poll(10, every: 0.3) { sends.label.contains("herdr gram get-file gp1") },
+                      "the topic got the file's download reference: \(sends.label)")
+        XCTAssertTrue(sends.label.hasPrefix("Use these numbers"), "with the caption first: \(sends.label)")
+        XCTAssertEqual(gramPosts(in: app), 1, "one Gram, to the agent")
+        XCTAssertTrue(probe("topic-gram-posts", in: app).label.contains("file=picked-notes.txt@"))
         attach(app, "topics-attachment-sent")
+    }
+
+    // MARK: The topic's draft (#852, #853, #854)
+
+    /// herdr refuses the message before it reaches the topic (`invalid_params`, its size
+    /// gate): nothing was sent, so the caption and the chip stay, and Send again sends the
+    /// message with the Gram already posted, not a second one (#852).
+    func testARefusedAttachmentMessageKeepsTheDraftAndItsGram() {
+        let app = launch("chatview", ["HERDR_MOCK_PICKED_FILE": "1", "HERDR_MOCK_TOPICS_SEND_REFUSE": "invalid_params"])
+        let chip = openTopicWithAFile("t-board", "Q4 board pack", in: app)
+        let field = app.textViews["topic-composer-input"]
+        field.tap()
+        field.typeText("Use these numbers")
+        app.buttons["topic-send-button"].tap()
+        XCTAssertTrue(app.staticTexts["topic-send-note"].exists(within: 15), "the refusal is said")
+        XCTAssertTrue(poll(10, every: 0.25) { (field.value as? String ?? "").contains("Use these numbers") },
+                      "the caption comes back for a retry")
+        XCTAssertTrue(chip.exists, "and the file stays")
+        XCTAssertEqual(probe("topic-send-calls", in: app).label, "none", "the topic got nothing")
+        XCTAssertEqual(gramPosts(in: app), 1)
+
+        app.buttons["topic-send-button"].tap()
+        let sends = probe("topic-send-calls", in: app)
+        XCTAssertTrue(poll(15, every: 0.3) { sends.label.contains("herdr gram get-file gp1") },
+                      "the retry sends the message: \(sends.label)")
+        XCTAssertTrue(sends.label.hasPrefix("Use these numbers"))
+        XCTAssertTrue(poll(15, every: 0.25) { !chip.exists }, "the chip clears once it is delivered")
+        XCTAssertEqual(gramPosts(in: app), 1, "the retry reuses the Gram it posted")
+    }
+
+    /// The topic's conversation cannot load, so a send could not be shown: Send posts no
+    /// Gram and keeps the draft (#853), as the Inbox checks before it posts.
+    func testATopicThatCannotShowTheSendPostsNoGram() {
+        let app = launch("chatview", ["HERDR_MOCK_PICKED_FILE": "1", "HERDR_MOCK_TOPICS_TRANSCRIPT_STARTUP": "1000"])
+        let chip = openTopicWithAFile("t-board", "Q4 board pack", in: app)
+        let field = app.textViews["topic-composer-input"]
+        field.tap()
+        field.typeText("Use these numbers")
+        app.buttons["topic-send-button"].tap()
+        XCTAssertTrue(poll(20, every: 0.25) { (field.value as? String ?? "").contains("Use these numbers") },
+                      "the caption comes back: the message was not sent")
+        XCTAssertTrue(chip.exists, "and the file stays")
+        XCTAssertEqual(probe("topic-gram-posts", in: app).label, "none", "no Gram for a message not sent")
+        XCTAssertEqual(probe("topic-send-calls", in: app).label, "none")
+    }
+
+    /// The Terminal and back: the topic's draft, its text and its file, is still there (#854).
+    func testTheTerminalKeepsTheTopicsDraft() {
+        let app = launch("chatview", ["HERDR_MOCK_PICKED_FILE": "1"])
+        _ = openTopicWithAFile("t-board", "Q4 board pack", in: app)
+        let field = app.textViews["topic-composer-input"]
+        field.tap()
+        field.typeText("Keep me")
+        if isPad {
+            app.buttons["chat-switch-terminal"].tap()
+        } else {
+            app.buttons["topic-terminal"].tap()
+        }
+        let terminalSegment = app.buttons["chat-switch-terminal"]
+        XCTAssertTrue(poll(8, every: 0.3) { terminalSegment.exists && terminalSegment.isSelected }, "on the terminal")
+        app.buttons["chat-switch-topics"].tap()
+        XCTAssertTrue(topicChatOpen("Q4 board pack", in: app), "Topics brings the topic back")
+        XCTAssertTrue(app.descendants(matching: .any)["topic-attachment"].firstMatch.exists(within: 5),
+                      "with its file")
+        XCTAssertTrue((app.textViews["topic-composer-input"].value as? String ?? "").contains("Keep me"),
+                      "and its text")
+        XCTAssertEqual(gramPosts(in: app), 0, "nothing was sent")
+    }
+
+    /// A send still running when the reader opens the Terminal and comes back: the remounted
+    /// chat shows it running, Send held, until it settles; one Gram and one message, not two.
+    func testASendInFlightIsNotSentAgainAfterTheTerminal() {
+        let app = launch("chatview", ["HERDR_MOCK_PICKED_FILE": "1", "HERDR_MOCK_TOPICS_SEND_DELAY": "12"])
+        let chip = openTopicWithAFile("t-board", "Q4 board pack", in: app)
+        let field = app.textViews["topic-composer-input"]
+        field.tap()
+        field.typeText("Only once")
+        app.buttons["topic-send-button"].tap()
+        XCTAssertTrue(poll(10, every: 0.25) { gramPosts(in: app) == 1 }, "the file posts, the message waits")
+        if isPad {
+            app.buttons["chat-switch-terminal"].tap()
+        } else {
+            app.buttons["topic-terminal"].tap()
+        }
+        let terminalSegment = app.buttons["chat-switch-terminal"]
+        XCTAssertTrue(poll(8, every: 0.3) { terminalSegment.exists && terminalSegment.isSelected }, "on the terminal")
+        app.buttons["chat-switch-topics"].tap()
+        XCTAssertTrue(topicChatOpen("Q4 board pack", in: app), "Topics brings the topic back")
+        let send = app.buttons["topic-send-button"]
+        XCTAssertTrue(send.exists(within: 5), "the file is still in the draft while its send runs")
+        XCTAssertEqual(probe("topic-send-calls", in: app).label, "none", "the message is still on its way")
+        XCTAssertFalse(send.isEnabled, "Send waits for the running send")
+        send.tap()
+        XCTAssertTrue(poll(25, every: 0.3) { !chip.exists }, "the send settles and the chip clears")
+        let sends = probe("topic-send-calls", in: app)
+        XCTAssertTrue(poll(5, every: 0.3) { sends.label.contains("Only once") }, "the message reached the topic")
+        XCTAssertFalse(sends.label.contains("\n---\n"), "once: \(sends.label)")
+        XCTAssertEqual(gramPosts(in: app), 1, "one Gram")
+    }
+
+    /// Opens a topic and stages the attach sheet's file (`HERDR_MOCK_PICKED_FILE`); its chip.
+    private func openTopicWithAFile(_ id: String, _ title: String, in app: XCUIApplication) -> XCUIElement {
+        openHerdrApp(app)
+        _ = openTopics(app)
+        let topicRow = row(id, in: app)
+        XCTAssertTrue(topicRow.exists(within: 8))
+        topicRow.tap()
+        XCTAssertTrue(topicChatOpen(title, in: app))
+        let paperclip = app.buttons["topic-attach-button"]
+        XCTAssertTrue(paperclip.exists(within: 8))
+        XCTAssertTrue(poll(10, every: 0.25) { paperclip.isEnabled }, "attach opens once the topics have loaded")
+        paperclip.tap()
+        let file = app.buttons["composer-attach-file"]
+        XCTAssertTrue(file.exists(within: 5))
+        file.tap()
+        let chip = app.descendants(matching: .any)["topic-attachment"].firstMatch
+        XCTAssertTrue(chip.exists(within: 10), "the picked file stages a chip")
+        return chip
+    }
+
+    /// TopicChat's DEBUG probes (`topic-send-calls`, `topic-gram-posts`): labels.
+    private func probe(_ id: String, in app: XCUIApplication) -> XCUIElement {
+        app.descendants(matching: .any)[id].firstMatch
+    }
+
+    /// How many `gram.post` calls the mock answered, from `topic-gram-posts`.
+    private func gramPosts(in app: XCUIApplication) -> Int {
+        let label = probe("topic-gram-posts", in: app).label
+        return label == "none" ? 0 : label.components(separatedBy: "\n").count
     }
 }

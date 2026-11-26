@@ -375,19 +375,22 @@ final class TranscriptGroupingTests: XCTestCase {
         let entries = try JSONDecoder().decode([TranscriptEntry].self, from: Data(#"""
         [{"id":"u1","ts_ms":0,"kind":"user","text":"Go","author":"owner"},
          {"id":"r1","ts_ms":1,"kind":"reply","text":"Done","final":true},
-         {"id":"h1","ts_ms":2,"kind":"relay","from":"Inbox","topic_id":"t1","direction":"to_topic","text":"Is **clause 4** final?"},
+         {"id":"h1","ts_ms":2,"kind":"relay","from":"Inbox","direction":"to_topic","text":"Is **clause 4** final?"},
          {"id":"s1","ts_ms":3,"kind":"step","tool":"read","intent":"Reading clause 4","status":"ok"},
-         {"id":"h2","ts_ms":4,"kind":"relay","from":"Trip","direction":"to_inbox","text":"Booked."},
+         {"id":"h2","ts_ms":4,"kind":"relay","from":"Trip","topic_id":"t-trip","direction":"to_inbox","text":"Booked."},
          {"id":"h3","ts_ms":5,"kind":"relay","text":"No sender","direction":"sideways"}]
         """#.utf8))
-        XCTAssertEqual(entries[2].kind, .relay(TranscriptRelay(from: "Inbox", topicID: "t1", direction: .toTopic,
+        XCTAssertEqual(entries[2].kind, .relay(TranscriptRelay(from: "Inbox", direction: .toTopic,
                                                                text: "Is **clause 4** final?")))
         guard case .relay(let toInbox) = entries[4].kind, case .relay(let odd) = entries[5].kind else {
             return XCTFail("relay entries decode as relays: \(entries)")
         }
+        XCTAssertEqual(toInbox.topicID, "t-trip", "topic_id is the sending topic's")
         XCTAssertEqual(toInbox.label, "From topic Trip")
         XCTAssertEqual(odd.direction, .unknown, "an unknown direction still decodes")
         if case .relay(let fromInbox) = entries[2].kind { XCTAssertEqual(fromInbox.label, "From Inbox") }
+        XCTAssertEqual(TranscriptRelay(from: "Trip", topicID: "t-trip", direction: .toTopic, text: "Hi").label,
+                       "From topic Trip", "a topic handing over to another topic is named as a topic")
 
         let turns = TranscriptGrouping.turns(entries)
         XCTAssertEqual(turns.map(\.id), ["u1", "h1", "h2", "h3"], "each handed-over message opens a turn")

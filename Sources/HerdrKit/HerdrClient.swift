@@ -251,6 +251,14 @@ public actor HerdrClient {
     }
     private var capabilityFlight: Task<ServerCapabilities?, Error>?
 
+    /// The capabilities already learned, or the answer of the `ping` already in flight; nil
+    /// when neither (no `ping` is sent) or that `ping` fails.
+    private func learnedCapabilities() async -> ServerCapabilities? {
+        if case .probed(let capabilities) = capabilityCache { return capabilities }
+        guard let capabilityFlight else { return nil }
+        return try? await capabilityFlight.value
+    }
+
     /// The server's version string and capabilities from one `ping`, uncached: an update
     /// replaces the server under the same client. The answer also replaces the cached
     /// capabilities, so the openers see what the server that answered supports.
@@ -2107,12 +2115,23 @@ public actor HerdrClient {
         target: String, before: String? = nil, after: String? = nil, limit: UInt32? = nil,
         subagent: String? = nil, heldFrom: String? = nil, topic: String? = nil
     ) async throws -> AgentTranscriptPage {
-        if topic != nil, !(await supports(\.agentTranscriptTopic)) {
-            throw AgentTranscriptError.unsupported
+        // One read of the capabilities decides both the topic gate and the relay entries. A
+        // topic's page waits on them (the probe, or the `ping` already on its way). The Inbox's
+        // page sends no `ping` of its own for them: it takes them once learned, or joins the
+        // one in flight (the home screen's, at a cold start).
+        let capabilities: ServerCapabilities?
+        if topic != nil {
+            capabilities = try? await knownCapabilities()
+            guard capabilities?.agentTranscriptTopic == true else { throw AgentTranscriptError.unsupported }
+        } else {
+            capabilities = await learnedCapabilities()
         }
+        // Handovers as `relay` entries only from a server that offers them: asked for, an
+        // older one could refuse the unknown param.
+        let relayEntries: Bool? = capabilities?.transcriptRelayEntries == true ? true : nil
         let params = AgentTranscriptParams(target: target, before: before, after: after,
                                            limit: limit.map { min(max($0, 1), 50) }, subagent: subagent,
-                                           heldFrom: heldFrom, topic: topic)
+                                           heldFrom: heldFrom, topic: topic, relayEntries: relayEntries)
         // The newest page (no cursor) is what a chat opens on, so it is what a cold start
         // paints from; a page of older history or of appended entries is not. A topic's page
         // is not kept: the cache holds one page per agent (and subagent), the Inbox's.
