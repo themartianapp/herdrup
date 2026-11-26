@@ -154,6 +154,61 @@ public struct AccountClient: Sendable {
                                          body: ["outcome": "denied"])
     }
 
+    // MARK: Pair requests (pair-v1, DESIGN §13; `PairRequester` and `PairApproval` run them)
+
+    /// `POST /v1/approvals {kind: "pair", commit, ssh_pub}`: this native device asks the
+    /// account's other devices to add its SSH key `sshPub` to their machines. A new request
+    /// replaces this device's live one.
+    public func requestPair(commit: Data, sshPub: Data, accessToken: String) async throws -> PairRequestCreated {
+        try await send("POST", "v1/approvals", bearer: accessToken,
+                       body: ["kind": "pair", "commit": Base64URL.encode(commit), "ssh_pub": Base64URL.encode(sshPub)])
+    }
+
+    /// `GET /v1/approvals?kind=pair`: the account's other devices asking to be paired.
+    public func pairRequests(accessToken: String) async throws -> [PairRequest] {
+        let answer: PairRequestList = try await send("GET", "v1/approvals", query: [URLQueryItem(name: "kind", value: "pair")],
+                                                     bearer: accessToken)
+        return answer.requests
+    }
+
+    /// `POST /v1/approvals/<id>/reveal {nonce_b}`, as the requester, once its request is claimed.
+    public func revealPair(id: String, nonceB: Data, accessToken: String) async throws {
+        let _: JSONNull = try await send("POST", "v1/approvals/\(id)/reveal", bearer: accessToken,
+                                         body: ["nonce_b": Base64URL.encode(nonceB)])
+    }
+
+    /// `POST /v1/approvals/<id>/finish {outcome: "approved", seq, sealed}` for a pair request.
+    public func approvePair(id: String, seq: UInt64, sealed: String, accessToken: String) async throws {
+        let _: JSONNull = try await send("POST", "v1/approvals/\(id)/finish", bearer: accessToken,
+                                         body: PairSealed(outcome: "approved", seq: seq, sealed: sealed))
+    }
+
+    /// `PUT /v1/approvals/<id>/envelope {seq, sealed}`: a newer envelope for an approved pair
+    /// request (a retried machine), up to 10 minutes after the finish. `409 stale_seq`,
+    /// `410 expired`.
+    public func replacePairEnvelope(id: String, seq: UInt64, sealed: String, accessToken: String) async throws {
+        let _: JSONNull = try await send("PUT", "v1/approvals/\(id)/envelope", bearer: accessToken,
+                                         body: PairSealed(outcome: nil, seq: seq, sealed: sealed))
+    }
+
+    /// `GET /v1/pairs/self`: this device's pair request and the envelope its approver sealed.
+    public func pairsSelf(accessToken: String) async throws -> PairsSelf {
+        try await send("GET", "v1/pairs/self", bearer: accessToken)
+    }
+
+    // MARK: Push (pair requests reach the account's iOS devices through the push relay)
+
+    /// `PUT /v1/devices/self/push {capability}`: this iOS device's push relay capability
+    /// (`PushRelayEnroller`, `hpr1.…`), so the service can tell it about pair requests.
+    public func setPushCapability(_ capability: String, accessToken: String) async throws {
+        try await sendNoContent("PUT", "v1/devices/self/push", bearer: accessToken, body: ["capability": capability])
+    }
+
+    /// `DELETE /v1/devices/self/push`.
+    public func clearPushCapability(accessToken: String) async throws {
+        try await sendNoContent("DELETE", "v1/devices/self/push", bearer: accessToken)
+    }
+
     // MARK: Sync (DESIGN §5.2, §5.5)
 
     /// `GET /v1/sync?since=<rev>`; `since` 0 is a full pull.
@@ -220,8 +275,9 @@ public struct AccountClient: Sendable {
         }
     }
 
-    private func sendNoContent(_ method: String, _ path: String, bearer: String) async throws {
-        _ = try await data(for: request(method, path, query: [], bearer: bearer, body: nil))
+    private func sendNoContent(_ method: String, _ path: String, bearer: String,
+                               body: (any Encodable)? = nil) async throws {
+        _ = try await data(for: request(method, path, query: [], bearer: bearer, body: body))
     }
 
     private struct Refusal: Decodable {
@@ -279,6 +335,9 @@ public struct AccountHealth: Decodable, Equatable, Sendable {
 
     /// Browser approvals for web owner access (`/v1/approvals`, WIRE-PLAN §2.4).
     public static let webApprove = "web_approve"
+    /// Pairing a native device from another (`kind: "pair"` requests, `/v1/pairs/self`,
+    /// `/v1/devices/self/push`; DESIGN §13).
+    public static let pairV1 = "pair_v1"
 
     public let version: String
     public let features: [String]

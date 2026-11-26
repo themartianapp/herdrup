@@ -62,10 +62,22 @@ public struct ApprovalRequest: Decodable, Equatable, Sendable, Identifiable {
     }
 }
 
-/// `GET /v1/approvals/<id>` as the approver reads it.
+/// `GET /v1/approvals/<id>` as either side reads it.
 public struct ApprovalStatus: Decodable, Equatable, Sendable {
     public enum State: String, Decodable, Sendable {
         case waiting, claimed, revealed, denied, approved, expired
+    }
+
+    /// The claimant, once there is one.
+    public struct Approver: Decodable, Equatable, Sendable {
+        /// Its X25519 device key, unpadded base64url.
+        public let devicePub: String
+        public let name: String
+
+        enum CodingKeys: String, CodingKey {
+            case name
+            case devicePub = "device_pub"
+        }
     }
 
     public let state: State
@@ -77,13 +89,21 @@ public struct ApprovalStatus: Decodable, Equatable, Sendable {
     /// The service answered from an outcome it stored, not one it computed from the clock. For
     /// an expiry: no finish can be recorded after it (herdrup #801).
     public let outcomeStored: Bool
+    public let approver: Approver?
+    /// A pair request (`kind: "pair"`) also carries what its list entry does, so an approver
+    /// opening it from a push needs no list.
+    public let kind: String?
+    public let sshPub: String?
+    public let commit: String?
+    public let device: PairRequest.Device?
 
     enum CodingKeys: String, CodingKey {
-        case state
+        case state, approver, kind, commit, device
         case expiresIn = "expires_in"
         case nonceT = "nonce_t"
         case nonceB = "nonce_b"
         case outcomeStored = "outcome_stored"
+        case sshPub = "ssh_pub"
     }
 
     public init(from decoder: Decoder) throws {
@@ -93,6 +113,11 @@ public struct ApprovalStatus: Decodable, Equatable, Sendable {
         nonceT = try c.decodeIfPresent(String.self, forKey: .nonceT)
         nonceB = try c.decodeIfPresent(String.self, forKey: .nonceB)
         outcomeStored = try c.decodeIfPresent(Bool.self, forKey: .outcomeStored) ?? false
+        approver = try c.decodeIfPresent(Approver.self, forKey: .approver)
+        kind = try c.decodeIfPresent(String.self, forKey: .kind)
+        sshPub = try c.decodeIfPresent(String.self, forKey: .sshPub)
+        commit = try c.decodeIfPresent(String.self, forKey: .commit)
+        device = try c.decodeIfPresent(PairRequest.Device.self, forKey: .device)
     }
 }
 
