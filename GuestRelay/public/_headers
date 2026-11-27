@@ -3,7 +3,7 @@
   Referrer-Policy: no-referrer
 
 /i
-  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self' https://accounts.herdrup.app; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
   Cache-Control: no-store
 
 /web/*

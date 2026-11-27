@@ -5,7 +5,7 @@
 // Every field is written with textContent, and only a b64url payload is ever placed in the
 // app link and the browser links (/web/#<payload>, and /web/#<payload>&bind=1&provider=… for an
 // account invite), which all carry it in the fragment, so no request ever sends it to a server.
-import { accountInvite, accountLink, browserLink, installTarget, invitePayload, openShortInvite, shortInvite, tintIndex } from "./invite.js";
+import { accountInvite, accountLink, addAccountLink, browserLink, checkSignedIn, installTarget, invitePayload, openShortInvite, shortInvite, tintIndex } from "./invite.js";
 
 (async function () {
   var APP_LINK = "herdrup://guest-invite#";
@@ -116,7 +116,6 @@ import { accountInvite, accountLink, browserLink, installTarget, invitePayload, 
 
   var open = $("open");
   open.href = APP_LINK + payload;
-  open.hidden = false;
   var browser = $("browser");
   browser.href = browserLink(payload);
 
@@ -127,6 +126,7 @@ import { accountInvite, accountLink, browserLink, installTarget, invitePayload, 
     invite = null;
   }
   if (!validInvite(invite)) {
+    open.hidden = false;
     browser.hidden = false;
     problem("This invite link looks incomplete. Try opening it in HerdrUp, or ask for the link again.");
     return;
@@ -155,17 +155,33 @@ import { accountInvite, accountLink, browserLink, installTarget, invitePayload, 
   }
   $("details").hidden = false;
 
-  // An account invite (acct: 1) offers the browser's ways to keep it, after Open in HerdrUp: in
-  // the guest's HerdrUp account, through Apple or Google (the browser guest signs in with it
-  // first when it must), or on this device only. The page never signs in itself. Other invites
-  // keep the single Open in browser.
+  // An account invite (acct: 1) checks if this browser is already signed in to HerdrUp. When
+  // signed in, the primary button adds the agent directly to the signed-in account without
+  // asking to sign in again; otherwise it offers Open in HerdrUp plus Apple/Google sign-in.
   var account = accountInvite(invite, location.origin);
   if (account) {
-    $("apple").href = accountLink(payload, "apple");
-    $("google").href = accountLink(payload, "google");
-    $("device").href = browserLink(payload);
-    $("choice").hidden = false;
+    var session = await checkSignedIn(fetch, navigator.locks, 2500);
+    if (session.signedIn) {
+      $("signed-in-lead").textContent = session.displayHint
+        ? "Signed in as " + session.displayHint
+        : "Signed in to your HerdrUp account in this browser.";
+      $("add-account").href = addAccountLink(payload);
+      $("signed-in").hidden = false;
+      open.classList.remove("primary");
+      open.classList.add("quiet");
+      open.textContent = "Open in HerdrUp app";
+      open.hidden = false;
+      $("signed-in-device").href = browserLink(payload);
+      $("signed-in-device").hidden = false;
+    } else {
+      open.hidden = false;
+      $("apple").href = accountLink(payload, "apple");
+      $("google").href = accountLink(payload, "google");
+      $("device").href = browserLink(payload);
+      $("choice").hidden = false;
+    }
   } else {
+    open.hidden = false;
     browser.hidden = false;
   }
   offerInstall(account);
