@@ -159,7 +159,7 @@ import { accountInvite, accountLink, browserLink, installTarget, invitePayload, 
   // the guest's HerdrUp account, through Apple or Google (the browser guest signs in with it
   // first when it must), or on this device only. The page never signs in itself. Other invites
   // keep the single Open in browser.
-  var account = accountInvite(invite);
+  var account = accountInvite(invite, location.origin);
   if (account) {
     $("apple").href = accountLink(payload, "apple");
     $("google").href = accountLink(payload, "google");

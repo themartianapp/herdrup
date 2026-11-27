@@ -69,15 +69,20 @@ export function browserLink(payload) {
   return "/web/#" + payload;
 }
 
+/** The sole relay origin configured for browser HerdrUp account sign-in (AccountService wrangler.toml). */
+export var ACCOUNT_ORIGIN = "https://guest.herdrup.app";
+
 /**
  * Whether a decoded invite lets the guest keep the share in a HerdrUp account: the owner's
- * herdr sends `acct: 1` (guest access contract). An invite without it is a plain,
- * this-device-only invite, and the page shows it as before.
+ * herdr sends `acct: 1` (guest access contract), and the page is served from the origin that
+ * supports browser account sign-in. On legacy relay origins (e.g. guest.herdrup.themartian.app)
+ * or invites without `acct: 1`, the landing keeps the plain this-device-only Open in browser flow.
  * @param {object} invite decoded invite payload
+ * @param {string} [origin] location.origin
  * @returns {boolean}
  */
-export function accountInvite(invite) {
-  return invite.acct === 1;
+export function accountInvite(invite, origin) {
+  return invite.acct === 1 && (origin === undefined || origin === ACCOUNT_ORIGIN);
 }
 
 /**
