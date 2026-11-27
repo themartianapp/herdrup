@@ -26,16 +26,20 @@ public struct ChatMarkdownListItem: Equatable, Sendable {
     public let depth: Int
     /// `- [x]` / `- [ ]` task items.
     public let checked: Bool?
+    /// Non-nil only when a nested item's marker kind differs from the enclosing list's `ordered`
+    /// flag (e.g. a bullet nested under an ordered item).
+    public let markerOrdered: Bool?
 
-    public init(text: String, depth: Int = 0, checked: Bool? = nil) {
+    public init(text: String, depth: Int = 0, checked: Bool? = nil, markerOrdered: Bool? = nil) {
         self.text = text
         self.depth = depth
         self.checked = checked
+        self.markerOrdered = markerOrdered
     }
 }
 
 public enum ChatMarkdown {
-    public static func blocks(_ markdown: String) -> [ChatMarkdownBlock] {
+    public static func blocks(_ markdown: String, parseFences: Bool = true) -> [ChatMarkdownBlock] {
         let lines = markdown
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
@@ -60,7 +64,7 @@ public enum ChatMarkdown {
                 continue
             }
 
-            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+            if parseFences, trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
                 flushParagraph()
                 let fence = String(trimmed.prefix(3))
                 let language = trimmed.dropFirst(3).trimmingCharacters(in: .whitespaces)
@@ -141,16 +145,20 @@ public enum ChatMarkdown {
                     }
                     if let item = listItem(next) {
                         guard item.ordered == first.ordered || item.item.depth > 0 else { break }
-                        items.append(item.item)
+                        let resolved = item.ordered == first.ordered
+                            ? item.item
+                            : ChatMarkdownListItem(text: item.item.text, depth: item.item.depth,
+                                                   checked: item.item.checked, markerOrdered: item.ordered)
+                        items.append(resolved)
                         i += 1
                         continue
                     }
                     // A lazy continuation line belongs to the previous item.
-                    if leadingWidth(next) > 0 || !startsBlock(next.trimmingCharacters(in: .whitespaces)) {
+                    if leadingWidth(next) > 0 || !startsBlock(next.trimmingCharacters(in: .whitespaces), parseFences: parseFences) {
                         let last = items.removeLast()
                         items.append(ChatMarkdownListItem(
                             text: last.text + "\n" + next.trimmingCharacters(in: .whitespaces),
-                            depth: last.depth, checked: last.checked))
+                            depth: last.depth, checked: last.checked, markerOrdered: last.markerOrdered))
                         i += 1
                         continue
                     }
@@ -167,10 +175,32 @@ public enum ChatMarkdown {
         return blocks
     }
 
+    /// Computes the display marker (`"1."`, `"•"`, …) for each item in a list, tracking ordered
+    /// numbering independently per nesting depth so nested bullets or sub-lists never consume
+    /// the outer list's sequence.
+    public static func listMarkers(ordered: Bool, start: Int, items: [ChatMarkdownListItem]) -> [String] {
+        var nextByDepth: [Int: Int] = [:]
+        var previousDepth = 0
+        return items.map { item in
+            if item.depth < previousDepth {
+                for depth in (item.depth + 1)...previousDepth {
+                    nextByDepth.removeValue(forKey: depth)
+                }
+            }
+            previousDepth = item.depth
+            let itemOrdered = item.markerOrdered ?? ordered
+            guard itemOrdered else { return "•" }
+            let current = nextByDepth[item.depth] ?? (item.depth == 0 ? start : 1)
+            nextByDepth[item.depth] = current + 1
+            return "\(current)."
+        }
+    }
+
     // MARK: - Pieces
 
-    private static func startsBlock(_ trimmed: String) -> Bool {
-        trimmed.hasPrefix("```") || trimmed.hasPrefix(">") || heading(trimmed) != nil || isRule(trimmed)
+    private static func startsBlock(_ trimmed: String, parseFences: Bool) -> Bool {
+        (parseFences && (trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~")))
+            || trimmed.hasPrefix(">") || heading(trimmed) != nil || isRule(trimmed)
     }
 
     /// The diagram a fence's info string names (its first word, any case), if the app draws it.

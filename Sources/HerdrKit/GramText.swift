@@ -54,24 +54,24 @@ public enum GramText {
         return segments
     }
 
-    /// Splits a Gram prose segment into Markdown blocks (paragraphs, headings, lists, tables,
-    /// quotes, rules) using the shared `ChatMarkdown` parser.
-    public static func blocks(_ text: String) -> [ChatMarkdownBlock] {
-        ChatMarkdown.blocks(text)
+    /// Splits a Gram prose segment (already separated from closed fenced code blocks by
+    /// `segments(_:)`) into Markdown blocks without re-parsing block fences, so inline
+    /// triple-backtick spans (e.g. ```` ``` `42` ``` ````) and unclosed fences remain prose.
+    public static func proseBlocks(_ text: String) -> [ChatMarkdownBlock] {
+        ChatMarkdown.blocks(text, parseFences: false)
     }
 
-    /// True when `text` contains a GitHub-flavored Markdown table (used to widen the bubble
-    /// to its cap so table columns have room).
-    public static func hasTable(_ text: String) -> Bool {
-        guard text.contains("|") else { return false }
-        return ChatMarkdown.blocks(text).contains {
+    /// True when parsed prose blocks contain a GitHub-flavored Markdown table (used to widen
+    /// the bubble to its cap so table columns have room).
+    public static func hasTable(_ blocks: [ChatMarkdownBlock]) -> Bool {
+        blocks.contains {
             if case .table = $0 { return true } else { return false }
         }
     }
 
     /// True when parsed blocks contain multiple blocks or any non-paragraph block (lists,
-    /// headings, tables, quotes, rules, code); false for a single paragraph so plain prose
-    /// keeps the exact 8-line `GramFoldingText` layout.
+    /// headings, tables, quotes, rules); false for a single paragraph so plain prose keeps
+    /// the exact 8-line `GramFoldingText` layout.
     public static func isRichMarkdown(_ blocks: [ChatMarkdownBlock]) -> Bool {
         guard blocks.count == 1 else { return blocks.count > 1 }
         if case .paragraph = blocks[0] { return false }
