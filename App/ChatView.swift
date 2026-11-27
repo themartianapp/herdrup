@@ -792,6 +792,9 @@ private final class ChatPromptTops {
     /// older page, the top already fetching one): the view value it captured still has no
     /// search, so this is how it learns search took over and gives up (review 18e58fbbc4ef6e41).
     var navigation = 0
+    /// Live Find state, mirrored by reference so async paging continuations never read a stale
+    /// `findRequest` captured from an earlier `ChatView` value.
+    var finding = false
 
     /// The reader moved the chat (a drag, a deceleration they started, a wheel or trackpad
     /// scroll): the up arrow searches from where they are now, and a pending jump stops,
@@ -1085,12 +1088,6 @@ struct ChatView: View {
             guard isActive else { return }
             await model.probeFormSupport(client: client)
         }
-        // Search moves the chat on its own: the up arrow then starts from what is on screen.
-        // (The offset check retires a settled jump anyway; this also covers one still gliding.)
-        .onChange(of: findRequest != nil) { _, _ in
-            promptTops.cancelNavigation()
-            formReveal.pending = false
-        }
         .environment(\.chatTextScale, textScale)
         .environment(\.chatSearchQuery, findRequest?.term ?? "")
         .environment(\.chatSearchReveal, searchReveal)
@@ -1193,6 +1190,15 @@ struct ChatView: View {
         .onChange(of: liveSearchKey) { old, new in
             guard old.query == new.query else { return }
             updateSearch(proxy)
+        }
+        // Search moves the chat on its own: retire any in-flight jump or paging anchor first,
+        // then (when Find closes with the top sentinel still visible) reveal any history loaded
+        // while Find suppressed paging — in one handler, in that order.
+        .onChange(of: findRequest != nil) { _, finding in
+            promptTops.finding = finding
+            promptTops.cancelNavigation()
+            formReveal.pending = false
+            if !finding, topVisible { showOlder(proxy) }
         }
     }
 
@@ -1634,16 +1640,6 @@ struct ChatView: View {
         }
         // `landed` flips after the first scroll; the sentinel may already be on screen.
         .onChange(of: landed) { _, _ in if topVisible { showOlder(proxy) } }
-        // Closing Find or finishing a fetch whose old anchor was retired by navigation may leave
-        // the top sentinel still visible with newly loaded rows sitting above `drawnStart`.
-        .onChange(of: findRequest != nil) { _, finding in
-            if !finding, topVisible { showOlder(proxy) }
-        }
-        .onChange(of: model.loadingOlder) { _, loading in
-            if !loading, topVisible, findRequest == nil, drawnStart > 0 {
-                showOlder(proxy, fetches: false)
-            }
-        }
     }
 
     // MARK: - The drawn window
@@ -1729,12 +1725,17 @@ struct ChatView: View {
         let navigation = promptTops.navigation
         Task {
             await model.loadOlder(client: client)
-            // If the reader navigated elsewhere (Jump to latest, Find, form submit) while this
-            // page was in flight, keep the newly loaded turns off-screen instead of yanking
-            // them back to the old top anchor. A short initial page that started paging with
-            // no navigation keeps the same generation and widens drawWindow normally.
-            guard promptTops.navigation == navigation,
-                  let anchor, let index = model.rowIndex[anchor] else { return }
+            // If navigation (Jump to latest, Find, form submit) retired our original anchor while
+            // this page was in flight, never scroll back to it. When Find is now closed and the
+            // top sentinel is still on screen with undrawn history above `drawnStart`, hand off
+            // to a single fresh reveal under the current generation instead of stranding rows.
+            guard promptTops.navigation == navigation else {
+                if topVisible, landed, !promptTops.finding, drawnStart > 0 {
+                    showOlder(proxy, fetches: false)
+                }
+                return
+            }
+            guard let anchor, let index = model.rowIndex[anchor] else { return }
             drawWindow = windowStarting(at: index - Self.renderWindow)
             try? await Task.sleep(nanoseconds: 30_000_000)
             guard promptTops.navigation == navigation else { return }
