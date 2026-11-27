@@ -3,11 +3,12 @@
 // the same-origin files index.html links to exist in public.
 // Runs in Node, not workerd: it reads the file tree.
 import assert from "node:assert/strict";
-import { appendFileSync, cpSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { ACCOUNT_ORIGIN } from "../public/static/invite.js";
 import { checkRelayHeaders, checkSiteAssets, checkWebBundle, relaySources, withRelaySources } from "./web-bundle.mjs";
 
 const WEB = fileURLToPath(new URL("../public/web", import.meta.url));
@@ -147,4 +148,38 @@ test("an absolute link on a relay origin is checked; other origins are not", () 
   assert.deepEqual(checkSiteAssets(web), [
     "index.html: https://guest.herdrup.themartian.app/static/gone.png is not in public/static/gone.png",
   ]);
+});
+
+test("invite landing ACCOUNT_ORIGIN matches AccountService WEB_ORIGIN", () => {
+  const wrangler = readFileSync(new URL("../../AccountService/wrangler.toml", import.meta.url), "utf8");
+  const match = wrangler.match(/^WEB_ORIGIN\s*=\s*"([^"]+)"/m);
+  assert.ok(match, "AccountService/wrangler.toml must define WEB_ORIGIN");
+  assert.equal(ACCOUNT_ORIGIN, match[1]);
+});
+
+test("invite landing CSS gradients match design/tokens.json stops and tint-0..3 order", () => {
+  const tokens = JSON.parse(readFileSync(new URL("../../design/tokens.json", import.meta.url), "utf8"));
+  const css = readFileSync(new URL("../public/static/i.css", import.meta.url), "utf8");
+  const order = ["default", "claude", "codex", "gemini"];
+  order.forEach((key, idx) => {
+    const [start, end] = tokens.agentGradient[key];
+    assert.match(css, new RegExp(`--agent-gradient-${key}:linear-gradient\\(135deg,${start},${end}\\)`, "i"));
+    assert.ok(css.includes(`.ava.tint-${idx}{background:var(--agent-gradient-${key})}`), `missing .ava.tint-${idx}`);
+  });
+});
+
+test("invite landing provider SVG marks agree with the vendored /web/ bundle", () => {
+  const assetsDir = join(WEB, "assets");
+  const bundleJs = readdirSync(assetsDir)
+    .filter((name) => name.endsWith(".js"))
+    .map((name) => readFileSync(join(assetsDir, name), "utf8"))
+    .join("\n");
+  for (const file of ["apple.svg", "google.svg"]) {
+    const svg = readFileSync(new URL(`../public/static/${file}`, import.meta.url), "utf8");
+    const paths = [...svg.matchAll(/<path[^>]*\bd="([^"]+)"/g)].map((m) => m[1]);
+    assert.ok(paths.length > 0, `${file} must contain at least one path`);
+    for (const d of paths) {
+      assert.ok(bundleJs.includes(d), `${file} path drifted from vendored /web/ bundle: ${d.slice(0, 32)}...`);
+    }
+  }
 });

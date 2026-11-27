@@ -35,16 +35,35 @@ const PAYLOAD = b64url(JSON.stringify({
 const HOST_SOCKET = `wss://guest.herdrup.app/v1/guest/${HOST_ID}`;
 const REVIEW = "jerry shared enyo with you";
 
-let server, origin, chrome, profile;
+let server, origin, chrome, profile, closedError = null;
 let next = 1;
 const pending = new Map();
 const listeners = new Set();
 
+function failPending(error) {
+  closedError ??= error;
+  for (const [id, call] of pending) {
+    pending.delete(id);
+    call.reject(new Error(`${call.method}: ${error.message}`));
+  }
+}
+
 /** One DevTools call, on the browser or on an attached page's session. */
 function send(method, params = {}, sessionId) {
+  if (closedError) return Promise.reject(new Error(`${method}: ${closedError.message}`));
+  if (!chrome || chrome.exitCode !== null || chrome.stdio[3].destroyed) {
+    return Promise.reject(new Error(`${method}: Chrome DevTools pipe closed`));
+  }
   const id = next++;
-  chrome.stdio[3].write(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }) + "\0");
-  return new Promise((resolve, reject) => pending.set(id, { resolve, reject, method }));
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject, method });
+    chrome.stdio[3].write(
+      JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }) + "\0",
+      (err) => {
+        if (err) failPending(err);
+      },
+    );
+  });
 }
 
 before(async () => {
@@ -65,6 +84,11 @@ before(async () => {
   chrome = spawn(binary, ["--headless=new", "--remote-debugging-pipe", "--no-first-run", "--no-default-browser-check",
     "--no-sandbox", `--user-data-dir=${profile}`, "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1", "about:blank"],
   { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"] });
+  chrome.on("error", (err) => failPending(err));
+  chrome.on("exit", (code, sig) => failPending(new Error(`Chrome exited (${sig ?? code})`)));
+  chrome.stdio[3].on("error", (err) => failPending(err));
+  chrome.stdio[4].on("error", (err) => failPending(err));
+  chrome.stdio[4].on("close", () => failPending(new Error("Chrome DevTools pipe closed")));
   let buffered = "";
   chrome.stdio[4].on("data", (chunk) => {
     buffered += chunk.toString("utf8");
@@ -83,12 +107,21 @@ before(async () => {
 });
 
 after(async () => {
-  if (chrome) {
-    await send("Browser.close").catch(() => {});
-    await new Promise((resolve) => (chrome.exitCode !== null ? resolve() : chrome.once("exit", resolve)));
+  try {
+    if (chrome && chrome.exitCode === null) {
+      await send("Browser.close").catch(() => {});
+      if (chrome.exitCode === null) {
+        await Promise.race([
+          new Promise((resolve) => chrome.once("exit", resolve)),
+          new Promise((resolve) => setTimeout(resolve, 2000)),
+        ]);
+      }
+      if (chrome.exitCode === null) chrome.kill("SIGKILL");
+    }
+  } finally {
+    server?.close();
+    if (profile) rmSync(profile, { recursive: true, force: true });
   }
-  server?.close();
-  if (profile) rmSync(profile, { recursive: true, force: true });
 });
 
 /** Opens origin + link in a fresh page until the bundle shows the review or a refusal, or

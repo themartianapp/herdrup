@@ -78,11 +78,11 @@ export var ACCOUNT_ORIGIN = "https://guest.herdrup.app";
  * supports browser account sign-in. On legacy relay origins (e.g. guest.herdrup.themartian.app)
  * or invites without `acct: 1`, the landing keeps the plain this-device-only Open in browser flow.
  * @param {object} invite decoded invite payload
- * @param {string} [origin] location.origin
+ * @param {string} origin location.origin
  * @returns {boolean}
  */
 export function accountInvite(invite, origin) {
-  return invite.acct === 1 && (origin === undefined || origin === ACCOUNT_ORIGIN);
+  return invite.acct === 1 && origin === ACCOUNT_ORIGIN;
 }
 
 /**

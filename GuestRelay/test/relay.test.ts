@@ -1193,13 +1193,14 @@ describe("landing page script", () => {
   });
 
   it("offers the account choice only for an invite whose acct is exactly 1 on the canonical account origin", () => {
-    expect(accountInvite({ v: 1, acct: 1 })).toBe(true);
     expect(accountInvite({ v: 1, acct: 1 }, "https://guest.herdrup.app")).toBe(true);
+    expect((accountInvite as (invite: object, origin?: string) => boolean)({ v: 1, acct: 1 })).toBe(false);
+    expect(accountInvite({ v: 1, acct: 1 }, "")).toBe(false);
     expect(accountInvite({ v: 1, acct: 1 }, "https://guest.herdrup.themartian.app")).toBe(false);
     // An older invite has no acct, and keeps the single Open in browser.
-    expect(accountInvite({ v: 1 })).toBe(false);
+    expect(accountInvite({ v: 1 }, "https://guest.herdrup.app")).toBe(false);
     for (const other of [0, 2, "1", true, null, [1]]) {
-      expect(accountInvite({ v: 1, acct: other }), JSON.stringify(other)).toBe(false);
+      expect(accountInvite({ v: 1, acct: other }, "https://guest.herdrup.app"), JSON.stringify(other)).toBe(false);
     }
   });
 
