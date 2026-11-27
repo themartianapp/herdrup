@@ -797,7 +797,41 @@ private final class ChatPromptTops {
     var finding = false
     /// Navigation generation that currently owns an in-flight scroll-anchor restore, so close-
     /// triggered reveals and completing older-page fetches cannot schedule competing restores.
-    var restoringNavigation: Int?
+    private var restoringNavigation: Int?
+    /// Another older-page reveal arrived while `restoringNavigation` owned the anchor and should
+    /// be rechecked once the current restore settles if the top sentinel is still visible.
+    private var pendingOlderReveal = false
+
+    /// Whether the current navigation generation already owns an in-flight older-page restore.
+    var isRestoringOlder: Bool { restoringNavigation == navigation }
+
+    /// Claims restore ownership for `generation`. Returns false if `generation` is stale or
+    /// already restoring (marking a pending reveal for the active owner in the latter case).
+    func claimOlderRestore(for generation: Int) -> Bool {
+        guard generation == navigation else { return false }
+        if restoringNavigation == generation {
+            pendingOlderReveal = true
+            return false
+        }
+        restoringNavigation = generation
+        pendingOlderReveal = false
+        return true
+    }
+
+    func hasPendingOlderReveal(for generation: Int) -> Bool {
+        restoringNavigation == generation && pendingOlderReveal
+    }
+
+    /// Releases restore ownership for `generation` and reports whether another reveal arrived
+    /// while this restore owned the anchor.
+    @discardableResult
+    func releaseOlderRestore(for generation: Int) -> Bool {
+        guard restoringNavigation == generation else { return false }
+        restoringNavigation = nil
+        let pending = pendingOlderReveal
+        pendingOlderReveal = false
+        return pending
+    }
 
     /// The reader moved the chat (a drag, a deceleration they started, a wheel or trackpad
     /// scroll): the up arrow searches from where they are now, and a pending jump stops,
@@ -813,6 +847,7 @@ private final class ChatPromptTops {
     func cancelNavigation() {
         lastJump = nil
         restoringNavigation = nil
+        pendingOlderReveal = false
         navigation += 1
     }
 }
@@ -1716,6 +1751,34 @@ struct ChatView: View {
         showOlder(proxy, fetches: false)
     }
 
+    /// Widens the rendered window to `targetStart` and restores `anchor` to the top under a single
+    /// restore owner for `navigation`. Any overlapping reveal records itself as pending instead of
+    /// scheduling a competing `scrollTo`, and is rechecked after this restore settles if the top
+    /// sentinel remains visible.
+    private func restoreOlderWindow(_ proxy: ScrollViewProxy, to anchor: String,
+                                    targetStart: Int, navigation: Int,
+                                    recheckAfterScroll: Bool) {
+        guard promptTops.claimOlderRestore(for: navigation) else { return }
+        drawWindow = windowStarting(at: targetStart)
+        Task {
+            try? await Task.sleep(nanoseconds: 30_000_000)
+            guard promptTops.navigation == navigation else { return }
+            proxy.scrollTo(anchor, anchor: .top)
+            if recheckAfterScroll || promptTops.hasPendingOlderReveal(for: navigation) {
+                // The sentinel's visibility is measured again after that scroll; still in view
+                // (short rows, or another older page arrived while this restore owned the anchor),
+                // it gets the next already-loaded window, never a fetch.
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                guard promptTops.navigation == navigation else { return }
+                promptTops.releaseOlderRestore(for: navigation)
+                if topVisible, landed { showOlder(proxy, fetches: false) }
+            } else {
+                let pending = promptTops.releaseOlderRestore(for: navigation)
+                if pending, topVisible, landed { showOlder(proxy, fetches: false) }
+            }
+        }
+    }
+
     /// The reader reached the top: the next window of rows already loaded, else the next
     /// older page. Either way the row that was on top stays where it was. `fetches` false: a
     /// window only, as when a revealed window still does not reach the screen's top.
@@ -1723,33 +1786,19 @@ struct ChatView: View {
         guard landed, !promptTops.finding else { return }
         let start = drawnStart
         guard start > 0 else {
-            if fetches { loadOlder(proxy) }
+            if fetches, !promptTops.isRestoringOlder { loadOlder(proxy) }
             return
         }
-        let navigation = promptTops.navigation
-        guard promptTops.restoringNavigation != navigation else { return }
         guard let anchor = anchorRowID else { return }
-        promptTops.restoringNavigation = navigation
-        drawWindow = windowStarting(at: start - Self.renderWindow)
-        Task {
-            try? await Task.sleep(nanoseconds: 30_000_000)
-            guard promptTops.navigation == navigation else { return }
-            proxy.scrollTo(anchor, anchor: .top)
-            // The sentinel's visibility is measured again after that scroll; still in view
-            // (short rows), it gets the next window, never a fetch.
-            try? await Task.sleep(nanoseconds: 150_000_000)
-            guard promptTops.navigation == navigation else { return }
-            if promptTops.restoringNavigation == navigation {
-                promptTops.restoringNavigation = nil
-            }
-            if topVisible, landed { showOlder(proxy, fetches: false) }
-        }
+        restoreOlderWindow(proxy, to: anchor, targetStart: start - Self.renderWindow,
+                           navigation: promptTops.navigation, recheckAfterScroll: true)
     }
 
     /// Fetches the next older page and draws its newest window above the row that was on
     /// top, which stays where it was.
     private func loadOlder(_ proxy: ScrollViewProxy, retry: Bool = false) {
-        guard landed, !promptTops.finding, model.hasOlder, !model.loadingOlder, retry || !model.olderFailed else { return }
+        guard landed, !promptTops.finding, !promptTops.isRestoringOlder,
+              model.hasOlder, !model.loadingOlder, retry || !model.olderFailed else { return }
         let anchor = anchorRowID
         let navigation = promptTops.navigation
         Task {
@@ -1763,15 +1812,8 @@ struct ChatView: View {
                 return
             }
             guard let anchor, let index = model.rowIndex[anchor] else { return }
-            guard promptTops.restoringNavigation != navigation else { return }
-            promptTops.restoringNavigation = navigation
-            drawWindow = windowStarting(at: index - Self.renderWindow)
-            try? await Task.sleep(nanoseconds: 30_000_000)
-            guard promptTops.navigation == navigation else { return }
-            if promptTops.restoringNavigation == navigation {
-                promptTops.restoringNavigation = nil
-            }
-            proxy.scrollTo(anchor, anchor: .top)
+            restoreOlderWindow(proxy, to: anchor, targetStart: index - Self.renderWindow,
+                               navigation: navigation, recheckAfterScroll: false)
         }
     }
 
