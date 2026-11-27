@@ -6363,11 +6363,12 @@ struct TerminalPaneContent: View {
     /// for its first seconds, until its session file or conversation DB is ready (#604); the
     /// page keeps asking so Chat appears without restarting the app.
     private var chatRecoveryNeeded: Bool {
-        ChatPreference.supportsChat(agent?.agent, transcriptCapable: transcriptCapable,
-                                    agyCapable: transcriptAgyCapable) && chatModel.unsupported
+        ChatPreference.needsRecovery(agent?.agent, transcriptCapable: transcriptCapable,
+                                     agyCapable: transcriptAgyCapable,
+                                     unsupported: chatModel.unsupportedRecoverable)
     }
     /// Gaps between transcript retries while Chat is refused, in seconds. The last one repeats.
-    private static let chatRecoveryDelays: [UInt64] = [1, 2, 4, 8, 15, 30, 60]
+    private static let chatRecoveryDelays: [UInt64] = ChatPreference.recoveryDelays
     /// The page offers Topics: an omp agent on a machine with `agent_topics` that answered its
     /// topic list this session, or whose session file already holds topics. Everything else
     /// keeps exactly today's `Chat | Terminal` page.
@@ -6778,7 +6779,7 @@ struct TerminalPaneContent: View {
             guard chatRecoveryNeeded, isForeground else { return }
             await chatModel.refresh(client: client)
             var attempt = 0
-            while chatModel.unsupported, !Task.isCancelled {
+            while chatModel.unsupportedRecoverable, !Task.isCancelled {
                 let delays = Self.chatRecoveryDelays
                 let seconds = delays[min(attempt, delays.count - 1)]
                 attempt += 1

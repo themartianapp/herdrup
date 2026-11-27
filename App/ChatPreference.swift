@@ -72,6 +72,15 @@ enum ChatPreference {
     static func supportsChat(_ agentKind: String?, transcriptCapable: Bool, agyCapable: Bool) -> Bool {
         AgentChatSupport.supportsChat(agentKind, transcriptCapable: transcriptCapable, agyCapable: agyCapable)
     }
+
+    /// Gaps between transcript retries while Chat is refused, in seconds.
+    static var recoveryDelays: [UInt64] { AgentChatSupport.recoveryDelays }
+
+    /// Whether a pane should poll at pane scope to recover from a temporary `transcript_unsupported`.
+    static func needsRecovery(_ agentKind: String?, transcriptCapable: Bool, agyCapable: Bool, unsupported: Bool) -> Bool {
+        AgentChatSupport.needsRecovery(agentKind, transcriptCapable: transcriptCapable,
+                                       agyCapable: agyCapable, unsupported: unsupported)
+    }
 }
 
 /// The owner page's `Chat | Terminal` switch, `Topics | Chat | Terminal` for an omp agent with

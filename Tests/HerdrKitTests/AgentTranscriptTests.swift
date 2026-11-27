@@ -1214,4 +1214,51 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertEqual(entryTexts.count, 4, "both real prompts and both real replies decode")
         XCTAssertFalse(entryTexts.contains(recapText), "the recap must not appear as a conversation entry")
     }
+
+    func testChatRecoveryNeededTracksTemporaryTranscriptUnsupportedAndClearsOnRetry() async {
+        XCTAssertTrue(AgentChatSupport.needsRecovery("agy", transcriptCapable: true, agyCapable: true, unsupported: true))
+        XCTAssertFalse(AgentChatSupport.needsRecovery("agy", transcriptCapable: true, agyCapable: false, unsupported: true))
+        XCTAssertFalse(AgentChatSupport.needsRecovery("agy", transcriptCapable: true, agyCapable: true, unsupported: false))
+        XCTAssertTrue(AgentChatSupport.needsRecovery("omp", transcriptCapable: true, agyCapable: false, unsupported: true))
+        XCTAssertFalse(AgentChatSupport.needsRecovery("claude", transcriptCapable: true, agyCapable: true, unsupported: true))
+        XCTAssertEqual(AgentChatSupport.recoveryDelays.first, 1)
+
+        var calls = 0
+        let (client, _) = scripted { _ in
+            calls += 1
+            if calls == 1 {
+                return RecordingTransport.errorReply(code: "transcript_unsupported",
+                                                     message: "the agent has not opened a conversation database")
+            }
+            return Self.page([
+                Self.entry("u1", "user", extra: #""text":"Hey""#),
+                Self.entry("r1", extra: #""text":"Ready","final":true"#),
+            ], after: "a1")
+        }
+        let store = TranscriptStore(target: "w1:p2")
+        await store.refresh(client: client)
+        let refused = (store.lastError as? AgentTranscriptError) == .unsupported
+        XCTAssertTrue(refused)
+        XCTAssertTrue(AgentChatSupport.needsRecovery("agy", transcriptCapable: true, agyCapable: true, unsupported: refused))
+
+        // Recovery poll succeeds once the agy DB opens: unsupported clears and Chat recovers.
+        await store.refresh(client: client)
+        let stillRefused = (store.lastError as? AgentTranscriptError) == .unsupported
+        XCTAssertFalse(stillRefused)
+        XCTAssertFalse(AgentChatSupport.needsRecovery("agy", transcriptCapable: true, agyCapable: true, unsupported: stillRefused))
+        XCTAssertEqual(store.entries.map(\.id), ["u1", "r1"])
+
+        // Permanent guest refusal (`guest_forbidden`) does not classify as temporary
+        // `AgentTranscriptError.unsupported`, so the pane recovery loop stops.
+        let (forbiddenClient, _) = scripted { _ in
+            RecordingTransport.errorReply(code: "guest_forbidden", message: "guests may not read transcripts")
+        }
+        let forbiddenStore = TranscriptStore(target: "w1:p3")
+        await forbiddenStore.refresh(client: forbiddenClient)
+        XCTAssertEqual((forbiddenStore.lastError as? APIError)?.code, "guest_forbidden")
+        let recoverableAfterForbidden = (forbiddenStore.lastError as? AgentTranscriptError) == .unsupported
+        XCTAssertFalse(recoverableAfterForbidden)
+        XCTAssertFalse(AgentChatSupport.needsRecovery("agy", transcriptCapable: true, agyCapable: true,
+                                                      unsupported: recoverableAfterForbidden))
+    }
 }
