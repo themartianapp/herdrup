@@ -275,7 +275,7 @@ covers every table the migrations create.
 | Binding | Key | Limit | Covers |
 |---|---|---|---|
 | `AUTH_IP_LIMIT` | `CF-Connecting-IP` | 20 / 60 s | nonce, sign-in, refresh; checked before the body is read |
-| `ACCOUNT_LIMIT` | account id | 120 / 60 s | every authenticated call |
+| `ACCOUNT_LIMIT` | account id | 240 / 60 s | every authenticated call |
 | `STATEMENT_LIMIT` | account id | 30 / 60 s | `/v1/statements`, on top of `ACCOUNT_LIMIT` |
 | `ENROL_LIMIT` | account id | 10 / 60 s | device challenge and enrolment, on top of `ACCOUNT_LIMIT` |
 | `SYNC_WRITE_LIMIT` | account id | 30 / 60 s | `POST /v1/sync`, on top of `ACCOUNT_LIMIT` |

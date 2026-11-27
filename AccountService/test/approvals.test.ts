@@ -1,5 +1,5 @@
 import { SELF, env } from "cloudflare:test";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, inject, it } from "vitest";
 import { findOrCreateAccount } from "../src/auth";
 import { approveCommit, fingerprint, handleFinish, MAX_REQUESTS_PER_HOUR, reportStatements } from "../src/approvals";
 import { b64url, fromB64url, hex, randomB64url } from "../src/bytes";
@@ -744,8 +744,9 @@ describe("browser approval", () => {
   it("rate-limits every approval route per account (APPROVAL_LIMIT) and caps requests per hour", async () => {
     const approver = await party("macos");
     const browser = await party("web", approver.accountId);
-    for (let i = 0; i < 45; i++) expect((await call("GET", "/v1/browsers/self", browser)).status).toBe(200);
-    for (let i = 0; i < 45; i++) expect((await call("GET", "/v1/approvals", approver)).status).toBe(200);
+    const half = inject("rateLimits").APPROVAL_LIMIT / 2;
+    for (let i = 0; i < half; i++) expect((await call("GET", "/v1/browsers/self", browser)).status).toBe(200);
+    for (let i = 0; i < half; i++) expect((await call("GET", "/v1/approvals", approver)).status).toBe(200);
     expect(await rejection(await call("GET", "/v1/withdrawals", approver))).toEqual({ status: 429, error: "rate_limited" });
     expect(await rejection(await call("POST", "/v1/approvals", browser, { commit: b64url(nonce()) }))).toEqual({ status: 429, error: "rate_limited" });
     // Other routes only count against ACCOUNT_LIMIT.
