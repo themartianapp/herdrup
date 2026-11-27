@@ -181,12 +181,14 @@ final class ChatModel: ObservableObject {
         refreshReceipt = failure.map { "Refresh failed: \($0)" } ?? "Up to date"
     }
 
-    func loadOlder(client: HerdrClient) async {
+    @discardableResult
+    func loadOlder(client: HerdrClient) async -> Bool {
         olderFailed = false
         do {
-            try await store.loadOlder(client: client)
+            return try await store.loadOlder(client: client)
         } catch {
             olderFailed = true
+            return false
         }
     }
 
@@ -1810,13 +1812,7 @@ struct ChatView: View {
         guard landed, !promptTops.finding else { return }
         let start = drawnStart
         guard start > 0 else {
-            if fetches {
-                if promptTops.isRestoringOlder {
-                    promptTops.deferOlderFetch(for: promptTops.navigation)
-                } else {
-                    loadOlder(proxy)
-                }
-            }
+            if fetches { loadOlder(proxy) }
             return
         }
         guard let anchor = anchorRowID else { return }
@@ -1834,23 +1830,21 @@ struct ChatView: View {
             return
         }
         let anchor = anchorRowID
-        let anchorIndexBefore = anchor.flatMap { model.rowIndex[$0] }
         let navigation = promptTops.navigation
         Task {
-            await model.loadOlder(client: client)
+            let added = await model.loadOlder(client: client)
             // If navigation (Jump to latest, Find, form submit) retired our original anchor while
             // this page was in flight, never scroll back to it. When Find is now closed and the
             // top sentinel is still on screen with undrawn history above `drawnStart`, hand off
             // to a single fresh reveal under the current generation instead of stranding rows.
             guard promptTops.navigation == navigation else {
-                if !model.olderFailed { revealStrandedOlder(proxy) }
+                if added { revealStrandedOlder(proxy) }
                 return
             }
-            // Never claim a scroll-anchor restore when the fetch failed or prepended no rows
-            // above the anchor, so an immediate Retry tap is never blocked.
-            guard !model.olderFailed,
-                  let anchor, let before = anchorIndexBefore,
-                  let index = model.rowIndex[anchor], index > before else { return }
+            // Only claim a scroll-anchor restore when this request actually merged new older
+            // entries, not when it failed or returned an empty/duplicate-only page while another
+            // update shifted row indices during the wait.
+            guard added, let anchor, let index = model.rowIndex[anchor] else { return }
             restoreOlderWindow(proxy, to: anchor, targetStart: index - Self.renderWindow,
                                navigation: navigation, initialFollowUp: .none)
         }
