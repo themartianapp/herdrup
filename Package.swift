@@ -40,12 +40,15 @@ let package = Package(
         // handshake + auth timer at 10 s, below the app's 15 s connect budget, and a
         // slow link's handshake hit it first (5–8 s measured on a 600 ms, 5 % loss
         // link; over 10 s with other traffic on it). The fork also closes the socket of
-        // a handshake that fails instead of leaking it. Package identity is the URL's
+        // a handshake that fails instead of leaking it, and adds
+        // `SSHClientSettings.serverHostKeyAlgorithms` (branch herdr/host-key-algorithms):
+        // a machine this device got by pairing offers only the algorithm of the host key
+        // its pin was made from. Package identity is the URL's
         // last path component, so `package: "Citadel"` below is unchanged. Drop the
         // fork once upstream makes the timer configurable.
         .package(url: "https://github.com/jerryfane/Citadel.git",
-                 revision: "160e41bff00ef08b2275369f49b4d919adc18f36"),
-        // swift-nio-ssh is OVERRIDDEN with our own fork of Citadel's fork, at one
+                 revision: "48f88910e23a2d55abc1359174707b860d296240"),
+        // swift-nio-ssh is our own fork of Citadel's (Wellz26) fork, at one
         // revision. Wellz26 0.3.6 (a05e6bbe) killed the app (Mac crash, build 220):
         // a read buffered in the multiplexer was delivered after a child channel had
         // closed locally, servicing it sent a window adjust, and
@@ -54,17 +57,15 @@ let package = Package(
         // NIOSSHHandler.channelReadComplete). jerryfane/swift-nio-ssh tag
         // 0.3.6-herdr.1 is a05e6bbe plus the fix: no window adjust once either side
         // has sent CHANNEL_CLOSE, and the closed states throw instead of crashing as
-        // proposed upstream in https://github.com/apple/swift-nio-ssh/pull/239.
+        // proposed upstream in https://github.com/apple/swift-nio-ssh/pull/239. Branch
+        // herdr/client-host-key-algorithms adds `SSHClientConfiguration.serverHostKeyAlgorithms`
+        // (the client offers only the host key algorithms named), which the Citadel fork uses.
         //
-        // HOW THE OVERRIDE WORKS: package identity is the URL's last path component,
-        // so this root dependency and Citadel's Wellz26 one are the same package
-        // `swift-nio-ssh`; the root's location wins, and a `revision:` requirement at
-        // the root overrides Citadel's "0.3.4"..<"0.4.0" range. SwiftPM warns that
-        // Citadel's dependency "conflicts with dependency on" this URL; that warning
-        // is expected. Drop this override once Citadel ships a swift-nio-ssh with
-        // the fix, and bump the revision with any Citadel bump.
+        // The Citadel fork depends on this same fork and revision, so there is one
+        // `swift-nio-ssh` package (identity is the URL's last path component). The root
+        // still names it so the revision is pinned here: bump both together.
         .package(url: "https://github.com/jerryfane/swift-nio-ssh.git",
-                 revision: "7d87c52e86e5affae0480a411b9baaf1dd121aba"),
+                 revision: "7af2b5567dbfba04e5b275ca809630dab668194c"),
     ],
     targets: [
         // libssh2 is gone: CitadelTransport (pure-Swift nio-ssh + Citadel)

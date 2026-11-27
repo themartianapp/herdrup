@@ -1516,6 +1516,13 @@ them, the service could hand N an older approved envelope from the same B and T 
 request, another S) as this request's. With them, an envelope opens only as the request it was
 sealed for.
 
+**host_key is the only key N accepts.** It is the OpenSSH line of the host key A checked (a
+certificate stands for the key it certifies). N pins it, and when it connects to that machine
+it offers only that key's host-key algorithm. A host often has several keys (stock OpenSSH has
+ECDSA and ed25519), and a client offering all of them is shown the one it prefers, which the
+pin would refuse. The iOS app keeps the algorithm with the machine on that device, like the
+pin, and drops it when the machine's host or port is edited.
+
 **seq is per request.** The finish's envelope has `seq ≥ 1`, and the apps start at 1. Each retry
 (`PUT …/envelope`) must be higher than the stored one. A new request starts again at 1. Browser
 envelopes (§12.3), which live across requests per approver, keep their own seq rule.

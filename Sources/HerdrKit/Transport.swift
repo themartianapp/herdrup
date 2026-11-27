@@ -27,6 +27,11 @@ public struct SSHCredentials: Sendable {
     /// nil or "default" means the default session, which sends NO flag, so a machine on an
     /// older herdr (which rejects `--session`) keeps working unchanged.
     public var session: String? = nil
+    /// The one host-key algorithm to offer ("ecdsa-sha2-nistp256"), for a machine this device
+    /// got by pairing: its pin is the key the approver sent, and a host with several keys
+    /// (stock OpenSSH has ECDSA and ed25519) must be asked for that one, or it shows another
+    /// the pin refuses. nil offers every algorithm, as for a machine added by hand or by QR.
+    public var hostKeyAlgorithm: String? = nil
 
     /// The two SSH auth methods herdr offers. `Equatable` for tests; the secrets
     /// live only here and in the Keychain on the client.

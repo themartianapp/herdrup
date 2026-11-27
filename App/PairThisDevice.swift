@@ -173,8 +173,11 @@ final class DevicePairing: ObservableObject {
                 failures[id] = "\(result.approverName) couldn’t add the key: \(machine.reason ?? "it failed")"
                 continue
             }
+            // The pin is the key the approver checked; this device offers only its algorithm, so
+            // a host with several keys (ECDSA and ed25519) shows that one (DESIGN §13 host_key).
             guard let port = UInt16(exactly: machine.port),
-                  let fingerprint = HostKeyRecorder.fingerprint(ofOpenSSHKey: machine.hostKey) else {
+                  let fingerprint = HostKeyRecorder.fingerprint(ofOpenSSHKey: machine.hostKey),
+                  let algorithm = HostKeyRecorder.algorithm(ofOpenSSHKey: machine.hostKey) else {
                 failures[id] = "\(result.approverName) sent no usable host key for it"
                 continue
             }
@@ -187,14 +190,14 @@ final class DevicePairing: ObservableObject {
             let savedID: UUID
             if let existing {
                 guard store.update(existing, nickname: existing.nickname ?? "", host: existing.host,
-                                   username: existing.username, secret: .key(pem)) else {
+                                   username: existing.username, secret: .key(pem), hostKeyAlgorithm: algorithm) else {
                     failures[id] = "Couldn’t save its key on this \(HerdrUpAccount.deviceKind)"
                     continue
                 }
                 savedID = existing.id
             } else {
                 guard store.add(nickname: machine.nickname, host: Self.address(machine.host, port: machine.port),
-                                username: machine.user, secret: .key(pem)),
+                                username: machine.user, secret: .key(pem), hostKeyAlgorithm: algorithm),
                       let added = store.hosts.first else {
                     failures[id] = "Couldn’t save its key on this \(HerdrUpAccount.deviceKind)"
                     continue

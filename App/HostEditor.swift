@@ -167,7 +167,7 @@ struct HostEditor: View {
     private func saveAndConnect() {
         guard let ep = endpoint, save() else { return }
         // Add mode requires the secret, so it is in hand here — connect straight away.
-        let creds: SSHCredentials
+        var creds: SSHCredentials
         switch authKind {
         case .key:
             creds = SSHCredentials(host: ep.host, port: ep.port, username: trimmedUser,
@@ -176,6 +176,8 @@ struct HostEditor: View {
             creds = SSHCredentials(host: ep.host, port: ep.port, username: trimmedUser,
                                    password: password, remoteSocketPath: "")
         }
+        // A paired machine whose address didn't change still offers only its pinned key's algorithm.
+        if let editing { creds.hostKeyAlgorithm = store.hosts.first { $0.id == editing.id }?.hostKeyAlgorithm }
         onConnect(creds)
         dismiss()
     }

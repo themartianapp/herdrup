@@ -155,12 +155,16 @@ final class PairV1Tests: XCTestCase {
 
     /// An approver that saw a host certificate may send it as host_key. This app never
     /// negotiates certificate host-key algorithms, so the host shows it the plain certified
-    /// key; the pin must be that key's, or every connect after pairing would be refused.
+    /// key; the pin, and the one algorithm offered, must be that key's, or every connect
+    /// after pairing would be refused.
     func testAHostCertificatePinsTheKeyItCertifies() throws {
         let plain = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPe20jCjHILbi0oia+XTjaYy8WtHOKueMP/ymXXJkIfO"
         let cert = "ssh-ed25519-cert-v01@openssh.com AAAAIHNzaC1lZDI1NTE5LWNlcnQtdjAxQG9wZW5zc2guY29tAAAAIN46Pyh56idR9QvyrRush6rqJB3pwTFhDggryxWMCsIQAAAAIPe20jCjHILbi0oia+XTjaYy8WtHOKueMP/ymXXJkIfOAAAAAAAAAAAAAAACAAAACmZsZWV0LWhlbDEAAAAOAAAACmZsZWV0LWhlbDEAAAAAaVWq8AAAAAB8JFDwAAAAAAAAAAAAAAAAAAAAMwAAAAtzc2gtZWQyNTUxOQAAACCy41EgMLY0ZutF4qiBtWxbAj94qNa1AW3ssqbIn6CUuQAAAFMAAAALc3NoLWVkMjU1MTkAAABAMnP2AtVx44FZRW49/K4MEj7RkDbTJ7lOKA07x7EwomCw3G0GI1Bdq2VSk5WFLAvb8W3DkmIm/0QGgeGDRd6IDw=="
         let presented = try NIOSSHPublicKey(openSSHPublicKey: plain)
         let pin = try XCTUnwrap(HostKeyRecorder.fingerprint(ofOpenSSHKey: cert))
         XCTAssertEqual(pin, sshHostKeyFingerprintSHA256(presented))
+        XCTAssertEqual(HostKeyRecorder.algorithm(ofOpenSSHKey: cert), "ssh-ed25519")
+        XCTAssertEqual(HostKeyRecorder.algorithm(ofOpenSSHKey: plain), "ssh-ed25519")
+        XCTAssertNil(HostKeyRecorder.algorithm(ofOpenSSHKey: "not a key"))
     }
 }

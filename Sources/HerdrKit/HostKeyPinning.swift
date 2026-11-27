@@ -188,9 +188,20 @@ public final class HostKeyRecorder: HostKeyPolicy, @unchecked Sendable {
     /// nil for a line that isn't one. A host certificate pins the key it certifies: this app
     /// never negotiates certificate host-key algorithms, so the host shows it that plain key.
     public static func fingerprint(ofOpenSSHKey line: String) -> String? {
+        plainKey(line).map(sshHostKeyFingerprintSHA256)
+    }
+
+    /// The host-key algorithm of the key `fingerprint(ofOpenSSHKey:)` pins ("ssh-ed25519",
+    /// "ecdsa-sha2-nistp256"; a certificate's certified key), or nil for a line that isn't one.
+    /// A paired machine offers only this one (`SSHCredentials.hostKeyAlgorithm`).
+    public static func algorithm(ofOpenSSHKey line: String) -> String? {
+        plainKey(line).flatMap { String(openSSHPublicKey: $0).split(separator: " ").first.map(String.init) }
+    }
+
+    private static func plainKey(_ line: String) -> NIOSSHPublicKey? {
         guard let key = try? NIOSSHPublicKey(openSSHPublicKey: line.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             return nil
         }
-        return sshHostKeyFingerprintSHA256(NIOSSHCertifiedPublicKey(key)?.key ?? key)
+        return NIOSSHCertifiedPublicKey(key)?.key ?? key
     }
 }
