@@ -1352,8 +1352,11 @@ struct ChatView: View {
         var keys = Set<String>()
         if !expanded.isEmpty, case .item(.work(let work)) = row {
             for key in ["t:" + work.id, "s:" + work.id] where expanded.contains(key) { keys.insert(key) }
-            if keys.contains("s:" + work.id) {
-                for step in work.steps where expanded.contains("d:" + step.id) { keys.insert("d:" + step.id) }
+            let summaryOpen = keys.contains("s:" + work.id)
+            for step in work.steps where expanded.contains("d:" + step.id) {
+                if summaryOpen || (live && work.live && step.status == .running) {
+                    keys.insert("d:" + step.id)
+                }
             }
         }
         var recorded = false
@@ -1371,7 +1374,7 @@ struct ChatView: View {
             suggestionProblem = model.suggestionProblem?.suggestionID == id ? model.suggestionProblem?.message : nil
         }
         return ChatRowView(
-            row: row, viewer: viewer, client: client, expanded: keys, recorded: recorded,
+            row: row, viewer: viewer, client: client, live: live, expanded: keys, recorded: recorded,
             answering: askID != nil && model.answeringAskID == askID,
             problem: askID != nil && model.answerProblem?.askID == askID ? model.answerProblem : nil,
             answersRefused: model.answersRefused,
@@ -2176,6 +2179,8 @@ private struct ChatRowView: View, Equatable {
     let row: ChatRow
     let viewer: ChatViewer
     let client: HerdrClient
+    /// The pane is live (not a paused share), so active work steps may animate.
+    let live: Bool
     /// This row's open thought, step list and step details (`t:`, `s:`, `d:` keys).
     let expanded: Set<String>
     /// The prompt is one this device sent ("In transcript").
@@ -2207,6 +2212,7 @@ private struct ChatRowView: View, Equatable {
         lhs.row == rhs.row
             && lhs.viewer == rhs.viewer
             && lhs.client === rhs.client
+            && lhs.live == rhs.live
             && lhs.expanded == rhs.expanded
             && lhs.recorded == rhs.recorded
             && lhs.answering == rhs.answering
@@ -2491,59 +2497,15 @@ private struct ChatRowView: View, Equatable {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("chat-steps")
                 if expanded.contains(stepsKey) {
-                    stepList(work)
-                } else if live {
+                    stepList(work.steps, workLive: live && work.live, compact: false)
+                } else if live && work.live {
                     let runningSteps = work.steps.filter { $0.status == .running }
                     if !runningSteps.isEmpty {
-                        runningStepPreviewList(runningSteps)
+                        stepList(runningSteps, workLive: true, compact: true)
                     }
                 }
             }
         }
-    }
-
-    private func runningStepPreviewList(_ steps: [TranscriptStepRow]) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(steps) { step in
-                let detailKey = "d:" + step.id
-                let preview = Self.runningCommandPreview(step.detail)
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        ChatWorkingWave(dotSize: 4, spacing: 3)
-                            .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 2 }
-                        if !step.tool.isEmpty {
-                            Text(step.tool).font(Typography.machine(11.5 * textScale, .semibold))
-                                .foregroundStyle(Color(hex: ChatPalette.current.toolTitle))
-                                .lineLimit(1)
-                                .fixedSize()
-                        }
-                        Text(step.intent).font(Typography.app(13.5 * textScale))
-                            .foregroundStyle(Palette.textDim)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                    if expanded.contains(detailKey), let detail = step.detail, !detail.isEmpty {
-                        Text(detail).font(Typography.machine(11.5 * textScale)).foregroundStyle(Palette.textFaint)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .textSelection(.enabled)
-                            .padding(.leading, 22)
-                    } else if let preview, preview != step.intent {
-                        Text(preview).font(Typography.machine(11.5 * textScale)).foregroundStyle(Palette.textFaint)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .padding(.leading, 22)
-                    }
-                }
-                .contentShape(Rectangle())
-                .onTapGesture { if step.detail != nil { toggle(detailKey) } }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel(Self.stepLabel(step, running: true))
-                .accessibilityIdentifier("chat-step-running-preview")
-            }
-        }
-        .padding(.vertical, 2).padding(.leading, 12)
-        .overlay(alignment: .leading) { Rectangle().fill(Palette.hairlineQuiet).frame(width: 2) }
-        .padding(.leading, 5)
     }
 
     private static func runningCommandPreview(_ detail: String?) -> String? {
@@ -2567,53 +2529,65 @@ private struct ChatRowView: View, Equatable {
         }
     }
 
-    private func stepList(_ work: TranscriptWork) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            ForEach(work.steps) { step in
-                let running = step.status == .running && live
-                let detailKey = "d:" + step.id
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        if running {
-                            ChatWorkingWave(dotSize: 4, spacing: 3)
-                                .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 2 }
-                        } else {
-                            Circle()
-                                .fill(step.status == .error ? Palette.died : Palette.hairline)
-                                .frame(width: 5, height: 5)
-                                .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 2.5 }
-                        }
-                        // The tool omp ran, in the theme's accent, as omp's terminal titles it.
-                        if !step.tool.isEmpty {
-                            Text(step.tool).font(Typography.machine(11.5 * textScale, .semibold))
-                                .foregroundStyle(Color(hex: ChatPalette.current.toolTitle))
-                                .lineLimit(1)
-                                .fixedSize()
-                                .frame(minWidth: 46 * textScale, alignment: .leading)
-                        }
-                        Text(step.intent).font(Typography.app(13.5 * textScale))
-                            .foregroundStyle(running ? Palette.textDim : Palette.textFaint)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    if expanded.contains(detailKey), let detail = step.detail, !detail.isEmpty {
-                        Text(detail).font(Typography.machine(11.5 * textScale)).foregroundStyle(Palette.textFaint)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .textSelection(.enabled)
-                            .padding(.leading, 12)
-                    }
-                }
-                .contentShape(Rectangle())
-                .onTapGesture { if step.detail != nil { toggle(detailKey) } }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel(Self.stepLabel(step, running: running))
-                .accessibilityIdentifier(running ? "chat-step-running" : "chat-step")
+    private func stepList(_ steps: [TranscriptStepRow], workLive: Bool, compact: Bool) -> some View {
+        VStack(alignment: .leading, spacing: compact ? 6 : 5) {
+            ForEach(steps) { step in
+                stepRow(step, running: step.status == .running && workLive, compact: compact)
             }
         }
-        .padding(.vertical, 1).padding(.leading, 12)
+        .padding(.vertical, compact ? 2 : 1).padding(.leading, 12)
         .overlay(alignment: .leading) { Rectangle().fill(Palette.hairlineQuiet).frame(width: 2) }
         .padding(.leading, 5)
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("chat-steplist")
+        .accessibilityIdentifier(compact ? "chat-steplist-running" : "chat-steplist")
+    }
+
+    private func stepRow(_ step: TranscriptStepRow, running: Bool, compact: Bool) -> some View {
+        let detailKey = "d:" + step.id
+        let detailOpen = expanded.contains(detailKey)
+        let preview = compact ? Self.runningCommandPreview(step.detail) : nil
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                if running {
+                    ChatWorkingWave(dotSize: 4, spacing: 3)
+                        .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 2 }
+                } else {
+                    Circle()
+                        .fill(step.status == .error ? Palette.died : Palette.hairline)
+                        .frame(width: 5, height: 5)
+                        .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 2.5 }
+                }
+                // The tool the agent ran, in the theme's accent, as the terminal titles it.
+                if !step.tool.isEmpty {
+                    Text(step.tool).font(Typography.machine(11.5 * textScale, .semibold))
+                        .foregroundStyle(Color(hex: ChatPalette.current.toolTitle))
+                        .lineLimit(1)
+                        .fixedSize()
+                        .frame(minWidth: compact ? 0 : 46 * textScale, alignment: .leading)
+                }
+                Text(step.intent).font(Typography.app(13.5 * textScale))
+                    .foregroundStyle(running ? Palette.textDim : Palette.textFaint)
+                    .lineLimit(compact ? 1 : nil)
+                    .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: !compact)
+            }
+            if detailOpen, let detail = step.detail, !detail.isEmpty {
+                Text(detail).font(Typography.machine(11.5 * textScale)).foregroundStyle(Palette.textFaint)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .padding(.leading, running ? 22 : 12)
+            } else if let preview, preview != step.intent {
+                Text(preview).font(Typography.machine(11.5 * textScale)).foregroundStyle(Palette.textFaint)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .padding(.leading, 22)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { if step.detail != nil { toggle(detailKey) } }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Self.stepLabel(step, running: running))
+        .accessibilityIdentifier(compact ? "chat-step-running-preview" : running ? "chat-step-running" : "chat-step")
     }
 
     /// A step for VoiceOver: its tool, then what it did.

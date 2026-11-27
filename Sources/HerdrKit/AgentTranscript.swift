@@ -256,7 +256,7 @@ public struct TranscriptModel: Decodable, Sendable, Equatable {
 
     /// Normalized harness prefix (`"omp"`, `"agy"`, etc.), preferring the wire field and
     /// falling back to the pane's agent kind when talking to an older herdr.
-    public func resolvedHarness(fallback: String? = nil) -> String? {
+    private func resolvedHarness(fallback: String?) -> String? {
         let raw = (harness ?? fallback)?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let raw, !raw.isEmpty else { return nil }
         return raw.lowercased()
@@ -280,20 +280,10 @@ public struct TranscriptModel: Decodable, Sendable, Equatable {
             .joined(separator: " · ")
     }
 
-    /// The chat's model line using only the harness carried on the wire, if any.
-    public var label: String {
-        label(harness: nil)
-    }
-
     /// "Model: omp, anthropic, claude-opus-5-5, effort high".
     public func accessibilityLabel(harness fallback: String? = nil) -> String {
         let prefix = resolvedHarness(fallback: fallback).map { "\($0), " } ?? ""
         return "Model: \(prefix)\(provider), \(id)" + (effort.map { ", effort \($0)" } ?? "")
-    }
-
-    /// "Model: anthropic, claude-opus-5-5, effort high" (or with harness when present).
-    public var accessibilityLabel: String {
-        accessibilityLabel(harness: nil)
     }
 }
 
