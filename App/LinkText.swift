@@ -28,6 +28,29 @@ func linkified(_ text: String, tint: Color = Palette.brand) -> AttributedString 
     return attributed
 }
 
+/// Auto-links bare URLs (`https://…`, `www.…`) inside an already-parsed inline Markdown
+/// `AttributedString`, skipping spans that are already links or inline code.
+func detectLinks(in attributed: inout AttributedString, tint: Color, underline: Bool = false) {
+    guard let detector = LinkifiedCache.detector else { return }
+    let plain = String(attributed.characters)
+    let full = NSRange(location: 0, length: (plain as NSString).length)
+    detector.enumerateMatches(in: plain, range: full) { match, _, _ in
+        guard let match, let url = match.url,
+              let swiftRange = Range(match.range, in: plain),
+              let attrStart = AttributedString.Index(swiftRange.lowerBound, within: attributed),
+              let attrEnd = AttributedString.Index(swiftRange.upperBound, within: attributed)
+        else { return }
+        let range = attrStart..<attrEnd
+        let blocked = attributed[range].runs.contains { run in
+            run.link != nil || (run.inlinePresentationIntent ?? []).contains(.code)
+        }
+        guard !blocked else { return }
+        attributed[range].link = url
+        attributed[range].foregroundColor = tint
+        if underline { attributed[range].underlineStyle = .single }
+    }
+}
+
 /// The shared link detector and the (text, tint) → linkified answer cache behind `linkified`.
 private enum LinkifiedCache {
     /// Built once. NSDataDetector (an NSRegularExpression) is immutable and thread-safe.

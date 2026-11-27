@@ -134,4 +134,34 @@ final class GramTextTests: XCTestCase {
     func testTwoTicksAreNotAFence() {
         XCTAssertEqual(segments("``\nx\n``"), [.text("``\nx\n``")])
     }
+
+    func testPlainMultiLineReportStaysSingleNonRichParagraph() {
+        let report = "Deployed. vetrina.dev is live.\n• Build 412 passed\n• 2 migrations ran clean"
+        let blocks = GramText.blocks(report)
+        XCTAssertEqual(blocks, [.paragraph(report)])
+        XCTAssertFalse(GramText.isRichMarkdown(blocks))
+        XCTAssertFalse(GramText.hasTable(report))
+    }
+
+    func testRichMarkdownAndTableDetection() {
+        let rich = """
+        ## Summary
+
+        - First item
+        - [x] Done
+
+        | Service | Delta |
+        |---|---|
+        | API | +12% |
+        """
+        let blocks = GramText.blocks(rich)
+        XCTAssertTrue(GramText.isRichMarkdown(blocks))
+        XCTAssertTrue(GramText.hasTable(rich))
+        XCTAssertEqual(blocks.count, 3)
+
+        let twoParagraphs = "First paragraph.\n\nSecond paragraph."
+        XCTAssertTrue(GramText.isRichMarkdown(GramText.blocks(twoParagraphs)))
+        XCTAssertFalse(GramText.hasTable(twoParagraphs))
+        XCTAssertFalse(GramText.hasTable("plain prose with a | pipe"))
+    }
 }
