@@ -126,4 +126,21 @@ final class HostEndpointTests: XCTestCase {
         XCTAssertEqual(HostEndpoint.parse("h:65535")?.port, 65535)
         XCTAssertNil(HostEndpoint.parse("h:65536"))
     }
+
+    // MARK: - one host-key pin
+
+    /// A saved machine keeps its paired host-key algorithm across an address edit exactly when
+    /// the edit keeps its pin (`SavedHostsStore` asks `samePin`; `KeychainHostKeyPolicy` keys the
+    /// pin by `pinKey`). Another spelling of the same host keeps both; a real change drops both.
+    func testOtherSpellingsShareOnePinAndAnotherHostDoesNot() {
+        XCTAssertTrue(HostEndpoint.samePin("mac.local", "mac.local."))
+        XCTAssertTrue(HostEndpoint.samePin("Mac.Local:22", "mac.local"))
+        XCTAssertTrue(HostEndpoint.samePin("[::1]", "[0:0::1]"))
+        XCTAssertTrue(HostEndpoint.samePin("[fe80::1%EN0]:2222", "[fe80:0::1%en0]:2222"))
+        XCTAssertEqual(HostEndpoint.parse("[0:0::1]")?.pinKey, "::1:22")
+
+        XCTAssertFalse(HostEndpoint.samePin("mac.local", "mini.local"))
+        XCTAssertFalse(HostEndpoint.samePin("mac.local", "mac.local:2222"))
+        XCTAssertFalse(HostEndpoint.samePin("[::1]", "[::2]"))
+    }
 }

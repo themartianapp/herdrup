@@ -86,19 +86,11 @@ enum AskPushAnswer {
                                  session: SessionChoice.remembered(for: credentials))
     }
 
+    /// The saved host's credentials as a tapped row gets them (a paired machine's host-key
+    /// algorithm included), or nil when its address or secret isn't usable here.
     private static func savedCredentials(_ saved: SavedHost) -> SSHCredentials? {
-        guard let endpoint = HostEndpoint.parse(saved.host) else { return nil }
-        switch saved.auth {
-        case .key:
-            guard let key = SavedHostsStore.shared.key(for: saved)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !key.isEmpty else { return nil }
-            return SSHCredentials(host: endpoint.host, port: endpoint.port, username: saved.username,
-                                  privateKeyPEM: key, remoteSocketPath: "")
-        case .password:
-            guard let password = SavedHostsStore.shared.password(for: saved), !password.isEmpty else { return nil }
-            return SSHCredentials(host: endpoint.host, port: endpoint.port, username: saved.username,
-                                  password: password, remoteSocketPath: "")
-        }
+        guard case .ready(let credentials) = SavedHostsStore.shared.connection(for: saved) else { return nil }
+        return credentials
     }
 
     private static func loadRoutes() -> AskAnswerRoutes {

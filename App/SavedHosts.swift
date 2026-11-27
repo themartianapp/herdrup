@@ -30,6 +30,11 @@ struct SavedHost: Codable, Identifiable, Hashable {
     /// JSON written before password auth has no `authKind`, decodes to nil, and resolves
     /// to `.key` via `auth` — so every legacy host stays key-based.
     var authKind: SavedAuthKind?
+    /// The only host-key algorithm to offer, for a machine this device got by pairing: the
+    /// algorithm of the key the approver sent and this device pinned (`SSHCredentials.hostKeyAlgorithm`).
+    /// nil for every other machine. Device-local like the pin, so it never syncs; it goes
+    /// when the address does, since the pin is keyed by host and port. Optional for migration.
+    var hostKeyAlgorithm: String?
 
     /// The resolved auth kind for callers — a legacy (nil) host is key-based.
     var auth: SavedAuthKind { authKind ?? .key }
@@ -74,7 +79,7 @@ final class SavedHostsStore: ObservableObject {
     /// is missing or the secret could not be persisted, so the UI never offers a
     /// one-tap host it cannot open.
     @discardableResult
-    func add(nickname: String, host: String, username: String, secret: HostSecret) -> Bool {
+    func add(nickname: String, host: String, username: String, secret: HostSecret, hostKeyAlgorithm: String? = nil) -> Bool {
         let h = host.trimmingCharacters(in: .whitespacesAndNewlines)
         let u = username.trimmingCharacters(in: .whitespacesAndNewlines)
         let n = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -94,7 +99,8 @@ final class SavedHostsStore: ObservableObject {
             kind = .password
         }
         hosts.insert(
-            SavedHost(id: id, host: h, username: u, nickname: n.isEmpty ? nil : n, authKind: kind),
+            SavedHost(id: id, host: h, username: u, nickname: n.isEmpty ? nil : n, authKind: kind,
+                      hostKeyAlgorithm: hostKeyAlgorithm),
             at: 0)
         persist()
         return true
@@ -103,10 +109,13 @@ final class SavedHostsStore: ObservableObject {
     /// Updates an existing saved host IN PLACE (by id): host / username / nickname, and
     /// the secret only when `secret` is non-nil (nil = keep the current one, so an edit
     /// never forces re-entering it). Switching auth kind drops the now-stale other
-    /// secret. Returns false without changing anything if a required field is missing
+    /// secret. `hostKeyAlgorithm` likewise replaces the paired restriction only when
+    /// non-nil; a new host or port drops it, as the pin it went with is keyed by the old
+    /// address. Returns false without changing anything if a required field is missing
     /// or a provided secret fails to persist.
     @discardableResult
-    func update(_ existing: SavedHost, nickname: String, host: String, username: String, secret: HostSecret?) -> Bool {
+    func update(_ existing: SavedHost, nickname: String, host: String, username: String, secret: HostSecret?,
+                hostKeyAlgorithm: String? = nil) -> Bool {
         let h = host.trimmingCharacters(in: .whitespacesAndNewlines)
         let u = username.trimmingCharacters(in: .whitespacesAndNewlines)
         let n = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -134,6 +143,11 @@ final class SavedHostsStore: ObservableObject {
                 case .password: _ = passwordKeychain.delete(account: existing.id.uuidString)
                 }
             }
+        }
+        if let hostKeyAlgorithm {
+            hosts[i].hostKeyAlgorithm = hostKeyAlgorithm
+        } else if !HostEndpoint.samePin(h, hosts[i].host) {
+            hosts[i].hostKeyAlgorithm = nil
         }
         hosts[i].host = h
         hosts[i].username = u
@@ -177,19 +191,23 @@ final class SavedHostsStore: ObservableObject {
     }
 
     /// The one conversion from a saved host to connection credentials, for a tapped row
-    /// and for a machine just paired alike.
+    /// and for a machine just paired alike. A paired machine's credentials offer only the
+    /// host-key algorithm its pin was made from.
     func connection(for saved: SavedHost) -> Connection {
         guard let ep = HostEndpoint.parse(saved.host) else { return .unparseableHost }
+        var credentials: SSHCredentials
         switch secret(for: saved) {
         case nil:
             return .missingSecret
         case .key(let key):
-            return .ready(SSHCredentials(host: ep.host, port: ep.port, username: saved.username,
-                                         privateKeyPEM: key, remoteSocketPath: ""))
+            credentials = SSHCredentials(host: ep.host, port: ep.port, username: saved.username,
+                                         privateKeyPEM: key, remoteSocketPath: "")
         case .password(let password):
-            return .ready(SSHCredentials(host: ep.host, port: ep.port, username: saved.username,
-                                         password: password, remoteSocketPath: ""))
+            credentials = SSHCredentials(host: ep.host, port: ep.port, username: saved.username,
+                                         password: password, remoteSocketPath: "")
         }
+        credentials.hostKeyAlgorithm = saved.hostKeyAlgorithm
+        return .ready(credentials)
     }
 
     /// Removes a saved host. Deletes the secret from BOTH stores first and drops the
@@ -220,10 +238,12 @@ final class SavedHostsStore: ObservableObject {
     /// Puts a machine from the HerdrUp account in the list, or updates it in place by id. Only
     /// the synced fields change: a secret never syncs (DESIGN #698 §5.4), so a new machine has
     /// none here and its row asks for one, as for any host whose secret is not on this phone.
+    /// A paired restriction is this device's, like its pin: kept unless the address moved.
     func applySynced(id: UUID, host: String, username: String, nickname: String?, authKind: SavedAuthKind?) {
         if let i = hosts.firstIndex(where: { $0.id == id }) {
             let old = hosts[i]
-            let updated = SavedHost(id: id, host: host, username: username, nickname: nickname, authKind: authKind)
+            let updated = SavedHost(id: id, host: host, username: username, nickname: nickname, authKind: authKind,
+                                    hostKeyAlgorithm: HostEndpoint.samePin(host, old.host) ? old.hostKeyAlgorithm : nil)
             guard updated != old else { return }
             hosts[i] = updated
             persist()
@@ -256,7 +276,8 @@ final class SavedHostsStore: ObservableObject {
         for store in copied { _ = store.delete(account: old) }
         let current = hosts[i]
         hosts[i] = SavedHost(id: id, host: current.host, username: current.username,
-                             nickname: current.nickname, authKind: current.authKind)
+                             nickname: current.nickname, authKind: current.authKind,
+                             hostKeyAlgorithm: current.hostKeyAlgorithm)
         persist()
         return true
     }
@@ -279,6 +300,11 @@ final class SavedHostsStore: ObservableObject {
             }
             guard saved else { return false }
             hosts[k].authKind = duplicate.auth
+        }
+        // The same address shares one pin: a restriction either copy got by pairing stays.
+        if hosts[k].hostKeyAlgorithm == nil,
+           let copy = hosts.first(where: { $0.id == duplicate.id }), HostEndpoint.samePin(copy.host, hosts[k].host) {
+            hosts[k].hostKeyAlgorithm = copy.hostKeyAlgorithm
         }
         guard keychain.delete(account: duplicate.id.uuidString),
               passwordKeychain.delete(account: duplicate.id.uuidString) else { return false }

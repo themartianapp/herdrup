@@ -165,16 +165,13 @@ struct HostEditor: View {
     }
 
     private func saveAndConnect() {
-        guard let ep = endpoint, save() else { return }
-        // Add mode requires the secret, so it is in hand here — connect straight away.
-        let creds: SSHCredentials
-        switch authKind {
-        case .key:
-            creds = SSHCredentials(host: ep.host, port: ep.port, username: trimmedUser,
-                                   privateKeyPEM: trimmedKey, remoteSocketPath: "")
-        case .password:
-            creds = SSHCredentials(host: ep.host, port: ep.port, username: trimmedUser,
-                                   password: password, remoteSocketPath: "")
+        guard save() else { return }
+        // The secret was just saved (add mode requires it), so connect straight away, through the
+        // one conversion from a saved host to credentials. `add` puts a new host first.
+        let saved: SavedHost? = editing.map { e in store.hosts.first { $0.id == e.id } } ?? store.hosts.first
+        guard let saved, case .ready(let creds) = store.connection(for: saved) else {
+            error = "Couldn't read this host back after saving it. Try again."
+            return
         }
         onConnect(creds)
         dismiss()

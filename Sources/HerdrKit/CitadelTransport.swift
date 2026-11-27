@@ -1280,6 +1280,8 @@ actor SSHConnectionCore {
             host: host, port: Int(credentials.port),
             authenticationMethod: { method }, hostKeyValidator: hostKeyValidator)
         settings.protocolOptions = [.maximumPacketSize(SSHConnectionCore.maximumPacketSize)]
+        // A paired machine is asked for the key its pin was made from; any other offers all.
+        settings.serverHostKeyAlgorithms = credentials.hostKeyAlgorithm.map { [$0] }
         // ONE budget: the race below. Citadel's own timers (the TCP connect, and the
         // handshake + auth timer that upstream fixes at 10 s) are set past it so they
         // never cut a slow handshake short of the budget the app chose.
