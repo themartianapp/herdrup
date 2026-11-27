@@ -137,6 +137,10 @@ public enum AgentChatSupport {
         isOmp(agentKind) || isAgy(agentKind)
     }
 
+    /// Gaps between transcript retries while Chat is temporarily refused (`transcript_unsupported`),
+    /// in seconds. The last value repeats.
+    public static let recoveryDelays: [UInt64] = [1, 2, 4, 8, 15, 30, 60]
+
     public static func supportsChat(
         _ agentKind: String?,
         transcriptCapable: Bool,
@@ -146,6 +150,18 @@ public enum AgentChatSupport {
         if isOmp(agentKind) { return true }
         if isAgy(agentKind) { return agyCapable }
         return false
+    }
+
+    /// Whether a pane should keep polling for transcript recovery at pane scope after a temporary
+    /// `transcript_unsupported` refusal unmounted Chat (e.g. a fresh omp or agy agent whose
+    /// session file or conversation DB opens late).
+    public static func needsRecovery(
+        _ agentKind: String?,
+        transcriptCapable: Bool,
+        agyCapable: Bool,
+        unsupported: Bool
+    ) -> Bool {
+        unsupported && supportsChat(agentKind, transcriptCapable: transcriptCapable, agyCapable: agyCapable)
     }
 }
 
