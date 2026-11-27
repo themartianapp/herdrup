@@ -1115,6 +1115,7 @@ struct ChatView: View {
             if landed, findRequest == nil, !atBottom {
                 JumpToLatestButton(label: "Jump to latest message", identifier: "chat-jump-latest") {
                     promptTops.lastJump = nil
+                    promptTops.navigation += 1
                     formReveal.pending = false
                     scrollPosition.animateToLatest()
                     followingLatest = true
@@ -1354,7 +1355,7 @@ struct ChatView: View {
             for key in ["t:" + work.id, "s:" + work.id] where expanded.contains(key) { keys.insert(key) }
             let summaryOpen = keys.contains("s:" + work.id)
             for step in work.steps where expanded.contains("d:" + step.id) {
-                if summaryOpen || (live && work.live && step.status == .running) {
+                if summaryOpen || ChatRowView.showsCollapsedRunningStep(step, in: work, paneLive: live) {
                     keys.insert("d:" + step.id)
                 }
             }
@@ -1400,6 +1401,7 @@ struct ChatView: View {
                 formReveal.pending = false
                 if findRequest == nil {
                     promptTops.lastJump = nil
+                    promptTops.navigation += 1
                     followingLatest = true
                 } else {
                     followingLatest = false
@@ -1692,15 +1694,16 @@ struct ChatView: View {
             return
         }
         guard let anchor = anchorRowID else { return }
+        let navigation = promptTops.navigation
         drawWindow = windowStarting(at: start - Self.renderWindow)
         Task {
             try? await Task.sleep(nanoseconds: 30_000_000)
-            guard !followingLatest, findRequest == nil else { return }
+            guard promptTops.navigation == navigation else { return }
             proxy.scrollTo(anchor, anchor: .top)
             // The sentinel's visibility is measured again after that scroll; still in view
             // (short rows), it gets the next window, never a fetch.
             try? await Task.sleep(nanoseconds: 150_000_000)
-            if topVisible, landed, !followingLatest, findRequest == nil { showOlder(proxy, fetches: false) }
+            if topVisible, landed, promptTops.navigation == navigation { showOlder(proxy, fetches: false) }
         }
     }
 
@@ -1709,16 +1712,18 @@ struct ChatView: View {
     private func loadOlder(_ proxy: ScrollViewProxy, retry: Bool = false) {
         guard landed, findRequest == nil, model.hasOlder, !model.loadingOlder, retry || !model.olderFailed else { return }
         let anchor = anchorRowID
+        let navigation = promptTops.navigation
         Task {
             await model.loadOlder(client: client)
-            // If the reader jumped back to the tail or opened search while this page was
-            // in flight, keep the newly loaded turns off-screen instead of yanking them
-            // back to the old top anchor.
-            guard !followingLatest, findRequest == nil,
+            // If the reader navigated elsewhere (Jump to latest, Find, form submit) while this
+            // page was in flight, keep the newly loaded turns off-screen instead of yanking
+            // them back to the old top anchor. A short initial page that started paging with
+            // no navigation keeps the same generation and widens drawWindow normally.
+            guard promptTops.navigation == navigation,
                   let anchor, let index = model.rowIndex[anchor] else { return }
             drawWindow = windowStarting(at: index - Self.renderWindow)
             try? await Task.sleep(nanoseconds: 30_000_000)
-            guard !followingLatest, findRequest == nil else { return }
+            guard promptTops.navigation == navigation else { return }
             proxy.scrollTo(anchor, anchor: .top)
         }
     }
@@ -2504,14 +2509,20 @@ private struct ChatRowView: View, Equatable {
                 .accessibilityIdentifier("chat-steps")
                 if expanded.contains(stepsKey) {
                     stepList(work.steps, workLive: live && work.live, compact: false)
-                } else if live && work.live {
-                    let runningSteps = work.steps.filter { $0.status == .running }
+                } else {
+                    let runningSteps = work.steps.filter { Self.showsCollapsedRunningStep($0, in: work, paneLive: live) }
                     if !runningSteps.isEmpty {
                         stepList(runningSteps, workLive: true, compact: true)
                     }
                 }
             }
         }
+    }
+
+    /// Single source of truth for whether a step renders inline beneath a collapsed work summary
+    /// (and therefore needs its detail toggle key forwarded by `ChatView.chatRow`).
+    static func showsCollapsedRunningStep(_ step: TranscriptStepRow, in work: TranscriptWork, paneLive: Bool) -> Bool {
+        paneLive && work.live && step.status == .running
     }
 
     private static func runningCommandPreview(_ detail: String?) -> String? {
