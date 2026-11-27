@@ -574,10 +574,12 @@ final class ChatModel: ObservableObject {
         } else if let error = store.lastError {
             // A guest whose host refuses the method for guests: the Chat tab goes away for the
             // session and does not enter the temporary transcript_unsupported recovery loop.
+            // Any other transient transport/internal error leaves `unsupported` and
+            // `unsupportedRecoverable` unchanged so recovery survives a dropped poll.
             let code = (error as? APIError)?.code
-            assign(\.unsupportedRecoverable, false)
             if code == "forbidden" || code == "guest_forbidden" {
                 assign(\.unsupported, true)
+                assign(\.unsupportedRecoverable, false)
                 assign(\.failure, nil)
             } else {
                 assign(\.failure, "Couldn't load the chat.")
