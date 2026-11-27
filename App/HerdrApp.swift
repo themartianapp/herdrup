@@ -121,6 +121,8 @@ struct RootView: View {
     @ObservedObject private var herdrupAccount = HerdrUpAccount.shared
     /// Browsers asking to reach this account's machines (web owner access, I1).
     @ObservedObject private var webAccess = WebAccessApprovals.shared
+    /// Devices of this account asking to be paired with its machines (pair from another device).
+    @ObservedObject private var pairApprovals = PairApprovals.shared
     @State private var openGuest: GuestAccess?
     /// A guest's Settings › Connect your own machine closed the share: the machine list
     /// shows with its owner setup open.
@@ -207,6 +209,13 @@ struct RootView: View {
             Text(pairing.failure ?? "")
         }
         .onAppear { autoOpenSharedMachine() }
+        // A share left on another device of the account (#700) leaves this one too: its open
+        // home closes once nothing on its machine remains.
+        .onChange(of: sharedMachines.machines) { _, machines in
+            guard let open = openGuest else { return }
+            let machine = SharedMachineGroup.Identity(open)
+            if !machines.contains(where: { SharedMachineGroup.Identity($0) == machine }) { openGuest = nil }
+        }
         // A tapped push for an agent shared with this phone opens that share (its home picks
         // the Gram tab or the terminal), in place of whatever screen is showing. A share the
         // phone no longer holds opens nothing.
@@ -221,6 +230,19 @@ struct RootView: View {
         // Shares with push on hold this phone's token too: a new one is registered with each.
         .onChange(of: push.deviceToken) { _, _ in
             GuestPushCenter.shared.deviceTokenChanged(shares: sharedMachines.machines)
+            pairApprovals.registerPush()
+        }
+        // A pair request's push (tapped, or arriving in the foreground) opens "Pair ‹device›?".
+        .onReceive(push.$pendingPairRequest) { id in
+            guard let id else { return }
+            push.pendingPairRequest = nil
+            Task { await pairApprovals.openPushed(id) }
+        }
+        // Pair requests push to this device once it is enrolled with an account that offers them.
+        .onChange(of: herdrupAccount.enrolment, initial: true) { _, _ in pairApprovals.registerPush() }
+        .onChange(of: herdrupAccount.health) { _, _ in pairApprovals.registerPush() }
+        .onChange(of: herdrupAccount.signedIn) { _, signedIn in
+            if !signedIn { pairApprovals.forgetPush() }
         }
         // Reclaim gram attachment staging left by a PREVIOUS session (a crash or a
         // jetsam kill runs no cleanup) here rather than on the Gram page: bytes from a
@@ -246,9 +268,12 @@ struct RootView: View {
             }
             // Browsers asking for approval are listed only in the foreground (no push, §5.9).
             webAccess.setActive(phase == .active)
+            pairApprovals.setActive(phase == .active)
         }
         // "Approve a browser?" opens over whatever is on screen; the account page shows its own.
         .webAccessApprovalSheet(webAccess, active: !herdrupAccount.screenVisible)
+        // "Pair ‹device›?" likewise.
+        .pairApprovalSheet(pairApprovals, active: !herdrupAccount.screenVisible)
     }
 
     @ViewBuilder
@@ -384,9 +409,10 @@ struct RootView: View {
         GuestAcceptView(
             invite: invite,
             fingerprint: try? GuestDevice.identity().fingerprint,
-            accept: {
+            accept: { bind in
                 let identity = try GuestDevice.identity()
-                return try await GuestSession.accept(invite, identity: identity, device: UIDevice.current.model)
+                return try await GuestSession.accept(invite, identity: identity, device: UIDevice.current.model,
+                                                     bindToAccount: bind, statements: AccountGuestStatements())
             },
             onAccepted: { access in
                 sharedMachines.add(access)
@@ -650,7 +676,7 @@ struct RootView: View {
                 GuestAcceptView(
                     invite: GuestMockTransport.invite,
                     fingerprint: try? GuestDevice.identity().fingerprint,
-                    accept: { GuestMockTransport.access },
+                    accept: { bind in try await GuestMockTransport.accepted(bindToAccount: bind) },
                     onAccepted: { access in
                         sharedMachines.add(access)
                         openGuest = access
@@ -954,6 +980,19 @@ struct ConnectView: View {
     @State private var showingOwnerSetup = false
     /// Settings › HerdrUp account, opened from the account avatar (#698 host-status proposal 1).
     @State private var showingAccount = false
+    /// The shared machine whose account shares are being opened on this device, why some
+    /// couldn't be, and the machine to open once that is read (when another share on it did).
+    @State private var openingShared: SharedMachineGroup.Identity?
+    @State private var openSharedError: String?
+    @State private var openAfterError: GuestAccess?
+    /// Pair from another device (option B): the signed-in account, this device's request and
+    /// what it brought, and "Pair this device" with the choice made in it (run once it closed).
+    @ObservedObject private var herdrupAccount = HerdrUpAccount.shared
+    @ObservedObject private var devicePairing = DevicePairing.shared
+    @State private var showingPairSheet = false
+    @State private var pairChoice: PairChoice?
+
+    private enum PairChoice { case approve, qr }
 
     var body: some View {
         ZStack {
@@ -961,10 +1000,19 @@ struct ConnectView: View {
             ScrollView {
                 VStack(spacing: 18) {
                     header
-                    if !savedHosts.hosts.isEmpty {
+                    if devicePairing.phase != .idle {
+                        pairCardSection
+                    }
+                    if !pairedEntries.isEmpty {
+                        pairedSection
+                    }
+                    if !fromAccountHosts.isEmpty {
+                        fromAccountSection
+                    }
+                    if !savedList.isEmpty {
                         savedHostsSection
                     }
-                    if sharedMachines.machines.isEmpty {
+                    if sharedMachines.isEmpty {
                         if savedHosts.hosts.isEmpty { emptyState }
                         scanButton
                         addHostButton
@@ -1005,6 +1053,23 @@ struct ConnectView: View {
         .sheet(isPresented: $showingAccount) {
             HerdrUpAccountSheet { showingAccount = false }
         }
+        // "Pair this device": what was chosen runs once the sheet is gone (the QR scanner is
+        // the root's sheet).
+        .sheet(isPresented: $showingPairSheet, onDismiss: {
+            switch pairChoice {
+            case .approve?: devicePairing.ask()
+            case .qr?: PairingRouter.shared.scan()
+            case nil: break
+            }
+            pairChoice = nil
+        }) {
+            PairThisDeviceSheet(machineCount: fromAccountHosts.count, approveAvailable: devicePairing.available,
+                                onApprove: { pairChoice = .approve; showingPairSheet = false },
+                                onQR: { pairChoice = .qr; showingPairSheet = false },
+                                onCancel: { showingPairSheet = false })
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
         .sheet(isPresented: $showingInviteScan, onDismiss: {
             guard let invite = scannedInvite else { return }
             scannedInvite = nil
@@ -1012,30 +1077,84 @@ struct ConnectView: View {
         }) {
             GuestInviteScanSheet { scannedInvite = $0 }
         }
+        .alert("Couldn't open this share", isPresented: Binding(
+            get: { openSharedError != nil },
+            set: { if !$0 { openSharedError = nil } }
+        )) {
+            Button("OK", role: .cancel) {
+                if let access = openAfterError {
+                    openAfterError = nil
+                    onOpenShared(access)
+                }
+            }
+        } message: {
+            Text(openSharedError ?? "")
+        }
     }
 
-    /// Machines other people shared: each opens its guest home over the relay.
+    /// Machines other people shared, one row per machine: each opens its guest home over the
+    /// relay. Shares from the HerdrUp account that this device hasn't opened list the same
+    /// way, and open with nothing to accept (#700); the note under the rows says so once.
     private var sharedSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let groups = sharedMachines.groups
+        let fromAccount = groups.filter { $0.accesses.isEmpty }
+        return VStack(alignment: .leading, spacing: 8) {
             connectSectionLabel("SHARED WITH YOU")
             VStack(spacing: 0) {
-                ForEach(Array(sharedMachines.groups.enumerated()), id: \.element.id) { index, group in
-                    let access = group.accesses[0]
+                ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
                     if index > 0 { connectRowDivider }
                     Button {
                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        onOpenShared(access)
+                        openShared(group)
                     } label: {
-                        connectRow(icon: "person.2", title: access.machineLabel,
-                                   subtitle: "\(group.accesses.map(\.agentName).joined(separator: ", ")) · shared by \(access.ownerName)")
+                        connectRow(icon: "person.2", title: group.machineLabel,
+                                   subtitle: "\(group.agentNames.joined(separator: ", ")) · shared by \(group.ownerName)",
+                                   connecting: openingShared == group.id)
                     }
                     .buttonStyle(ConnectRowButtonStyle(held: false))
-                    .disabled(connecting != nil)
+                    .disabled(connecting != nil || openingShared != nil)
                     .accessibilityIdentifier("shared-machine-row")
                 }
             }
             .settingsGroup(outline: true)
+            if !fromAccount.isEmpty {
+                let owners = Set(fromAccount.map(\.ownerName))
+                let owner = owners.count == 1 ? owners.first! : "The owner"
+                Text("From your HerdrUp account: nothing to accept here. \(owner) sees each device you open it on.")
+                    .font(connectFont(13)).foregroundStyle(Palette.textFaint)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 18)
+                    .accessibilityIdentifier("shared-from-account-note")
+            }
         }
+    }
+
+    /// A machine this device holds opens at once; one with account shares not opened here
+    /// opens them first (a hello with the account's statement), its row reading
+    /// "Connecting…" meanwhile. A share that couldn't be opened is named, before the machine
+    /// opens with the others.
+    private func openShared(_ group: SharedMachineGroup) {
+        guard group.synced.isEmpty, let access = group.accesses.first else {
+            openingShared = group.id
+            Task {
+                let opened = await sharedMachines.open(group)
+                openingShared = nil
+                if opened.failures.isEmpty {
+                    if let access = opened.access { onOpenShared(access) }
+                    return
+                }
+                let reasons = opened.failures.map { GuestDevice.describe($0.error, machine: group.machineLabel) }
+                if opened.failures.count == 1, opened.access == nil {
+                    openSharedError = reasons[0]
+                } else {
+                    openSharedError = zip(opened.failures, reasons).map { "\($0.share.agentName): \($1)" }
+                        .joined(separator: "\n")
+                }
+                openAfterError = opened.access
+            }
+            return
+        }
+        onOpenShared(access)
     }
 
     // MARK: #374 inset groups (the Settings look of #357)
@@ -1160,7 +1279,7 @@ struct ConnectView: View {
                     .font(connectFont(34, .bold))
                     .foregroundStyle(Palette.text)
                     .accessibilityAddTraits(.isHeader)
-                Text(sharedMachines.machines.isEmpty ? "connect to your machine" : "your shared agents")
+                Text(sharedMachines.isEmpty ? "connect to your machine" : "your shared agents")
                     .font(connectFont(16))
                     .foregroundStyle(Palette.textDim)
             }
@@ -1252,11 +1371,149 @@ struct ConnectView: View {
         .buttonStyle(.plain)
     }
 
+    // MARK: Pair from another device
+
+    /// Machines the account brought with no key or password here, while signed in: each
+    /// offers "Pair this device".
+    private var fromAccountHosts: [SavedHost] {
+        guard herdrupAccount.signedIn else { return [] }
+        let paired = Set(devicePairing.paired.map(\.id))
+        return savedHosts.hosts.filter { saved in
+            guard !paired.contains(saved.id) else { return false }
+            if case .missingSecret = savedHosts.connection(for: saved) { return true }
+            return false
+        }
+    }
+
+    /// The machines another device paired this one with, in the order it sent them.
+    private var pairedEntries: [(DevicePairing.Paired, SavedHost)] {
+        devicePairing.paired.compactMap { entry in
+            savedHosts.hosts.first { $0.id == entry.id }.map { (entry, $0) }
+        }
+    }
+
+    /// SAVED: every other machine.
+    private var savedList: [SavedHost] {
+        let elsewhere = Set(fromAccountHosts.map(\.id)).union(devicePairing.paired.map(\.id))
+        return savedHosts.hosts.filter { !elsewhere.contains($0.id) }
+    }
+
+    private var pairCardSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            connectSectionLabel("PAIR THIS \(HerdrUpAccount.deviceKind.uppercased())")
+            PairThisDeviceCard(pairing: devicePairing) { PairingRouter.shared.scan() }
+        }
+    }
+
+    private var pairedSection: some View {
+        let entries = pairedEntries
+        let away = entries.filter { $0.0.reach == .unreachable }
+        return VStack(alignment: .leading, spacing: 8) {
+            connectSectionLabel("PAIRED BY \((devicePairing.approverName ?? "another device").uppercased())")
+            VStack(spacing: 0) {
+                ForEach(Array(entries.enumerated()), id: \.offset) { index, item in
+                    if index > 0 { connectRowDivider }
+                    pairedRow(item.0, item.1)
+                }
+            }
+            .settingsGroup(outline: true)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("paired-by-section")
+            if !away.isEmpty {
+                Text("\(PairApprovalSheet.list(away.map { $0.0.label })) \(away.count == 1 ? "is" : "are") on another network. Join it from this \(HerdrUpAccount.deviceKind) (same Wi-Fi or Tailscale), then open \(away.count == 1 ? "it" : "them"). Nothing to approve again.")
+                    .font(connectFont(12.5)).foregroundStyle(Palette.textFaint)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 18)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func pairedRow(_ entry: DevicePairing.Paired, _ saved: SavedHost) -> some View {
+        if entry.reach == .unreachable {
+            HStack(spacing: 14) {
+                Image(systemName: "desktopcomputer")
+                    .font(.system(size: 19)).foregroundStyle(Palette.textFaint)
+                    .frame(width: 22)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(saved.label).font(connectFont(17)).foregroundStyle(Palette.textFaint).lineLimit(1)
+                    Text("Join its network to connect").font(connectFont(14)).foregroundStyle(Palette.textFaint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("paired-machine-\(saved.label)")
+                Spacer(minLength: 8)
+                Button("Use herdr pair") { PairingRouter.shared.scan() }
+                    .buttonStyle(.capsule(.secondary))
+                    .lineLimit(1)
+                    .fixedSize()
+                    .accessibilityIdentifier("paired-use-herdr-pair-\(saved.label)")
+            }
+            .padding(.horizontal, 18).padding(.vertical, 10)
+            .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
+        } else {
+            Button {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                tapSavedHost(saved)
+            } label: {
+                connectRow(icon: "desktopcomputer", title: saved.label,
+                           subtitle: entry.reach == .checking ? "Checking…" : "\(saved.username)@\(saved.host)",
+                           connecting: isConnecting(saved))
+            }
+            .buttonStyle(ConnectRowButtonStyle(held: isConnecting(saved)))
+            .disabled(connecting != nil)
+            .accessibilityIdentifier("paired-machine-\(saved.label)")
+        }
+    }
+
+    private var fromAccountSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            connectSectionLabel("FROM YOUR ACCOUNT")
+            VStack(spacing: 0) {
+                ForEach(Array(fromAccountHosts.enumerated()), id: \.element.id) { index, saved in
+                    if index > 0 { connectRowDivider }
+                    fromAccountRow(saved)
+                }
+            }
+            .settingsGroup(outline: true)
+        }
+    }
+
+    /// A machine with no key here: the row opens Reconnect (type the key or password), the
+    /// capsule pairs this device. The capsule's label stays "Pair this device", without the
+    /// machine's name, so the row is the one element that names it.
+    private func fromAccountRow(_ saved: SavedHost) -> some View {
+        HStack(spacing: 10) {
+            Button {
+                tapSavedHost(saved)
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(saved.label).font(connectFont(17)).foregroundStyle(Palette.text).lineLimit(1)
+                    Text(devicePairing.failure(for: saved) ?? "\(saved.username)@\(saved.host) · synced from your account")
+                        .font(connectFont(14)).foregroundStyle(Palette.textDim).lineLimit(2)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .stableContextMenu {
+                StableMenuItem("Edit", systemImage: "pencil") { editorTarget = .missingSecret(saved) }
+                StableMenuItem("Remove", systemImage: "trash", role: .destructive) { savedHosts.delete(saved) }
+            }
+            Button("Pair this device") { showingPairSheet = true }
+                .buttonStyle(.capsule(.secondary))
+                .disabled(devicePairing.active)
+                .accessibilityIdentifier("pair-this-device-\(saved.label)")
+        }
+        .padding(.horizontal, 18).padding(.vertical, 10)
+        .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
+    }
+
     private var savedHostsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             connectSectionLabel("SAVED")
             VStack(spacing: 0) {
-                ForEach(Array(savedHosts.hosts.enumerated()), id: \.element.id) { index, saved in
+                ForEach(Array(savedList.enumerated()), id: \.element.id) { index, saved in
                     if index > 0 { connectRowDivider }
                     savedHostRow(saved)
                 }
@@ -5934,6 +6191,9 @@ struct TerminalPaneContent: View {
     /// The machine answers `agent.transcript` (ping `agent_transcript`), from the client's
     /// capabilities (learned once per connection by the home screen).
     @State private var transcriptCapable = false
+    /// The machine serves Antigravity CLI (`agy`) conversations via `agent.transcript`
+    /// (ping `transcript_agy`), from the same capabilities.
+    @State private var transcriptAgyCapable = false
     /// The machine serves omp agents' topics (ping `agent_topics`), from the same capabilities.
     @State private var topicsCapable = false
     /// `transcriptCapable` has its answer (or the capability check failed).
@@ -6092,19 +6352,23 @@ struct TerminalPaneContent: View {
     }
 
     private var group: AgentGroup? { agent.map { AgentRow(info: $0).group } }
-    /// The page offers the Chat view: an omp agent whose machine serves `agent.transcript`,
-    /// unless the server's latest answer is that it cannot give this agent a transcript.
+    /// The page offers the Chat view: an omp agent on a `agent_transcript` machine, or an agy
+    /// agent on a machine that also advertises `transcript_agy`, unless the server's latest
+    /// answer is that it cannot give this agent a transcript.
     private var chatAvailable: Bool {
-        transcriptCapable && ChatPreference.isOmp(agent?.agent) && !chatModel.unsupported
+        ChatPreference.supportsChat(agent?.agent, transcriptCapable: transcriptCapable,
+                                    agyCapable: transcriptAgyCapable) && !chatModel.unsupported
     }
-    /// An omp agent on a transcript-capable machine whose transcript was refused. A just-started
-    /// agent is refused for its first seconds, until omp's integration reports a session
-    /// (#604); the page keeps asking so Chat appears without restarting the app.
+    /// A chat-capable agent whose transcript was refused. A just-started agent can be refused
+    /// for its first seconds, until its session file or conversation DB is ready (#604); the
+    /// page keeps asking so Chat appears without restarting the app.
     private var chatRecoveryNeeded: Bool {
-        transcriptCapable && ChatPreference.isOmp(agent?.agent) && chatModel.unsupported
+        ChatPreference.needsRecovery(agent?.agent, transcriptCapable: transcriptCapable,
+                                     agyCapable: transcriptAgyCapable,
+                                     unsupported: chatModel.unsupportedRecoverable)
     }
     /// Gaps between transcript retries while Chat is refused, in seconds. The last one repeats.
-    private static let chatRecoveryDelays: [UInt64] = [1, 2, 4, 8, 15, 30, 60]
+    private static let chatRecoveryDelays: [UInt64] = ChatPreference.recoveryDelays
     /// The page offers Topics: an omp agent on a machine with `agent_topics` that answered its
     /// topic list this session, or whose session file already holds topics. Everything else
     /// keeps exactly today's `Chat | Terminal` page.
@@ -6131,7 +6395,7 @@ struct TerminalPaneContent: View {
     /// answer, or it would start a backfill, a stream and a size claim it drops a moment later.
     private var mountsTerminal: Bool {
         if coversTerminal { return false }
-        let mayOpenCovered = mode != .terminal && ChatPreference.isOmp(agent?.agent)
+        let mayOpenCovered = mode != .terminal && ChatPreference.maySupportChat(agent?.agent)
         return capabilitiesResolved || !mayOpenCovered
     }
 
@@ -6476,12 +6740,16 @@ struct TerminalPaneContent: View {
             // A chat page kept from the last launch says this server serves transcripts: the
             // Chat opens on it while the capability answer is out (slow-network fix 4). That
             // answer still decides; a failed one leaves the kept page up rather than hiding it.
-            if client.contentCache?.hasTranscript(target: paneID) == true { transcriptCapable = true }
+            if client.contentCache?.hasTranscript(target: paneID) == true {
+                transcriptCapable = true
+                if ChatPreference.isAgy(agent?.agent) { transcriptAgyCapable = true }
+            }
             // Usually no request: the home screen already learned the capabilities.
             // A failed answer leaves both as they are (a kept chat page stays up).
             do {
                 let capabilities = try await client.knownCapabilities()
                 transcriptCapable = capabilities?.agentTranscript ?? false
+                transcriptAgyCapable = capabilities?.transcriptAgy ?? false
                 topicsCapable = capabilities?.agentTopics ?? false
             } catch {}
             capabilitiesResolved = true
@@ -6511,7 +6779,7 @@ struct TerminalPaneContent: View {
             guard chatRecoveryNeeded, isForeground else { return }
             await chatModel.refresh(client: client)
             var attempt = 0
-            while chatModel.unsupported, !Task.isCancelled {
+            while chatModel.unsupportedRecoverable, !Task.isCancelled {
                 let delays = Self.chatRecoveryDelays
                 let seconds = delays[min(attempt, delays.count - 1)]
                 attempt += 1
@@ -8450,7 +8718,18 @@ struct SettingsView: View {
         }
     }
 
+    /// Shared access pushes a person's page. On iPhone it already sits in Settings' stack; the
+    /// iPad detail column has none (the split is the nav), so the page brings its own there.
+    @ViewBuilder
     private func sharedAccessDetail(showBack: Bool) -> some View {
+        if showBack {
+            sharedAccessPage(showBack: true)
+        } else {
+            NavigationStack { sharedAccessPage(showBack: false) }
+        }
+    }
+
+    private func sharedAccessPage(showBack: Bool) -> some View {
         detailScaffold(title: "Shared access", subtitle: guestAccess.summary, showBack: showBack) {
             if case .owner(let client) = mode {
                 GuestAccessSection(client: client, model: guestAccess) { await loadGuestAccess() }

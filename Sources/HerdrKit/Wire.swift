@@ -19,6 +19,12 @@ public struct APIError: Error, Decodable, Equatable, Sendable, CustomStringConve
     public let code: String
     public let message: String
     public var description: String { "\(code): \(message)" }
+
+    /// herdr from before this method: serde rejects the request line with `invalid_request`
+    /// naming the unknown variant, so the answer means "update herdr", not a real failure.
+    public var isUnknownMethod: Bool {
+        code == "invalid_request" && message.contains("unknown variant")
+    }
 }
 
 struct ErrorEnvelope: Decodable {
@@ -1221,6 +1227,15 @@ public struct ServerCapabilities: Decodable, Equatable, Sendable {
     /// `agent.topics.accept_suggestion` / `dismiss_suggestion` / `organise`, `suggestions` on
     /// `agent.topics.list` and `topic_suggestion` entries on `agent.transcript`.
     public let agentTopicSuggestions: Bool
+    /// `agent.transcript` returns `relay` entries (a handover between the Inbox and a topic)
+    /// when asked with `relay_entries: true` (herdr #521); without it, `user` entries as before.
+    public let transcriptRelayEntries: Bool
+    /// `agent.transcript` also serves Antigravity CLI (`agy`) agents by reading their SQLite
+    /// conversation database. Clients offer Chat for `agy` only when this is true.
+    public let transcriptAgy: Bool
+    /// `pair.add_key`: the owner's own connection can add another device's SSH key (pairing
+    /// from another device). False: the approver lists the machine as needing a herdr update.
+    public let pairAddKey: Bool
 
     enum CodingKeys: String, CodingKey {
         case liveHandoff = "live_handoff"
@@ -1244,6 +1259,9 @@ public struct ServerCapabilities: Decodable, Equatable, Sendable {
         case agentTopicsSwitch = "agent_topics_switch"
         case agentTopicsSwitchWhenIdle = "agent_topics_switch_when_idle"
         case agentTopicSuggestions = "agent_topic_suggestions"
+        case transcriptRelayEntries = "transcript_relay_entries"
+        case transcriptAgy = "transcript_agy"
+        case pairAddKey = "pair_add_key"
     }
 
     public init(from decoder: Decoder) throws {
@@ -1272,6 +1290,9 @@ public struct ServerCapabilities: Decodable, Equatable, Sendable {
         agentTopicsSwitch = try c.decodeIfPresent(Bool.self, forKey: .agentTopicsSwitch) ?? false
         agentTopicsSwitchWhenIdle = try c.decodeIfPresent(Bool.self, forKey: .agentTopicsSwitchWhenIdle) ?? false
         agentTopicSuggestions = try c.decodeIfPresent(Bool.self, forKey: .agentTopicSuggestions) ?? false
+        transcriptRelayEntries = try c.decodeIfPresent(Bool.self, forKey: .transcriptRelayEntries) ?? false
+        transcriptAgy = try c.decodeIfPresent(Bool.self, forKey: .transcriptAgy) ?? false
+        pairAddKey = try c.decodeIfPresent(Bool.self, forKey: .pairAddKey) ?? false
     }
 }
 

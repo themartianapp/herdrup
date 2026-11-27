@@ -53,10 +53,33 @@ enum ChatPreference {
         }
     }
 
-    /// The Chat view exists for omp agents only; Claude Code and Codex stay on the terminal.
+    /// omp agents support Chat (and optionally Topics).
     static func isOmp(_ agentKind: String?) -> Bool {
-        guard let kind = agentKind?.lowercased() else { return false }
-        return kind == "omp" || kind.hasPrefix("omp ") || kind.hasPrefix("omp-")
+        AgentChatSupport.isOmp(agentKind)
+    }
+
+    /// Antigravity CLI (`agy`) agents support Chat when the server advertises `transcript_agy`.
+    static func isAgy(_ agentKind: String?) -> Bool {
+        AgentChatSupport.isAgy(agentKind)
+    }
+
+    /// Whether an agent kind may open in Chat once server capabilities resolve.
+    static func maySupportChat(_ agentKind: String?) -> Bool {
+        AgentChatSupport.maySupportChat(agentKind)
+    }
+
+    /// Whether Chat is available for `agentKind` given the server's capabilities.
+    static func supportsChat(_ agentKind: String?, transcriptCapable: Bool, agyCapable: Bool) -> Bool {
+        AgentChatSupport.supportsChat(agentKind, transcriptCapable: transcriptCapable, agyCapable: agyCapable)
+    }
+
+    /// Gaps between transcript retries while Chat is refused, in seconds.
+    static var recoveryDelays: [UInt64] { AgentChatSupport.recoveryDelays }
+
+    /// Whether a pane should poll at pane scope to recover from a temporary `transcript_unsupported`.
+    static func needsRecovery(_ agentKind: String?, transcriptCapable: Bool, agyCapable: Bool, unsupported: Bool) -> Bool {
+        AgentChatSupport.needsRecovery(agentKind, transcriptCapable: transcriptCapable,
+                                       agyCapable: agyCapable, unsupported: unsupported)
     }
 }
 

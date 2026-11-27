@@ -210,14 +210,14 @@ public actor SyncEngine {
                     try ensureCurrent(started)
                     apply(result, of: changes, into: &report)
                     remaining = []
-                } catch AccountError.refused(400, "invalid_item", let field, let index?) where changes.indices.contains(index) {
+                } catch AccountError.refused(400, "invalid_item", let field, let index?, _) where changes.indices.contains(index) {
                     try ensureCurrent(started)
                     // One bad change refuses the whole push: drop it, push the rest again.
                     let bad = changes[index]
                     report.rejected.append(SyncRejection(change: bad, field: field ?? ""))
                     dropPending(bad)
                     remaining.remove(at: index)
-                } catch AccountError.refused(403, "quota", _, _) {
+                } catch AccountError.refused(403, "quota", _, _, _) {
                     try ensureCurrent(started)
                     report.overQuota = true
                     return
@@ -294,7 +294,7 @@ public actor SyncEngine {
                 for item in items { store(item, force: false) }
                 state.since = rev
                 return
-            } catch AccountError.refused(410, "reset_required", _, _) where resets < Self.maxResets {
+            } catch AccountError.refused(410, "reset_required", _, _, _) where resets < Self.maxResets {
                 try ensureCurrent(started)
                 resets += 1
                 since = 0

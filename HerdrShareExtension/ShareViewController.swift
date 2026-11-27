@@ -132,17 +132,15 @@ private final class ShareModel: ObservableObject {
         if Task.isCancelled { return }
         let store = SavedHostsStore.shared
         do {
-            guard let endpoint = HostEndpoint.parse(host.host) else { throw ShareFailure("Invalid host address") }
             var credentials: SSHCredentials
-            switch host.auth {
-            case .key:
-                guard let key = store.key(for: host), !key.isEmpty else { throw ShareFailure("Unlock Herdrup to access the saved key") }
-                credentials = SSHCredentials(host: endpoint.host, port: endpoint.port, username: host.username,
-                                             privateKeyPEM: key, remoteSocketPath: "")
-            case .password:
-                guard let password = store.password(for: host), !password.isEmpty else { throw ShareFailure("Unlock Herdrup to access the saved password") }
-                credentials = SSHCredentials(host: endpoint.host, port: endpoint.port, username: host.username,
-                                             password: password, remoteSocketPath: "")
+            switch store.connection(for: host) {
+            case .ready(let ready):
+                credentials = ready
+            case .unparseableHost:
+                throw ShareFailure("Invalid host address")
+            case .missingSecret:
+                throw ShareFailure(host.auth == .key ? "Unlock Herdrup to access the saved key"
+                                                     : "Unlock Herdrup to access the saved password")
             }
             credentials.session = SessionChoice.remembered(for: credentials)
             let transport = CitadelTransport(credentials: credentials, hostKeyPolicy: KeychainHostKeyPolicy.shared)

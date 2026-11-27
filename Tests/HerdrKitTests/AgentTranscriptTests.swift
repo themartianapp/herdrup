@@ -75,12 +75,44 @@ final class AgentTranscriptDecodingTests: XCTestCase {
 
     func testCapabilitiesDecodeTheChatFlagsAndDefaultFalse() throws {
         let on = try JSONDecoder().decode(ServerCapabilities.self,
-                                          from: Data(#"{"agent_transcript":true,"agent_answer":true}"#.utf8))
+                                          from: Data(#"{"agent_transcript":true,"agent_answer":true,"transcript_agy":true}"#.utf8))
         XCTAssertTrue(on.agentTranscript)
         XCTAssertTrue(on.agentAnswer)
+        XCTAssertTrue(on.transcriptAgy)
         let old = try JSONDecoder().decode(ServerCapabilities.self, from: Data("{}".utf8))
         XCTAssertFalse(old.agentTranscript)
         XCTAssertFalse(old.agentAnswer)
+        XCTAssertFalse(old.transcriptAgy)
+    }
+
+    func testChatSupportGatesAgyOnTranscriptAgyCapability() throws {
+        let ompOnly = try JSONDecoder().decode(ServerCapabilities.self,
+                                               from: Data(#"{"agent_transcript":true}"#.utf8))
+        let withAgy = try JSONDecoder().decode(ServerCapabilities.self,
+                                               from: Data(#"{"agent_transcript":true,"transcript_agy":true}"#.utf8))
+        let agyWithoutTranscript = try JSONDecoder().decode(ServerCapabilities.self,
+                                                            from: Data(#"{"transcript_agy":true}"#.utf8))
+
+        XCTAssertTrue(ompOnly.supportsChat(agentKind: "omp"))
+        XCTAssertTrue(ompOnly.supportsChat(agentKind: "omp 18.2"))
+        XCTAssertFalse(ompOnly.supportsChat(agentKind: "agy"))
+        XCTAssertFalse(ompOnly.supportsChat(agentKind: "agy-cli"))
+        XCTAssertFalse(ompOnly.supportsChat(agentKind: "claude"))
+
+        XCTAssertTrue(withAgy.supportsChat(agentKind: "omp"))
+        XCTAssertTrue(withAgy.supportsChat(agentKind: "agy"))
+        XCTAssertTrue(withAgy.supportsChat(agentKind: "AGY"))
+        XCTAssertTrue(withAgy.supportsChat(agentKind: "agy 1.5"))
+        XCTAssertTrue(withAgy.supportsChat(agentKind: "agy-cli"))
+        XCTAssertFalse(withAgy.supportsChat(agentKind: "claude"))
+        XCTAssertFalse(withAgy.supportsChat(agentKind: "codex"))
+        XCTAssertFalse(withAgy.supportsChat(agentKind: nil))
+
+        XCTAssertFalse(agyWithoutTranscript.supportsChat(agentKind: "agy"))
+        XCTAssertFalse(AgentChatSupport.isOmp("agy"))
+        XCTAssertTrue(AgentChatSupport.isAgy("agy"))
+        XCTAssertTrue(AgentChatSupport.maySupportChat("agy"))
+        XCTAssertFalse(AgentChatSupport.maySupportChat("claude"))
     }
 
     func testDecodesSubagentsWithMissingOptionalsAndUnknownStatus() throws {
@@ -375,19 +407,22 @@ final class TranscriptGroupingTests: XCTestCase {
         let entries = try JSONDecoder().decode([TranscriptEntry].self, from: Data(#"""
         [{"id":"u1","ts_ms":0,"kind":"user","text":"Go","author":"owner"},
          {"id":"r1","ts_ms":1,"kind":"reply","text":"Done","final":true},
-         {"id":"h1","ts_ms":2,"kind":"relay","from":"Inbox","topic_id":"t1","direction":"to_topic","text":"Is **clause 4** final?"},
+         {"id":"h1","ts_ms":2,"kind":"relay","from":"Inbox","direction":"to_topic","text":"Is **clause 4** final?"},
          {"id":"s1","ts_ms":3,"kind":"step","tool":"read","intent":"Reading clause 4","status":"ok"},
-         {"id":"h2","ts_ms":4,"kind":"relay","from":"Trip","direction":"to_inbox","text":"Booked."},
+         {"id":"h2","ts_ms":4,"kind":"relay","from":"Trip","topic_id":"t-trip","direction":"to_inbox","text":"Booked."},
          {"id":"h3","ts_ms":5,"kind":"relay","text":"No sender","direction":"sideways"}]
         """#.utf8))
-        XCTAssertEqual(entries[2].kind, .relay(TranscriptRelay(from: "Inbox", topicID: "t1", direction: .toTopic,
+        XCTAssertEqual(entries[2].kind, .relay(TranscriptRelay(from: "Inbox", direction: .toTopic,
                                                                text: "Is **clause 4** final?")))
         guard case .relay(let toInbox) = entries[4].kind, case .relay(let odd) = entries[5].kind else {
             return XCTFail("relay entries decode as relays: \(entries)")
         }
+        XCTAssertEqual(toInbox.topicID, "t-trip", "topic_id is the sending topic's")
         XCTAssertEqual(toInbox.label, "From topic Trip")
         XCTAssertEqual(odd.direction, .unknown, "an unknown direction still decodes")
         if case .relay(let fromInbox) = entries[2].kind { XCTAssertEqual(fromInbox.label, "From Inbox") }
+        XCTAssertEqual(TranscriptRelay(from: "Trip", topicID: "t-trip", direction: .toTopic, text: "Hi").label,
+                       "From topic Trip", "a topic handing over to another topic is named as a topic")
 
         let turns = TranscriptGrouping.turns(entries)
         XCTAssertEqual(turns.map(\.id), ["u1", "h1", "h2", "h3"], "each handed-over message opens a turn")
@@ -1178,5 +1213,52 @@ final class TranscriptStoreTests: XCTestCase {
         }
         XCTAssertEqual(entryTexts.count, 4, "both real prompts and both real replies decode")
         XCTAssertFalse(entryTexts.contains(recapText), "the recap must not appear as a conversation entry")
+    }
+
+    func testChatRecoveryNeededTracksTemporaryTranscriptUnsupportedAndClearsOnRetry() async {
+        XCTAssertTrue(AgentChatSupport.needsRecovery("agy", transcriptCapable: true, agyCapable: true, unsupported: true))
+        XCTAssertFalse(AgentChatSupport.needsRecovery("agy", transcriptCapable: true, agyCapable: false, unsupported: true))
+        XCTAssertFalse(AgentChatSupport.needsRecovery("agy", transcriptCapable: true, agyCapable: true, unsupported: false))
+        XCTAssertTrue(AgentChatSupport.needsRecovery("omp", transcriptCapable: true, agyCapable: false, unsupported: true))
+        XCTAssertFalse(AgentChatSupport.needsRecovery("claude", transcriptCapable: true, agyCapable: true, unsupported: true))
+        XCTAssertEqual(AgentChatSupport.recoveryDelays.first, 1)
+
+        var calls = 0
+        let (client, _) = scripted { _ in
+            calls += 1
+            if calls == 1 {
+                return RecordingTransport.errorReply(code: "transcript_unsupported",
+                                                     message: "the agent has not opened a conversation database")
+            }
+            return Self.page([
+                Self.entry("u1", "user", extra: #""text":"Hey""#),
+                Self.entry("r1", extra: #""text":"Ready","final":true"#),
+            ], after: "a1")
+        }
+        let store = TranscriptStore(target: "w1:p2")
+        await store.refresh(client: client)
+        let refused = (store.lastError as? AgentTranscriptError) == .unsupported
+        XCTAssertTrue(refused)
+        XCTAssertTrue(AgentChatSupport.needsRecovery("agy", transcriptCapable: true, agyCapable: true, unsupported: refused))
+
+        // Recovery poll succeeds once the agy DB opens: unsupported clears and Chat recovers.
+        await store.refresh(client: client)
+        let stillRefused = (store.lastError as? AgentTranscriptError) == .unsupported
+        XCTAssertFalse(stillRefused)
+        XCTAssertFalse(AgentChatSupport.needsRecovery("agy", transcriptCapable: true, agyCapable: true, unsupported: stillRefused))
+        XCTAssertEqual(store.entries.map(\.id), ["u1", "r1"])
+
+        // Permanent guest refusal (`guest_forbidden`) does not classify as temporary
+        // `AgentTranscriptError.unsupported`, so the pane recovery loop stops.
+        let (forbiddenClient, _) = scripted { _ in
+            RecordingTransport.errorReply(code: "guest_forbidden", message: "guests may not read transcripts")
+        }
+        let forbiddenStore = TranscriptStore(target: "w1:p3")
+        await forbiddenStore.refresh(client: forbiddenClient)
+        XCTAssertEqual((forbiddenStore.lastError as? APIError)?.code, "guest_forbidden")
+        let recoverableAfterForbidden = (forbiddenStore.lastError as? AgentTranscriptError) == .unsupported
+        XCTAssertFalse(recoverableAfterForbidden)
+        XCTAssertFalse(AgentChatSupport.needsRecovery("agy", transcriptCapable: true, agyCapable: true,
+                                                      unsupported: recoverableAfterForbidden))
     }
 }

@@ -62,10 +62,23 @@ public struct ApprovalRequest: Decodable, Equatable, Sendable, Identifiable {
     }
 }
 
-/// `GET /v1/approvals/<id>` as the approver reads it.
+/// `GET /v1/approvals/<id>` as either side reads it.
 public struct ApprovalStatus: Decodable, Equatable, Sendable {
     public enum State: String, Decodable, Sendable {
-        case waiting, claimed, revealed, denied, approved, expired
+        /// `cancelled`: a pair request its new device withdrew (`POST /v1/approvals/<id>/cancel`).
+        case waiting, claimed, revealed, denied, approved, expired, cancelled
+    }
+
+    /// The claimant, once there is one.
+    public struct Approver: Decodable, Equatable, Sendable {
+        /// Its X25519 device key, unpadded base64url.
+        public let devicePub: String
+        public let name: String
+
+        enum CodingKeys: String, CodingKey {
+            case name
+            case devicePub = "device_pub"
+        }
     }
 
     public let state: State
@@ -77,13 +90,21 @@ public struct ApprovalStatus: Decodable, Equatable, Sendable {
     /// The service answered from an outcome it stored, not one it computed from the clock. For
     /// an expiry: no finish can be recorded after it (herdrup #801).
     public let outcomeStored: Bool
+    public let approver: Approver?
+    /// A pair request (`kind: "pair"`) also carries what its list entry does, so an approver
+    /// opening it from a push needs no list.
+    public let kind: String?
+    public let sshPub: String?
+    public let commit: String?
+    public let device: PairRequest.Device?
 
     enum CodingKeys: String, CodingKey {
-        case state
+        case state, approver, kind, commit, device
         case expiresIn = "expires_in"
         case nonceT = "nonce_t"
         case nonceB = "nonce_b"
         case outcomeStored = "outcome_stored"
+        case sshPub = "ssh_pub"
     }
 
     public init(from decoder: Decoder) throws {
@@ -93,6 +114,11 @@ public struct ApprovalStatus: Decodable, Equatable, Sendable {
         nonceT = try c.decodeIfPresent(String.self, forKey: .nonceT)
         nonceB = try c.decodeIfPresent(String.self, forKey: .nonceB)
         outcomeStored = try c.decodeIfPresent(Bool.self, forKey: .outcomeStored) ?? false
+        approver = try c.decodeIfPresent(Approver.self, forKey: .approver)
+        kind = try c.decodeIfPresent(String.self, forKey: .kind)
+        sshPub = try c.decodeIfPresent(String.self, forKey: .sshPub)
+        commit = try c.decodeIfPresent(String.self, forKey: .commit)
+        device = try c.decodeIfPresent(PairRequest.Device.self, forKey: .device)
     }
 }
 
@@ -145,6 +171,8 @@ public actor BrowserApproval {
         case tampered
         /// The request ran out before the browser showed its code.
         case expired
+        /// The device asking cancelled its request (pair requests only).
+        case cancelled
     }
 
     /// An approval the service didn't record: it refused it, or the request ended without it.
@@ -177,6 +205,9 @@ public actor BrowserApproval {
     public static let defaultPoll: @Sendable (TimeInterval) -> TimeInterval = { $0 < 60 ? 2 : 5 }
     /// The longest wait between reads after failed ones.
     static let backoffMax: TimeInterval = 30
+    /// How long a call not tied to a live request (asking, opening a pushed request, a newer
+    /// envelope) waits at most for the account's approval budget to refill.
+    static let rateLimitPatience: TimeInterval = 120
 
     public nonisolated let request: ApprovalRequest
     /// This device's key (T), the one the service records from the session.
@@ -237,8 +268,11 @@ public actor BrowserApproval {
         else { throw Failure.tampered }
         let nonceT = ApproveV1.newNonce()
         let client = session.client
+        let deadline = now().addingTimeInterval(TimeInterval(request.expiresIn))
         do {
-            try await session.authorized { try await client.claimApproval(id: request.id, nonceT: nonceT, accessToken: $0) }
+            try await retryingRateLimit(until: deadline, now: now, poll: poll) {
+                try await session.authorized { try await client.claimApproval(id: request.id, nonceT: nonceT, accessToken: $0) }
+            }
         } catch let error as AccountError where Self.gone(error) || error.status == 409 {
             throw Failure.ended
         }
@@ -275,7 +309,7 @@ public actor BrowserApproval {
                 }
                 guard Self.transient(error) else { throw error }
                 failures = min(failures + 1, 5)
-                wait = min(wait * pow(2, Double(failures)), Self.backoffMax)
+                wait = Self.backoff(wait, failures: failures, after: error)
             }
             let left = expires.timeIntervalSince(now())
             try await Task.sleep(nanoseconds: UInt64(max(0, min(wait, left)) * 1_000_000_000))
@@ -374,9 +408,10 @@ public actor BrowserApproval {
         }
         let report = ApprovalReport(scope: scope, expiresMs: expiresMs, seq: seq, sealed: sealed)
         let client = session.client
+        let session = session
         let id = request.id
         do {
-            try await session.authorized { try await client.approveBrowser(id: id, report: report, accessToken: $0) }
+            try await paced { try await session.authorized { try await client.approveBrowser(id: id, report: report, accessToken: $0) } }
         } catch {
             // A refusal (a 4xx other than 429: the finish is one transaction, herdrup #792)
             // didn't record this finish; anything else may yet be recorded.
@@ -427,9 +462,10 @@ public actor BrowserApproval {
         if denied { return }
         if done { throw Failure.ended }
         let client = session.client
+        let session = session
         let id = request.id
         do {
-            try await session.authorized { try await client.denyBrowser(id: id, accessToken: $0) }
+            try await paced { try await session.authorized { try await client.denyBrowser(id: id, accessToken: $0) } }
         } catch let error as AccountError where Self.gone(error) || error.status == 409 {
             end()
             throw Failure.ended
@@ -442,8 +478,14 @@ public actor BrowserApproval {
 
     private func state() async throws -> ApprovalStatus {
         let client = session.client
+        let session = session
         let id = request.id
-        return try await session.authorized { try await client.approvalState(id: id, accessToken: $0) }
+        return try await paced { try await session.authorized { try await client.approvalState(id: id, accessToken: $0) } }
+    }
+
+    /// `call`, sent again while the account's approval budget is spent, until the request expires.
+    private func paced<T: Sendable>(_ call: @Sendable () async throws -> T) async throws -> T {
+        try await Self.retryingRateLimit(until: expires, now: now, poll: poll, call)
     }
 
     private func end() {
@@ -459,9 +501,45 @@ public actor BrowserApproval {
     /// A failed read worth repeating: no answer, a rate limit, or a server error.
     static func transient(_ error: AccountError) -> Bool {
         switch error {
-        case .refused(let status, _, _, _): return status == 429 || status >= 500
+        case .refused(let status, _, _, _, _): return status == 429 || status >= 500
         case .signedOut: return false
         case .unreachable, .malformedResponse: return true
+        }
+    }
+
+    /// The account's approval budget is spent (`429 rate_limited`). Every approval route of the
+    /// account shares it (list, claim, reveal, finish, envelope, cancel, state reads,
+    /// `/v1/pairs/self`) and the service did nothing with the call, so it is sent again once
+    /// the budget refills. Not `429 too_many_requests`, the hourly cap on new requests: final.
+    public static func rateLimited(_ error: Error) -> Bool {
+        guard let error = error as? AccountError else { return false }
+        return error.status == 429 && error.code == "rate_limited"
+    }
+
+    /// The wait before the next try after `failures` failed ones (`error` the last): the
+    /// service's `Retry-After` when it sent one, else `wait` doubled per failure up to
+    /// `backoffMax`.
+    public static func backoff(_ wait: TimeInterval, failures: Int, after error: Error) -> TimeInterval {
+        if case .refused(_, _, _, _, let retryAfter?) = error as? AccountError { return retryAfter }
+        return min(wait * pow(2, Double(failures)), backoffMax)
+    }
+
+    /// Runs `call`, and again after a backed-off wait each time it is answered
+    /// `429 rate_limited`, until `deadline`; once that passes the last answer is thrown.
+    static func retryingRateLimit<T: Sendable>(until deadline: Date, now: () -> Date, poll: (TimeInterval) -> TimeInterval,
+                                               _ call: @Sendable () async throws -> T) async throws -> T {
+        let start = now()
+        var failures = 0
+        while true {
+            do {
+                return try await call()
+            } catch let error as AccountError where rateLimited(error) {
+                let left = deadline.timeIntervalSince(now())
+                guard left > 0 else { throw error }
+                failures = min(failures + 1, 5)
+                let wait = backoff(poll(now().timeIntervalSince(start)), failures: failures, after: error)
+                try await Task.sleep(nanoseconds: UInt64(max(0, min(wait, left)) * 1_000_000_000))
+            }
         }
     }
 
@@ -474,11 +552,16 @@ public actor BrowserApproval {
         case Failure.ending: return "This request is about to expire. Ask the browser for a new one."
         case Failure.tampered: return "This request was tampered with. It was denied."
         case Failure.expired: return "This request expired before the browser showed its code."
+        case Failure.cancelled: return "This request was cancelled."
         case let error as NotRecorded: return describe(error.reason)
         case let error as OutcomeUnknown: return "Couldn't tell whether the browser was approved (\(describe(error.reason)))."
         case AccountError.unreachable: return "The HerdrUp account service can't be reached."
         case AccountError.signedOut: return "Signed out of HerdrUp."
-        case AccountError.refused(let status, let code, _, _): return code.isEmpty ? "Refused (\(status))." : "Refused: \(code)."
+        case let error as AccountError where rateLimited(error):
+            return "The HerdrUp account service is busy. Try again in a minute."
+        case let error as AccountError where error.status == 429 && error.code == "too_many_requests":
+            return "Too many pair requests this hour. Try again later."
+        case AccountError.refused(let status, let code, _, _, _): return code.isEmpty ? "Refused (\(status))." : "Refused: \(code)."
         default: return String(describing: error)
         }
     }
@@ -487,7 +570,7 @@ public actor BrowserApproval {
 extension AccountError {
     /// The HTTP status of a refusal.
     public var status: Int? {
-        if case .refused(let status, _, _, _) = self { return status }
+        if case .refused(let status, _, _, _, _) = self { return status }
         return nil
     }
 }

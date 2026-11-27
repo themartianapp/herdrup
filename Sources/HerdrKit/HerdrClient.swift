@@ -251,6 +251,22 @@ public actor HerdrClient {
     }
     private var capabilityFlight: Task<ServerCapabilities?, Error>?
 
+    /// The capabilities already learned, or the answer of the `ping` already in flight; nil
+    /// when neither (no `ping` is sent) or that `ping` fails.
+    private func learnedCapabilities() async -> ServerCapabilities? {
+        if case .probed(let capabilities) = capabilityCache { return capabilities }
+        guard let capabilityFlight else { return nil }
+        return try? await capabilityFlight.value
+    }
+
+    /// The server offers `relay` entries, as far as this client has learned; never a `ping`.
+    /// A store whose snapshot was fetched before that was known reloads it once
+    /// (`TranscriptStore`).
+    public func learnedRelayEntries() -> Bool {
+        if case .probed(let capabilities) = capabilityCache { return capabilities?.transcriptRelayEntries == true }
+        return false
+    }
+
     /// The server's version string and capabilities from one `ping`, uncached: an update
     /// replaces the server under the same client. The answer also replaces the cached
     /// capabilities, so the openers see what the server that answered supports.
@@ -2107,21 +2123,34 @@ public actor HerdrClient {
         target: String, before: String? = nil, after: String? = nil, limit: UInt32? = nil,
         subagent: String? = nil, heldFrom: String? = nil, topic: String? = nil
     ) async throws -> AgentTranscriptPage {
-        if topic != nil, !(await supports(\.agentTranscriptTopic)) {
-            throw AgentTranscriptError.unsupported
+        // One read of the capabilities decides both the topic gate and the relay entries. A
+        // topic's page waits on them (the probe, or the `ping` already on its way). The Inbox's
+        // page sends no `ping` of its own for them: it takes them once learned, or joins the
+        // one in flight (the home screen's, at a cold start).
+        let capabilities: ServerCapabilities?
+        if topic != nil {
+            capabilities = try? await knownCapabilities()
+            guard capabilities?.agentTranscriptTopic == true else { throw AgentTranscriptError.unsupported }
+        } else {
+            capabilities = await learnedCapabilities()
         }
+        // Handovers as `relay` entries only from a server that offers them: asked for, an
+        // older one could refuse the unknown param.
+        let relayEntries: Bool? = capabilities?.transcriptRelayEntries == true ? true : nil
         let params = AgentTranscriptParams(target: target, before: before, after: after,
                                            limit: limit.map { min(max($0, 1), 50) }, subagent: subagent,
-                                           heldFrom: heldFrom, topic: topic)
+                                           heldFrom: heldFrom, topic: topic, relayEntries: relayEntries)
         // The newest page (no cursor) is what a chat opens on, so it is what a cold start
         // paints from; a page of older history or of appended entries is not. A topic's page
         // is not kept: the cache holds one page per agent (and subagent), the Inbox's.
         let keeper = before == nil && after == nil && topic == nil ? contentCache : nil
         do {
-            return try await call("agent.transcript", params, as: AgentTranscriptPage.self,
-                                  record: keeper.map { cache in { line, _ in
-                                      cache.recordTranscript(line, target: target, subagent: subagent)
-                                  } })
+            var page = try await call("agent.transcript", params, as: AgentTranscriptPage.self,
+                                      record: keeper.map { cache in { line, _ in
+                                          cache.recordTranscript(line, target: target, subagent: subagent)
+                                      } })
+            page.askedForRelays = relayEntries == true
+            return page
         } catch let error as APIError {
             switch error.code {
             case "agent_not_found": throw AgentTranscriptError.agentNotFound
@@ -2370,10 +2399,23 @@ public actor HerdrClient {
         try await call("guest.list", GuestListParams(machine: machine), as: GuestListing.self)
     }
 
-    /// Revoke a guest (its live sessions close immediately) or cancel an unused invite.
+    /// Revoke a guest (its live sessions close immediately), every share of one person, or
+    /// cancel an unused invite.
     public func guestRevoke(_ target: GuestRevokeTarget, machine: String? = nil) async throws {
         _ = try await call("guest.revoke", GuestRevokeParams(target: target, machine: machine),
                            as: OkAck.self)
+    }
+
+    /// Remove one device, by fingerprint, from an account-bound share (`guest.remove_device`):
+    /// its live sessions close and herdr refuses it for good, while the person's other devices
+    /// keep the share. A plain share answers `guest_not_account_bound` (revoke it instead).
+    /// Returns the share as it is now.
+    @discardableResult
+    public func guestRemoveDevice(guestID: String, fingerprint: String,
+                                  machine: String? = nil) async throws -> GuestRecord {
+        try await call("guest.remove_device",
+                       GuestRemoveDeviceParams(guestID: guestID, fingerprint: fingerprint, machine: machine),
+                       as: GuestDeviceRemovedResult.self).guest
     }
 
     /// The guest activity log, newest first (`guest.audit`). `limit` is clamped to the
@@ -2413,6 +2455,15 @@ public actor HerdrClient {
     public func ownerAccessRemove(devicePub: String) async throws -> [String] {
         try await call("owner_access.remove", OwnerAccessRemoveParams(devicePub: devicePub),
                        as: OwnerAccessRemoved.self).removed
+    }
+
+    // MARK: - Pairing another device (pair-from-device PLAN, herdr `pair.add_key`)
+
+    /// Adds an ssh-ed25519 key to this machine's `~/.ssh/authorized_keys`, marked
+    /// `herdr-pair:<label>` as `herdr pair` marks its keys (`pair.add_key`, owner only, herdr's
+    /// `pair_add_key` capability). A key already there is not added again (`already`).
+    public func pairAddKey(publicKey: String, label: String) async throws -> PairKeyAdded {
+        try await call("pair.add_key", PairAddKeyParams(publicKey: publicKey, label: label), as: PairKeyAdded.self)
     }
 }
 

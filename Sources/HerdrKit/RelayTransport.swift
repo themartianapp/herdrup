@@ -334,13 +334,6 @@ public struct RelayTransport: HerdrTransport {
     /// transport of the same guest, host and device key.
     private let reusable: ReusableSession
 
-    /// `{"v":1,"guest_id":…}`, plus `account` (the statement) for an account-bound grant.
-    private struct ReturningHello: Encodable {
-        let v = 1
-        let guest_id: String
-        let account: String?
-    }
-
     /// Raw bytes per `gram.upload_chunk` over the relay: 256 KiB. On a host without session
     /// reuse every relay call is its own WebSocket and Noise handshake, so the SSH-sized 48 KiB chunk made a 6 MB
     /// photo 123 connections. The SSH argv cap behind 48 KiB does not apply here; the
@@ -383,8 +376,9 @@ public struct RelayTransport: HerdrTransport {
             statement = try await GuestStatements.fetch(for: endpoint.hostID, from: statements)
             source = statements
         }
-        // A string and an optional string have no failing Encodable implementation.
-        let hello = try! JSONEncoder().encode(ReturningHello(guest_id: guestID, account: statement?.jws))
+        // `{"v":1,"guest_id":…}`, plus `account` (the statement) for an account-bound grant.
+        // Strings and optional strings have no failing Encodable implementation.
+        let hello = try! JSONEncoder().encode(GuestSession.Hello.returning(guestID, account: statement?.jws))
         let session = try await RelaySession.open(
             endpoint: endpoint, identity: identity, hello: hello, connector: connector)
         guard session.reply["guest_id"] as? String == guestID else {

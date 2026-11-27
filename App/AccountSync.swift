@@ -77,3 +77,9 @@ final class SavedStoresAccountLocal: AccountLocalStore {
         set { defaults.set(newValue.sorted(), forKey: Self.promptIDsKey) }
     }
 }
+
+/// The shares shared with this device as HerdrKit's `AccountShareSync` sees them (#700): the
+/// account-bound grants, the account's shares not opened here, and the ledger kept with them.
+extension SharedMachinesStore: AccountShareStore {
+    var shares: [GuestAccess] { machines }
+}

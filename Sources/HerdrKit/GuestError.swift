@@ -172,7 +172,7 @@ public enum AccountStatementFailure: Error, Equatable, Sendable, CustomStringCon
             case .signedOut: self = .signedOut
             case .unreachable: self = .unreachable
             case .malformedResponse: self = .refused("malformed_response")
-            case .refused(_, let code, _, _): self = .refused(code)
+            case .refused(_, let code, _, _, _): self = .refused(code)
             }
         case let cache as StatementCache.Failure:
             switch cache {

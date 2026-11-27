@@ -86,6 +86,10 @@ final class ChatModel: ObservableObject {
     /// `transcript_unsupported` for its first seconds, until its integration reports a
     /// session (#604), so any later answer that is not a refusal clears it again.
     @Published private(set) var unsupported = false
+    /// Whether `unsupported` came specifically from a temporary `transcript_unsupported` refusal
+    /// (e.g. a fresh omp or agy agent whose session file or conversation DB has not opened yet),
+    /// rather than a permanent session refusal such as `guest_forbidden` or `forbidden`.
+    @Published private(set) var unsupportedRecoverable = false
     /// The chat's lines, flattened from `turns` and `outgoing` once per change of either
     /// (not per draw), with each row's position by id.
     fileprivate private(set) var rows: [ChatRow] = []
@@ -543,34 +547,46 @@ final class ChatModel: ObservableObject {
         if store.pendingAsk?.isWithheldFromCaller == true { assign(\.answersRefused, true) }
         if let error = store.lastError as? AgentTranscriptError {
             switch error {
-            case .unsupported: assign(\.unsupported, true)
+            case .unsupported:
+                assign(\.unsupported, true)
+                assign(\.unsupportedRecoverable, true)
             case .agentNotFound:
                 assign(\.unsupported, false)
+                assign(\.unsupportedRecoverable, false)
                 assign(\.failure, "This agent is gone.")
             case .unavailable:
                 assign(\.unsupported, false)
+                assign(\.unsupportedRecoverable, false)
                 assign(\.failure, "omp's session file can't be read right now.")
             case .cursorExpired:
                 assign(\.unsupported, false)
+                assign(\.unsupportedRecoverable, false)
                 assign(\.failure, nil)
             case .subagentNotFound:
                 assign(\.unsupported, false)
+                assign(\.unsupportedRecoverable, false)
                 assign(\.failure, "This subagent's conversation can't be found.")
             case .topicNotFound:
                 assign(\.unsupported, false)
+                assign(\.unsupportedRecoverable, false)
                 assign(\.failure, "This topic's conversation can't be found.")
             }
         } else if let error = store.lastError {
-            // A guest whose host refuses the method for guests: the Chat tab goes away.
+            // A guest whose host refuses the method for guests: the Chat tab goes away for the
+            // session and does not enter the temporary transcript_unsupported recovery loop.
+            // Any other transient transport/internal error leaves `unsupported` and
+            // `unsupportedRecoverable` unchanged so recovery survives a dropped poll.
             let code = (error as? APIError)?.code
             if code == "forbidden" || code == "guest_forbidden" {
                 assign(\.unsupported, true)
+                assign(\.unsupportedRecoverable, false)
                 assign(\.failure, nil)
             } else {
                 assign(\.failure, "Couldn't load the chat.")
             }
         } else {
             assign(\.unsupported, false)
+            assign(\.unsupportedRecoverable, false)
             assign(\.failure, nil)
         }
     }

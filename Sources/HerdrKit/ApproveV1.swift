@@ -75,25 +75,42 @@ public enum ApproveV1 {
     /// `browserPub`, at sequence `seq`. `iv` is for the vectors; leave it nil.
     public static func seal(approver: Curve25519.KeyAgreement.PrivateKey, browserPub: Data, seq: UInt64,
                             plaintext: Data, iv: Data? = nil) throws -> String {
-        let approverPub = approver.publicKey.rawRepresentation
-        let key = try envelopeKey(privateKey: approver, peerPub: browserPub, browserPub: browserPub, approverPub: approverPub)
-        let nonce = try iv.map { try AES.GCM.Nonce(data: $0) } ?? AES.GCM.Nonce()
-        let box = try AES.GCM.seal(plaintext, using: key, nonce: nonce,
-                                   authenticating: aad(browserPub: browserPub, approverPub: approverPub, seq: seq))
-        return Base64URL.encode(Data(nonce) + box.ciphertext + box.tag)
+        try seal(label: envelopeLabel, approver: approver, requesterPub: browserPub, seq: seq, plaintext: plaintext, iv: iv)
     }
 
     /// Opens `sealed` as the browser (holding `b`) from `approverPub` at `seq`. The browser side
     /// is TypeScript; this is for tests.
     public static func openEnvelope(browser: Curve25519.KeyAgreement.PrivateKey, approverPub: Data, seq: UInt64,
                                     sealed: String) throws -> Data {
-        let browserPub = browser.publicKey.rawRepresentation
-        let key = try envelopeKey(privateKey: browser, peerPub: approverPub, browserPub: browserPub, approverPub: approverPub)
+        try open(label: envelopeLabel, requester: browser, approverPub: approverPub, seq: seq, sealed: sealed)
+    }
+
+    /// The §12.3 envelope under `label`: approve-v1's, or pair-v1's (`PairV1`), which also binds
+    /// `bound` (S and the request id) in the AAD before the seq. The requester's key comes first
+    /// in the salt and the AAD.
+    static func seal(label: String, approver: Curve25519.KeyAgreement.PrivateKey, requesterPub: Data, seq: UInt64,
+                     bound: Data = Data(), plaintext: Data, iv: Data?) throws -> String {
+        let approverPub = approver.publicKey.rawRepresentation
+        let key = try envelopeKey(label: label, privateKey: approver, peerPub: requesterPub,
+                                  browserPub: requesterPub, approverPub: approverPub)
+        let nonce = try iv.map { try AES.GCM.Nonce(data: $0) } ?? AES.GCM.Nonce()
+        let aad = aad(label: label, browserPub: requesterPub, approverPub: approverPub, bound: bound, seq: seq)
+        let box = try AES.GCM.seal(plaintext, using: key, nonce: nonce, authenticating: aad)
+        return Base64URL.encode(Data(nonce) + box.ciphertext + box.tag)
+    }
+
+    static func open(label: String, requester: Curve25519.KeyAgreement.PrivateKey, approverPub: Data, seq: UInt64,
+                     bound: Data = Data(), sealed: String) throws -> Data {
+        let requesterPub = requester.publicKey.rawRepresentation
+        let key = try envelopeKey(label: label, privateKey: requester, peerPub: approverPub,
+                                  browserPub: requesterPub, approverPub: approverPub)
         guard let raw = Base64URL.decode(sealed), raw.count >= 12 + 16 else { throw Failure.malformedEnvelope }
         do {
             let box = try AES.GCM.SealedBox(nonce: AES.GCM.Nonce(data: raw.prefix(12)),
                                             ciphertext: raw.dropFirst(12).dropLast(16), tag: raw.suffix(16))
-            return try AES.GCM.open(box, using: key, authenticating: aad(browserPub: browserPub, approverPub: approverPub, seq: seq))
+            return try AES.GCM.open(box, using: key,
+                                    authenticating: aad(label: label, browserPub: requesterPub, approverPub: approverPub,
+                                                        bound: bound, seq: seq))
         } catch {
             throw Failure.malformedEnvelope
         }
@@ -115,13 +132,13 @@ public enum ApproveV1 {
         return Data(hash.finalize())
     }
 
-    private static func checkSizes(keys: [Data], nonces: [Data]) throws {
+    static func checkSizes(keys: [Data], nonces: [Data]) throws {
         guard keys.allSatisfy({ $0.count == keySize }), nonces.allSatisfy({ $0.count == nonceSize }) else {
             throw Failure.badSize
         }
     }
 
-    private static func envelopeKey(privateKey: Curve25519.KeyAgreement.PrivateKey, peerPub: Data,
+    private static func envelopeKey(label: String, privateKey: Curve25519.KeyAgreement.PrivateKey, peerPub: Data,
                                     browserPub: Data, approverPub: Data) throws -> SymmetricKey {
         try checkSizes(keys: [peerPub, browserPub, approverPub], nonces: [])
         let ikm: Data
@@ -131,11 +148,11 @@ public enum ApproveV1 {
             throw Failure.invalidKey
         }
         return HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: ikm), salt: browserPub + approverPub,
-                                      info: Data(envelopeLabel.utf8), outputByteCount: 32)
+                                      info: Data(label.utf8), outputByteCount: 32)
     }
 
-    private static func aad(browserPub: Data, approverPub: Data, seq: UInt64) -> Data {
-        var aad = Data(envelopeLabel.utf8) + [0] + browserPub + approverPub
+    private static func aad(label: String, browserPub: Data, approverPub: Data, bound: Data, seq: UInt64) -> Data {
+        var aad = Data(label.utf8) + [0] + browserPub + approverPub + bound
         withUnsafeBytes(of: seq.bigEndian) { aad.append(contentsOf: $0) }
         return aad
     }

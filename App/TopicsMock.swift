@@ -122,7 +122,8 @@ final class TopicsMock: @unchecked Sendable {
             : switchWhenIdle ? #","agent_topics_switch":true,"agent_topics_switch_when_idle":true"#
             : #","agent_topics_switch":true"#
         let suggestCapability = suggests ? #","agent_topic_suggestions":true"# : ""
-        let base = transcriptTopic ? #","agent_topics":true,"agent_transcript_topic":true"# : #","agent_topics":true"#
+        let base = (transcriptTopic ? #","agent_topics":true,"agent_transcript_topic":true"# : #","agent_topics":true"#)
+            + (relays ? #","transcript_relay_entries":true"# : "")
         let eventsCapability = applyAfter == nil ? "" : #","events_v2":true"#
         return base + switchCapability + suggestCapability + eventsCapability
     }
@@ -262,6 +263,15 @@ final class TopicsMock: @unchecked Sendable {
         for listener in listeners { listener.yield(event) }
     }
 
+    /// `HERDR_MOCK_TOPICS_SEND_REFUSE=<code>`: the first `agent.topics.send` is refused with
+    /// that code before it reaches the topic (`invalid_params`: herdr's size gate).
+    private var sendRefusal = ProcessInfo.processInfo.environment["HERDR_MOCK_TOPICS_SEND_REFUSE"]
+
+    /// Every message an `agent.topics.send` delivered, in order, across the owner's and the
+    /// guest's mocks: TopicChat's DEBUG `topic-send-calls` probe.
+    static var sentMessages: [String] { sentRecorder.messages }
+    private static let sentRecorder = TopicsSendRecorder()
+
     private func answer(method: String, id: String, params: [String: Any]) -> String {
         guard params["target"] as? String == paneID || params["target"] as? String == agent else {
             return ChatMockConversation.error(id: id, code: "agent_not_found", message: "no such agent")
@@ -314,9 +324,15 @@ final class TopicsMock: @unchecked Sendable {
                 guard let index = topics.firstIndex(where: { $0.id == topicID }) else {
                     return ChatMockConversation.error(id: id, code: "topic_not_found", message: "no such topic")
                 }
+                if let code = sendRefusal {
+                    sendRefusal = nil
+                    return ChatMockConversation.error(id: id, code: code, message: "message too long")
+                }
                 let now = Self.now()
                 let running = topics[index].state == "running"
-                topics[index].messages.append((.reader, params["message"] as? String ?? "", now))
+                let message = params["message"] as? String ?? ""
+                Self.sentRecorder.append(message)
+                topics[index].messages.append((.reader, message, now))
                 topics[index].lastMs = now
                 return ChatMockConversation.encode(id: id, result: [
                     "type": "agent_topic_sent", "agent": agent, "pane_id": paneID, "topic_id": topicID,
@@ -546,7 +562,9 @@ final class TopicsMock: @unchecked Sendable {
 
     /// `agent.transcript` with `topic`: that topic's whole conversation on one page, a turn per
     /// message (the reader's prompt, the topic's reply).
-    func transcript(id: String, topic topicID: String) -> String {
+    /// `relayEntries`: the request carried `relay_entries: true` (herdr #521); without it a
+    /// handover comes back as a `user` entry, as from a herdr without relays.
+    func transcript(id: String, topic topicID: String, relayEntries: Bool) -> String {
         lock.withLock {
             guard let topic = topics.first(where: { $0.id == topicID }) else {
                 return ChatMockConversation.error(id: id, code: "topic_not_found", message: "no such topic")
@@ -569,10 +587,14 @@ final class TopicsMock: @unchecked Sendable {
                                     "text": message.text, "final": true])
                     entries.append(["id": "\(topic.id)-\(index)e", "ts_ms": message.ms + 1, "kind": "turn_end",
                                     "status": "done"])
-                case .inbox:
+                case .inbox where relayEntries:
                     entries.append(["id": "\(topic.id)-\(index)h", "ts_ms": message.ms, "kind": "relay",
-                                    "from": "Inbox", "topic_id": topic.id, "direction": "to_topic",
+                                    "from": "Inbox", "direction": "to_topic",
                                     "text": message.text])
+                case .inbox:
+                    // Not asked for `relay_entries`: herdr sends the handover as omp wrote it.
+                    entries.append(["id": "\(topic.id)-\(index)h", "ts_ms": message.ms, "kind": "user",
+                                    "text": message.text, "author": "owner"])
                 }
             }
             return ChatMockConversation.encode(id: id, result: [
@@ -588,5 +610,15 @@ final class TopicsMock: @unchecked Sendable {
             ])
         }
     }
+}
+
+/// The messages `agent.topics.send` delivered, in order (`TopicsMock.sentMessages`).
+final class TopicsSendRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [String] = []
+
+    var messages: [String] { lock.withLock { stored } }
+
+    func append(_ message: String) { lock.withLock { stored.append(message) } }
 }
 #endif

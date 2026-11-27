@@ -90,6 +90,9 @@ final class HerdrUpAccount: ObservableObject {
     /// True while a sync applies the account's copy to the local stores, so those changes
     /// don't count as local edits to push.
     private var applying = false
+    /// The signed-in account's id, known from the first sync of this process on. Shares added
+    /// here are claimed for it (`AccountShareLedger`).
+    private var accountID: String?
     /// The file the sync state lives in, so a sign-out that couldn't delete it can retry.
     private let syncStore: SyncStateStore
     /// Where the session's display hint lives: the Keychain item beside the refresh token.
@@ -450,7 +453,7 @@ final class HerdrUpAccount: ObservableObject {
             }
         } catch ProviderSignInError.cancelled {
             return
-        } catch AccountError.refused(_, "wrong_account", _, _) {
+        } catch AccountError.refused(_, "wrong_account", _, _, _) {
             notice = AccountNotice(title: "That's another account",
                                    message: "Sign in with the \(provider == .apple ? "Apple ID" : "Google account") this HerdrUp account uses to delete it.")
         } catch {
@@ -482,6 +485,10 @@ final class HerdrUpAccount: ObservableObject {
                                    message: "Your machines and prompts stay on this \(Self.deviceKind), but the account's synced copy couldn't be deleted. herdrup tries again when it next opens.")
         }
         SavedStoresAccountLocal.forget(defaults)
+        // The ledger stays with the shares: which account each belongs to, and leaves still
+        // to write (#849 review F1).
+        SharedMachinesStore.shared.setAccountShares([])
+        accountID = nil
         forgetProfile()
         signedIn = false
         rememberDisplayHint(nil)
@@ -548,7 +555,11 @@ final class HerdrUpAccount: ObservableObject {
             self?.applying = active
         }
         do {
-            let summary = try await run.run()
+            var summary = try await run.run()
+            // The shares after the machines and prompts, on the mirror that run just pulled.
+            let account = try await session.requireAccountID()
+            accountID = account
+            summary.absorb(try await AccountShareSync(engine: sync, store: SharedMachinesStore.shared, account: account).run())
             lastSync = summary
             syncFailed = summary.overQuota
             let hosts = await sync.items(in: .hosts).count
@@ -582,6 +593,18 @@ final class HerdrUpAccount: ObservableObject {
             .debounce(for: .seconds(3), scheduler: RunLoop.main)
             .sink { [weak self] in self?.localEditSync() }
             .store(in: &cancellables)
+
+        // A share added to or left from the account here (#700) is claimed for this account at
+        // once, then pushed, or deleted on every device, by a sync that starts now.
+        SharedMachinesStore.shared.$machines.dropFirst()
+            .map { Set($0.filter(\.accountBound).map(\.id)) }
+            .removeDuplicates()
+            .sink { [weak self] bound in
+                guard let self, signedIn else { return }
+                if let accountID { SharedMachinesStore.shared.ledger.claim(bound, account: accountID) }
+                localEditSync()
+            }
+            .store(in: &cancellables)
     }
 
     // MARK: Words
@@ -602,6 +625,9 @@ final class HerdrUpAccount: ObservableObject {
 
     /// The device's name as the account lists it.
     static var deviceName: String {
+        #if DEBUG
+        if let name = mockDeviceName { return name }
+        #endif
         let name = UIDevice.current.name.trimmingCharacters(in: .whitespacesAndNewlines)
         return String((name.isEmpty ? deviceKind : name).prefix(64))
     }
@@ -648,7 +674,7 @@ final class HerdrUpAccount: ObservableObject {
             return "You're signed out. Sign in again."
         case .malformedResponse:
             return "The account service answered in a way this version doesn't understand. Update herdrup and try again."
-        case .refused(let status, let code, _, _):
+        case .refused(let status, let code, _, _, _):
             switch code {
             case "nonce_used", "nonce_mismatch", "nonce_invalid": return "The sign-in took too long. Try again."
             case "token_invalid", "token_expired": return "The sign-in wasn't accepted. Try again."

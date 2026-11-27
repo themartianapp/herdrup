@@ -379,22 +379,44 @@ final class SettingsTests: XCTestCase {
             let manage = app.staticTexts["Notifications"].firstMatch
             XCTAssertTrue(manage.exists(within: 15), "Settings should list Notifications")
             manage.tap()
-            let picker = app.buttons["settings-notify-finishes"]
+            // By identifier, whatever type it reads as: the menu Picker is a PopUpButton to the
+            // modern attributes and a Button to the legacy ones, and XCTest alternates.
+            let picker = app.descendants(matching: .any)["settings-notify-finishes"].firstMatch
             XCTAssertTrue(picker.exists(within: 10), "\"An agent finishes\" should be a picker")
 
+            // An option of the open menu, as a button or a menu item: never the picker itself,
+            // nor the text of its label, which reads the current choice while the menu is shut.
+            func item(_ option: String) -> XCUIElement {
+                app.descendants(matching: .any).matching(NSPredicate(
+                    format: "label == %@ AND identifier != %@ AND elementType != %lu",
+                    option, "settings-notify-finishes", XCUIElement.ElementType.staticText.rawValue
+                )).firstMatch
+            }
+
             func choose(_ option: String) {
-                // Tap the item once it is hittable; reopen if the first tap hit the dismissing
-                // backdrop (see testSettingsDefaultDecidesWhereOmpOpens).
+                // Tap the item once the menu has settled: it exists, is hittable and its frame
+                // held still between two reads (the menu animates in). Reopen once if the first
+                // tap hit the dismissing backdrop (see testSettingsDefaultDecidesWhereOmpOpens).
                 for _ in 0..<2 where picker.value as? String != option {
+                    XCTAssertTrue(picker.waitForHittable(timeout: 10), "the picker should be tappable")
                     picker.tap()
-                    let item = app.buttons[option].firstMatch
-                    XCTAssertTrue(poll(5, every: 0.2) { item.exists && !item.frame.isEmpty && item.isHittable },
-                                  "the menu should offer \(option)")
+                    let choice = item(option)
+                    var lastFrame = CGRect.null
+                    // Frame before hittability: on an item still animating in, `isHittable`
+                    // records a failure instead of answering false.
+                    XCTAssertTrue(poll(5, every: 0.2) {
+                        guard choice.exists, !choice.frame.isEmpty, choice.isHittable else { return false }
+                        defer { lastFrame = choice.frame }
+                        return choice.frame == lastFrame
+                    }, "the menu should offer \(option)")
                     for other in ["Off", "Only my requests", "Always"] {
-                        XCTAssertTrue(app.buttons[other].firstMatch.exists, "the menu should offer \(other)")
+                        XCTAssertTrue(item(other).exists(within: 5), "the menu should offer \(other)")
                     }
-                    item.tap()
-                    _ = poll(3, every: 0.3) { picker.value as? String == option }
+                    choice.tap()
+                    // The choice can land seconds after the tap, the screen untappable meanwhile:
+                    // in #855 b339f5f9, #873 j_4718dfe9 and #874 j_92a755dd, Off read as chosen
+                    // only after 3 s, and reopening the menu then hit nothing and failed.
+                    _ = poll(10, every: 0.3) { picker.value as? String == option }
                 }
                 XCTAssertEqual(picker.value as? String, option)
             }

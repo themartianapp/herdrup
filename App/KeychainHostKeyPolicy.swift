@@ -70,49 +70,10 @@ final class KeychainHostKeyPolicy: HostKeyPolicy, @unchecked Sendable {
         return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
     }
 
-    /// Canonicalizes the pin key so spellings that reach the same host share one
-    /// pin — otherwise a different spelling is a fresh first-contact that bypasses
-    /// the pin. IPv6 literals have many textual forms (RFC 5952), so they are
-    /// normalized through inet_pton/inet_ntop; DNS names are case-insensitive
-    /// (RFC 4343) and may carry a trailing dot.
+    /// The pin's Keychain account: `HostEndpoint.pinKey`, the one normalizer every caller that
+    /// asks "same pin?" shares (`SavedHostsStore` keeps a paired restriction by it).
     private func accountKey(host: String, port: UInt16) -> String {
-        var h = host.trimmingCharacters(in: .whitespaces)
-        if h.hasPrefix("[") && h.hasSuffix("]") { h = String(h.dropFirst().dropLast()) }
-        if let canonicalIP = canonicalIPv6(h) {
-            h = canonicalIP
-        } else {
-            h = h.lowercased()
-            while h.hasSuffix(".") { h.removeLast() }
-        }
-        return "\(h):\(port)"
-    }
-
-    /// Canonical IPv6 text (compressed, lowercase) via the resolver, or nil if
-    /// `s` is not an IPv6 literal. A scoped address keeps its zone id (`%en0`)
-    /// lowercased so `fe80::1%EN0` and `fe80::1%en0` share a pin — the zone is
-    /// canonicalized alongside the address rather than left to split the pin.
-    private func canonicalIPv6(_ s: String) -> String? {
-        let parts = s.split(separator: "%", maxSplits: 1, omittingEmptySubsequences: false)
-        let address = String(parts[0])
-        var addr = in6_addr()
-        guard address.withCString({ inet_pton(AF_INET6, $0, &addr) }) == 1 else { return nil }
-        var buffer = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
-        guard inet_ntop(AF_INET6, &addr, &buffer, socklen_t(INET6_ADDRSTRLEN)) != nil else { return nil }
-        var canonical = String(cString: buffer)
-        if parts.count == 2 {
-            // Lowercase the zone id — a STABLE canonicalization. An earlier
-            // version mapped the zone through if_nametoindex, but that was a
-            // fail-open (backfill review): if_nametoindex is a case-sensitive
-            // exact-match lookup (so `%EN0` and `%en0` took different branches
-            // and split the pin), and worse it embedded the kernel-assigned
-            // interface INDEX, which is runtime state that changes across
-            // reboots — a moved index no longer matches the pin and the next key
-            // is trusted as first contact. Lowercasing is stable and closes the
-            // realistic (case) variation; a name-vs-numeric-zone difference is a
-            // theoretical link-local-only edge, not worth an unstable key.
-            canonical += "%" + parts[1].lowercased()
-        }
-        return canonical
+        HostEndpoint.pinKey(host: host, port: port)
     }
 
     private enum Lookup { case found(String), notFound, error }

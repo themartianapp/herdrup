@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Glibc)
+import Glibc
+#else
+import Darwin
+#endif
 
 /// A parsed SSH destination — host plus port. Lives in HerdrKit (not on the
 /// SwiftUI view) so it is covered by the Linux suite: it is pure string logic
@@ -94,5 +99,62 @@ public struct HostEndpoint: Equatable, Sendable {
         guard !s.isEmpty, s.allSatisfy({ $0.isASCII && $0.isNumber }),
               let p = UInt16(s), p >= 1 else { return nil }  // UInt16 rejects >65535; guard rejects 0
         return p
+    }
+
+    // MARK: - the host-key pin's key
+
+    /// The key a host-key pin is stored under (`KeychainHostKeyPolicy`), "host:port" in canonical
+    /// form, so spellings that reach the same host share one pin. Otherwise a different spelling
+    /// is a fresh first contact that bypasses the pin. IPv6 literals have many textual forms
+    /// (RFC 5952), so they go through inet_pton/inet_ntop; DNS names are case-insensitive
+    /// (RFC 4343) and may carry a trailing dot.
+    public static func pinKey(host: String, port: UInt16) -> String {
+        var h = host.trimmingCharacters(in: .whitespaces)
+        if h.hasPrefix("[") && h.hasSuffix("]") { h = String(h.dropFirst().dropLast()) }
+        if let canonicalIP = canonicalIPv6(h) {
+            h = canonicalIP
+        } else {
+            h = h.lowercased()
+            while h.hasSuffix(".") { h.removeLast() }
+        }
+        return "\(h):\(port)"
+    }
+
+    /// `pinKey(host:port:)` for this endpoint.
+    public var pinKey: String { Self.pinKey(host: host, port: port) }
+
+    /// Whether two typed addresses share one host-key pin: both parse, to the same `pinKey`.
+    /// Addresses that don't parse match only when they're the same text.
+    public static func samePin(_ a: String, _ b: String) -> Bool {
+        guard let x = parse(a), let y = parse(b) else { return a == b }
+        return x.pinKey == y.pinKey
+    }
+
+    /// Canonical IPv6 text (compressed, lowercase) via the resolver, or nil if
+    /// `s` is not an IPv6 literal. A scoped address keeps its zone id (`%en0`)
+    /// lowercased so `fe80::1%EN0` and `fe80::1%en0` share a pin — the zone is
+    /// canonicalized alongside the address rather than left to split the pin.
+    private static func canonicalIPv6(_ s: String) -> String? {
+        let parts = s.split(separator: "%", maxSplits: 1, omittingEmptySubsequences: false)
+        let address = String(parts[0])
+        var addr = in6_addr()
+        guard address.withCString({ inet_pton(AF_INET6, $0, &addr) }) == 1 else { return nil }
+        var buffer = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
+        guard inet_ntop(AF_INET6, &addr, &buffer, socklen_t(INET6_ADDRSTRLEN)) != nil else { return nil }
+        var canonical = String(cString: buffer)
+        if parts.count == 2 {
+            // Lowercase the zone id — a STABLE canonicalization. An earlier
+            // version mapped the zone through if_nametoindex, but that was a
+            // fail-open (backfill review): if_nametoindex is a case-sensitive
+            // exact-match lookup (so `%EN0` and `%en0` took different branches
+            // and split the pin), and worse it embedded the kernel-assigned
+            // interface INDEX, which is runtime state that changes across
+            // reboots — a moved index no longer matches the pin and the next key
+            // is trusted as first contact. Lowercasing is stable and closes the
+            // realistic (case) variation; a name-vs-numeric-zone difference is a
+            // theoretical link-local-only edge, not worth an unstable key.
+            canonical += "%" + parts[1].lowercased()
+        }
+        return canonical
     }
 }

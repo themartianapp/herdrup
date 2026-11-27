@@ -993,6 +993,13 @@ case "$shard" in
     run_suite iPadStarPrompt "$IPAD_UDID" 10m \
       -only-testing:HerdrUITests/GitHubStarPromptTests/testBarFitsTheIPadSidebar || failed=1
     check_classes_ran TestReceipts/iPadStarPrompt-first.xcresult GitHubStarPromptTests || failed=1
+    # Shared access's people and a person's page (account-linked shares, frames o1-o3), whose
+    # screenshots the design compares on both devices; the iPhone half runs in iPhoneGuest.
+    run_suite iPadGuestPeople "$IPAD_UDID" 10m \
+      -only-testing:HerdrUITests/GuestShareTests/testPeopleListOneRowPerPersonWithTheirDevices \
+      -only-testing:HerdrUITests/GuestShareTests/testPersonPageListsAgentsAndDevicesAndRemovesADevice \
+      -only-testing:HerdrUITests/GuestShareTests/testRemovingAPersonAsksThenRemovesEveryShare || failed=1
+    check_classes_ran TestReceipts/iPadGuestPeople-first.xcresult GuestShareTests || failed=1
     # AgentListChromeTests shrinks the app into a window on purpose, and iPadOS keeps that
     # window for later launches, even across a reinstall: run 40537708095 ran NeedsYouPill
     # and the first ChatUX cases in a 715-722 pt window afterwards and failed four ChatUX
@@ -1003,6 +1010,14 @@ case "$shard" in
     # the classes above). 10m: p95 2.9 min, slowest pass 4.2 (n=151).
     run_suite iPadAgentListChrome "$IPAD_UDID" 10m -only-testing:HerdrUITests/AgentListChromeTests || failed=1
     check_classes_ran TestReceipts/iPadAgentListChrome-first.xcresult AgentListChromeTests || failed=1
+    # Account shares (#700): the guest's accept, SHARED WITH YOU and the opened share, kept as
+    # ipad-shares-* screenshots. The iPhone runs the whole class in the catch-all.
+    run_suite iPadAccountShares "$IPAD_UDID" 10m \
+      -only-testing:HerdrUITests/AccountSharesTests/testSignedOutTheInviteOffersTheAccountOrThisDeviceOnly \
+      -only-testing:HerdrUITests/AccountSharesTests/testSignedInAddToMyAccountOpensTheShareInTheAccount \
+      -only-testing:HerdrUITests/AccountSharesTests/testAnAccountShareOpensWithNothingToAccept \
+      -only-testing:HerdrUITests/AccountSharesTests/testSeveralSharesStayOneRowPerMachine || failed=1
+    check_classes_ran TestReceipts/iPadAccountShares-first.xcresult AccountSharesTests || failed=1
     ;;
   settings-stack)
     # Three things in one short script shard (macserve-script-shard.sh checks the built

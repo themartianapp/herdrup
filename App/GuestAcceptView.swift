@@ -3,8 +3,9 @@ import HerdrKit
 
 /// Shared styling for the guest screens (mock row 2), taken from the mock's tokens.
 enum GuestShellStyle {
-    /// The lilac the host's "<name> (via HerdrUp):" label is drawn in.
-    static let label = Color(hex: 0xB7A8FF)
+    /// The name the host labels the guest's messages with ("<name> (via HerdrUp):"): plain
+    /// ink, as on the desktop; the guest screens carry no decorative colour.
+    static let label = Palette.text
 
     /// A section heading: mono micro-label and a quiet rule.
     static func section(_ title: String) -> some View {
@@ -17,15 +18,15 @@ enum GuestShellStyle {
         .padding(.horizontal, 16)
     }
 
-    /// The violet explanatory note.
+    /// An explanatory note: a neutral card (surface and hairline), dim text.
     static func note<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         content()
             .font(Typography.app(13)).foregroundStyle(Palette.textDim)
             .lineSpacing(2.75)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 14).padding(.vertical, 13.5)
-            .background(Palette.brand.opacity(0.09), in: RoundedRectangle(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Palette.brand.opacity(0.28), lineWidth: 1))
+            .background(Palette.surface, in: RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Palette.hairline, lineWidth: 1))
             .padding(.horizontal, 16)
     }
 
@@ -55,16 +56,24 @@ enum GuestShellStyle {
 
 /// Screen G1: what an invite grants and how the guest will be labeled, shown before
 /// anything connects. Accept redeems the invite with this phone's key.
+///
+/// An invite whose host takes accounts (`acct`, DESIGN #698 §4) offers 2A instead of a plain
+/// Accept: signed out, the account's own Continue with Apple / Google (1B) above "Continue on
+/// this device only"; signed in, "Add to my account" (the share opens on every device of the
+/// account) or "Only this device". Not now is the close circle, so the foot holds the choice.
 struct GuestAcceptView: View {
     let invite: GuestInvite
     /// This phone's key fingerprint, when the key could be read.
     let fingerprint: String?
-    /// Redeems the invite. Injected so screenshot mocks never touch the network.
-    let accept: () async throws -> GuestAccess
+    /// Redeems the invite, bound to the signed-in account when asked. Injected so screenshot
+    /// mocks never touch the network.
+    let accept: (_ bindToAccount: Bool) async throws -> GuestAccess
     let onAccepted: (GuestAccess) -> Void
     let onCancel: () -> Void
 
-    @State private var accepting = false
+    @ObservedObject private var account = HerdrUpAccount.shared
+    /// Which button is redeeming: true for Add to my account.
+    @State private var accepting: Bool?
     @State private var error: String?
 
     var body: some View {
@@ -89,6 +98,16 @@ struct GuestAcceptView: View {
                 }
                 .scrollBounceBehavior(.basedOnSize)
                 footer
+            }
+            .overlay(alignment: .topLeading) {
+                Button(action: onCancel) {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.circle(diameter: 36))
+                .disabled(accepting != nil)
+                .padding(.leading, 16).padding(.top, 8)
+                .accessibilityLabel("Not now")
+                .accessibilityIdentifier("guest-accept-close")
             }
         }
     }
@@ -144,37 +163,65 @@ struct GuestAcceptView: View {
                     .padding(.horizontal, 8)
                     .accessibilityIdentifier("guest-accept-error")
             }
-            Button { Task { await run() } } label: {
-                ZStack {
-                    Text("Accept").opacity(accepting ? 0 : 1)
-                    if accepting { ProgressView().tint(Palette.ground) }
-                }
-                .font(Typography.app(16, .semibold)).foregroundStyle(Palette.ground)
-                .frame(maxWidth: .infinity).frame(height: 50)
-                .background(Palette.text, in: Capsule())
+            if !invite.acceptsAccount {
+                // A host that can't bind shares to an account: today's Accept.
+                choice("Accept", .filled, bind: false, identifier: "guest-accept")
+            } else if account.signedIn {
+                signedInLine
+                choice("Add to my account", .filled, bind: true, identifier: "guest-accept-account")
+                choice("Only this device", .secondary, bind: false, identifier: "guest-accept-this-device")
+            } else {
+                Text("Keep it on all your devices")
+                    .font(Typography.app(13)).foregroundStyle(Palette.textFaint)
+                    .padding(.bottom, 2)
+                AccountSignInButtons(account: account)
+                choice("Continue on this device only", .secondary, bind: false, identifier: "guest-accept-this-device")
             }
-            .buttonStyle(.plain)
-            .disabled(accepting)
-            .accessibilityLabel("Accept")
-            .accessibilityIdentifier("guest-accept")
-            Button(action: onCancel) {
-                Text("Not now")
-                    .font(Typography.app(16, .semibold)).foregroundStyle(Palette.textDim)
-                    .frame(maxWidth: .infinity).frame(height: 50)
-                    .contentShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .disabled(accepting)
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 16).padding(.bottom, 8)
+        .task { if invite.acceptsAccount, !account.signedIn { await account.loadHealth() } }
     }
 
-    private func run() async {
-        accepting = true
+    /// Who "Add to my account" adds the share to: the account email when this session knows
+    /// one, else the provider.
+    private var signedInLine: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "person.crop.circle").font(.system(size: 13)).foregroundStyle(Palette.textDim)
+            if let email = account.email {
+                Text("Signed in as").foregroundStyle(Palette.textDim)
+                Text(email).foregroundStyle(Palette.text).lineLimit(1).truncationMode(.middle)
+            } else {
+                Text(account.identityLine).foregroundStyle(Palette.textDim)
+            }
+        }
+        .font(Typography.app(13))
+        .padding(.bottom, 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("guest-accept-signed-in")
+    }
+
+    /// One of the foot's capsules. 50 pt tall, the height of the account's Continue with Apple
+    /// and Google beside them. A sign-in or first sync still running holds every choice.
+    private func choice(_ title: String, _ variant: CapsuleVariant, bind: Bool, identifier: String) -> some View {
+        Button { Task { await run(bind: bind) } } label: {
+            ZStack {
+                Text(title).opacity(accepting == bind ? 0 : 1)
+                if accepting == bind { ProgressView().tint(variant.ink) }
+            }
+            .frame(minHeight: 50)
+        }
+        .buttonStyle(.capsule(variant, .large, fullWidth: true))
+        .disabled(accepting != nil || account.busy != nil)
+        .accessibilityLabel(title)
+        .accessibilityIdentifier(identifier)
+    }
+
+    private func run(bind: Bool) async {
+        accepting = bind
         error = nil
-        defer { accepting = false }
+        defer { accepting = nil }
         do {
-            onAccepted(try await accept())
+            onAccepted(try await accept(bind))
         } catch {
             self.error = GuestDevice.describe(error, machine: invite.machineLabel)
         }

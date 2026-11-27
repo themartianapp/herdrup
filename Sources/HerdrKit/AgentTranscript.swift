@@ -25,14 +25,18 @@ public struct AgentTranscriptParams: Encodable, Sendable, Equatable {
     /// (herdr #430). Older servers ignore it.
     public let heldFrom: String?
     public let topic: String?
+    /// `true` asks for `relay` entries (`transcript_relay_entries`); nil is not sent.
+    public let relayEntries: Bool?
 
     enum CodingKeys: String, CodingKey {
         case target, before, after, limit, subagent, topic
         case heldFrom = "held_from"
+        case relayEntries = "relay_entries"
     }
 
     public init(target: String, before: String? = nil, after: String? = nil, limit: UInt32? = nil,
-                subagent: String? = nil, heldFrom: String? = nil, topic: String? = nil) {
+                subagent: String? = nil, heldFrom: String? = nil, topic: String? = nil,
+                relayEntries: Bool? = nil) {
         self.target = target
         self.before = before
         self.after = after
@@ -40,6 +44,7 @@ public struct AgentTranscriptParams: Encodable, Sendable, Equatable {
         self.subagent = subagent
         self.heldFrom = heldFrom
         self.topic = topic
+        self.relayEntries = relayEntries
     }
 }
 
@@ -112,6 +117,63 @@ public enum TranscriptAuthor: Sendable, Equatable {
 public enum TranscriptOrigin: Sendable, Equatable {
     case mine
     case other
+}
+
+/// Which agent kinds can open in the Chat view given a server's advertised capabilities.
+/// omp agents need `agent_transcript`; agy (Antigravity CLI) agents also need `transcript_agy`.
+/// Topics remain omp-only.
+public enum AgentChatSupport {
+    public static func isOmp(_ agentKind: String?) -> Bool {
+        guard let kind = agentKind?.lowercased() else { return false }
+        return kind == "omp" || kind.hasPrefix("omp ") || kind.hasPrefix("omp-")
+    }
+
+    public static func isAgy(_ agentKind: String?) -> Bool {
+        guard let kind = agentKind?.lowercased() else { return false }
+        return kind == "agy" || kind.hasPrefix("agy ") || kind.hasPrefix("agy-")
+    }
+
+    public static func maySupportChat(_ agentKind: String?) -> Bool {
+        isOmp(agentKind) || isAgy(agentKind)
+    }
+
+    /// Gaps between transcript retries while Chat is temporarily refused (`transcript_unsupported`),
+    /// in seconds. The last value repeats.
+    public static let recoveryDelays: [UInt64] = [1, 2, 4, 8, 15, 30, 60]
+
+    public static func supportsChat(
+        _ agentKind: String?,
+        transcriptCapable: Bool,
+        agyCapable: Bool
+    ) -> Bool {
+        guard transcriptCapable else { return false }
+        if isOmp(agentKind) { return true }
+        if isAgy(agentKind) { return agyCapable }
+        return false
+    }
+
+    /// Whether a pane should keep polling for transcript recovery at pane scope after a temporary
+    /// `transcript_unsupported` refusal unmounted Chat (e.g. a fresh omp or agy agent whose
+    /// session file or conversation DB opens late).
+    public static func needsRecovery(
+        _ agentKind: String?,
+        transcriptCapable: Bool,
+        agyCapable: Bool,
+        unsupported: Bool
+    ) -> Bool {
+        unsupported && supportsChat(agentKind, transcriptCapable: transcriptCapable, agyCapable: agyCapable)
+    }
+}
+
+public extension ServerCapabilities {
+    /// Whether this server serves `agent.transcript` for an agent of `agentKind`.
+    func supportsChat(agentKind: String?) -> Bool {
+        AgentChatSupport.supportsChat(
+            agentKind,
+            transcriptCapable: agentTranscript,
+            agyCapable: transcriptAgy
+        )
+    }
 }
 
 public enum TranscriptStepStatus: String, Sendable, Equatable {
@@ -541,6 +603,7 @@ public enum TranscriptRelayDirection: String, Sendable, Equatable {
 public struct TranscriptRelay: Sendable, Equatable {
     /// "Inbox", or the sending topic's title.
     public let from: String
+    /// The sending topic's id; nil when the Inbox sent it.
     public let topicID: String?
     public let direction: TranscriptRelayDirection
     /// The message, markdown.
@@ -553,10 +616,12 @@ public struct TranscriptRelay: Sendable, Equatable {
         self.text = text
     }
 
-    /// "From Inbox", "From topic Trip": who handed the message over.
+    /// "From Inbox", "From topic Trip": who handed the message over. A sending topic
+    /// (`topic_id`) is named as one, whichever page shows it.
     public var label: String {
-        let name = from.isEmpty ? (direction == .toTopic ? "Inbox" : "a topic") : from
-        return direction == .toInbox ? "From topic \(name)" : "From \(name)"
+        let fromTopic = !(topicID ?? "").isEmpty
+        let name = from.isEmpty ? (fromTopic ? "a topic" : "Inbox") : from
+        return fromTopic ? "From topic \(name)" : "From \(name)"
     }
 }
 
@@ -855,6 +920,10 @@ public struct AgentTranscriptPage: Decodable, Sendable, Equatable {
     /// marks, steps whose status changed) rather than appended since; every other entry is
     /// new. nil from a herdr that does not say (see `TranscriptStore.mergeAfter`).
     public let resent: [String]?
+    /// The request asked for `relay` entries (`HerdrClient` sets it; not on the wire). A
+    /// snapshot fetched without them is reloaded once the client learns the server offers
+    /// them (`TranscriptStore`).
+    public internal(set) var askedForRelays = false
 
     public init(agent: String? = nil, paneID: String? = nil, sessionID: String? = nil,
                 entries: [TranscriptEntry], before: String? = nil, after: String? = nil,

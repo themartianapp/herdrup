@@ -1,5 +1,5 @@
 import { SELF, env } from "cloudflare:test";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, inject, it, vi, type MockInstance } from "vitest";
 import { findOrCreateAccount } from "../src/auth";
 import { b64url, randomB64url, utf8 } from "../src/bytes";
 import { cleanup, INACTIVE_ACCOUNT_DAYS } from "../src/cleanup";
@@ -118,7 +118,7 @@ describe("routing", () => {
     const config = env as unknown as Record<string, string | undefined>;
     const names = ["GOOGLE_IOS_CLIENT_ID", "APPLE_WEB_CLIENT_ID", "GOOGLE_WEB_CLIENT_ID", "GOOGLE_WEB_CLIENT_SECRET", "APPLE_SIWA_P8", "APPLE_KEY_ID"];
     const saved = Object.fromEntries(names.map((name) => [name, config[name]]));
-    const ALWAYS = ["native_sign_in", "devices", "statements", "sync", "delete", "web_approve", "approval_expiry_final"];
+    const ALWAYS = ["native_sign_in", "devices", "statements", "sync", "delete", "web_approve", "approval_expiry_final", "pair_v1"];
     const listed = async (values: Record<string, string | undefined>) => {
       for (const name of names) config[name] = values[name];
       const response = await get("/v1/health");
@@ -495,9 +495,9 @@ describe("rate limits", () => {
     expect((await post("/v1/auth/nonce", {}, freshIp())).status).toBe(200);
   });
 
-  it("allows 120 account calls per account a minute", async () => {
+  it("allows ACCOUNT_LIMIT account calls per account a minute", async () => {
     const tokens = await signIn("apple");
-    for (let i = 0; i < 120; i++) expect((await get("/v1/account", tokens.access_token)).status).toBe(200);
+    for (let i = 0; i < inject("rateLimits").ACCOUNT_LIMIT; i++) expect((await get("/v1/account", tokens.access_token)).status).toBe(200);
     expect(await rejection(await get("/v1/account", tokens.access_token))).toEqual({ status: 429, error: "rate_limited" });
     const other = await signIn("apple");
     expect((await get("/v1/account", other.access_token)).status).toBe(200);

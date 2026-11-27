@@ -42,6 +42,8 @@ struct GuestPaneView: View {
     @StateObject private var chatModel: ChatModel
     /// The host serves `agent.transcript` to guests (its pong's `agent_transcript`).
     @State private var transcriptCapable = false
+    /// The host serves `agy` transcripts to guests (its pong's `transcript_agy`).
+    @State private var transcriptAgyCapable = false
     /// The Chat tab's first appearance in this mount has set the tab from Settings' "omp
     /// agents open in"; after that the guest's own pick stands.
     @State private var chatDefaulted = false
@@ -132,10 +134,20 @@ struct GuestPaneView: View {
     /// The owner shares this agent's Gram with the guest (the host's hello says so), and a
     /// Gram inbox is there to open.
     private var showsGram: Bool { features.current?.gram == true && onOpenGram != nil }
-    /// The Chat tab: a shared omp agent on a host that serves guests its transcript, until
-    /// the host says it cannot.
+    /// The Chat tab: a shared omp agent on a host with `agent_transcript`, or a shared agy agent
+    /// on a host that also advertises `transcript_agy`, until the host says it cannot.
     private var showsChat: Bool {
-        transcriptCapable && ChatPreference.isOmp(agent?.agent) && !chatModel.unsupported
+        ChatPreference.supportsChat(agent?.agent, transcriptCapable: transcriptCapable,
+                                    agyCapable: transcriptAgyCapable) && !chatModel.unsupported
+    }
+    /// A chat-capable shared agent whose transcript was refused (`transcript_unsupported`). A
+    /// fresh omp/agy agent can be refused until its session file or conversation DB opens (#881);
+    /// because hiding the Chat tab unmounts `ChatView`, recovery polling lives at pane scope so
+    /// Chat reappears without closing and reopening the share.
+    private var chatRecoveryNeeded: Bool {
+        ChatPreference.needsRecovery(agent?.agent, transcriptCapable: transcriptCapable,
+                                     agyCapable: transcriptAgyCapable,
+                                     unsupported: chatModel.unsupportedRecoverable)
     }
     private var showingChat: Bool { showsChat && tab == .chat }
     /// The Topics tab: a shared omp agent that offers topics, on a host with `agent_topics`.
@@ -249,6 +261,7 @@ struct GuestPaneView: View {
         .task(id: access.id) {
             let capabilities = try? await client.serverCapabilities()
             transcriptCapable = capabilities?.agentTranscript ?? false
+            transcriptAgyCapable = capabilities?.transcriptAgy ?? false
             topicsCapable = capabilities?.agentTopics ?? false
         }
         // Whether the shared omp agent offers topics (#758), on `TopicsDiscoveryBackoff`'s
@@ -262,13 +275,41 @@ struct GuestPaneView: View {
                   !topicsModel.offered else { return }
             await topicsModel.discover(client: client)
         }
-        // A shared omp agent opens where Settings' "omp agents open in" says (#735), once per
-        // mount, as the owner's page opens from it; afterwards the guest's own pick stands.
+        // While the host refuses this chat-capable agent a transcript (`transcript_unsupported`),
+        // ask again at pane scope: soon after it starts, then less often, and immediately when
+        // the share returns to running, returns to the foreground, or the agent's status changes
+        // (#881). A success clears `chatModel.unsupported`, which re-shows Chat and ends the loop.
+        .task(id: [chatRecoveryNeeded ? "retry" : "", availability == .running ? "running" : "",
+                   scenePhase.mountsChat ? "active" : "", agent?.agentStatus ?? ""]) {
+            guard chatRecoveryNeeded, availability == .running, scenePhase.mountsChat else { return }
+            await chatModel.refresh(client: client)
+            var attempt = 0
+            while chatModel.unsupportedRecoverable, !Task.isCancelled {
+                let delays = ChatPreference.recoveryDelays
+                let seconds = delays[min(attempt, delays.count - 1)]
+                attempt += 1
+                try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                await chatModel.refresh(client: client)
+            }
+        }
+        // A shared chat-capable agent opens where Settings' "omp agents open in" says (#735), once
+        // per mount, as the owner's page opens from it; afterwards the guest's own pick stands. If
+        // a temporary refusal hid Chat before the guest picked a tab, re-resolve the default on
+        // recovery so Topics stays selected when it became available during the refusal (#881).
         .onChange(of: showsChat, initial: true) { _, available in
             if available, !chatDefaulted {
                 chatDefaulted = true
-                if !tabChosen { tab = ChatPreference.opensInChat ? .chat : .terminal }
+                if !tabChosen {
+                    switch ChatPreference.resolved(ChatPreference.settingMode, chatAvailable: true,
+                                                   topicsAvailable: showsTopics) {
+                    case .topics: tab = .topics
+                    case .chat: tab = .chat
+                    case .terminal: tab = .terminal
+                    }
+                }
             } else if !available, tab == .chat {
+                if chatRecoveryNeeded, !tabChosen { chatDefaulted = false }
                 tab = .terminal
             }
         }

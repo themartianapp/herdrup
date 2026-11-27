@@ -103,6 +103,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         if let route = GuestPushRoute(userInfo: notification.request.content.userInfo), route.kind == .gram {
             await MainActor.run { PushCenter.shared.guestGramArrived(hostID: route.hostID) }
         }
+        // A pair request arriving while HerdrUp is open opens "Pair ‹device›?" itself; the
+        // notification only goes to the list.
+        if case .pairRequest(let id) = PushTapTarget(userInfo: notification.request.content.userInfo) {
+            await MainActor.run { PushCenter.shared.pendingPairRequest = id }
+            return [.list]
+        }
         return [.banner, .list, .sound]
     }
 
@@ -131,6 +137,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         case .guest(let route): PushCenter.shared.tappedGuest(route)
         case .ownerGram: PushCenter.shared.tappedGram()
         case .ownerPane(let paneID): PushCenter.shared.tapped(paneID: paneID)
+        case .pairRequest(let id): PushCenter.shared.pendingPairRequest = id
         case .droppedGuest, .none: break
         }
     }

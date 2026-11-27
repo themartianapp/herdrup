@@ -98,12 +98,32 @@ public struct AccountSyncSummary: Equatable, Sendable {
         }
     }
 
+    /// Adds a later step's summary of the same sync (the shares after the machines and
+    /// prompts): its counts and problems join this one's; the date stays this one's.
+    public mutating func absorb(_ other: AccountSyncSummary) {
+        machinesAdded += other.machinesAdded
+        machinesMerged += other.machinesMerged
+        machinesRemoved += other.machinesRemoved
+        machinesPushed += other.machinesPushed
+        promptsChanged += other.promptsChanged
+        rejected += other.rejected
+        conflicts += other.conflicts
+        overQuota = overQuota || other.overQuota
+        adoptFailures += other.adoptFailures
+    }
+
     static func describe(_ key: SyncKey, body: SyncBody?, error: SyncError) -> String {
         let name: String
         switch body {
         case .host(let host)?: name = "Machine “\(host.nickname ?? host.host)”"
         case .prompt(let prompt)?: name = "Prompt “\(prompt.title ?? String(prompt.text.prefix(24)))”"
-        default: name = key.collection == .hosts ? "A machine" : "A prompt"
+        case .share(let share)?: name = "Share “\(share.agentName ?? "agent") on \(share.machineLabel ?? "a shared machine")”"
+        default:
+            switch key.collection {
+            case .hosts: name = "A machine"
+            case .shares: name = "A share"
+            default: name = "A prompt"
+            }
         }
         switch error {
         case .secretLike(let field):
