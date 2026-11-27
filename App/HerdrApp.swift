@@ -6191,6 +6191,9 @@ struct TerminalPaneContent: View {
     /// The machine answers `agent.transcript` (ping `agent_transcript`), from the client's
     /// capabilities (learned once per connection by the home screen).
     @State private var transcriptCapable = false
+    /// The machine serves Antigravity CLI (`agy`) conversations via `agent.transcript`
+    /// (ping `transcript_agy`), from the same capabilities.
+    @State private var transcriptAgyCapable = false
     /// The machine serves omp agents' topics (ping `agent_topics`), from the same capabilities.
     @State private var topicsCapable = false
     /// `transcriptCapable` has its answer (or the capability check failed).
@@ -6349,16 +6352,19 @@ struct TerminalPaneContent: View {
     }
 
     private var group: AgentGroup? { agent.map { AgentRow(info: $0).group } }
-    /// The page offers the Chat view: an omp agent whose machine serves `agent.transcript`,
-    /// unless the server's latest answer is that it cannot give this agent a transcript.
+    /// The page offers the Chat view: an omp agent on a `agent_transcript` machine, or an agy
+    /// agent on a machine that also advertises `transcript_agy`, unless the server's latest
+    /// answer is that it cannot give this agent a transcript.
     private var chatAvailable: Bool {
-        transcriptCapable && ChatPreference.isOmp(agent?.agent) && !chatModel.unsupported
+        ChatPreference.supportsChat(agent?.agent, transcriptCapable: transcriptCapable,
+                                    agyCapable: transcriptAgyCapable) && !chatModel.unsupported
     }
-    /// An omp agent on a transcript-capable machine whose transcript was refused. A just-started
-    /// agent is refused for its first seconds, until omp's integration reports a session
-    /// (#604); the page keeps asking so Chat appears without restarting the app.
+    /// A chat-capable agent whose transcript was refused. A just-started agent can be refused
+    /// for its first seconds, until its session file or conversation DB is ready (#604); the
+    /// page keeps asking so Chat appears without restarting the app.
     private var chatRecoveryNeeded: Bool {
-        transcriptCapable && ChatPreference.isOmp(agent?.agent) && chatModel.unsupported
+        ChatPreference.supportsChat(agent?.agent, transcriptCapable: transcriptCapable,
+                                    agyCapable: transcriptAgyCapable) && chatModel.unsupported
     }
     /// Gaps between transcript retries while Chat is refused, in seconds. The last one repeats.
     private static let chatRecoveryDelays: [UInt64] = [1, 2, 4, 8, 15, 30, 60]
@@ -6388,7 +6394,7 @@ struct TerminalPaneContent: View {
     /// answer, or it would start a backfill, a stream and a size claim it drops a moment later.
     private var mountsTerminal: Bool {
         if coversTerminal { return false }
-        let mayOpenCovered = mode != .terminal && ChatPreference.isOmp(agent?.agent)
+        let mayOpenCovered = mode != .terminal && ChatPreference.maySupportChat(agent?.agent)
         return capabilitiesResolved || !mayOpenCovered
     }
 
@@ -6733,12 +6739,16 @@ struct TerminalPaneContent: View {
             // A chat page kept from the last launch says this server serves transcripts: the
             // Chat opens on it while the capability answer is out (slow-network fix 4). That
             // answer still decides; a failed one leaves the kept page up rather than hiding it.
-            if client.contentCache?.hasTranscript(target: paneID) == true { transcriptCapable = true }
+            if client.contentCache?.hasTranscript(target: paneID) == true {
+                transcriptCapable = true
+                if ChatPreference.isAgy(agent?.agent) { transcriptAgyCapable = true }
+            }
             // Usually no request: the home screen already learned the capabilities.
             // A failed answer leaves both as they are (a kept chat page stays up).
             do {
                 let capabilities = try await client.knownCapabilities()
                 transcriptCapable = capabilities?.agentTranscript ?? false
+                transcriptAgyCapable = capabilities?.transcriptAgy ?? false
                 topicsCapable = capabilities?.agentTopics ?? false
             } catch {}
             capabilitiesResolved = true

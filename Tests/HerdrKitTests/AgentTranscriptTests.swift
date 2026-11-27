@@ -75,12 +75,44 @@ final class AgentTranscriptDecodingTests: XCTestCase {
 
     func testCapabilitiesDecodeTheChatFlagsAndDefaultFalse() throws {
         let on = try JSONDecoder().decode(ServerCapabilities.self,
-                                          from: Data(#"{"agent_transcript":true,"agent_answer":true}"#.utf8))
+                                          from: Data(#"{"agent_transcript":true,"agent_answer":true,"transcript_agy":true}"#.utf8))
         XCTAssertTrue(on.agentTranscript)
         XCTAssertTrue(on.agentAnswer)
+        XCTAssertTrue(on.transcriptAgy)
         let old = try JSONDecoder().decode(ServerCapabilities.self, from: Data("{}".utf8))
         XCTAssertFalse(old.agentTranscript)
         XCTAssertFalse(old.agentAnswer)
+        XCTAssertFalse(old.transcriptAgy)
+    }
+
+    func testChatSupportGatesAgyOnTranscriptAgyCapability() throws {
+        let ompOnly = try JSONDecoder().decode(ServerCapabilities.self,
+                                               from: Data(#"{"agent_transcript":true}"#.utf8))
+        let withAgy = try JSONDecoder().decode(ServerCapabilities.self,
+                                               from: Data(#"{"agent_transcript":true,"transcript_agy":true}"#.utf8))
+        let agyWithoutTranscript = try JSONDecoder().decode(ServerCapabilities.self,
+                                                            from: Data(#"{"transcript_agy":true}"#.utf8))
+
+        XCTAssertTrue(ompOnly.supportsChat(agentKind: "omp"))
+        XCTAssertTrue(ompOnly.supportsChat(agentKind: "omp 18.2"))
+        XCTAssertFalse(ompOnly.supportsChat(agentKind: "agy"))
+        XCTAssertFalse(ompOnly.supportsChat(agentKind: "agy-cli"))
+        XCTAssertFalse(ompOnly.supportsChat(agentKind: "claude"))
+
+        XCTAssertTrue(withAgy.supportsChat(agentKind: "omp"))
+        XCTAssertTrue(withAgy.supportsChat(agentKind: "agy"))
+        XCTAssertTrue(withAgy.supportsChat(agentKind: "AGY"))
+        XCTAssertTrue(withAgy.supportsChat(agentKind: "agy 1.5"))
+        XCTAssertTrue(withAgy.supportsChat(agentKind: "agy-cli"))
+        XCTAssertFalse(withAgy.supportsChat(agentKind: "claude"))
+        XCTAssertFalse(withAgy.supportsChat(agentKind: "codex"))
+        XCTAssertFalse(withAgy.supportsChat(agentKind: nil))
+
+        XCTAssertFalse(agyWithoutTranscript.supportsChat(agentKind: "agy"))
+        XCTAssertFalse(AgentChatSupport.isOmp("agy"))
+        XCTAssertTrue(AgentChatSupport.isAgy("agy"))
+        XCTAssertTrue(AgentChatSupport.maySupportChat("agy"))
+        XCTAssertFalse(AgentChatSupport.maySupportChat("claude"))
     }
 
     func testDecodesSubagentsWithMissingOptionalsAndUnknownStatus() throws {

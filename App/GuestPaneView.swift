@@ -42,6 +42,8 @@ struct GuestPaneView: View {
     @StateObject private var chatModel: ChatModel
     /// The host serves `agent.transcript` to guests (its pong's `agent_transcript`).
     @State private var transcriptCapable = false
+    /// The host serves `agy` transcripts to guests (its pong's `transcript_agy`).
+    @State private var transcriptAgyCapable = false
     /// The Chat tab's first appearance in this mount has set the tab from Settings' "omp
     /// agents open in"; after that the guest's own pick stands.
     @State private var chatDefaulted = false
@@ -132,10 +134,11 @@ struct GuestPaneView: View {
     /// The owner shares this agent's Gram with the guest (the host's hello says so), and a
     /// Gram inbox is there to open.
     private var showsGram: Bool { features.current?.gram == true && onOpenGram != nil }
-    /// The Chat tab: a shared omp agent on a host that serves guests its transcript, until
-    /// the host says it cannot.
+    /// The Chat tab: a shared omp agent on a host with `agent_transcript`, or a shared agy agent
+    /// on a host that also advertises `transcript_agy`, until the host says it cannot.
     private var showsChat: Bool {
-        transcriptCapable && ChatPreference.isOmp(agent?.agent) && !chatModel.unsupported
+        ChatPreference.supportsChat(agent?.agent, transcriptCapable: transcriptCapable,
+                                    agyCapable: transcriptAgyCapable) && !chatModel.unsupported
     }
     private var showingChat: Bool { showsChat && tab == .chat }
     /// The Topics tab: a shared omp agent that offers topics, on a host with `agent_topics`.
@@ -249,6 +252,7 @@ struct GuestPaneView: View {
         .task(id: access.id) {
             let capabilities = try? await client.serverCapabilities()
             transcriptCapable = capabilities?.agentTranscript ?? false
+            transcriptAgyCapable = capabilities?.transcriptAgy ?? false
             topicsCapable = capabilities?.agentTopics ?? false
         }
         // Whether the shared omp agent offers topics (#758), on `TopicsDiscoveryBackoff`'s

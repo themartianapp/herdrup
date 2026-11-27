@@ -1230,6 +1230,9 @@ public struct ServerCapabilities: Decodable, Equatable, Sendable {
     /// `agent.transcript` returns `relay` entries (a handover between the Inbox and a topic)
     /// when asked with `relay_entries: true` (herdr #521); without it, `user` entries as before.
     public let transcriptRelayEntries: Bool
+    /// `agent.transcript` also serves Antigravity CLI (`agy`) agents by reading their SQLite
+    /// conversation database. Clients offer Chat for `agy` only when this is true.
+    public let transcriptAgy: Bool
     /// `pair.add_key`: the owner's own connection can add another device's SSH key (pairing
     /// from another device). False: the approver lists the machine as needing a herdr update.
     public let pairAddKey: Bool
@@ -1257,6 +1260,7 @@ public struct ServerCapabilities: Decodable, Equatable, Sendable {
         case agentTopicsSwitchWhenIdle = "agent_topics_switch_when_idle"
         case agentTopicSuggestions = "agent_topic_suggestions"
         case transcriptRelayEntries = "transcript_relay_entries"
+        case transcriptAgy = "transcript_agy"
         case pairAddKey = "pair_add_key"
     }
 
@@ -1287,6 +1291,7 @@ public struct ServerCapabilities: Decodable, Equatable, Sendable {
         agentTopicsSwitchWhenIdle = try c.decodeIfPresent(Bool.self, forKey: .agentTopicsSwitchWhenIdle) ?? false
         agentTopicSuggestions = try c.decodeIfPresent(Bool.self, forKey: .agentTopicSuggestions) ?? false
         transcriptRelayEntries = try c.decodeIfPresent(Bool.self, forKey: .transcriptRelayEntries) ?? false
+        transcriptAgy = try c.decodeIfPresent(Bool.self, forKey: .transcriptAgy) ?? false
         pairAddKey = try c.decodeIfPresent(Bool.self, forKey: .pairAddKey) ?? false
     }
 }
