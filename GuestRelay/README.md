@@ -74,7 +74,7 @@ iOS app also sends its crash and hang reports (`POST /v1/crash`, see
 | Endpoint | Behaviour |
 | --- | --- |
 | `GET /v1/health` | 200 `{"ok":true,"version":"…"}` |
-| `GET /i/<payload>` | The invite landing page. `<payload>` is the b64url invite (`A-Z a-z 0-9 - _`, 1 to 4096 characters); anything else is 404 `not_found`. The page's script reads the payload from the path, shows who shared which agent, links "Open in HerdrUp" to `herdrup://guest-invite#<payload>` and "Open in browser" to `/web/#<payload>`. It also links to the App Store on an iPhone or iPad, and to HerdrUp Desktop's latest release on a Windows, Mac or Linux computer. A path of exactly 34 b64url characters is a short link `<id><key>`: the script fetches `GET /v1/invite/<id>`, decrypts it (see [Short invites](#short-invites)) and renders the payload inside the same way. A 404 there shows "This invite has expired or was revoked." |
+| `GET /i/<payload>` | The invite landing page. `<payload>` is the b64url invite (`A-Z a-z 0-9 - _`, 1 to 4096 characters); anything else is 404 `not_found`. The page's script reads the payload from the path, shows who shared which agent, links "Open in HerdrUp" to `herdrup://guest-invite#<payload>` and "Open in browser" to `/web/#<payload>`. It also links to the App Store on an iPhone or iPad, and to HerdrUp Desktop's latest release on a Windows, Mac or Linux computer. An invite with `acct: 1` (the guest may keep it in a HerdrUp account) replaces "Open in browser" with "Continue with Apple" and "Continue with Google", linked to `/web/#<payload>&bind=1&provider=apple` and `…&provider=google` (the browser guest signs in with that provider when it must, then accepts bound to the account), and "Only this device", linked to `/web/#<payload>`; the page itself never signs in or calls the account service. A path of exactly 34 b64url characters is a short link `<id><key>`: the script fetches `GET /v1/invite/<id>`, decrypts it (see [Short invites](#short-invites)) and renders the payload inside the same way. A 404 there shows "This invite has expired or was revoked." |
 | `GET /i` | The same page for older `/i#<payload>` links: its script falls back to `location.hash`. |
 | `GET /web/` | The browser guest (see [Browser guest](#browser-guest)). Its files are served as they are; every other `GET /web/<path>` gets its `index.html`. `/web` and `/web/index.html` redirect to `/web/`. |
 | `GET /v1/host/<host_id>` | The host's WebSocket. Needs `Authorization: Bearer <relay_secret>`. |
@@ -342,6 +342,14 @@ rm -rf GuestRelay/public/web && cp -r herdrup-desktop/dist-web GuestRelay/public
 node GuestRelay/scripts/web-bundle.mjs
 ```
 
+`npm test` then runs `scripts/web-fragment.test.mjs` (`npm run test:web-fragment`), which
+loads `public/web` in headless Chrome (set `CHROME` if it isn't at a usual path) with every
+fragment the invite landing links: `<payload>`, `<payload>&bind=1` and
+`<payload>&bind=1&provider=apple|google`. The plain link must reach the invite's host; a bind
+link must show the invite for the account choice. Every host but the local server fails to
+resolve, so nothing reaches the network. A bundle built before herdrup-desktop #543 (account
+shares, step 6) fails the bind links.
+
 `public/_headers` sends every `/web/` response the policy below, `Referrer-Policy:
 no-referrer` and `X-Content-Type-Options: nosniff`. `index.html` is `Cache-Control:
 no-store`; `/web/assets/*`, whose names carry a content hash, are cached for a year as
@@ -363,7 +371,7 @@ requires it.
 ```sh
 cd GuestRelay
 npm install
-npm test                 # public/web against its manifest, then vitest in workerd
+npm test                 # public/web against its manifest, vitest in workerd, then the bundle's invite links in Chrome
 npm run typecheck
 npx wrangler deploy --dry-run --outdir /tmp/guestrelay-dry   # bundle check only
 wrangler deploy

@@ -3,9 +3,9 @@
 // A short link /i/<id><key> instead names an encrypted blob on this relay: the page fetches
 // /v1/invite/<id> (never the key), decrypts it here, and renders the payload inside.
 // Every field is written with textContent, and only a b64url payload is ever placed in the
-// app link and the browser link (/web/#<payload>), which both carry it in the fragment, so
-// no request ever sends it to a server.
-import { browserLink, installTarget, invitePayload, openShortInvite, shortInvite } from "./invite.js";
+// app link and the browser links (/web/#<payload>, and /web/#<payload>&bind=1&provider=… for an
+// account invite), which all carry it in the fragment, so no request ever sends it to a server.
+import { accountInvite, accountLink, browserLink, installTarget, invitePayload, openShortInvite, shortInvite, tintIndex } from "./invite.js";
 
 (async function () {
   var APP_LINK = "herdrup://guest-invite#";
@@ -15,15 +15,29 @@ import { browserLink, installTarget, invitePayload, openShortInvite, shortInvite
   // The App Store app is for iPhone and iPad only; a computer gets HerdrUp Desktop instead.
   var target = installTarget(navigator.userAgent, navigator.maxTouchPoints);
   var device = target === "ios" ? "phone" : target === "desktop" ? "computer" : "device";
-  if (target === "ios") {
-    $("store").hidden = false;
-  } else if (target === "desktop") {
-    $("desktop").hidden = false;
+  var install = target === "ios" ? $("store") : target === "desktop" ? $("desktop") : null;
+  if (target === "desktop") {
     $("lead").textContent = "Open this link on the computer or iPhone where HerdrUp is installed.";
     $("hint").textContent = "No HerdrUp yet? Click Open in browser, or install HerdrUp for desktop, then come back to this page and click Open in HerdrUp.";
-  } else {
+  } else if (target !== "ios") {
     $("lead").textContent = "Open this link on the iPhone or computer where HerdrUp is installed.";
     $("hint").textContent = "No HerdrUp for this device? Tap Open in browser.";
+  }
+
+  // Where to get HerdrUp, chosen once the page knows what it shows (an invite, or a problem):
+  // under an account invite's choice, one line naming the install capsule's own link and words;
+  // anywhere else, the capsule and the hint.
+  function offerInstall(account) {
+    if (!account) {
+      if (install !== null) install.hidden = false;
+      return;
+    }
+    $("hint").hidden = true;
+    if (install === null) return;
+    var getLink = $("get-link");
+    getLink.href = install.href;
+    getLink.textContent = install.textContent;
+    $("get").hidden = false;
   }
 
   function decode(payload) {
@@ -48,6 +62,7 @@ import { browserLink, installTarget, invitePayload, openShortInvite, shortInvite
     var el = $("problem");
     el.textContent = text;
     el.hidden = false;
+    offerInstall(false);
   }
 
   function expiryText(expiresUnix) {
@@ -104,7 +119,6 @@ import { browserLink, installTarget, invitePayload, openShortInvite, shortInvite
   open.hidden = false;
   var browser = $("browser");
   browser.href = browserLink(payload);
-  browser.hidden = false;
 
   var invite;
   try {
@@ -113,12 +127,15 @@ import { browserLink, installTarget, invitePayload, openShortInvite, shortInvite
     invite = null;
   }
   if (!validInvite(invite)) {
+    browser.hidden = false;
     problem("This invite link looks incomplete. Try opening it in HerdrUp, or ask for the link again.");
     return;
   }
 
   document.title = invite.owner_name + " shared " + invite.agent_name + " with you · HerdrUp";
   $("avatar").textContent = Array.from(invite.agent_name)[0].toUpperCase();
+  // The agent's own gradient, as its avatar tile in the agent lists.
+  $("avatar").classList.add("tint-" + tintIndex(invite.agent_name));
   $("title").textContent = invite.owner_name + " shared " + invite.agent_name + " with you";
   $("lead").textContent = "You'll be able to watch it work and send it messages and files from this " + device + ".";
   $("machine").textContent = invite.machine_label;
@@ -137,4 +154,19 @@ import { browserLink, installTarget, invitePayload, openShortInvite, shortInvite
     expiry.textContent = remaining;
   }
   $("details").hidden = false;
+
+  // An account invite (acct: 1) offers the browser's ways to keep it, after Open in HerdrUp: in
+  // the guest's HerdrUp account, through Apple or Google (the browser guest signs in with it
+  // first when it must), or on this device only. The page never signs in itself. Other invites
+  // keep the single Open in browser.
+  var account = accountInvite(invite, location.origin);
+  if (account) {
+    $("apple").href = accountLink(payload, "apple");
+    $("google").href = accountLink(payload, "google");
+    $("device").href = browserLink(payload);
+    $("choice").hidden = false;
+  } else {
+    browser.hidden = false;
+  }
+  offerInstall(account);
 })();

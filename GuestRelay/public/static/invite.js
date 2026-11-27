@@ -69,6 +69,49 @@ export function browserLink(payload) {
   return "/web/#" + payload;
 }
 
+/** The sole relay origin configured for browser HerdrUp account sign-in (AccountService wrangler.toml). */
+export var ACCOUNT_ORIGIN = "https://guest.herdrup.app";
+
+/**
+ * Whether a decoded invite lets the guest keep the share in a HerdrUp account: the owner's
+ * herdr sends `acct: 1` (guest access contract), and the page is served from the origin that
+ * supports browser account sign-in. On legacy relay origins (e.g. guest.herdrup.themartian.app)
+ * or invites without `acct: 1`, the landing keeps the plain this-device-only Open in browser flow.
+ * @param {object} invite decoded invite payload
+ * @param {string} origin location.origin
+ * @returns {boolean}
+ */
+export function accountInvite(invite, origin) {
+  return invite.acct === 1 && origin === ACCOUNT_ORIGIN;
+}
+
+/**
+ * The "Continue with Apple" / "Continue with Google" link: the browser guest with the invite,
+ * `bind=1` and the provider in the fragment. The browser guest signs in with that provider when
+ * it has no session, then accepts bound to the account.
+ * @param {string} payload b64url invite payload
+ * @param {"apple" | "google"} provider
+ * @returns {string}
+ */
+export function accountLink(payload, provider) {
+  return browserLink(payload) + "&bind=1&provider=" + provider;
+}
+
+/**
+ * Which of the four agent gradients an agent's avatar tile uses (0 default, 1 claude, 2 codex,
+ * 3 gemini), from its name: FNV-1a 64 over the UTF-8 bytes, the high bits folded down, mod 4.
+ * The same function as HerdrKit AgentPresentation.colorIndex and herdrup-desktop
+ * internal/herdr/board.go TintIndex (src/web/board.ts tintIndex), so the invite shows the
+ * colour the agent lists show.
+ * @param {string} name
+ * @returns {number}
+ */
+export function tintIndex(name) {
+  var h = 0xcbf29ce484222325n;
+  for (var b of new TextEncoder().encode(name)) h = BigInt.asUintN(64, (h ^ BigInt(b)) * 0x100000001b3n);
+  return Number((h ^ (h >> 32n)) % 4n);
+}
+
 /**
  * Which HerdrUp this browser's device installs: "ios" on an iPhone or iPad (iPadOS Safari
  * reports a Mac, told apart by its touch screen), "desktop" on a Windows, Mac or Linux

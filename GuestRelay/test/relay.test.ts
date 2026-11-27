@@ -7,7 +7,7 @@ import {
   runInDurableObject,
 } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
-import { browserLink, installTarget, invitePayload, isRelay, openShortInvite, shortInvite } from "../public/static/invite.js";
+import { accountInvite, accountLink, browserLink, installTarget, invitePayload, isRelay, openShortInvite, shortInvite, tintIndex } from "../public/static/invite.js";
 import { InviteBlob } from "../src/invite";
 
 // Everything here runs against the real Worker and Durable Object in workerd. Each test
@@ -262,7 +262,7 @@ describe("routing", () => {
 
     const css = await (await env.ASSETS.fetch(`${ORIGIN}/static/i.css`)).text();
     const refs = [...html.matchAll(/(?:src|href)="(\/[^"]+)"/g), ...css.matchAll(/url\((\/[^)]+)\)/g)].map((m) => m[1]);
-    expect(refs).toEqual(expect.arrayContaining(["/static/i.js", "/static/i.css", "/fonts/Geist-Regular.woff2"]));
+    expect(refs).toEqual(expect.arrayContaining(["/static/i.js", "/static/i.css", "/fonts/Geist-Regular.woff2", "/static/apple.svg", "/static/google.svg"]));
     const js = await (await env.ASSETS.fetch(`${ORIGIN}/static/i.js`)).text();
     const imports = [...js.matchAll(/from "\.\/([^"]+)"/g)].map((m) => `/static/${m[1]}`);
     expect(imports).toEqual(["/static/invite.js"]);
@@ -1190,6 +1190,41 @@ describe("landing page script", () => {
     const short = shortInvite(`/i/${id}${b64url(keyBytes)}`);
     expect(short).not.toBeNull();
     expectLink(browserLink(await openShortInvite(short!, await seal(id, keyBytes, plaintext), ORIGIN)));
+  });
+
+  it("offers the account choice only for an invite whose acct is exactly 1 on the canonical account origin", () => {
+    expect(accountInvite({ v: 1, acct: 1 }, "https://guest.herdrup.app")).toBe(true);
+    expect((accountInvite as (invite: object, origin?: string) => boolean)({ v: 1, acct: 1 })).toBe(false);
+    expect(accountInvite({ v: 1, acct: 1 }, "")).toBe(false);
+    expect(accountInvite({ v: 1, acct: 1 }, "https://guest.herdrup.themartian.app")).toBe(false);
+    // An older invite has no acct, and keeps the single Open in browser.
+    expect(accountInvite({ v: 1 }, "https://guest.herdrup.app")).toBe(false);
+    for (const other of [0, 2, "1", true, null, [1]]) {
+      expect(accountInvite({ v: 1, acct: other }, "https://guest.herdrup.app"), JSON.stringify(other)).toBe(false);
+    }
+  });
+
+  it("links Continue with Apple/Google to /web/ with the payload, bind=1 and the provider in the fragment, and Only this device without them", () => {
+    const payload = newInvitePayload();
+    for (const provider of ["apple", "google"] as const) {
+      const account = new URL(accountLink(payload, provider), ORIGIN);
+      expect([account.origin, account.pathname, account.search, account.hash])
+        .toEqual([ORIGIN, "/web/", "", `#${payload}&bind=1&provider=${provider}`]);
+    }
+    expect(browserLink(payload)).toBe(`/web/#${payload}`);
+  });
+
+  it("picks the agent's avatar gradient from its name exactly as the apps do", () => {
+    // herdrup-desktop internal/herdr/board_test.go TestTintIndexMatchesHerdrup.
+    const desktop: Record<string, number> = {
+      "api-review": 3, "docs": 1, "web": 0, "infra": 2, "release": 1, "notes": 3,
+      "mac-studio/render": 1, "": 1, "é-ünicode": 0,
+    };
+    // HerdrFontTests/DesignTokensTests.swift: these names map to the gradients 0, 1, 2 and 3.
+    const ios: Record<string, number> = { "gemini": 0, "Bob": 1, "Ada": 2, "x": 3 };
+    for (const [name, want] of Object.entries({ ...desktop, ...ios })) {
+      expect([name, tintIndex(name)]).toEqual([name, want]);
+    }
   });
 
   // Owner report 2026-11-05: on a Windows computer the page offered the App Store.
