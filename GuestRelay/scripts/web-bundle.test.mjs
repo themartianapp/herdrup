@@ -190,5 +190,10 @@ test("invite landing REFRESH_LOCK matches the vendored /web/ bundle", () => {
     .filter((name) => name.endsWith(".js"))
     .map((name) => readFileSync(join(assetsDir, name), "utf8"))
     .join("\n");
-  assert.ok(bundleJs.includes(REFRESH_LOCK), `REFRESH_LOCK (${REFRESH_LOCK}) missing from vendored /web/ bundle`);
+  const escaped = REFRESH_LOCK.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  assert.match(
+    bundleJs,
+    new RegExp(`["'\`]${escaped}["'\`]`),
+    `REFRESH_LOCK (${REFRESH_LOCK}) string literal missing from vendored /web/ bundle`,
+  );
 });
