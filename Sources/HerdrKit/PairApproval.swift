@@ -70,7 +70,11 @@ public actor PairApproval {
         let client = session.client
         let status: ApprovalStatus
         do {
-            status = try await session.authorized { try await client.approvalState(id: id, accessToken: $0) }
+            status = try await BrowserApproval.retryingRateLimit(
+                until: Date().addingTimeInterval(BrowserApproval.rateLimitPatience), now: { Date() },
+                poll: BrowserApproval.defaultPoll) {
+                try await session.authorized { try await client.approvalState(id: id, accessToken: $0) }
+            }
         } catch let error as AccountError where BrowserApproval.gone(error) {
             throw BrowserApproval.Failure.ended
         }
@@ -94,8 +98,11 @@ public actor PairApproval {
         else { throw BrowserApproval.Failure.tampered }
         let nonceT = ApproveV1.newNonce()
         let client = session.client
+        let deadline = now().addingTimeInterval(TimeInterval(request.expiresIn))
         do {
-            try await session.authorized { try await client.claimApproval(id: request.id, nonceT: nonceT, accessToken: $0) }
+            try await BrowserApproval.retryingRateLimit(until: deadline, now: now, poll: poll) {
+                try await session.authorized { try await client.claimApproval(id: request.id, nonceT: nonceT, accessToken: $0) }
+            }
         } catch let error as AccountError where BrowserApproval.gone(error) || error.status == 409 || error.status == 403 {
             throw BrowserApproval.Failure.ended
         }
@@ -135,7 +142,7 @@ public actor PairApproval {
                 }
                 guard BrowserApproval.transient(error) else { throw error }
                 failures = min(failures + 1, 5)
-                wait = min(wait * pow(2, Double(failures)), BrowserApproval.backoffMax)
+                wait = BrowserApproval.backoff(wait, failures: failures, after: error)
             }
             let left = expires.timeIntervalSince(now())
             try await Task.sleep(nanoseconds: UInt64(max(0, min(wait, left)) * 1_000_000_000))
@@ -211,9 +218,10 @@ public actor PairApproval {
             throw BrowserApproval.NotRecorded(reason: PairMachines.Failure.tooManyMachines)
         }
         let client = session.client
+        let session = session
         let id = request.id
         do {
-            try await session.authorized { try await client.approvePair(id: id, seq: 1, sealed: sealed, accessToken: $0) }
+            try await paced { try await session.authorized { try await client.approvePair(id: id, seq: 1, sealed: sealed, accessToken: $0) } }
         } catch {
             let refused = (error as? AccountError).flatMap(\.status).map { (400..<500).contains($0) && $0 != 429 } ?? false
             let earlier = unsure
@@ -241,10 +249,15 @@ public actor PairApproval {
         let sealed = try seal(envelope, seq: next)
         guard sealed.utf8.count <= ApproveV1.maxSealedLength else { throw PairMachines.Failure.tooManyMachines }
         let client = session.client
+        let session = session
         let id = request.id
         do {
-            try await session.authorized {
-                try await client.replacePairEnvelope(id: id, seq: next, sealed: sealed, accessToken: $0)
+            // The service takes a newer envelope for 10 minutes after the finish, past `expires`.
+            try await BrowserApproval.retryingRateLimit(
+                until: now().addingTimeInterval(BrowserApproval.rateLimitPatience), now: now, poll: poll) {
+                try await session.authorized {
+                    try await client.replacePairEnvelope(id: id, seq: next, sealed: sealed, accessToken: $0)
+                }
             }
         } catch let error as AccountError where error.status == 409 && error.code == "stale_seq" {
             // A resend whose answer was lost took this seq: the next goes above it.
@@ -287,9 +300,10 @@ public actor PairApproval {
         if denied { return }
         if done { throw BrowserApproval.Failure.ended }
         let client = session.client
+        let session = session
         let id = request.id
         do {
-            try await session.authorized { try await client.denyBrowser(id: id, accessToken: $0) }
+            try await paced { try await session.authorized { try await client.denyBrowser(id: id, accessToken: $0) } }
         } catch let error as AccountError where BrowserApproval.gone(error) || error.status == 409 {
             end()
             throw BrowserApproval.Failure.ended
@@ -326,8 +340,14 @@ public actor PairApproval {
 
     private func state() async throws -> ApprovalStatus {
         let client = session.client
+        let session = session
         let id = request.id
-        return try await session.authorized { try await client.approvalState(id: id, accessToken: $0) }
+        return try await paced { try await session.authorized { try await client.approvalState(id: id, accessToken: $0) } }
+    }
+
+    /// `call`, sent again while the account's approval budget is spent, until the request expires.
+    private func paced<T: Sendable>(_ call: @Sendable () async throws -> T) async throws -> T {
+        try await BrowserApproval.retryingRateLimit(until: expires, now: now, poll: poll, call)
     }
 
     private func seal(_ envelope: PairEnvelope, seq: UInt64) throws -> String {

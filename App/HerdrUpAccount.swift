@@ -453,7 +453,7 @@ final class HerdrUpAccount: ObservableObject {
             }
         } catch ProviderSignInError.cancelled {
             return
-        } catch AccountError.refused(_, "wrong_account", _, _) {
+        } catch AccountError.refused(_, "wrong_account", _, _, _) {
             notice = AccountNotice(title: "That's another account",
                                    message: "Sign in with the \(provider == .apple ? "Apple ID" : "Google account") this HerdrUp account uses to delete it.")
         } catch {
@@ -674,7 +674,7 @@ final class HerdrUpAccount: ObservableObject {
             return "You're signed out. Sign in again."
         case .malformedResponse:
             return "The account service answered in a way this version doesn't understand. Update herdrup and try again."
-        case .refused(let status, let code, _, _):
+        case .refused(let status, let code, _, _, _):
             switch code {
             case "nonce_used", "nonce_mismatch", "nonce_invalid": return "The sign-in took too long. Try again."
             case "token_invalid", "token_expired": return "The sign-in wasn't accepted. Try again."

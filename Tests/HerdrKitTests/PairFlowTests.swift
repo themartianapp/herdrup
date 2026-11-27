@@ -36,6 +36,8 @@ final class FakePairService: @unchecked Sendable {
     var envelopeApproverPub: Data?
     /// Push registrations answer this status (204 by default).
     var pushStatus = 204
+    /// Answers given ahead of the protocol's, oldest first, by "METHOD path".
+    var queued: [String: [Reply]] = [:]
 
     func install() {
         AccountServiceStub.reset()
@@ -62,6 +64,10 @@ final class FakePairService: @unchecked Sendable {
         let isRequester = bearer.contains(Self.requesterSession)
         let isApprover = bearer.contains(Self.approverSession)
         guard isRequester || isApprover else { return .error(401, "invalid_token") }
+        if let next = queued["\(request.method) \(request.path)"]?.first {
+            queued["\(request.method) \(request.path)"]?.removeFirst()
+            return next
+        }
         let base = "/v1/approvals/\(Self.requestID)"
         let live = state == "claimed" || state == "revealed"
         // After a cancel every step on the request answers 410 cancelled; GET shows the state.
@@ -493,5 +499,38 @@ final class PairFlowTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? BrowserApproval.Failure, .ended)
         }
+    }
+
+    /// Both devices list and poll against one approval budget per account (`429 rate_limited`
+    /// once spent): a claim or finish refused for it is sent again until it goes through, and
+    /// the pairing completes instead of the sheet showing "Refused: rate_limited.".
+    func testARateLimitedClaimAndFinishAreSentAgainAndThePairingCompletes() async throws {
+        let base = "/v1/approvals/\(FakePairService.requestID)"
+        let busy = [AccountServiceStub.Reply.error(429, "rate_limited"), .error(429, "rate_limited")]
+        service.queued = ["POST \(base)/claim": busy, "POST \(base)/finish": busy]
+        let (requester, approval, code) = try await startBoth()
+        XCTAssertEqual(AccountServiceStub.requests(to: base + "/claim").count, 3)
+        _ = try await approval.checkCode(code)
+        let added = await PairMachines.add(FakePairHerdr().machine("fleet-hel1"), link: nil,
+                                           publicKeyLine: approval.publicKeyLine, label: "x").machine
+        try await approval.approve(PairEnvelope(machines: [added]))
+        XCTAssertEqual(AccountServiceStub.requests(to: base + "/finish").count, 3)
+        let result = try await requester.awaitResult()
+        XCTAssertEqual(result.machines, [added])
+    }
+
+    /// The hourly cap on new pair requests (`429 too_many_requests`) is final: asked once, and
+    /// told in a plain line rather than a refusal code.
+    func testTooManyPairRequestsThisHourIsFinal() async throws {
+        service.queued = ["POST /v1/approvals": [.error(429, "too_many_requests")]]
+        do {
+            _ = try await PairRequester.start(session: service.session(FakePairService.requesterSession),
+                                              identity: service.requester, keyComment: "x", poll: fastPoll)
+            XCTFail("expected too_many_requests")
+        } catch {
+            XCTAssertEqual(error as? AccountError, .refused(status: 429, code: "too_many_requests"))
+            XCTAssertEqual(PairRequester.describe(error), "Too many pair requests this hour. Try again later.")
+        }
+        XCTAssertEqual(AccountServiceStub.requests(to: "/v1/approvals").filter { $0.method == "POST" }.count, 1)
     }
 }

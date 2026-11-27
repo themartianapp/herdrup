@@ -140,6 +140,8 @@ final class DevicePairing: ObservableObject {
             return .ended(title: "Not approved", message: "\(who) didn’t approve this \(kind).\n\(tail)")
         case PairRequester.Failure.expired:
             return .ended(title: "The request expired", message: "No device approved this \(kind) in 10 minutes.\n\(tail)")
+        case let error as AccountError where error.code == "too_many_requests":
+            return .ended(title: "Not paired", message: "\(PairRequester.describe(error))\nOr pair with herdr pair instead.")
         default:
             return .ended(title: "Not paired", message: "\(PairRequester.describe(error))\n\(tail)")
         }

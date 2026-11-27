@@ -30,7 +30,8 @@ final class FakeApprovalService: @unchecked Sendable {
     /// Answers to finish, oldest first. `applyFailedFinish`: a 5xx one was still recorded.
     var finishReplies: [Reply] = []
     var applyFailedFinish = false
-    var claimReply: Reply?
+    /// Answers to claim before the state machine's, oldest first.
+    var claimReplies: [Reply] = []
     /// Reads of the request that fail (503) right after each finish.
     var readFailuresAfterFinish = 0
     private var failingReads = 0
@@ -71,7 +72,7 @@ final class FakeApprovalService: @unchecked Sendable {
             let list = state == "waiting" || state == "claimed" || state == "revealed"
             return .json(200, ["requests": list ? [listed()] : []])
         case ("POST", base + "/claim"):
-            if let claimReply { return claimReply }
+            if !claimReplies.isEmpty { return claimReplies.removeFirst() }
             guard state == "waiting" else { return .error(409, "already_claimed") }
             nonceT = Base64URL.decode(request.json["nonce_t"] as? String ?? "")
             state = "claimed"
@@ -203,7 +204,7 @@ final class BrowserApprovalTests: XCTestCase {
     }
 
     func testARequestClaimedElsewhereHasEnded() async throws {
-        service.claimReply = .error(409, "already_claimed")
+        service.claimReplies = [.error(409, "already_claimed")]
         do {
             _ = try await started()
             XCTFail("expected ended")
@@ -328,6 +329,35 @@ final class BrowserApprovalTests: XCTestCase {
         // Sent again, now answered: recorded.
         try await approval.approve(scope: "chat", expiresMs: 1, seq: 1, envelope: Data("{}".utf8))
         XCTAssertEqual(service.finishCount, 2)
+    }
+
+    /// The account's approval budget is shared by every approval route of every device; once
+    /// spent (`429 rate_limited`) the claim and the finish are sent again until they go
+    /// through, never ending the approval as refused.
+    func testARateLimitedClaimAndFinishAreSentAgainUntilTheyGoThrough() async throws {
+        service.claimReplies = [.error(429, "rate_limited"), .error(429, "rate_limited")]
+        let approval = try await matched()
+        XCTAssertEqual(AccountServiceStub.requests(to: "/v1/approvals/\(FakeApprovalService.requestID)/claim").count, 3)
+        service.finishReplies = [.error(429, "rate_limited"), .error(429, "rate_limited")]
+        try await approval.approve(scope: "chat", expiresMs: 1, seq: 1, envelope: Data("{}".utf8))
+        XCTAssertEqual(service.finishCount, 3)
+        XCTAssertEqual(service.lastFinish?["outcome"] as? String, "approved")
+    }
+
+    /// A rate limit that says when to come back (`Retry-After`) is waited out that long.
+    func testARateLimitWaitsTheServicesRetryAfter() async throws {
+        AccountServiceStub.handler = { _ in
+            var reply = AccountServiceStub.Reply.error(429, "rate_limited")
+            reply.headers = ["Retry-After": "7"]
+            return reply
+        }
+        do {
+            _ = try await AccountServiceStub.client().approvals(accessToken: "a")
+            XCTFail("expected rate_limited")
+        } catch {
+            XCTAssertEqual(error as? AccountError, .refused(status: 429, code: "rate_limited", retryAfter: 7))
+            XCTAssertEqual(BrowserApproval.backoff(0.01, failures: 1, after: error), 7)
+        }
     }
 
     /// After an unknown outcome, a computed expiry proves nothing (the lost finish may still be

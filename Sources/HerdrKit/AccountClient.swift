@@ -262,10 +262,15 @@ public struct AccountClient: Sendable {
         } catch {
             throw AccountError.unreachable
         }
-        guard let status = (response as? HTTPURLResponse)?.statusCode else { throw AccountError.unreachable }
+        guard let http = response as? HTTPURLResponse else { throw AccountError.unreachable }
+        let status = http.statusCode
         guard (200..<300).contains(status) else {
             let refusal = try? JSONDecoder().decode(Refusal.self, from: data)
-            throw AccountError.refused(status: status, code: refusal?.error ?? "", field: refusal?.field, index: refusal?.index)
+            let retryAfter = http.value(forHTTPHeaderField: "Retry-After")
+                .flatMap { TimeInterval($0.trimmingCharacters(in: .whitespaces)) }
+                .flatMap { $0 >= 0 ? $0 : nil }
+            throw AccountError.refused(status: status, code: refusal?.error ?? "", field: refusal?.field,
+                                       index: refusal?.index, retryAfter: retryAfter)
         }
         return (data, status)
     }
@@ -303,11 +308,12 @@ public enum AccountError: Error, Equatable, Sendable {
     /// The service refused: its HTTP status and `error` code, as AccountService/src answers
     /// them (`invalid_token`, `device_in_other_account`, `reset_required`, `quota`, …). A sync
     /// push refused for one change also names the change (`index`) and the key at fault (`field`).
-    case refused(status: Int, code: String, field: String? = nil, index: Int? = nil)
+    /// `retryAfter` is the service's `Retry-After` in seconds, when it sent one.
+    case refused(status: Int, code: String, field: String? = nil, index: Int? = nil, retryAfter: TimeInterval? = nil)
 
     /// The service's error code, when it refused.
     public var code: String? {
-        if case .refused(_, let code, _, _) = self { return code }
+        if case .refused(_, let code, _, _, _) = self { return code }
         return nil
     }
 
@@ -315,7 +321,7 @@ public enum AccountError: Error, Equatable, Sendable {
     /// `authenticate` in sessions.ts gives). Other 401s (`token_invalid`, `nonce_used`, …) are
     /// about an ID token or a nonce, not the session.
     var rejectsAccessToken: Bool {
-        guard case .refused(401, let code, _, _) = self else { return false }
+        guard case .refused(401, let code, _, _, _) = self else { return false }
         return code == "invalid_token" || code == "token_expired"
     }
 }

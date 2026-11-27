@@ -253,8 +253,13 @@ public actor PairRequester {
         let nonceB = ApproveV1.newNonce()
         let commit = try PairV1.commit(requesterPub: identity.publicKey, sshPub: sshKey.publicKey, nonceB: nonceB)
         let client = session.client
-        let created = try await session.authorized {
-            try await client.requestPair(commit: commit, sshPub: sshKey.publicKey, accessToken: $0)
+        // A spent approval budget (`rate_limited`) is waited out; the hourly cap on new requests
+        // (`429 too_many_requests`) is final.
+        let created = try await BrowserApproval.retryingRateLimit(
+            until: now().addingTimeInterval(BrowserApproval.rateLimitPatience), now: now, poll: poll) {
+            try await session.authorized {
+                try await client.requestPair(commit: commit, sshPub: sshKey.publicKey, accessToken: $0)
+            }
         }
         return PairRequester(id: created.id, sshKey: sshKey, identity: identity, session: session, nonceB: nonceB,
                              expiresIn: created.expiresIn, now: now, poll: poll)
@@ -340,9 +345,12 @@ public actor PairRequester {
     /// cancelled and adds nothing. A request already over needs no cancel.
     public func cancel() async throws {
         let client = session.client
+        let session = session
         let id = self.id
         do {
-            try await session.authorized { try await client.cancelPair(id: id, accessToken: $0) }
+            try await BrowserApproval.retryingRateLimit(until: expires, now: now, poll: poll) {
+                try await session.authorized { try await client.cancelPair(id: id, accessToken: $0) }
+            }
         } catch let error as AccountError where BrowserApproval.gone(error) || error.status == 409 {
             // Already denied, approved, expired or cancelled.
         }
@@ -390,7 +398,7 @@ public actor PairRequester {
                 if BrowserApproval.gone(error) { throw error.status == 410 ? Failure.expired : Failure.ended }
                 guard BrowserApproval.transient(error) else { throw error }
                 failures = min(failures + 1, 5)
-                wait = min(wait * pow(2, Double(failures)), BrowserApproval.backoffMax)
+                wait = BrowserApproval.backoff(wait, failures: failures, after: error)
             }
             let left = expires.timeIntervalSince(now())
             try await Task.sleep(nanoseconds: UInt64(max(0, min(wait, left)) * 1_000_000_000))
