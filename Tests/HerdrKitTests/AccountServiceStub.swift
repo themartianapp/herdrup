@@ -27,6 +27,7 @@ final class AccountServiceStub: URLProtocol {
         var status: Int
         var body: String
         var delay: TimeInterval = 0
+        var headers: [String: String] = [:]
 
         static func json(_ status: Int, _ object: [String: Any], delay: TimeInterval = 0) -> Reply {
             let data = try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
@@ -87,7 +88,7 @@ final class AccountServiceStub: URLProtocol {
             stopLock.lock(); let isStopped = stopped; stopLock.unlock()
             if isStopped { return }
             let response = HTTPURLResponse(url: url, statusCode: reply.status, httpVersion: "HTTP/1.1",
-                                           headerFields: ["Content-Type": "application/json"])!
+                                           headerFields: reply.headers.merging(["Content-Type": "application/json"]) { $1 })!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: Data(reply.body.utf8))
             client?.urlProtocolDidFinishLoading(self)

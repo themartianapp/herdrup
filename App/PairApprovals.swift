@@ -35,38 +35,61 @@ final class PairApprovals: ObservableObject {
         return false
     }
 
-    /// Starts or stops the foreground poll.
+    /// Whether the list poll is redundant on this device now: the approver sheet is open (it
+    /// reads its own request), or this device is waiting on its own pair request. Every list
+    /// read spends the account's approval budget, which the other devices and the pairing
+    /// itself share, so the poll pauses meanwhile and resumes once the screen closes.
+    var pollPaused: Bool { presented != nil || DevicePairing.shared.active }
+
+    /// Starts or stops the foreground poll. A list refused for a spent budget is read again
+    /// after a growing wait.
     func setActive(_ active: Bool) {
         loop?.cancel()
         loop = nil
         guard active else { return }
         loop = Task { [weak self] () async -> Void in
+            var failures = 0
             while !Task.isCancelled {
-                await self?.refresh()
-                try? await Task.sleep(nanoseconds: Self.pollInterval)
+                var wait = TimeInterval(Self.pollInterval) / 1_000_000_000
+                if let self, !self.pollPaused {
+                    if let error = await self.refresh(), BrowserApproval.rateLimited(error) {
+                        failures = min(failures + 1, 5)
+                        wait = BrowserApproval.backoff(wait, failures: failures, after: error)
+                    } else {
+                        failures = 0
+                    }
+                }
+                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
             }
         }
     }
 
     /// Lists the waiting requests and opens the sheet for a new one. One `kind=any` read
     /// serves browsers too: their list goes to `WebAccessApprovals`, which doesn't poll itself
-    /// while this one is available.
-    func refresh() async {
+    /// while this one is available. Returns why the list couldn't be read.
+    @discardableResult
+    func refresh() async -> Error? {
         guard available else {
             requests = []
-            return
+            return nil
         }
         if let id = pushed {
             pushed = nil
             await openPushed(id)
         }
-        guard let inbox = try? await PairApproval.inbox(session: account.session) else { return }
+        let inbox: ApprovalInbox
+        do {
+            inbox = try await PairApproval.inbox(session: account.session)
+        } catch {
+            return error
+        }
         WebAccessApprovals.shared.take(inbox.browsers)
         requests = inbox.pairs.filter { $0.claimed == "no" }
         if presented == nil, let next = requests.first(where: { !shown.contains($0.id) }) {
             shown.insert(next.id)
             presented = next
         }
+        return nil
     }
 
     /// A `pair_request` push named `id` (tapped, or arrived while in the foreground).
@@ -316,7 +339,8 @@ final class PairApprovalModel: ObservableObject {
     }
 
     /// While the code is typed and the machines ticked, the request is read on the foreground
-    /// poll's cadence: a cancel or an expiry ends the sheet as soon as the service says so.
+    /// poll's cadence: a cancel or an expiry ends the sheet as soon as the service says so. A
+    /// read refused for a spent approval budget is backed off inside `stillOpen`, not repeated here.
     private func watchOpen(_ approval: PairApproval) {
         watch?.cancel()
         watch = Task { [weak self] () async -> Void in

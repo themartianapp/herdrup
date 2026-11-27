@@ -223,7 +223,7 @@ public actor AccountSession {
         let tokens: AccountTokens
         do {
             tokens = try await client.refresh(refreshToken: presented)
-        } catch AccountError.refused(let status, let code, _, _) where (400..<500).contains(status) && status != 429 {
+        } catch AccountError.refused(let status, let code, _, _, _) where (400..<500).contains(status) && status != 429 {
             // Refused for good: a revoked, expired or unknown session, or reuse detected.
             if generation == started { end(code == "session_revoked" ? .sessionRevoked : .sessionEnded) }
             throw AccountError.signedOut
