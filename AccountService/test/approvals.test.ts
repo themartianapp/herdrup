@@ -744,8 +744,8 @@ describe("browser approval", () => {
   it("rate-limits every approval route per account (APPROVAL_LIMIT) and caps requests per hour", async () => {
     const approver = await party("macos");
     const browser = await party("web", approver.accountId);
-    for (let i = 0; i < 15; i++) expect((await call("GET", "/v1/browsers/self", browser)).status).toBe(200);
-    for (let i = 0; i < 15; i++) expect((await call("GET", "/v1/approvals", approver)).status).toBe(200);
+    for (let i = 0; i < 45; i++) expect((await call("GET", "/v1/browsers/self", browser)).status).toBe(200);
+    for (let i = 0; i < 45; i++) expect((await call("GET", "/v1/approvals", approver)).status).toBe(200);
     expect(await rejection(await call("GET", "/v1/withdrawals", approver))).toEqual({ status: 429, error: "rate_limited" });
     expect(await rejection(await call("POST", "/v1/approvals", browser, { commit: b64url(nonce()) }))).toEqual({ status: 429, error: "rate_limited" });
     // Other routes only count against ACCOUNT_LIMIT.
