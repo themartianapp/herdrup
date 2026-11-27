@@ -792,6 +792,60 @@ private final class ChatPromptTops {
     /// older page, the top already fetching one): the view value it captured still has no
     /// search, so this is how it learns search took over and gives up (review 18e58fbbc4ef6e41).
     var navigation = 0
+    enum PendingOlderFollowUp {
+        case none
+        case revealOnly
+        case fetchAllowed
+    }
+
+    /// Live Find state, mirrored by reference so async paging continuations never read a stale
+    /// `findRequest` captured from an earlier `ChatView` value.
+    var finding = false
+    /// Navigation generation that currently owns an in-flight scroll-anchor restore, so close-
+    /// triggered reveals and completing older-page fetches cannot schedule competing restores.
+    private var restoringNavigation: Int?
+    /// Follow-up work requested while `restoringNavigation` owned the anchor: `.revealOnly` when
+    /// an overlapping already-loaded reveal arrived, or `.fetchAllowed` when a fetch-eligible
+    /// top-sentinel visibility event arrived while `drawnStart == 0`.
+    private var pendingOlder: PendingOlderFollowUp = .none
+
+    /// Whether the current navigation generation already owns an in-flight older-page restore.
+    var isRestoringOlder: Bool { restoringNavigation == navigation }
+
+    /// Claims restore ownership for `generation`. Returns false if `generation` is stale or
+    /// already restoring (recording `.revealOnly` in the latter case without upgrading a deferred
+    /// fetch).
+    func claimOlderRestore(for generation: Int) -> Bool {
+        guard generation == navigation else { return false }
+        if restoringNavigation == generation {
+            if pendingOlder == .none { pendingOlder = .revealOnly }
+            return false
+        }
+        restoringNavigation = generation
+        pendingOlder = .none
+        return true
+    }
+
+    /// Preserves a fetch-eligible top-sentinel event that arrived during an active restore so
+    /// releasing ownership honors it once if the sentinel remains visible.
+    func deferOlderFetch(for generation: Int) {
+        guard generation == navigation, restoringNavigation == generation else { return }
+        pendingOlder = .fetchAllowed
+    }
+
+    func hasPendingOlder(for generation: Int) -> Bool {
+        restoringNavigation == generation && pendingOlder != .none
+    }
+
+    /// Releases restore ownership for `generation` and returns any follow-up deferred while
+    /// this restore owned the anchor.
+    func releaseOlderRestore(for generation: Int) -> PendingOlderFollowUp {
+        guard restoringNavigation == generation else { return .none }
+        restoringNavigation = nil
+        let pending = pendingOlder
+        pendingOlder = .none
+        return pending
+    }
 
     /// The reader moved the chat (a drag, a deceleration they started, a wheel or trackpad
     /// scroll): the up arrow searches from where they are now, and a pending jump stops,
@@ -800,6 +854,15 @@ private final class ChatPromptTops {
         guard lastJump != nil else { return }
         settle.readerInput()
         lastJump = nil
+    }
+
+    /// Retires both any issued previous-message jump and any in-flight paging/jump anchor
+    /// awaiting data, so navigation handlers cannot update one without the other.
+    func cancelNavigation() {
+        lastJump = nil
+        restoringNavigation = nil
+        pendingOlder = .none
+        navigation += 1
     }
 }
 
@@ -878,6 +941,9 @@ struct ChatView: View {
     let live: Bool
     /// The agent's status as the page knows it: a change prompts a refresh.
     let agentStatus: String?
+    /// The pane's agent harness (`"omp"`, `"agy"`, etc.), used as a fallback prefix for the
+    /// model footer when an older herdr does not yet include `model.harness`.
+    var agentKind: String? = nil
     /// The page's ground, for the top fade.
     let ground: Color
     let onOpenTerminal: () -> Void
@@ -1075,13 +1141,6 @@ struct ChatView: View {
             guard isActive else { return }
             await model.probeFormSupport(client: client)
         }
-        // Search moves the chat on its own: the up arrow then starts from what is on screen.
-        // (The offset check retires a settled jump anyway; this also covers one still gliding.)
-        .onChange(of: findRequest != nil) { _, _ in
-            promptTops.lastJump = nil
-            promptTops.navigation += 1
-            formReveal.pending = false
-        }
         .environment(\.chatTextScale, textScale)
         .environment(\.chatSearchQuery, findRequest?.term ?? "")
         .environment(\.chatSearchReveal, searchReveal)
@@ -1111,7 +1170,7 @@ struct ChatView: View {
         .overlay(alignment: .bottom) {
             if landed, findRequest == nil, !atBottom {
                 JumpToLatestButton(label: "Jump to latest message", identifier: "chat-jump-latest") {
-                    promptTops.lastJump = nil
+                    promptTops.cancelNavigation()
                     formReveal.pending = false
                     scrollPosition.animateToLatest()
                     followingLatest = true
@@ -1184,6 +1243,18 @@ struct ChatView: View {
         .onChange(of: liveSearchKey) { old, new in
             guard old.query == new.query else { return }
             updateSearch(proxy)
+        }
+        .onAppear {
+            promptTops.finding = findRequest != nil
+        }
+        // Search moves the chat on its own: retire any in-flight jump or paging anchor first,
+        // then (when Find closes with the top sentinel still visible) reveal any history loaded
+        // while Find suppressed paging — in one handler, in that order.
+        .onChange(of: findRequest != nil) { _, finding in
+            promptTops.finding = finding
+            promptTops.cancelNavigation()
+            formReveal.pending = false
+            if !finding, topVisible { showOlder(proxy) }
         }
     }
 
@@ -1274,7 +1345,11 @@ struct ChatView: View {
                     Button("Load older") {
                         Task {
                             await model.loadOlder(client: client)
-                            updateSearch(proxy, reveal: true)
+                            if promptTops.finding {
+                                updateSearch(proxy, reveal: true)
+                            } else {
+                                revealStrandedOlder(proxy)
+                            }
                         }
                     }
                     .disabled(model.loadingOlder)
@@ -1288,16 +1363,16 @@ struct ChatView: View {
         if !model.currentPlan.isEmpty { planCard(model.currentPlan) }
         if !model.subagents.isEmpty { subagentsCard(model.subagents) }
         if live, model.failure == nil,
-           agentStatus == "working" || (agentStatus == nil && model.working != nil) {
+           agentStatus == "working" || model.working != nil {
             ChatWorkingDots(intent: model.working?.intent)
         }
         recapDivider
         if let sessionModel = model.sessionModel {
-            Text(sessionModel.label)
+            Text(sessionModel.label(harness: agentKind))
                 .font(Typography.machine(11.5 * textScale))
                 .foregroundStyle(Palette.textFaint)
                 .padding(.leading, 4).padding(.vertical, 4)
-                .accessibilityLabel(sessionModel.accessibilityLabel)
+                .accessibilityLabel(sessionModel.accessibilityLabel(harness: agentKind))
                 .accessibilityIdentifier("chat-model")
         }
         if let failure = model.failure {
@@ -1349,8 +1424,11 @@ struct ChatView: View {
         var keys = Set<String>()
         if !expanded.isEmpty, case .item(.work(let work)) = row {
             for key in ["t:" + work.id, "s:" + work.id] where expanded.contains(key) { keys.insert(key) }
-            if keys.contains("s:" + work.id) {
-                for step in work.steps where expanded.contains("d:" + step.id) { keys.insert("d:" + step.id) }
+            let summaryOpen = keys.contains("s:" + work.id)
+            for step in work.steps where expanded.contains("d:" + step.id) {
+                if summaryOpen || ChatRowView.showsCollapsedRunningStep(step, in: work, paneLive: live) {
+                    keys.insert("d:" + step.id)
+                }
             }
         }
         var recorded = false
@@ -1368,7 +1446,7 @@ struct ChatView: View {
             suggestionProblem = model.suggestionProblem?.suggestionID == id ? model.suggestionProblem?.message : nil
         }
         return ChatRowView(
-            row: row, viewer: viewer, client: client, expanded: keys, recorded: recorded,
+            row: row, viewer: viewer, client: client, live: live, expanded: keys, recorded: recorded,
             answering: askID != nil && model.answeringAskID == askID,
             problem: askID != nil && model.answerProblem?.askID == askID ? model.answerProblem : nil,
             answersRefused: model.answersRefused,
@@ -1393,7 +1471,7 @@ struct ChatView: View {
                 // reveal, which would hold the card's top on screen against the follow.
                 formReveal.pending = false
                 if findRequest == nil {
-                    promptTops.lastJump = nil
+                    promptTops.cancelNavigation()
                     followingLatest = true
                 } else {
                     followingLatest = false
@@ -1510,6 +1588,10 @@ struct ChatView: View {
                     }
                     await model.loadOlder(client: client)
                     if model.olderFailed { return }
+                    if promptTops.navigation != navigation {
+                        revealStrandedOlder(proxy)
+                        return
+                    }
                 }
             }
         }
@@ -1675,39 +1757,85 @@ struct ChatView: View {
         Task { @MainActor in position.jumpToLatest() }
     }
 
+    /// Reveals already-loaded rows above `drawnStart` when an older-page fetch finished after
+    /// Find closed (or navigation retired the fetch's original anchor) while the top sentinel is
+    /// still on screen. Never starts a new fetch, and shares the single restore owner in `showOlder`.
+    private func revealStrandedOlder(_ proxy: ScrollViewProxy) {
+        guard topVisible else { return }
+        showOlder(proxy, fetches: false)
+    }
+
+    /// Widens the rendered window to `targetStart` and restores `anchor` to the top under a single
+    /// restore owner for `navigation`. Any overlapping reveal or fetch-eligible sentinel event is
+    /// deferred on `ChatPromptTops` and honored once after this restore settles if the sentinel
+    /// remains visible.
+    private func restoreOlderWindow(_ proxy: ScrollViewProxy, to anchor: String,
+                                    targetStart: Int, navigation: Int,
+                                    recheckAfterScroll: Bool) {
+        guard promptTops.claimOlderRestore(for: navigation) else { return }
+        drawWindow = windowStarting(at: targetStart)
+        Task {
+            try? await Task.sleep(nanoseconds: 30_000_000)
+            guard promptTops.navigation == navigation else { return }
+            proxy.scrollTo(anchor, anchor: .top)
+            if recheckAfterScroll || promptTops.hasPendingOlder(for: navigation) {
+                // The sentinel's visibility is measured again after that scroll; still in view
+                // (short rows, or deferred work arrived while this restore owned the anchor),
+                // honor it once after releasing ownership.
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                guard promptTops.navigation == navigation else { return }
+            }
+            let pending = promptTops.releaseOlderRestore(for: navigation)
+            guard topVisible, landed else { return }
+            if pending == .fetchAllowed {
+                showOlder(proxy, fetches: true)
+            } else if recheckAfterScroll || pending == .revealOnly {
+                showOlder(proxy, fetches: false)
+            }
+        }
+    }
+
     /// The reader reached the top: the next window of rows already loaded, else the next
     /// older page. Either way the row that was on top stays where it was. `fetches` false: a
     /// window only, as when a revealed window still does not reach the screen's top.
     private func showOlder(_ proxy: ScrollViewProxy, fetches: Bool = true) {
-        guard landed, findRequest == nil else { return }
+        guard landed, !promptTops.finding else { return }
         let start = drawnStart
         guard start > 0 else {
-            if fetches { loadOlder(proxy) }
+            if fetches {
+                if promptTops.isRestoringOlder {
+                    promptTops.deferOlderFetch(for: promptTops.navigation)
+                } else {
+                    loadOlder(proxy)
+                }
+            }
             return
         }
         guard let anchor = anchorRowID else { return }
-        drawWindow = windowStarting(at: start - Self.renderWindow)
-        Task {
-            try? await Task.sleep(nanoseconds: 30_000_000)
-            proxy.scrollTo(anchor, anchor: .top)
-            // The sentinel's visibility is measured again after that scroll; still in view
-            // (short rows), it gets the next window, never a fetch.
-            try? await Task.sleep(nanoseconds: 150_000_000)
-            if topVisible, landed, findRequest == nil { showOlder(proxy, fetches: false) }
-        }
+        restoreOlderWindow(proxy, to: anchor, targetStart: start - Self.renderWindow,
+                           navigation: promptTops.navigation, recheckAfterScroll: true)
     }
 
     /// Fetches the next older page and draws its newest window above the row that was on
     /// top, which stays where it was.
     private func loadOlder(_ proxy: ScrollViewProxy, retry: Bool = false) {
-        guard landed, findRequest == nil, model.hasOlder, !model.loadingOlder, retry || !model.olderFailed else { return }
+        guard landed, !promptTops.finding, !promptTops.isRestoringOlder,
+              model.hasOlder, !model.loadingOlder, retry || !model.olderFailed else { return }
         let anchor = anchorRowID
+        let navigation = promptTops.navigation
         Task {
             await model.loadOlder(client: client)
+            // If navigation (Jump to latest, Find, form submit) retired our original anchor while
+            // this page was in flight, never scroll back to it. When Find is now closed and the
+            // top sentinel is still on screen with undrawn history above `drawnStart`, hand off
+            // to a single fresh reveal under the current generation instead of stranding rows.
+            guard promptTops.navigation == navigation else {
+                revealStrandedOlder(proxy)
+                return
+            }
             guard let anchor, let index = model.rowIndex[anchor] else { return }
-            drawWindow = windowStarting(at: index - Self.renderWindow)
-            try? await Task.sleep(nanoseconds: 30_000_000)
-            proxy.scrollTo(anchor, anchor: .top)
+            restoreOlderWindow(proxy, to: anchor, targetStart: index - Self.renderWindow,
+                               navigation: navigation, recheckAfterScroll: false)
         }
     }
 
@@ -2129,6 +2257,7 @@ extension ChatView: Equatable {
                 && lhs.isActive == rhs.isActive
                 && lhs.live == rhs.live
                 && lhs.agentStatus == rhs.agentStatus
+                && lhs.agentKind == rhs.agentKind
                 && lhs.ground == rhs.ground
                 && lhs.findRequest == rhs.findRequest
         }
@@ -2172,6 +2301,8 @@ private struct ChatRowView: View, Equatable {
     let row: ChatRow
     let viewer: ChatViewer
     let client: HerdrClient
+    /// The pane is live (not a paused share), so active work steps may animate.
+    let live: Bool
     /// This row's open thought, step list and step details (`t:`, `s:`, `d:` keys).
     let expanded: Set<String>
     /// The prompt is one this device sent ("In transcript").
@@ -2203,6 +2334,7 @@ private struct ChatRowView: View, Equatable {
         lhs.row == rhs.row
             && lhs.viewer == rhs.viewer
             && lhs.client === rhs.client
+            && lhs.live == rhs.live
             && lhs.expanded == rhs.expanded
             && lhs.recorded == rhs.recorded
             && lhs.answering == rhs.answering
@@ -2487,10 +2619,30 @@ private struct ChatRowView: View, Equatable {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("chat-steps")
                 if expanded.contains(stepsKey) {
-                    stepList(work)
+                    stepList(work.steps, workLive: live && work.live, compact: false)
+                } else {
+                    let runningSteps = work.steps.filter { Self.showsCollapsedRunningStep($0, in: work, paneLive: live) }
+                    if !runningSteps.isEmpty {
+                        stepList(runningSteps, workLive: true, compact: true)
+                    }
                 }
             }
         }
+    }
+
+    /// Single source of truth for whether a step renders inline beneath a collapsed work summary
+    /// (and therefore needs its detail toggle key forwarded by `ChatView.chatRow`).
+    static func showsCollapsedRunningStep(_ step: TranscriptStepRow, in work: TranscriptWork, paneLive: Bool) -> Bool {
+        paneLive && work.live && step.status == .running
+    }
+
+    private static func runningCommandPreview(_ detail: String?) -> String? {
+        guard let detail else { return nil }
+        for line in detail.split(whereSeparator: \.isNewline) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return nil
     }
 
     private func stepsSummary(_ work: TranscriptWork) -> some View {
@@ -2505,48 +2657,65 @@ private struct ChatRowView: View, Equatable {
         }
     }
 
-    private func stepList(_ work: TranscriptWork) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            ForEach(work.steps) { step in
-                let running = step.status == .running && work.live
-                let detailKey = "d:" + step.id
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        Circle()
-                            .fill(step.status == .error ? Palette.died : running ? Palette.working : Palette.hairline)
-                            .frame(width: 5, height: 5)
-                            .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 2.5 }
-                        // The tool omp ran, in the theme's accent, as omp's terminal titles it.
-                        if !step.tool.isEmpty {
-                            Text(step.tool).font(Typography.machine(11.5 * textScale, .semibold))
-                                .foregroundStyle(Color(hex: ChatPalette.current.toolTitle))
-                                .lineLimit(1)
-                                .fixedSize()
-                                .frame(minWidth: 46 * textScale, alignment: .leading)
-                        }
-                        Text(step.intent).font(Typography.app(13.5 * textScale))
-                            .foregroundStyle(running ? Palette.textDim : Palette.textFaint)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    if expanded.contains(detailKey), let detail = step.detail, !detail.isEmpty {
-                        Text(detail).font(Typography.machine(11.5 * textScale)).foregroundStyle(Palette.textFaint)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .textSelection(.enabled)
-                            .padding(.leading, 12)
-                    }
-                }
-                .contentShape(Rectangle())
-                .onTapGesture { if step.detail != nil { toggle(detailKey) } }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel(Self.stepLabel(step, running: running))
-                .accessibilityIdentifier(running ? "chat-step-running" : "chat-step")
+    private func stepList(_ steps: [TranscriptStepRow], workLive: Bool, compact: Bool) -> some View {
+        VStack(alignment: .leading, spacing: compact ? 6 : 5) {
+            ForEach(steps) { step in
+                stepRow(step, running: step.status == .running && workLive, compact: compact)
             }
         }
-        .padding(.vertical, 1).padding(.leading, 12)
+        .padding(.vertical, compact ? 2 : 1).padding(.leading, 12)
         .overlay(alignment: .leading) { Rectangle().fill(Palette.hairlineQuiet).frame(width: 2) }
         .padding(.leading, 5)
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("chat-steplist")
+        .accessibilityIdentifier(compact ? "chat-steplist-running" : "chat-steplist")
+    }
+
+    private func stepRow(_ step: TranscriptStepRow, running: Bool, compact: Bool) -> some View {
+        let detailKey = "d:" + step.id
+        let detailOpen = expanded.contains(detailKey)
+        let preview = compact ? Self.runningCommandPreview(step.detail) : nil
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                if running {
+                    ChatWorkingWave(dotSize: 4, spacing: 3)
+                        .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 2 }
+                } else {
+                    Circle()
+                        .fill(step.status == .error ? Palette.died : Palette.hairline)
+                        .frame(width: 5, height: 5)
+                        .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 2.5 }
+                }
+                // The tool the agent ran, in the theme's accent, as the terminal titles it.
+                if !step.tool.isEmpty {
+                    Text(step.tool).font(Typography.machine(11.5 * textScale, .semibold))
+                        .foregroundStyle(Color(hex: ChatPalette.current.toolTitle))
+                        .lineLimit(1)
+                        .fixedSize()
+                        .frame(minWidth: compact ? 0 : 46 * textScale, alignment: .leading)
+                }
+                Text(step.intent).font(Typography.app(13.5 * textScale))
+                    .foregroundStyle(running ? Palette.textDim : Palette.textFaint)
+                    .lineLimit(compact ? 1 : nil)
+                    .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: !compact)
+            }
+            if detailOpen, let detail = step.detail, !detail.isEmpty {
+                Text(detail).font(Typography.machine(11.5 * textScale)).foregroundStyle(Palette.textFaint)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .padding(.leading, running ? 22 : 12)
+            } else if let preview, preview != step.intent {
+                Text(preview).font(Typography.machine(11.5 * textScale)).foregroundStyle(Palette.textFaint)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .padding(.leading, 22)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { if step.detail != nil { toggle(detailKey) } }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Self.stepLabel(step, running: running))
+        .accessibilityIdentifier(compact ? "chat-step-running-preview" : running ? "chat-step-running" : "chat-step")
     }
 
     /// A step for VoiceOver: its tool, then what it did.

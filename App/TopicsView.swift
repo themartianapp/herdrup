@@ -1546,6 +1546,7 @@ private struct TopicChat: View {
                 // Inbox; otherwise the page's `working` decides, as in the Inbox.
                 ChatView(client: client, model: chat, viewer: viewer, eventsPaneID: eventsPaneID,
                          isActive: isActive, live: live, agentStatus: topic.state.isWorking ? "working" : nil,
+                         agentKind: "omp",
                          ground: Palette.groundMachine, onOpenTerminal: onOpenTerminal)
                     .equatable()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)

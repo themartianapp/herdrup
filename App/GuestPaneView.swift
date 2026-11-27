@@ -179,7 +179,7 @@ struct GuestPaneView: View {
                     ChatView(client: client, model: chatModel,
                              viewer: .guest(name: access.guestName, ownerName: access.ownerName),
                              eventsPaneID: nil, isActive: true, live: availability == .running,
-                             agentStatus: agent?.agentStatus, ground: Palette.groundMachine,
+                             agentStatus: agent?.agentStatus, agentKind: agent?.agent, ground: Palette.groundMachine,
                              onOpenTerminal: { tab = .terminal },
                              findRequest: findRequest,
                              onFindResult: { index, total, capped in findMatches = (index, total, capped) },

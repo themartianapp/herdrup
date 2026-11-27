@@ -148,22 +148,37 @@ final class AgentTranscriptDecodingTests: XCTestCase {
         let plain = try model(#"{"provider":"anthropic","id":"claude-opus-5-5"}"#)
         XCTAssertNil(plain.thinkingLevel)
         XCTAssertFalse(plain.thinkingAuto)
-        XCTAssertEqual(plain.label, "claude-opus-5-5")
-        XCTAssertEqual(plain.accessibilityLabel, "Model: anthropic, claude-opus-5-5")
+        XCTAssertEqual(plain.label(), "claude-opus-5-5")
+        XCTAssertEqual(plain.accessibilityLabel(), "Model: anthropic, claude-opus-5-5")
 
         let high = try model(#"{"provider":"anthropic","id":"claude-opus-5-5","thinking_level":"high"}"#)
         XCTAssertEqual(high, TranscriptModel(provider: "anthropic", id: "claude-opus-5-5", thinkingLevel: "high"))
-        XCTAssertEqual(high.label, "claude-opus-5-5 · high")
-        XCTAssertEqual(high.accessibilityLabel, "Model: anthropic, claude-opus-5-5, effort high")
+        XCTAssertEqual(high.label(), "claude-opus-5-5 · high")
+        XCTAssertEqual(high.accessibilityLabel(), "Model: anthropic, claude-opus-5-5, effort high")
 
         let resolved = try model(#"{"provider":"a","id":"m","thinking_level":"medium","thinking_auto":true}"#)
         XCTAssertTrue(resolved.thinkingAuto)
-        XCTAssertEqual(resolved.label, "m · medium (auto)")
-        XCTAssertEqual(resolved.accessibilityLabel, "Model: a, m, effort medium (auto)")
+        XCTAssertEqual(resolved.label(), "m · medium (auto)")
+        XCTAssertEqual(resolved.accessibilityLabel(), "Model: a, m, effort medium (auto)")
 
         let pending = try model(#"{"provider":"a","id":"m","thinking_auto":true}"#)
-        XCTAssertEqual(pending.label, "m · auto")
-        XCTAssertEqual(pending.accessibilityLabel, "Model: a, m, effort auto")
+        XCTAssertEqual(pending.label(), "m · auto")
+        XCTAssertEqual(pending.accessibilityLabel(), "Model: a, m, effort auto")
+
+        let ompWire = try model(#"{"provider":"anthropic","id":"claude-opus-5-5","harness":"omp","thinking_level":"high"}"#)
+        XCTAssertEqual(ompWire.harness, "omp")
+        XCTAssertEqual(ompWire.label(), "omp · claude-opus-5-5 · high")
+        XCTAssertEqual(ompWire.label(harness: "agy"), "omp · claude-opus-5-5 · high")
+        XCTAssertEqual(ompWire.accessibilityLabel(), "Model: omp, anthropic, claude-opus-5-5, effort high")
+
+        let agyWire = try model(#"{"provider":"antigravity","id":"Gemini 4 Neon","harness":"agy","thinking_level":"high"}"#)
+        XCTAssertEqual(agyWire.label(), "agy · Gemini 4 Neon · high")
+        XCTAssertEqual(agyWire.accessibilityLabel(), "Model: agy, antigravity, Gemini 4 Neon, effort high")
+
+        // Fallback harness when talking to an older herdr without `model.harness`.
+        XCTAssertEqual(high.label(harness: "omp"), "omp · claude-opus-5-5 · high")
+        XCTAssertEqual(high.accessibilityLabel(harness: "omp"), "Model: omp, anthropic, claude-opus-5-5, effort high")
+        XCTAssertEqual(plain.label(harness: "  AGY "), "agy · claude-opus-5-5")
     }
 }
 
