@@ -146,7 +146,7 @@ final class SavedHostsStore: ObservableObject {
         }
         if let hostKeyAlgorithm {
             hosts[i].hostKeyAlgorithm = hostKeyAlgorithm
-        } else if !Self.sameEndpoint(h, hosts[i].host) {
+        } else if !HostEndpoint.samePin(h, hosts[i].host) {
             hosts[i].hostKeyAlgorithm = nil
         }
         hosts[i].host = h
@@ -210,13 +210,6 @@ final class SavedHostsStore: ObservableObject {
         return .ready(credentials)
     }
 
-    /// Whether two saved addresses reach the same host and port, which is how the host-key
-    /// pin is keyed: a different spelling of the same endpoint keeps a paired restriction.
-    static func sameEndpoint(_ a: String, _ b: String) -> Bool {
-        guard let x = HostEndpoint.parse(a), let y = HostEndpoint.parse(b) else { return a == b }
-        return x.host.lowercased() == y.host.lowercased() && x.port == y.port
-    }
-
     /// Removes a saved host. Deletes the secret from BOTH stores first and drops the
     /// host record ONLY if both confirm it is gone — a failed Keychain delete must not
     /// leave a secret orphaned while the host vanishes from the UI. Each delete returns
@@ -250,7 +243,7 @@ final class SavedHostsStore: ObservableObject {
         if let i = hosts.firstIndex(where: { $0.id == id }) {
             let old = hosts[i]
             let updated = SavedHost(id: id, host: host, username: username, nickname: nickname, authKind: authKind,
-                                    hostKeyAlgorithm: Self.sameEndpoint(host, old.host) ? old.hostKeyAlgorithm : nil)
+                                    hostKeyAlgorithm: HostEndpoint.samePin(host, old.host) ? old.hostKeyAlgorithm : nil)
             guard updated != old else { return }
             hosts[i] = updated
             persist()
@@ -310,7 +303,7 @@ final class SavedHostsStore: ObservableObject {
         }
         // The same address shares one pin: a restriction either copy got by pairing stays.
         if hosts[k].hostKeyAlgorithm == nil,
-           let copy = hosts.first(where: { $0.id == duplicate.id }), Self.sameEndpoint(copy.host, hosts[k].host) {
+           let copy = hosts.first(where: { $0.id == duplicate.id }), HostEndpoint.samePin(copy.host, hosts[k].host) {
             hosts[k].hostKeyAlgorithm = copy.hostKeyAlgorithm
         }
         guard keychain.delete(account: duplicate.id.uuidString),
