@@ -6600,6 +6600,7 @@ struct TerminalPaneContent: View {
                     if showingChat, isForeground, scenePhase.mountsChat {
                         ChatView(client: client, model: chatModel, viewer: .owner, eventsPaneID: paneID,
                                  isActive: isForeground, live: true, agentStatus: agent?.agentStatus,
+                                 agentKind: agent?.agent,
                                  ground: Palette.groundMachine,
                                  onOpenTerminal: { setMode(.terminal) },
                                  findRequest: findRequest,

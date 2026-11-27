@@ -878,6 +878,9 @@ struct ChatView: View {
     let live: Bool
     /// The agent's status as the page knows it: a change prompts a refresh.
     let agentStatus: String?
+    /// The pane's agent harness (`"omp"`, `"agy"`, etc.), used as a fallback prefix for the
+    /// model footer when an older herdr does not yet include `model.harness`.
+    var agentKind: String? = nil
     /// The page's ground, for the top fade.
     let ground: Color
     let onOpenTerminal: () -> Void
@@ -1288,16 +1291,16 @@ struct ChatView: View {
         if !model.currentPlan.isEmpty { planCard(model.currentPlan) }
         if !model.subagents.isEmpty { subagentsCard(model.subagents) }
         if live, model.failure == nil,
-           agentStatus == "working" || (agentStatus == nil && model.working != nil) {
+           agentStatus == "working" || model.working != nil {
             ChatWorkingDots(intent: model.working?.intent)
         }
         recapDivider
         if let sessionModel = model.sessionModel {
-            Text(sessionModel.label)
+            Text(sessionModel.label(harness: agentKind))
                 .font(Typography.machine(11.5 * textScale))
                 .foregroundStyle(Palette.textFaint)
                 .padding(.leading, 4).padding(.vertical, 4)
-                .accessibilityLabel(sessionModel.accessibilityLabel)
+                .accessibilityLabel(sessionModel.accessibilityLabel(harness: agentKind))
                 .accessibilityIdentifier("chat-model")
         }
         if let failure = model.failure {
@@ -2129,6 +2132,7 @@ extension ChatView: Equatable {
                 && lhs.isActive == rhs.isActive
                 && lhs.live == rhs.live
                 && lhs.agentStatus == rhs.agentStatus
+                && lhs.agentKind == rhs.agentKind
                 && lhs.ground == rhs.ground
                 && lhs.findRequest == rhs.findRequest
         }
@@ -2488,9 +2492,67 @@ private struct ChatRowView: View, Equatable {
                 .accessibilityIdentifier("chat-steps")
                 if expanded.contains(stepsKey) {
                     stepList(work)
+                } else if live {
+                    let runningSteps = work.steps.filter { $0.status == .running }
+                    if !runningSteps.isEmpty {
+                        runningStepPreviewList(runningSteps)
+                    }
                 }
             }
         }
+    }
+
+    private func runningStepPreviewList(_ steps: [TranscriptStepRow]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(steps) { step in
+                let detailKey = "d:" + step.id
+                let preview = Self.runningCommandPreview(step.detail)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        ChatWorkingWave(dotSize: 4, spacing: 3)
+                            .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 2 }
+                        if !step.tool.isEmpty {
+                            Text(step.tool).font(Typography.machine(11.5 * textScale, .semibold))
+                                .foregroundStyle(Color(hex: ChatPalette.current.toolTitle))
+                                .lineLimit(1)
+                                .fixedSize()
+                        }
+                        Text(step.intent).font(Typography.app(13.5 * textScale))
+                            .foregroundStyle(Palette.textDim)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    if expanded.contains(detailKey), let detail = step.detail, !detail.isEmpty {
+                        Text(detail).font(Typography.machine(11.5 * textScale)).foregroundStyle(Palette.textFaint)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                            .padding(.leading, 22)
+                    } else if let preview, preview != step.intent {
+                        Text(preview).font(Typography.machine(11.5 * textScale)).foregroundStyle(Palette.textFaint)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .padding(.leading, 22)
+                    }
+                }
+                .contentShape(Rectangle())
+                .onTapGesture { if step.detail != nil { toggle(detailKey) } }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(Self.stepLabel(step, running: true))
+                .accessibilityIdentifier("chat-step-running-preview")
+            }
+        }
+        .padding(.vertical, 2).padding(.leading, 12)
+        .overlay(alignment: .leading) { Rectangle().fill(Palette.hairlineQuiet).frame(width: 2) }
+        .padding(.leading, 5)
+    }
+
+    private static func runningCommandPreview(_ detail: String?) -> String? {
+        guard let detail else { return nil }
+        for line in detail.split(whereSeparator: \.isNewline) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return nil
     }
 
     private func stepsSummary(_ work: TranscriptWork) -> some View {
@@ -2508,14 +2570,19 @@ private struct ChatRowView: View, Equatable {
     private func stepList(_ work: TranscriptWork) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             ForEach(work.steps) { step in
-                let running = step.status == .running && work.live
+                let running = step.status == .running && live
                 let detailKey = "d:" + step.id
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        Circle()
-                            .fill(step.status == .error ? Palette.died : running ? Palette.working : Palette.hairline)
-                            .frame(width: 5, height: 5)
-                            .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 2.5 }
+                        if running {
+                            ChatWorkingWave(dotSize: 4, spacing: 3)
+                                .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 2 }
+                        } else {
+                            Circle()
+                                .fill(step.status == .error ? Palette.died : Palette.hairline)
+                                .frame(width: 5, height: 5)
+                                .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 2.5 }
+                        }
                         // The tool omp ran, in the theme's accent, as omp's terminal titles it.
                         if !step.tool.isEmpty {
                             Text(step.tool).font(Typography.machine(11.5 * textScale, .semibold))

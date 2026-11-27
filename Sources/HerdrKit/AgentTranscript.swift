@@ -223,21 +223,24 @@ public struct TranscriptNote: Sendable, Equatable {
 public struct TranscriptModel: Decodable, Sendable, Equatable {
     public let provider: String
     public let id: String
-    /// omp's thinking (effort) level: minimal, low, medium, high, xhigh or max. Absent when
+    /// The agent harness running this session (`"omp"`, `"agy"`, etc.).
+    public let harness: String?
+    /// The thinking (effort) level: minimal, low, medium, high, xhigh or max. Absent when
     /// thinking is off, or while `auto` has not picked a level yet.
     public let thinkingLevel: String?
     /// The level is omp's `auto`: `thinkingLevel` is what auto resolved to, if anything.
     public let thinkingAuto: Bool
 
-    public init(provider: String, id: String, thinkingLevel: String? = nil, thinkingAuto: Bool = false) {
+    public init(provider: String, id: String, harness: String? = nil, thinkingLevel: String? = nil, thinkingAuto: Bool = false) {
         self.provider = provider
         self.id = id
+        self.harness = harness
         self.thinkingLevel = thinkingLevel
         self.thinkingAuto = thinkingAuto
     }
 
     enum CodingKeys: String, CodingKey {
-        case provider, id
+        case provider, id, harness
         case thinkingLevel = "thinking_level"
         case thinkingAuto = "thinking_auto"
     }
@@ -246,8 +249,17 @@ public struct TranscriptModel: Decodable, Sendable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.init(provider: try c.decode(String.self, forKey: .provider),
                   id: try c.decode(String.self, forKey: .id),
+                  harness: try c.decodeIfPresent(String.self, forKey: .harness),
                   thinkingLevel: try c.decodeIfPresent(String.self, forKey: .thinkingLevel),
                   thinkingAuto: try c.decodeIfPresent(Bool.self, forKey: .thinkingAuto) ?? false)
+    }
+
+    /// Normalized harness prefix (`"omp"`, `"agy"`, etc.), preferring the wire field and
+    /// falling back to the pane's agent kind when talking to an older herdr.
+    public func resolvedHarness(fallback: String? = nil) -> String? {
+        let raw = (harness ?? fallback)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let raw, !raw.isEmpty else { return nil }
+        return raw.lowercased()
     }
 
     /// The effort as the chat words it: "high", "high (auto)" once auto picked a level,
@@ -261,14 +273,27 @@ public struct TranscriptModel: Decodable, Sendable, Equatable {
         }
     }
 
-    /// The chat's model line: "claude-opus-5-5 · high", or the id alone without a level.
-    public var label: String {
-        effort.map { "\(id) · \($0)" } ?? id
+    /// The chat's model line: "omp · claude-opus-5-5 · high", or without harness/effort when absent.
+    public func label(harness fallback: String? = nil) -> String {
+        [resolvedHarness(fallback: fallback), id, effort]
+            .compactMap { $0 }
+            .joined(separator: " · ")
     }
 
-    /// "Model: anthropic, claude-opus-5-5, effort high".
+    /// The chat's model line using only the harness carried on the wire, if any.
+    public var label: String {
+        label(harness: nil)
+    }
+
+    /// "Model: omp, anthropic, claude-opus-5-5, effort high".
+    public func accessibilityLabel(harness fallback: String? = nil) -> String {
+        let prefix = resolvedHarness(fallback: fallback).map { "\($0), " } ?? ""
+        return "Model: \(prefix)\(provider), \(id)" + (effort.map { ", effort \($0)" } ?? "")
+    }
+
+    /// "Model: anthropic, claude-opus-5-5, effort high" (or with harness when present).
     public var accessibilityLabel: String {
-        "Model: \(provider), \(id)" + (effort.map { ", effort \($0)" } ?? "")
+        accessibilityLabel(harness: nil)
     }
 }
 

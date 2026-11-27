@@ -67,8 +67,8 @@ final class ChatUXSmokeTests: XCTestCase {
         let model = app.staticTexts["chat-model"]
         XCTAssertTrue(model.exists(within: 12), app.debugDescription)
         XCTAssertTrue(model.label.contains("fixture-model"))
-        XCTAssertEqual(model.label, "Model: fixture, fixture-model, effort high",
-                       "the model line names omp's effort (fixture-model · high)")
+        XCTAssertEqual(model.label, "Model: omp, fixture, fixture-model, effort high",
+                       "the model line names the harness and effort (omp · fixture-model · high)")
         XCTAssertTrue(app.staticTexts["Review the table"].exists)
         XCTAssertTrue(app.staticTexts["Ship after review"].exists)
         // The pause icon marks a blocked item; the long "Blocked · <blocker>" line is gone.
