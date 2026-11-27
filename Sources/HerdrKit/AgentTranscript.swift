@@ -119,6 +119,47 @@ public enum TranscriptOrigin: Sendable, Equatable {
     case other
 }
 
+/// Which agent kinds can open in the Chat view given a server's advertised capabilities.
+/// omp agents need `agent_transcript`; agy (Antigravity CLI) agents also need `transcript_agy`.
+/// Topics remain omp-only.
+public enum AgentChatSupport {
+    public static func isOmp(_ agentKind: String?) -> Bool {
+        guard let kind = agentKind?.lowercased() else { return false }
+        return kind == "omp" || kind.hasPrefix("omp ") || kind.hasPrefix("omp-")
+    }
+
+    public static func isAgy(_ agentKind: String?) -> Bool {
+        guard let kind = agentKind?.lowercased() else { return false }
+        return kind == "agy" || kind.hasPrefix("agy ") || kind.hasPrefix("agy-")
+    }
+
+    public static func maySupportChat(_ agentKind: String?) -> Bool {
+        isOmp(agentKind) || isAgy(agentKind)
+    }
+
+    public static func supportsChat(
+        _ agentKind: String?,
+        transcriptCapable: Bool,
+        agyCapable: Bool
+    ) -> Bool {
+        guard transcriptCapable else { return false }
+        if isOmp(agentKind) { return true }
+        if isAgy(agentKind) { return agyCapable }
+        return false
+    }
+}
+
+public extension ServerCapabilities {
+    /// Whether this server serves `agent.transcript` for an agent of `agentKind`.
+    func supportsChat(agentKind: String?) -> Bool {
+        AgentChatSupport.supportsChat(
+            agentKind,
+            transcriptCapable: agentTranscript,
+            agyCapable: transcriptAgy
+        )
+    }
+}
+
 public enum TranscriptStepStatus: String, Sendable, Equatable {
     case running, ok, error
 }
