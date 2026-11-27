@@ -71,8 +71,20 @@ final class TerminalTeardownTests: XCTestCase {
             hostView = made.view
             host = made
         }
-        XCTAssertTrue(spin(until: { hostView.map(containsSurface) ?? false }),
-                      "the terminal must be mounted before it is torn down")
+        // THE TEST LAYS THE WINDOW OUT ITSELF, every turn of the wait. The surface reaches the
+        // hosting view only in a layout pass of the window, and when the test host runs in the
+        // background nothing lays this window out. Under load the host can launch into the
+        // background: j_f2bbc720 (#878) reported "Herdr pid 6966 state: running background"
+        // where 9 passing iphone-terminal runs reported "running foreground". There makeUIView
+        // ran 77 ms into the test (one terminal's keyboard lookups, "Keyboard screen not found
+        // for window (null)") and the teardown still disarmed Ctrl, but the surface never
+        // reached the hosting view, in either 10 s attempt. j_d36ad7a7 (#848) and j_61097cea
+        // failed the same way, 10.3-10.8 s on both attempts; a passing run takes 0.4 s.
+        XCTAssertTrue(spin(until: {
+            window.layoutIfNeeded()
+            return hostView.map(containsSurface) ?? false
+        }, timeout: 30), "the terminal must be mounted before it is torn down (app state "
+                      + "\(UIApplication.shared.applicationState.rawValue), scene \(scene != nil))")
         XCTAssertTrue(armed.armed, "nothing disarms Ctrl while the terminal is up")
 
         // Off screen first, then released: in the crash, the hosting controller was already out
@@ -97,5 +109,49 @@ final class TerminalTeardownTests: XCTestCase {
         XCTAssertTrue(spin(until: { armed.disarms == 1 }, timeout: 5),
                       "the torn-down terminal still cancels the armed Ctrl, after the teardown")
         XCTAssertFalse(armed.armed)
+    }
+
+    // TEMPORARY CI EXPERIMENT, removed before review: does a scene-less window mount the
+    // terminal without a forced layout, and with one?
+    func testExperimentSceneLessWindowMount() throws {
+        NSLog("%@", "TEARDOWN-EXP app state \(UIApplication.shared.applicationState.rawValue), scenes "
+              + UIApplication.shared.connectedScenes.map { "\(type(of: $0)) \($0.activationState.rawValue)" }
+                .joined(separator: ", "))
+        for forcedFromStart in [false, true] {
+            let armed = ArmedBinding()
+            let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
+            var host: UIHostingController<LiveTerminalView>?
+            weak var hostView: UIView?
+            autoreleasepool {
+                let made = UIHostingController(rootView: LiveTerminalView(
+                    client: .init(transport: MockTransport()), paneID: "teardown:exp\(forcedFromStart)",
+                    controlArmed: armed.binding))
+                window.rootViewController = made
+                window.makeKeyAndVisible()
+                hostView = made.view
+                host = made
+            }
+            let start = Date()
+            let plain = spin(until: { hostView.map(containsSurface) ?? false }, timeout: forcedFromStart ? 0 : 3)
+            let plainAt = Date().timeIntervalSince(start)
+            let forced = spin(until: {
+                window.layoutIfNeeded()
+                return hostView.map(containsSurface) ?? false
+            }, timeout: 5)
+            let forcedAt = Date().timeIntervalSince(start)
+            autoreleasepool {
+                window.rootViewController = nil
+                window.isHidden = true
+            }
+            _ = spin(until: { false }, timeout: 0.3)
+            armed.tearingDown = true
+            autoreleasepool { host = nil }
+            armed.tearingDown = false
+            let freed = spin(until: { hostView == nil }, timeout: 5)
+            let disarmed = spin(until: { armed.disarms == 1 }, timeout: 3)
+            NSLog("%@", "TEARDOWN-EXP scene-less forcedFromStart=\(forcedFromStart) plain=\(plain) "
+                  + "at \(plainAt) forced=\(forced) at \(forcedAt) freed=\(freed) disarmed=\(disarmed) "
+                  + "dismantleAccesses=\(armed.accessesDuringDismantle)")
+        }
     }
 }
