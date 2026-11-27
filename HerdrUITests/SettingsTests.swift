@@ -400,13 +400,18 @@ final class SettingsTests: XCTestCase {
                     picker.tap()
                     let choice = item(option)
                     var lastFrame = CGRect.null
+                    // Frame before hittability: on an item still animating in, `isHittable`
+                    // records a failure instead of answering false.
                     XCTAssertTrue(poll(5, every: 0.2) {
-                        guard choice.exists, choice.isHittable, !choice.frame.isEmpty else { return false }
+                        guard choice.exists, !choice.frame.isEmpty, choice.isHittable else { return false }
                         defer { lastFrame = choice.frame }
                         return choice.frame == lastFrame
                     }, "the menu should offer \(option)")
+                    // Wait for each item rather than read it once: right after the chosen item
+                    // settled, single reads of all three came back false while the menu was open
+                    // and the tap that followed chose fine (#855 b339f5f9, #873 j_4718dfe9).
                     for other in ["Off", "Only my requests", "Always"] {
-                        XCTAssertTrue(item(other).exists, "the menu should offer \(other)")
+                        XCTAssertTrue(item(other).exists(within: 5), "the menu should offer \(other)")
                     }
                     choice.tap()
                     _ = poll(3, every: 0.3) { picker.value as? String == option }
