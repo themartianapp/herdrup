@@ -44,11 +44,12 @@ name = "AUTH_IP_LIMIT"
 namespace_id = "6981"
 simple = { limit = 20, period = 60 }
 
-# Keyed by account id, after the access token is checked: every authenticated call.
+# Keyed by account id, after the access token is checked: every authenticated call. Sized above
+# APPROVAL_LIMIT, whose calls count here too, plus sync pulls and the rest while a pair runs.
 [[ratelimits]]
 name = "ACCOUNT_LIMIT"
 namespace_id = "6982"
-simple = { limit = 120, period = 60 }
+simple = { limit = 240, period = 60 }
 
 # Keyed by account id, on top of ACCOUNT_LIMIT: statement batches (a live share asks about
 # every 8 minutes) ...
@@ -70,14 +71,16 @@ namespace_id = "6984"
 simple = { limit = 30, period = 60 }
 
 # Keyed by account id, on top of ACCOUNT_LIMIT: every approval route (src/approvals.ts:
-# /v1/approvals…, /v1/pairs/self, /v1/browsers/…, /v1/withdrawals). Both sides of a request poll
-# it every 2 s for a minute, then every 5 s, and every signed-in iPhone, iPad and Mac lists
-# waiting requests every 5 s while open: a pair between two iPads with a third device open is
-# ~75 calls in its first minute. 30 refused the second pair of a session (owner, 2026-11-27).
+# /v1/approvals…, /v1/pairs/self, /v1/browsers/…, /v1/withdrawals). Size it from the clients'
+# schedules, per minute: each open device's inbox (App/PairApprovals.swift pollInterval) × the
+# devices, + the approver's watch of the open request (PairApprovals.watchOpen), + the live
+# requester (HerdrKit BrowserApproval.defaultPoll, restarted per wait), + an earlier requester
+# still reading /v1/pairs/self (App/PairThisDevice.swift followRetries), + one-off calls.
+# Support at least 4 open devices with a second requester, with headroom.
 [[ratelimits]]
 name = "APPROVAL_LIMIT"
 namespace_id = "6987"
-simple = { limit = 90, period = 60 }
+simple = { limit = 150, period = 60 }
 
 # Keyed by CF-Connecting-IP and checked before any other work: account deletion and Apple's
 # server-to-server notifications.
