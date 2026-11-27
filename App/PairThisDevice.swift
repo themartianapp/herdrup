@@ -92,7 +92,7 @@ final class DevicePairing: ObservableObject {
                 let result = try await requester.awaitResult()
                 let added = self.apply(result, key: requester.sshKey.privateKeyPEM)
                 self.phase = .approved(approver: result.approverName, added: added)
-                await self.followRetries(requester)
+                await self.followRetries(requester, after: result)
             } catch is CancellationError {
             } catch {
                 guard !Task.isCancelled else { return }
@@ -122,13 +122,38 @@ final class DevicePairing: ObservableObject {
         if case .ended = phase { phase = .idle }
     }
 
-    private func followRetries(_ requester: PairRequester) async {
+    /// Reads the approver's retries of failed machines (newer envelopes) for as long as the
+    /// service takes them, backing off while the account's approval budget is spent. Every read
+    /// spends that budget, so it stops as soon as no machine of the latest result failed.
+    private func followRetries(_ requester: PairRequester, after result: PairResult) async {
+        guard Self.hasFailed(result) else { return }
         let until = Date().addingTimeInterval(Self.retryWindow)
+        let poll = TimeInterval(Self.retryPoll) / 1_000_000_000
+        var wait = poll
+        var failures = 0
         while Date() < until, !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: Self.retryPoll)
-            guard let newer = try? await requester.newerResult() else { continue }
+            try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+            wait = poll
+            let newer: PairResult?
+            do {
+                newer = try await requester.newerResult()
+                failures = 0
+            } catch {
+                if BrowserApproval.rateLimited(error) {
+                    failures = min(failures + 1, 5)
+                    wait = BrowserApproval.backoff(poll, failures: failures, after: error)
+                }
+                continue
+            }
+            guard let newer else { continue }
             _ = apply(newer, key: requester.sshKey.privateKeyPEM)
+            if !Self.hasFailed(newer) { return }
         }
+    }
+
+    /// Whether the approver couldn't add the key on some machine, so it may try that one again.
+    private static func hasFailed(_ result: PairResult) -> Bool {
+        result.machines.contains { $0.status == .failed }
     }
 
     private static func ended(_ error: Error, approver: String?) -> Phase {

@@ -339,7 +339,8 @@ final class PairApprovalModel: ObservableObject {
     }
 
     /// While the code is typed and the machines ticked, the request is read on the foreground
-    /// poll's cadence: a cancel or an expiry ends the sheet as soon as the service says so.
+    /// poll's cadence: a cancel or an expiry ends the sheet as soon as the service says so. A
+    /// read refused for a spent approval budget is backed off inside `stillOpen`, not repeated here.
     private func watchOpen(_ approval: PairApproval) {
         watch?.cancel()
         watch = Task { [weak self] () async -> Void in

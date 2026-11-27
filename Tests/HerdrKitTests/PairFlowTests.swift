@@ -533,4 +533,16 @@ final class PairFlowTests: XCTestCase {
         }
         XCTAssertEqual(AccountServiceStub.requests(to: "/v1/approvals").filter { $0.method == "POST" }.count, 1)
     }
+
+    /// The approver's sheet checks every few seconds that the request is still open while the
+    /// code is typed; a check refused for a spent budget is read again, not taken as an error.
+    func testTheApproversOpenCheckWaitsOutARateLimit() async throws {
+        let (_, approval, code) = try await startBoth()
+        _ = try await approval.checkCode(code)
+        let base = "/v1/approvals/\(FakePairService.requestID)"
+        let before = AccountServiceStub.requests(to: base).count
+        service.queued = ["GET \(base)": [.error(429, "rate_limited"), .error(429, "rate_limited")]]
+        try await approval.stillOpen()
+        XCTAssertEqual(AccountServiceStub.requests(to: base).count, before + 3)
+    }
 }

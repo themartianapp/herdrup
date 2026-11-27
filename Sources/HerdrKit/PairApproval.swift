@@ -314,7 +314,8 @@ public actor PairApproval {
 
     /// Reads the request and throws once it is over: `.cancelled` when the new device withdrew
     /// it, `.ended` when it was denied, expired or is gone. Run before adding keys and while the
-    /// sheet waits on the user, so a withdrawn request adds nothing. A failed read is thrown as is.
+    /// sheet waits on the user, so a withdrawn request adds nothing. A spent approval budget is
+    /// waited out (backing off) until the request expires; any other failed read is thrown as is.
     public func stillOpen() async throws {
         if withdrawn { throw BrowserApproval.Failure.cancelled }
         if done { throw BrowserApproval.Failure.ended }
