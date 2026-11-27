@@ -792,10 +792,13 @@ private final class ChatPromptTops {
     /// older page, the top already fetching one): the view value it captured still has no
     /// search, so this is how it learns search took over and gives up (review 18e58fbbc4ef6e41).
     var navigation = 0
-    enum PendingOlderFollowUp {
-        case none
-        case revealOnly
-        case fetchAllowed
+    enum PendingOlderFollowUp: Int, Comparable {
+        case none = 0
+        case revealOnly = 1
+        case fetchAllowed = 2
+        case retryFetch = 3
+
+        static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
     }
 
     /// Live Find state, mirrored by reference so async paging continuations never read a stale
@@ -804,33 +807,34 @@ private final class ChatPromptTops {
     /// Navigation generation that currently owns an in-flight scroll-anchor restore, so close-
     /// triggered reveals and completing older-page fetches cannot schedule competing restores.
     private var restoringNavigation: Int?
-    /// Follow-up work requested while `restoringNavigation` owned the anchor: `.revealOnly` when
-    /// an overlapping already-loaded reveal arrived, or `.fetchAllowed` when a fetch-eligible
-    /// top-sentinel visibility event arrived while `drawnStart == 0`.
+    /// Follow-up work requested for the active restore: initialized by the owner (`.revealOnly`
+    /// for a loaded-window reveal, `.none` for a freshly fetched page) and upgraded if an
+    /// overlapping reveal (`.revealOnly`), fetch-eligible top-sentinel event (`.fetchAllowed`),
+    /// or explicit Retry tap (`.retryFetch`) arrives while `restoringNavigation` owns the anchor.
     private var pendingOlder: PendingOlderFollowUp = .none
 
     /// Whether the current navigation generation already owns an in-flight older-page restore.
     var isRestoringOlder: Bool { restoringNavigation == navigation }
 
-    /// Claims restore ownership for `generation`. Returns false if `generation` is stale or
-    /// already restoring (recording `.revealOnly` in the latter case without upgrading a deferred
-    /// fetch).
-    func claimOlderRestore(for generation: Int) -> Bool {
+    /// Claims restore ownership for `generation` with `initialFollowUp`. Returns false if
+    /// `generation` is stale or already restoring (upgrading any pending follow-up to at least
+    /// `.revealOnly` without downgrading a deferred fetch or retry).
+    func claimOlderRestore(for generation: Int, initialFollowUp: PendingOlderFollowUp = .none) -> Bool {
         guard generation == navigation else { return false }
         if restoringNavigation == generation {
-            if pendingOlder == .none { pendingOlder = .revealOnly }
+            pendingOlder = max(pendingOlder, max(.revealOnly, initialFollowUp))
             return false
         }
         restoringNavigation = generation
-        pendingOlder = .none
+        pendingOlder = initialFollowUp
         return true
     }
 
-    /// Preserves a fetch-eligible top-sentinel event that arrived during an active restore so
-    /// releasing ownership honors it once if the sentinel remains visible.
-    func deferOlderFetch(for generation: Int) {
+    /// Preserves a fetch-eligible top-sentinel event or explicit Retry tap that arrived during an
+    /// active restore so releasing ownership honors it once.
+    func deferOlderFetch(for generation: Int, retry: Bool = false) {
         guard generation == navigation, restoringNavigation == generation else { return }
-        pendingOlder = .fetchAllowed
+        pendingOlder = max(pendingOlder, retry ? .retryFetch : .fetchAllowed)
     }
 
     func hasPendingOlder(for generation: Int) -> Bool {
@@ -1766,31 +1770,35 @@ struct ChatView: View {
     }
 
     /// Widens the rendered window to `targetStart` and restores `anchor` to the top under a single
-    /// restore owner for `navigation`. Any overlapping reveal or fetch-eligible sentinel event is
-    /// deferred on `ChatPromptTops` and honored once after this restore settles if the sentinel
-    /// remains visible.
+    /// restore owner for `navigation`. The owner's initial follow-up (`.revealOnly` for a
+    /// loaded-window reveal, `.none` for a newly fetched page) may be upgraded while this restore
+    /// owns the anchor, and the released follow-up is dispatched once after the scroll settles.
     private func restoreOlderWindow(_ proxy: ScrollViewProxy, to anchor: String,
                                     targetStart: Int, navigation: Int,
-                                    recheckAfterScroll: Bool) {
-        guard promptTops.claimOlderRestore(for: navigation) else { return }
+                                    initialFollowUp: ChatPromptTops.PendingOlderFollowUp) {
+        guard promptTops.claimOlderRestore(for: navigation, initialFollowUp: initialFollowUp) else { return }
         drawWindow = windowStarting(at: targetStart)
         Task {
             try? await Task.sleep(nanoseconds: 30_000_000)
             guard promptTops.navigation == navigation else { return }
             proxy.scrollTo(anchor, anchor: .top)
-            if recheckAfterScroll || promptTops.hasPendingOlder(for: navigation) {
-                // The sentinel's visibility is measured again after that scroll; still in view
-                // (short rows, or deferred work arrived while this restore owned the anchor),
-                // honor it once after releasing ownership.
+            if promptTops.hasPendingOlder(for: navigation) {
+                // Give layout a beat to re-measure top-sentinel visibility after the scroll before
+                // honoring the follow-up once ownership is released.
                 try? await Task.sleep(nanoseconds: 150_000_000)
                 guard promptTops.navigation == navigation else { return }
             }
             let pending = promptTops.releaseOlderRestore(for: navigation)
-            guard topVisible, landed else { return }
-            if pending == .fetchAllowed {
-                showOlder(proxy, fetches: true)
-            } else if recheckAfterScroll || pending == .revealOnly {
-                showOlder(proxy, fetches: false)
+            guard landed else { return }
+            switch pending {
+            case .none:
+                break
+            case .revealOnly:
+                if topVisible { showOlder(proxy, fetches: false) }
+            case .fetchAllowed:
+                if topVisible { showOlder(proxy, fetches: true) }
+            case .retryFetch:
+                loadOlder(proxy, retry: true)
             }
         }
     }
@@ -1813,15 +1821,20 @@ struct ChatView: View {
         }
         guard let anchor = anchorRowID else { return }
         restoreOlderWindow(proxy, to: anchor, targetStart: start - Self.renderWindow,
-                           navigation: promptTops.navigation, recheckAfterScroll: true)
+                           navigation: promptTops.navigation, initialFollowUp: .revealOnly)
     }
 
     /// Fetches the next older page and draws its newest window above the row that was on
     /// top, which stays where it was.
     private func loadOlder(_ proxy: ScrollViewProxy, retry: Bool = false) {
-        guard landed, !promptTops.finding, !promptTops.isRestoringOlder,
+        guard landed, !promptTops.finding,
               model.hasOlder, !model.loadingOlder, retry || !model.olderFailed else { return }
+        if promptTops.isRestoringOlder {
+            promptTops.deferOlderFetch(for: promptTops.navigation, retry: retry)
+            return
+        }
         let anchor = anchorRowID
+        let anchorIndexBefore = anchor.flatMap { model.rowIndex[$0] }
         let navigation = promptTops.navigation
         Task {
             await model.loadOlder(client: client)
@@ -1830,12 +1843,16 @@ struct ChatView: View {
             // top sentinel is still on screen with undrawn history above `drawnStart`, hand off
             // to a single fresh reveal under the current generation instead of stranding rows.
             guard promptTops.navigation == navigation else {
-                revealStrandedOlder(proxy)
+                if !model.olderFailed { revealStrandedOlder(proxy) }
                 return
             }
-            guard let anchor, let index = model.rowIndex[anchor] else { return }
+            // Never claim a scroll-anchor restore when the fetch failed or prepended no rows
+            // above the anchor, so an immediate Retry tap is never blocked.
+            guard !model.olderFailed,
+                  let anchor, let before = anchorIndexBefore,
+                  let index = model.rowIndex[anchor], index > before else { return }
             restoreOlderWindow(proxy, to: anchor, targetStart: index - Self.renderWindow,
-                               navigation: navigation, recheckAfterScroll: false)
+                               navigation: navigation, initialFollowUp: .none)
         }
     }
 
@@ -2638,9 +2655,13 @@ private struct ChatRowView: View, Equatable {
 
     private static func runningCommandPreview(_ detail: String?) -> String? {
         guard let detail else { return nil }
-        for line in detail.split(whereSeparator: \.isNewline) {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        var start = detail.startIndex
+        while start < detail.endIndex {
+            let lineEnd = detail[start...].firstIndex(where: \.isNewline) ?? detail.endIndex
+            let trimmed = detail[start..<lineEnd].trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty { return trimmed }
+            guard lineEnd < detail.endIndex else { break }
+            start = detail.index(after: lineEnd)
         }
         return nil
     }
@@ -2673,7 +2694,6 @@ private struct ChatRowView: View, Equatable {
     private func stepRow(_ step: TranscriptStepRow, running: Bool, compact: Bool) -> some View {
         let detailKey = "d:" + step.id
         let detailOpen = expanded.contains(detailKey)
-        let preview = compact ? Self.runningCommandPreview(step.detail) : nil
         return VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline, spacing: 7) {
                 if running {
@@ -2704,7 +2724,7 @@ private struct ChatRowView: View, Equatable {
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
                     .padding(.leading, running ? 22 : 12)
-            } else if let preview, preview != step.intent {
+            } else if compact, let preview = Self.runningCommandPreview(step.detail), preview != step.intent {
                 Text(preview).font(Typography.machine(11.5 * textScale)).foregroundStyle(Palette.textFaint)
                     .lineLimit(1)
                     .truncationMode(.tail)
