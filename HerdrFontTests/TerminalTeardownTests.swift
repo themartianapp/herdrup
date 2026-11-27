@@ -46,10 +46,13 @@ final class TerminalTeardownTests: XCTestCase {
 
     private func spin(until condition: () -> Bool, timeout: TimeInterval = 10) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
-        while !condition(), Date() < deadline {
+        while true {
+            // Drain ObjC autoreleases from layoutIfNeeded / CoreAnimation on every poll so a
+            // synchronous layout pass never pins `hostView` in the test method's outer pool.
+            if autoreleasepool(invoking: condition) { return true }
+            if Date() >= deadline { return false }
             RunLoop.main.run(until: Date().addingTimeInterval(0.02))
         }
-        return condition()
     }
 
     private func containsSurface(_ view: UIView) -> Bool {
@@ -84,8 +87,8 @@ final class TerminalTeardownTests: XCTestCase {
             window?.layoutIfNeeded()
             CATransaction.flush()
             return hostView.map(containsSurface) ?? false
-        }, timeout: 30), "the terminal must be mounted before it is torn down (app state "
-                      + "\(UIApplication.shared.applicationState.rawValue), scene \(scene != nil))")
+        }), "the terminal must be mounted before it is torn down (app state "
+            + "\(UIApplication.shared.applicationState.rawValue), scene \(scene != nil))")
         XCTAssertTrue(armed.armed, "nothing disarms Ctrl while the terminal is up")
 
         // Off screen first, then released: in the crash, the hosting controller was already out
@@ -93,11 +96,10 @@ final class TerminalTeardownTests: XCTestCase {
         // the background with no active scene / display link (j_bc1badfd: app state 2, scenes ""),
         // clearing `rootViewController` alone leaves the hosting view retained by the throwaway
         // window or uncommitted CoreAnimation transactions; detach, flush, and release the window
-        // so only `host` retains `hostView`.
+        // inside an autoreleasepool so only `host` retains `hostView`.
         autoreleasepool {
             window?.rootViewController = nil
             hostView?.removeFromSuperview()
-            window?.resignKey()
             window?.isHidden = true
             window?.layoutIfNeeded()
             CATransaction.flush()
@@ -105,6 +107,7 @@ final class TerminalTeardownTests: XCTestCase {
         }
         _ = spin(until: { false }, timeout: 0.3)
         XCTAssertTrue(host != nil && hostView != nil, "the test alone still holds the hosting controller")
+        XCTAssertTrue(armed.armed, "detaching the window must not disarm Ctrl before controller release")
 
         armed.tearingDown = true
         autoreleasepool {
