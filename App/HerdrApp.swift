@@ -6364,7 +6364,8 @@ struct TerminalPaneContent: View {
     /// page keeps asking so Chat appears without restarting the app.
     private var chatRecoveryNeeded: Bool {
         ChatPreference.needsRecovery(agent?.agent, transcriptCapable: transcriptCapable,
-                                     agyCapable: transcriptAgyCapable, unsupported: chatModel.unsupported)
+                                     agyCapable: transcriptAgyCapable,
+                                     unsupported: chatModel.unsupportedRecoverable)
     }
     /// Gaps between transcript retries while Chat is refused, in seconds. The last one repeats.
     private static let chatRecoveryDelays: [UInt64] = ChatPreference.recoveryDelays
@@ -6778,7 +6779,7 @@ struct TerminalPaneContent: View {
             guard chatRecoveryNeeded, isForeground else { return }
             await chatModel.refresh(client: client)
             var attempt = 0
-            while chatModel.unsupported, !Task.isCancelled {
+            while chatModel.unsupportedRecoverable, !Task.isCancelled {
                 let delays = Self.chatRecoveryDelays
                 let seconds = delays[min(attempt, delays.count - 1)]
                 attempt += 1

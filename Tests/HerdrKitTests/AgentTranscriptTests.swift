@@ -1247,5 +1247,18 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertFalse(stillRefused)
         XCTAssertFalse(AgentChatSupport.needsRecovery("agy", transcriptCapable: true, agyCapable: true, unsupported: stillRefused))
         XCTAssertEqual(store.entries.map(\.id), ["u1", "r1"])
+
+        // Permanent guest refusal (`guest_forbidden`) does not classify as temporary
+        // `AgentTranscriptError.unsupported`, so the pane recovery loop stops.
+        let (forbiddenClient, _) = scripted { _ in
+            RecordingTransport.errorReply(code: "guest_forbidden", message: "guests may not read transcripts")
+        }
+        let forbiddenStore = TranscriptStore(target: "w1:p3")
+        await forbiddenStore.refresh(client: forbiddenClient)
+        XCTAssertEqual((forbiddenStore.lastError as? APIError)?.code, "guest_forbidden")
+        let recoverableAfterForbidden = (forbiddenStore.lastError as? AgentTranscriptError) == .unsupported
+        XCTAssertFalse(recoverableAfterForbidden)
+        XCTAssertFalse(AgentChatSupport.needsRecovery("agy", transcriptCapable: true, agyCapable: true,
+                                                      unsupported: recoverableAfterForbidden))
     }
 }

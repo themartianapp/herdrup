@@ -146,7 +146,8 @@ struct GuestPaneView: View {
     /// Chat reappears without closing and reopening the share.
     private var chatRecoveryNeeded: Bool {
         ChatPreference.needsRecovery(agent?.agent, transcriptCapable: transcriptCapable,
-                                     agyCapable: transcriptAgyCapable, unsupported: chatModel.unsupported)
+                                     agyCapable: transcriptAgyCapable,
+                                     unsupported: chatModel.unsupportedRecoverable)
     }
     private var showingChat: Bool { showsChat && tab == .chat }
     /// The Topics tab: a shared omp agent that offers topics, on a host with `agent_topics`.
@@ -283,7 +284,7 @@ struct GuestPaneView: View {
             guard chatRecoveryNeeded, availability == .running, scenePhase.mountsChat else { return }
             await chatModel.refresh(client: client)
             var attempt = 0
-            while chatModel.unsupported, !Task.isCancelled {
+            while chatModel.unsupportedRecoverable, !Task.isCancelled {
                 let delays = ChatPreference.recoveryDelays
                 let seconds = delays[min(attempt, delays.count - 1)]
                 attempt += 1
@@ -294,12 +295,19 @@ struct GuestPaneView: View {
         }
         // A shared chat-capable agent opens where Settings' "omp agents open in" says (#735), once
         // per mount, as the owner's page opens from it; afterwards the guest's own pick stands. If
-        // a temporary refusal hid Chat before the guest picked a tab, allow Chat to re-open on
-        // recovery (#881).
+        // a temporary refusal hid Chat before the guest picked a tab, re-resolve the default on
+        // recovery so Topics stays selected when it became available during the refusal (#881).
         .onChange(of: showsChat, initial: true) { _, available in
             if available, !chatDefaulted {
                 chatDefaulted = true
-                if !tabChosen { tab = ChatPreference.opensInChat ? .chat : .terminal }
+                if !tabChosen {
+                    switch ChatPreference.resolved(ChatPreference.settingMode, chatAvailable: true,
+                                                   topicsAvailable: showsTopics) {
+                    case .topics: tab = .topics
+                    case .chat: tab = .chat
+                    case .terminal: tab = .terminal
+                    }
+                }
             } else if !available, tab == .chat {
                 if chatRecoveryNeeded, !tabChosen { chatDefaulted = false }
                 tab = .terminal
