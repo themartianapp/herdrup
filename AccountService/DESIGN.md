@@ -1084,7 +1084,7 @@ relay.ts and crash.ts.
 | `SYNC_WRITE_LIMIT` (6984) | account id | 30 / 60 s | `POST /v1/sync` |
 | `ENROL_LIMIT` (6985) | account id | 10 / 60 s | Challenge and enrol |
 | `DELETE_IP_LIMIT` (6986) | IP | 5 / 60 s | Delete, Apple notifications |
-| `APPROVAL_LIMIT` (6987) | account id | 30 / 60 s | Every browser-approval route (§12) |
+| `APPROVAL_LIMIT` (6987) | account id | 90 / 60 s | Every approval route (§12, §13) |
 
 Fixed caps:
 
@@ -1362,7 +1362,7 @@ person to type a code. What the service enforces for that argument:
   states; a finish's `200` is the write itself and its `410 expired` says that finish wrote
   nothing; `GET /v1/browsers/self` and Devices report a browser's reported access (from
   `browser_access`), not a request's outcome, and a stored expiry only drops `waiting` there;
-- `APPROVAL_LIMIT` (30 / 60 s per account, every route, on top of `ACCOUNT_LIMIT`) and at most
+- `APPROVAL_LIMIT` (90 / 60 s per account, every route, on top of `ACCOUNT_LIMIT`) and at most
   10 requests per account per hour (`429 too_many_requests`), counted in fixed hour windows per
   browser and summed over the account in the inserting statement.
 
