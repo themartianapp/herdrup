@@ -1191,6 +1191,9 @@ struct ChatView: View {
             guard old.query == new.query else { return }
             updateSearch(proxy)
         }
+        .onAppear {
+            promptTops.finding = findRequest != nil
+        }
         // Search moves the chat on its own: retire any in-flight jump or paging anchor first,
         // then (when Find closes with the top sentinel still visible) reveal any history loaded
         // while Find suppressed paging — in one handler, in that order.
@@ -1289,7 +1292,11 @@ struct ChatView: View {
                     Button("Load older") {
                         Task {
                             await model.loadOlder(client: client)
-                            updateSearch(proxy, reveal: true)
+                            if promptTops.finding {
+                                updateSearch(proxy, reveal: true)
+                            } else {
+                                revealStrandedOlder(proxy)
+                            }
                         }
                     }
                     .disabled(model.loadingOlder)
@@ -1528,6 +1535,10 @@ struct ChatView: View {
                     }
                     await model.loadOlder(client: client)
                     if model.olderFailed { return }
+                    if promptTops.navigation != navigation {
+                        revealStrandedOlder(proxy)
+                        return
+                    }
                 }
             }
         }
@@ -1693,11 +1704,19 @@ struct ChatView: View {
         Task { @MainActor in position.jumpToLatest() }
     }
 
+    /// Reveals already-loaded rows above `drawnStart` when an older-page fetch finished after
+    /// Find closed (or navigation retired the fetch's original anchor) while the top sentinel is
+    /// still on screen. Never starts a new fetch, and never runs alongside an uncancelled `loadOlder`.
+    private func revealStrandedOlder(_ proxy: ScrollViewProxy) {
+        guard topVisible, landed, !promptTops.finding, drawnStart > 0 else { return }
+        showOlder(proxy, fetches: false)
+    }
+
     /// The reader reached the top: the next window of rows already loaded, else the next
     /// older page. Either way the row that was on top stays where it was. `fetches` false: a
     /// window only, as when a revealed window still does not reach the screen's top.
     private func showOlder(_ proxy: ScrollViewProxy, fetches: Bool = true) {
-        guard landed, findRequest == nil else { return }
+        guard landed, !promptTops.finding else { return }
         let start = drawnStart
         guard start > 0 else {
             if fetches { loadOlder(proxy) }
@@ -1720,7 +1739,7 @@ struct ChatView: View {
     /// Fetches the next older page and draws its newest window above the row that was on
     /// top, which stays where it was.
     private func loadOlder(_ proxy: ScrollViewProxy, retry: Bool = false) {
-        guard landed, findRequest == nil, model.hasOlder, !model.loadingOlder, retry || !model.olderFailed else { return }
+        guard landed, !promptTops.finding, model.hasOlder, !model.loadingOlder, retry || !model.olderFailed else { return }
         let anchor = anchorRowID
         let navigation = promptTops.navigation
         Task {
@@ -1730,9 +1749,7 @@ struct ChatView: View {
             // top sentinel is still on screen with undrawn history above `drawnStart`, hand off
             // to a single fresh reveal under the current generation instead of stranding rows.
             guard promptTops.navigation == navigation else {
-                if topVisible, landed, !promptTops.finding, drawnStart > 0 {
-                    showOlder(proxy, fetches: false)
-                }
+                revealStrandedOlder(proxy)
                 return
             }
             guard let anchor, let index = model.rowIndex[anchor] else { return }
