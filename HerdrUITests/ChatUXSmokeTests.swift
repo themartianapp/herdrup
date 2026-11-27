@@ -55,7 +55,7 @@ final class ChatUXSmokeTests: XCTestCase {
         var gap = tailGap(app)
         _ = poll(3, every: 0.3) {
             gap = tailGap(app)
-            return gap <= 32
+            return gap >= 0 && gap <= 32
         }
         XCTAssertGreaterThanOrEqual(gap, 0, "\(moment): the model label must sit above the composer")
         XCTAssertLessThanOrEqual(gap, 32, "\(moment): at most about 20 pt between the model label and the composer")

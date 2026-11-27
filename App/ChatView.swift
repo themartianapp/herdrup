@@ -1695,11 +1695,12 @@ struct ChatView: View {
         drawWindow = windowStarting(at: start - Self.renderWindow)
         Task {
             try? await Task.sleep(nanoseconds: 30_000_000)
+            guard !followingLatest, findRequest == nil else { return }
             proxy.scrollTo(anchor, anchor: .top)
             // The sentinel's visibility is measured again after that scroll; still in view
             // (short rows), it gets the next window, never a fetch.
             try? await Task.sleep(nanoseconds: 150_000_000)
-            if topVisible, landed, findRequest == nil { showOlder(proxy, fetches: false) }
+            if topVisible, landed, !followingLatest, findRequest == nil { showOlder(proxy, fetches: false) }
         }
     }
 
@@ -1710,9 +1711,14 @@ struct ChatView: View {
         let anchor = anchorRowID
         Task {
             await model.loadOlder(client: client)
-            guard let anchor, let index = model.rowIndex[anchor] else { return }
+            // If the reader jumped back to the tail or opened search while this page was
+            // in flight, keep the newly loaded turns off-screen instead of yanking them
+            // back to the old top anchor.
+            guard !followingLatest, findRequest == nil,
+                  let anchor, let index = model.rowIndex[anchor] else { return }
             drawWindow = windowStarting(at: index - Self.renderWindow)
             try? await Task.sleep(nanoseconds: 30_000_000)
+            guard !followingLatest, findRequest == nil else { return }
             proxy.scrollTo(anchor, anchor: .top)
         }
     }
