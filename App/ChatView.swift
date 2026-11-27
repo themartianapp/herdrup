@@ -801,6 +801,13 @@ private final class ChatPromptTops {
         settle.readerInput()
         lastJump = nil
     }
+
+    /// Retires both any issued previous-message jump and any in-flight paging/jump anchor
+    /// awaiting data, so navigation handlers cannot update one without the other.
+    func cancelNavigation() {
+        lastJump = nil
+        navigation += 1
+    }
 }
 
 /// A form's review asked to be shown from its top (`AskFormStepper`). Each layout of the card
@@ -1081,8 +1088,7 @@ struct ChatView: View {
         // Search moves the chat on its own: the up arrow then starts from what is on screen.
         // (The offset check retires a settled jump anyway; this also covers one still gliding.)
         .onChange(of: findRequest != nil) { _, _ in
-            promptTops.lastJump = nil
-            promptTops.navigation += 1
+            promptTops.cancelNavigation()
             formReveal.pending = false
         }
         .environment(\.chatTextScale, textScale)
@@ -1114,8 +1120,7 @@ struct ChatView: View {
         .overlay(alignment: .bottom) {
             if landed, findRequest == nil, !atBottom {
                 JumpToLatestButton(label: "Jump to latest message", identifier: "chat-jump-latest") {
-                    promptTops.lastJump = nil
-                    promptTops.navigation += 1
+                    promptTops.cancelNavigation()
                     formReveal.pending = false
                     scrollPosition.animateToLatest()
                     followingLatest = true
@@ -1400,8 +1405,7 @@ struct ChatView: View {
                 // reveal, which would hold the card's top on screen against the follow.
                 formReveal.pending = false
                 if findRequest == nil {
-                    promptTops.lastJump = nil
-                    promptTops.navigation += 1
+                    promptTops.cancelNavigation()
                     followingLatest = true
                 } else {
                     followingLatest = false
@@ -1630,6 +1634,16 @@ struct ChatView: View {
         }
         // `landed` flips after the first scroll; the sentinel may already be on screen.
         .onChange(of: landed) { _, _ in if topVisible { showOlder(proxy) } }
+        // Closing Find or finishing a fetch whose old anchor was retired by navigation may leave
+        // the top sentinel still visible with newly loaded rows sitting above `drawnStart`.
+        .onChange(of: findRequest != nil) { _, finding in
+            if !finding, topVisible { showOlder(proxy) }
+        }
+        .onChange(of: model.loadingOlder) { _, loading in
+            if !loading, topVisible, findRequest == nil, drawnStart > 0 {
+                showOlder(proxy, fetches: false)
+            }
+        }
     }
 
     // MARK: - The drawn window
