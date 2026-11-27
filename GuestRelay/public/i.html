@@ -51,6 +51,10 @@
   <p class="problem" id="problem" hidden></p>
 
   <div class="foot">
+    <div class="choice" id="signed-in" hidden>
+      <p class="choice-lead" id="signed-in-lead">Signed in to your HerdrUp account in this browser.</p>
+      <a class="btn primary" id="add-account">Add to your HerdrUp account</a>
+    </div>
     <a class="btn primary" id="open" hidden>Open in HerdrUp</a>
     <a class="btn quiet" id="browser" hidden>Open in browser</a>
     <div class="choice" id="choice" hidden>
@@ -59,8 +63,8 @@
       <!-- The account's own provider marks (herdrup-desktop src/herdrupAccount.ts), Apple's in ink. -->
       <a class="btn quiet provider" id="apple"><img src="/static/apple.svg" width="15" height="18" alt="">Continue with Apple</a>
       <a class="btn quiet provider" id="google"><img src="/static/google.svg" width="17" height="17" alt="">Continue with Google</a>
-      <a class="btn plain" id="device">Only this device</a>
     </div>
+    <a class="btn plain" id="device" hidden>Only this device</a>
     <a class="btn quiet" id="store" href="https://apps.apple.com/app/id6798087089" rel="noopener" hidden>Get HerdrUp on the App Store</a>
     <a class="btn quiet" id="desktop" href="https://github.com/jerryfane/herdrup-desktop/releases/latest" rel="noopener" hidden>Get HerdrUp for desktop</a>
     <p class="hint" id="hint">No HerdrUp yet? Tap Open in browser, or install it, then come back to this page and tap Open in HerdrUp.</p>

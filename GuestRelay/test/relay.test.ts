@@ -7,7 +7,7 @@ import {
   runInDurableObject,
 } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
-import { accountInvite, accountLink, browserLink, installTarget, invitePayload, isRelay, openShortInvite, shortInvite, tintIndex } from "../public/static/invite.js";
+import { accountInvite, accountLink, addAccountLink, browserLink, checkSignedIn, installTarget, invitePayload, isRelay, openShortInvite, REFRESH_LOCK, shortInvite, tintIndex } from "../public/static/invite.js";
 import { InviteBlob } from "../src/invite";
 
 // Everything here runs against the real Worker and Durable Object in workerd. Each test
@@ -253,8 +253,8 @@ describe("routing", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toMatch(/^text\/html/);
     expect(response.headers.get("content-security-policy")).toContain("default-src 'none'");
-    // The page fetches a short invite's blob from its own origin, and nowhere else.
-    expect(response.headers.get("content-security-policy")).toContain("connect-src 'self';");
+    // The page fetches short-invite blobs from its own origin and checks signed-in state against AccountService.
+    expect(response.headers.get("content-security-policy")).toContain("connect-src 'self' https://accounts.herdrup.app;");
     expect(response.headers.get("referrer-policy")).toBe("no-referrer");
     const html = await response.text();
     expect(html).toContain('href="https://apps.apple.com/app/id6798087089"');
@@ -1204,14 +1204,41 @@ describe("landing page script", () => {
     }
   });
 
-  it("links Continue with Apple/Google to /web/ with the payload, bind=1 and the provider in the fragment, and Only this device without them", () => {
+  it("links Continue with Apple/Google to /web/ with the payload, bind=1 and the provider in the fragment, Add to your HerdrUp account without a provider, and Only this device without them", () => {
     const payload = newInvitePayload();
     for (const provider of ["apple", "google"] as const) {
       const account = new URL(accountLink(payload, provider), ORIGIN);
       expect([account.origin, account.pathname, account.search, account.hash])
         .toEqual([ORIGIN, "/web/", "", `#${payload}&bind=1&provider=${provider}`]);
     }
+    const direct = new URL(addAccountLink(payload), ORIGIN);
+    expect([direct.origin, direct.pathname, direct.search, direct.hash])
+      .toEqual([ORIGIN, "/web/", "", `#${payload}&bind=1`]);
     expect(browserLink(payload)).toBe(`/web/#${payload}`);
+  });
+
+  it("checks signed-in browser state under the shared refresh lock and degrades cleanly when signed out or unreachable", async () => {
+    const locksHeld: string[] = [];
+    const locks = {
+      async request<T>(name: string, run: () => Promise<T>): Promise<T> {
+        locksHeld.push(name);
+        return await run();
+      },
+    };
+    const seen: { url: string; credentials?: unknown; method?: string }[] = [];
+    const ok = await checkSignedIn((async (url: string | URL | Request, init?: { credentials?: unknown; method?: string }) => {
+      seen.push({ url: String(url), credentials: init?.credentials, method: init?.method });
+      return Response.json({ account_id: "acct-123", display_hint: "jerry@example.com" });
+    }) as unknown as typeof fetch, locks, 500);
+    expect(ok).toEqual({ signedIn: true, displayHint: "jerry@example.com" });
+    expect(locksHeld).toEqual([REFRESH_LOCK]);
+    expect(seen).toEqual([{ url: "https://accounts.herdrup.app/v1/auth/refresh", credentials: "include", method: "POST" }]);
+
+    const signedOut = await checkSignedIn((async () => Response.json({ error: "invalid_token" }, { status: 401 })) as typeof fetch, locks, 500);
+    expect(signedOut).toEqual({ signedIn: false, displayHint: null });
+
+    const offline = await checkSignedIn((async () => { throw new TypeError("Failed to fetch"); }) as typeof fetch, locks, 500);
+    expect(offline).toEqual({ signedIn: false, displayHint: null });
   });
 
   it("picks the agent's avatar gradient from its name exactly as the apps do", () => {

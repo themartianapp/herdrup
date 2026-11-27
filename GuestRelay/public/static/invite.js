@@ -71,6 +71,10 @@ export function browserLink(payload) {
 
 /** The sole relay origin configured for browser HerdrUp account sign-in (AccountService wrangler.toml). */
 export var ACCOUNT_ORIGIN = "https://guest.herdrup.app";
+/** The HerdrUp account service origin (AccountService). */
+export var ACCOUNT_SERVICE = "https://accounts.herdrup.app";
+/** Shared Web Locks name with /web/ (herdrup-desktop src/web/account.ts) so refresh cookie rotations never race across tabs. */
+export var REFRESH_LOCK = "herdrup-account-refresh";
 
 /**
  * Whether a decoded invite lets the guest keep the share in a HerdrUp account: the owner's
@@ -95,6 +99,61 @@ export function accountInvite(invite, origin) {
  */
 export function accountLink(payload, provider) {
   return browserLink(payload) + "&bind=1&provider=" + provider;
+}
+
+/**
+ * The "Add to your HerdrUp account" link for a browser that is already signed in: the browser
+ * guest with the invite and `bind=1` in the fragment (no provider, since the cookie already
+ * holds a live session).
+ * @param {string} payload b64url invite payload
+ * @returns {string}
+ */
+export function addAccountLink(payload) {
+  return browserLink(payload) + "&bind=1";
+}
+
+/**
+ * Checks whether this browser already holds a live HerdrUp account session cookie on
+ * ACCOUNT_SERVICE, serialized with `/web/` via Web Locks so cookie rotation never races with
+ * an open tab. Any network error, non-200 status, or timeout resolves to `{ signedIn: false }`.
+ * @param {typeof fetch} fetcher
+ * @param {{ request<T>(name: string, run: () => Promise<T>): Promise<T> } | null | undefined} locks
+ * @param {number} [timeoutMs]
+ * @returns {Promise<{ signedIn: boolean, displayHint: string | null }>}
+ */
+export async function checkSignedIn(fetcher, locks, timeoutMs) {
+  var limit = typeof timeoutMs === "number" && timeoutMs > 0 ? timeoutMs : 2500;
+  var probe = async function () {
+    var controller = typeof AbortController === "function" ? new AbortController() : null;
+    var timer = setTimeout(function () { if (controller !== null) controller.abort(); }, limit);
+    try {
+      var response = await fetcher(ACCOUNT_SERVICE + "/v1/auth/refresh", {
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+        signal: controller !== null ? controller.signal : undefined,
+      });
+      if (!response.ok) return { signedIn: false, displayHint: null };
+      var body = await response.json();
+      if (body === null || typeof body !== "object" || typeof body.account_id !== "string" || body.account_id === "") {
+        return { signedIn: false, displayHint: null };
+      }
+      var hint = typeof body.display_hint === "string" && body.display_hint !== "" ? body.display_hint : null;
+      return { signedIn: true, displayHint: hint };
+    } catch (e) {
+      return { signedIn: false, displayHint: null };
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  try {
+    if (locks && typeof locks.request === "function") {
+      return await locks.request(REFRESH_LOCK, probe);
+    }
+    return await probe();
+  } catch (e) {
+    return { signedIn: false, displayHint: null };
+  }
 }
 
 /**
