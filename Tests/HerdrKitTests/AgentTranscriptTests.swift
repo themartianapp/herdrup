@@ -775,11 +775,35 @@ final class TranscriptStoreTests: XCTestCase {
 
         // Nothing older: no request is made.
         let sent = transport.requestLines.count
-        try await store.loadOlder(client: client)
+        let added = try await store.loadOlder(client: client)
+        XCTAssertFalse(added)
         XCTAssertEqual(transport.requestLines.count, sent)
         // The newest page is a few turns, so a long session's chat draws at once; the reader
         // scrolls up for more, a full page at a time.
         XCTAssertEqual(transport.requests.compactMap { $0.params["limit"] as? Int }, [5, 20, 20])
+    }
+
+    func testLoadOlderReportsWhetherNewEntriesWereMerged() async throws {
+        let (client, _) = scripted { params in
+            switch params["before"] as? String {
+            case nil: return Self.page([Self.entry("u2", "user", extra: #""text":"b""#), Self.entry("r2")], before: "c2")
+            // Duplicate-only older page: merges zero entries and must return false so the view
+            // does not claim an anchor restore.
+            case "c2": return Self.page([Self.entry("u2", "user", extra: #""text":"b""#)], before: "c1")
+            default: return Self.page([Self.entry("u1", "user", extra: #""text":"a""#)], before: nil)
+            }
+        }
+        let store = TranscriptStore(target: "w1:p1")
+        await store.refresh(client: client)
+        XCTAssertEqual(store.entries.map(\.id), ["u2", "r2"])
+
+        let duplicateAdded = try await store.loadOlder(client: client)
+        XCTAssertFalse(duplicateAdded)
+        XCTAssertEqual(store.entries.map(\.id), ["u2", "r2"])
+
+        let freshAdded = try await store.loadOlder(client: client)
+        XCTAssertTrue(freshAdded)
+        XCTAssertEqual(store.entries.map(\.id), ["u1", "u2", "r2"])
     }
 
     func testNewestPageAsksForFiveTurnsAndOlderPagesForTwenty() async throws {

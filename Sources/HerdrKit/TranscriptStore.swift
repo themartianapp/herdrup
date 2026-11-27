@@ -417,9 +417,10 @@ public final class TranscriptStore {
 
     /// The next older page, prepended. A failure is thrown for the caller to show where
     /// the reader asked for it (the top of the list); a page fetched before a reload
-    /// replaced the list is dropped.
-    public func loadOlder(client: HerdrClient) async throws {
-        guard hasOlder, !loadingOlder, let before = beforeCursor else { return }
+    /// replaced the list is dropped. Returns whether this page merged any new older entries.
+    @discardableResult
+    public func loadOlder(client: HerdrClient) async throws -> Bool {
+        guard hasOlder, !loadingOlder, let before = beforeCursor else { return false }
         loadingOlder = true
         onChange?()
         // Every exit clears the flag; the success path clears it before merging so the
@@ -436,18 +437,18 @@ public final class TranscriptStore {
             page = try await client.agentTranscript(target: target, before: before, limit: pageTurns,
                                                     subagent: subagent, topic: topic)
         } catch AgentTranscriptError.cursorExpired {
-            guard version == generation else { return }
+            guard version == generation else { return false }
             // The file was replaced under us: the history we hold is no longer pageable.
             hasOlder = false
             beforeCursor = nil
-            return
+            return false
         } catch {
-            guard version == generation, !(error is CancellationError) else { return }
+            guard version == generation, !(error is CancellationError) else { return false }
             throw error
         }
-        guard version == generation else { return }
+        guard version == generation else { return false }
         loadingOlder = false
-        mergeOlder(page)
+        return mergeOlder(page)
     }
 
     /// Shows an answer the reader just sent before the server reports it.
@@ -532,12 +533,15 @@ public final class TranscriptStore {
         regroup()
     }
 
-    func mergeOlder(_ page: AgentTranscriptPage) {
+    @discardableResult
+    func mergeOlder(_ page: AgentTranscriptPage) -> Bool {
         let known = Set(entries.map(\.id))
-        entries = Self.unique(page.entries.filter { !known.contains($0.id) }) + entries
+        let fresh = Self.unique(page.entries.filter { !known.contains($0.id) })
+        entries = fresh + entries
         beforeCursor = page.before
         hasOlder = page.before != nil
         regroup()
+        return !fresh.isEmpty
     }
 
     /// Merges a live (`after`) page. Most polls bring nothing (or re-send entries unchanged):
