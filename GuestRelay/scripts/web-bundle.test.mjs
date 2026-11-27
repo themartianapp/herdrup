@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { ACCOUNT_ORIGIN } from "../public/static/invite.js";
+import { ACCOUNT_ORIGIN, REFRESH_LOCK } from "../public/static/invite.js";
 import { checkRelayHeaders, checkSiteAssets, checkWebBundle, relaySources, withRelaySources } from "./web-bundle.mjs";
 
 const WEB = fileURLToPath(new URL("../public/web", import.meta.url));
@@ -182,4 +182,13 @@ test("invite landing provider SVG marks agree with the vendored /web/ bundle", (
       assert.ok(bundleJs.includes(d), `${file} path drifted from vendored /web/ bundle: ${d.slice(0, 32)}...`);
     }
   }
+});
+
+test("invite landing REFRESH_LOCK matches the vendored /web/ bundle", () => {
+  const assetsDir = join(WEB, "assets");
+  const bundleJs = readdirSync(assetsDir)
+    .filter((name) => name.endsWith(".js"))
+    .map((name) => readFileSync(join(assetsDir, name), "utf8"))
+    .join("\n");
+  assert.ok(bundleJs.includes(REFRESH_LOCK), `REFRESH_LOCK (${REFRESH_LOCK}) missing from vendored /web/ bundle`);
 });

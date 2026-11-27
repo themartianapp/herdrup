@@ -171,15 +171,15 @@ import { accountInvite, accountLink, addAccountLink, browserLink, checkSignedIn,
       open.classList.add("quiet");
       open.textContent = "Open in HerdrUp app";
       open.hidden = false;
-      $("signed-in-device").href = browserLink(payload);
-      $("signed-in-device").hidden = false;
     } else {
       open.hidden = false;
       $("apple").href = accountLink(payload, "apple");
       $("google").href = accountLink(payload, "google");
-      $("device").href = browserLink(payload);
       $("choice").hidden = false;
     }
+    var deviceOnly = $("device");
+    deviceOnly.href = browserLink(payload);
+    deviceOnly.hidden = false;
   } else {
     open.hidden = false;
     browser.hidden = false;
