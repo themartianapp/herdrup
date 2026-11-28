@@ -135,23 +135,44 @@ public enum ChatMarkdown {
             if let first = listItem(line) {
                 flushParagraph()
                 var items = [first.item]
+                var seenOrderedDepths: Set<Int> = first.ordered ? [first.item.depth] : []
+                var previousDepth = first.item.depth
                 i += 1
                 while i < lines.count {
                     let next = lines[i]
                     if next.trimmingCharacters(in: .whitespaces).isEmpty {
-                        // A blank line inside a list continues it when another item of the same
-                        // list or a nested child item follows.
-                        if i + 1 < lines.count, let after = listItem(lines[i + 1]),
-                           after.ordered == first.ordered || after.item.depth > 0 {
-                            i += 1
-                            continue
+                        // A blank line inside a list continues it when another top-level item of
+                        // the same kind follows, or a child item indented past the parent marker
+                        // width follows (preventing independent lists or thematic breaks from
+                        // merging into the list, #916).
+                        if i + 1 < lines.count, let after = listItem(lines[i + 1]) {
+                            let sameTopLevel = after.ordered == first.ordered && after.item.depth == first.item.depth
+                            let nestedChild = leadingWidth(lines[i + 1]) >= first.markerWidth
+                            if sameTopLevel || nestedChild {
+                                i += 1
+                                continue
+                            }
                         }
                         break
                     }
                     if let item = listItem(next) {
                         guard item.ordered == first.ordered || item.item.depth > 0 else { break }
+                        if item.item.depth < previousDepth {
+                            for depth in (item.item.depth + 1)...previousDepth {
+                                seenOrderedDepths.remove(depth)
+                            }
+                        }
+                        previousDepth = item.item.depth
                         let markerOrdered: Bool? = item.ordered == first.ordered ? nil : item.ordered
-                        let orderedStart: Int? = (item.ordered && item.item.depth > 0 && item.number != 1) ? item.number : nil
+                        let orderedStart: Int?
+                        if item.ordered {
+                            let isSublistStart = item.item.depth > 0 && !seenOrderedDepths.contains(item.item.depth)
+                            seenOrderedDepths.insert(item.item.depth)
+                            orderedStart = (isSublistStart && item.number != 1) ? item.number : nil
+                        } else {
+                            seenOrderedDepths.remove(item.item.depth)
+                            orderedStart = nil
+                        }
                         let resolved = (markerOrdered == nil && orderedStart == nil)
                             ? item.item
                             : ChatMarkdownListItem(text: item.item.text, depth: item.item.depth,
@@ -311,13 +332,18 @@ public enum ChatMarkdown {
         return width
     }
 
-    private static func listItem(_ line: String) -> (ordered: Bool, number: Int, item: ChatMarkdownListItem)? {
-        let depth = leadingWidth(line) / 2
+    private static func listItem(_ line: String) -> (ordered: Bool, number: Int, markerWidth: Int, item: ChatMarkdownListItem)? {
+        let leading = leadingWidth(line)
+        let depth = leading / 2
         let trimmed = line.trimmingCharacters(in: .whitespaces)
+        // Thematic breaks (`- - -`, `* * *`, `_ _ _`) take precedence over list items (#916).
+        guard !isRule(trimmed) else { return nil }
         var ordered = false
         var number = 1
+        let markerWidth: Int
         var rest: Substring
         if let marker = trimmed.first, "-*+".contains(marker), trimmed.dropFirst().first == " " {
+            markerWidth = leading + 2
             rest = trimmed.dropFirst(2)
         } else {
             let digits = trimmed.prefix { $0.isASCII && $0.isNumber }
@@ -326,6 +352,7 @@ public enum ChatMarkdown {
             guard let dot = after.first, dot == "." || dot == ")", after.dropFirst().first == " " else { return nil }
             ordered = true
             number = Int(digits) ?? 1
+            markerWidth = leading + digits.count + 2
             rest = after.dropFirst(2)
         }
         // `[ ]` / `[x]` followed by a space or nothing: an empty task item is still one.
@@ -337,7 +364,7 @@ public enum ChatMarkdown {
             rest = after
             break
         }
-        return (ordered, number, ChatMarkdownListItem(
+        return (ordered, number, markerWidth, ChatMarkdownListItem(
             text: rest.trimmingCharacters(in: .whitespaces), depth: depth, checked: checked))
     }
 }
