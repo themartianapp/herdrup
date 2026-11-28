@@ -1,0 +1,171 @@
+# Automatically vendors jerryfane/herdrup-desktop's Guest Web bundle into GuestRelay/public/web/
+# and opens/updates a PR whenever a newer desktop release or main commit is available.
+#
+# Touches ONLY GuestRelay/public/web/ so macserve's matrix_skip_paths (GuestRelay/**) skips all
+# iOS simulator UI test shards automatically.
+name: Auto-vendor Guest Web
+
+on:
+  workflow_dispatch:
+    inputs:
+      desktop_ref:
+        description: "Branch, tag, or commit of jerryfane/herdrup-desktop (default: main)"
+        default: main
+        required: false
+  repository_dispatch:
+    types: [herdrup-desktop-release]
+  schedule:
+    # Hourly lightweight check (~3s early exit when sourceCommit already matches).
+    - cron: "15 * * * *"
+
+concurrency:
+  group: vendor-guest-web
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  vendor:
+    name: Vendor herdrup-desktop Guest Web bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout themartianapp/herdrup
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.AUTO_VENDOR_TOKEN || github.token }}
+
+      - name: Resolve target jerryfane/herdrup-desktop commit
+        id: target
+        env:
+          INPUT_REF: ${{ github.event.inputs.desktop_ref || github.event.client_payload.ref || 'main' }}
+          INPUT_TAG: ${{ github.event.client_payload.tag || '' }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$INPUT_REF" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]]; then
+            echo "::error::Invalid desktop_ref '$INPUT_REF'"
+            exit 1
+          fi
+          if [[ -n "$INPUT_TAG" && ! "$INPUT_TAG" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::Invalid desktop tag '$INPUT_TAG'"
+            exit 1
+          fi
+          CURRENT=$(jq -r '.sourceCommit // empty' GuestRelay/public/web/manifest.json)
+          if [[ "$INPUT_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            TARGET_SHA="$INPUT_REF"
+          else
+            LS_OUT=$(git ls-remote -- https://github.com/jerryfane/herdrup-desktop.git \
+              "refs/heads/$INPUT_REF" \
+              "refs/tags/$INPUT_REF" \
+              "refs/tags/$INPUT_REF^{}")
+            # Prefer peeled tag commit (^{}), then exact tag/branch ref.
+            TARGET_SHA=$(printf '%s\n' "$LS_OUT" | awk '$2 ~ /\^\{\}$/ {print $1; exit}')
+            if [ -z "$TARGET_SHA" ]; then
+              TARGET_SHA=$(printf '%s\n' "$LS_OUT" | awk 'NR==1 {print $1}')
+            fi
+          fi
+          if [ -z "$TARGET_SHA" ]; then
+            echo "::error::Could not resolve jerryfane/herdrup-desktop ref '$INPUT_REF'"
+            exit 1
+          fi
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
+          echo "short=${TARGET_SHA:0:7}" >> "$GITHUB_OUTPUT"
+          echo "tag=$INPUT_TAG" >> "$GITHUB_OUTPUT"
+          if [ "$CURRENT" = "$TARGET_SHA" ]; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "GuestRelay/public/web is already at herdrup-desktop@$TARGET_SHA"
+            exit 0
+          fi
+          if git fetch --depth=1 origin chore/auto-vendor-guest-web 2>/dev/null; then
+            PR_CURRENT=$(git show origin/chore/auto-vendor-guest-web:GuestRelay/public/web/manifest.json 2>/dev/null | jq -r '.sourceCommit // empty' || true)
+            if [ "$PR_CURRENT" = "$TARGET_SHA" ]; then
+              echo "needed=false" >> "$GITHUB_OUTPUT"
+              echo "Branch chore/auto-vendor-guest-web is already at herdrup-desktop@$TARGET_SHA"
+              exit 0
+            fi
+          fi
+          echo "needed=true" >> "$GITHUB_OUTPUT"
+          echo "Update needed: $CURRENT -> $TARGET_SHA"
+
+      - name: Checkout jerryfane/herdrup-desktop at target commit
+        if: steps.target.outputs.needed == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: jerryfane/herdrup-desktop
+          ref: ${{ steps.target.outputs.sha }}
+          path: _desktop
+
+      - name: Setup Bun
+        if: steps.target.outputs.needed == 'true'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Build clean guest-web bundle
+        if: steps.target.outputs.needed == 'true'
+        working-directory: _desktop
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun run build:guest-web
+          jq -e '.sourceDirty == false' dist-web/manifest.json
+
+      - name: Vendor dist-web into GuestRelay/public/web
+        if: steps.target.outputs.needed == 'true'
+        run: |
+          set -euo pipefail
+          rm -rf GuestRelay/public/web
+          cp -a _desktop/dist-web GuestRelay/public/web
+          rm -rf _desktop
+
+      - name: Verify GuestRelay bundle, tests, and typecheck
+        if: steps.target.outputs.needed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run GuestRelay checks
+        if: steps.target.outputs.needed == 'true'
+        working-directory: GuestRelay
+        run: |
+          set -euo pipefail
+          npm ci
+          npm test
+          npm run typecheck
+
+      - name: Push branch and open or update PR
+        if: steps.target.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.AUTO_VENDOR_TOKEN || github.token }}
+          SHORT: ${{ steps.target.outputs.short }}
+          SHA: ${{ steps.target.outputs.sha }}
+          TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain -- GuestRelay/public/web)" ]; then
+            echo "No file changes in GuestRelay/public/web"
+            exit 0
+          fi
+          BRANCH="chore/auto-vendor-guest-web"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add -A GuestRelay/public/web
+          LABEL="$SHORT"
+          [ -n "$TAG" ] && LABEL="$TAG ($SHORT)"
+          git commit -m "chore(web): vendor herdrup-desktop@$LABEL"
+          git push --force origin "HEAD:refs/heads/$BRANCH"
+          TITLE="chore(web): vendor herdrup-desktop@$LABEL"
+          BODY=$(printf '%s\n\n%s' \
+            "Automated Guest Web bundle sync from \`jerryfane/herdrup-desktop@$SHA\` (\`sourceDirty: false\`)." \
+            "Verified in workflow: \`GuestRelay\` \`npm test\` (bundle manifest + vitest) and \`npm run typecheck\`.")
+          EXISTING=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/pulls/$EXISTING" -f title="$TITLE" -f body="$BODY" >/dev/null
+            echo "Updated PR #$EXISTING"
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" --title "$TITLE" --body "$BODY"
+          fi
