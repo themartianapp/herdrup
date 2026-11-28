@@ -70,32 +70,36 @@ jobs:
             exit 1
           fi
           CURRENT=$(jq -r '.sourceCommit // empty' GuestRelay/public/web/manifest.json)
+          DESKTOP_URL="https://github.com/jerryfane/herdrup-desktop.git"
           if [[ "$INPUT_REF" =~ ^[0-9a-f]{40}$ ]]; then
             TARGET_SHA="$INPUT_REF"
           else
-            LS_OUT=$(git ls-remote -- https://github.com/jerryfane/herdrup-desktop.git \
+            LS_OUT=$(git ls-remote -- "$DESKTOP_URL" \
               "refs/heads/$INPUT_REF" \
               "refs/tags/$INPUT_REF" \
               "refs/tags/$INPUT_REF^{}")
-            # Prefer peeled tag commit (^{}), then exact tag/branch ref.
-            TARGET_SHA=$(printf '%s\n' "$LS_OUT" | awk '$2 ~ /\^\{\}$/ {print $1; exit}')
+            # Match full ref names strictly (never suffix matches): peeled tag > tag > branch.
+            TARGET_SHA=$(printf '%s\n' "$LS_OUT" | awk -v r="refs/tags/${INPUT_REF}^{}" '$2 == r {print $1; exit}')
             if [ -z "$TARGET_SHA" ]; then
-              TARGET_SHA=$(printf '%s\n' "$LS_OUT" | awk 'NR==1 {print $1}')
+              TARGET_SHA=$(printf '%s\n' "$LS_OUT" | awk -v r="refs/tags/${INPUT_REF}" '$2 == r {print $1; exit}')
+            fi
+            if [ -z "$TARGET_SHA" ]; then
+              TARGET_SHA=$(printf '%s\n' "$LS_OUT" | awk -v r="refs/heads/${INPUT_REF}" '$2 == r {print $1; exit}')
             fi
           fi
           if [ -z "$TARGET_SHA" ]; then
             echo "::error::Could not resolve jerryfane/herdrup-desktop ref '$INPUT_REF'"
             exit 1
           fi
-          # Only attach a release tag label when that tag actually points to TARGET_SHA.
+          # Only attach a release tag label when the exact refs/tags/$INPUT_TAG points to TARGET_SHA.
           VERIFIED_TAG=""
           if [ -n "$INPUT_TAG" ]; then
-            TAG_LS=$(git ls-remote -- https://github.com/jerryfane/herdrup-desktop.git \
+            TAG_LS=$(git ls-remote -- "$DESKTOP_URL" \
               "refs/tags/$INPUT_TAG" \
               "refs/tags/$INPUT_TAG^{}")
-            TAG_SHA=$(printf '%s\n' "$TAG_LS" | awk '$2 ~ /\^\{\}$/ {print $1; exit}')
+            TAG_SHA=$(printf '%s\n' "$TAG_LS" | awk -v r="refs/tags/${INPUT_TAG}^{}" '$2 == r {print $1; exit}')
             if [ -z "$TAG_SHA" ]; then
-              TAG_SHA=$(printf '%s\n' "$TAG_LS" | awk 'NR==1 {print $1}')
+              TAG_SHA=$(printf '%s\n' "$TAG_LS" | awk -v r="refs/tags/${INPUT_TAG}" '$2 == r {print $1; exit}')
             fi
             if [ "$TAG_SHA" = "$TARGET_SHA" ]; then
               VERIFIED_TAG="$INPUT_TAG"
@@ -136,11 +140,13 @@ jobs:
             esac
           fi
 
-          # Check if the vendor branch already holds TARGET_SHA, and separately whether an open PR exists,
-          # so a previous run whose branch push succeeded but PR creation failed still reconciles the PR.
+          # Check if the remote vendor branch (explicit refs/heads/$BRANCH, never a same-named tag)
+          # already holds TARGET_SHA, and separately whether an open PR exists.
           BRANCH="chore/auto-vendor-guest-web"
           BRANCH_MATCHES=false
-          if git fetch --depth=1 --no-tags origin "$BRANCH" 2>/dev/null; then
+          REMOTE_BRANCH_SHA=$(git ls-remote --heads origin "refs/heads/$BRANCH" | awk -v r="refs/heads/$BRANCH" '$2 == r {print $1; exit}')
+          if [ -n "$REMOTE_BRANCH_SHA" ]; then
+            git fetch --depth=1 --no-tags origin "refs/heads/$BRANCH"
             PR_CURRENT=$(git show "FETCH_HEAD:GuestRelay/public/web/manifest.json" 2>/dev/null | jq -r '.sourceCommit // empty' || true)
             if [ "$PR_CURRENT" = "$TARGET_SHA" ]; then
               BRANCH_MATCHES=true
@@ -274,15 +280,17 @@ jobs:
         run: |
           set -euo pipefail
           BRANCH="chore/auto-vendor-guest-web"
-          # Only create or update the PR when the remote vendor branch actually holds SHA,
-          # preventing a no-op publish (when main already caught up) from relabeling an older PR.
-          if ! git fetch --depth=1 --no-tags origin "$BRANCH" 2>/dev/null; then
-            echo "Remote branch $BRANCH does not exist; skipping PR reconciliation"
+          # Only create or update the PR when the explicit remote branch refs/heads/$BRANCH exists
+          # and holds SHA. Surface git transport errors instead of treating them as a skip.
+          REMOTE_BRANCH_SHA=$(git ls-remote --heads origin "refs/heads/$BRANCH" | awk -v r="refs/heads/$BRANCH" '$2 == r {print $1; exit}')
+          if [ -z "$REMOTE_BRANCH_SHA" ]; then
+            echo "Remote branch refs/heads/$BRANCH does not exist; skipping PR reconciliation"
             exit 0
           fi
+          git fetch --depth=1 --no-tags origin "refs/heads/$BRANCH"
           BRANCH_SHA=$(git show "FETCH_HEAD:GuestRelay/public/web/manifest.json" 2>/dev/null | jq -r '.sourceCommit // empty' || true)
           if [ "$BRANCH_SHA" != "$SHA" ]; then
-            echo "Remote branch $BRANCH holds '$BRANCH_SHA' instead of '$SHA'; skipping PR reconciliation"
+            echo "Remote branch refs/heads/$BRANCH holds '$BRANCH_SHA' instead of '$SHA'; skipping PR reconciliation"
             exit 0
           fi
           LABEL="$SHORT"
