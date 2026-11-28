@@ -379,7 +379,7 @@ struct GramTextPart<Card: View>: View {
             .clipShape(bubbleShape)
         } else {
             // Parse each text segment once (cached) and derive table width from those blocks.
-            let parsed: [(index: Int, blocks: [ChatMarkdownBlock])] = segments.enumerated().compactMap { index, segment in
+            let parsed: [(index: Int, blocks: [GramProseBlock])] = segments.enumerated().compactMap { index, segment in
                 guard case .text(let text) = segment else { return nil }
                 return (index, ChatMarkdownCache.gramProseBlocks(text))
             }
@@ -400,7 +400,7 @@ struct GramTextPart<Card: View>: View {
     /// keep `GramFoldingText`'s exact 8-line fold, while multi-block Markdown (paragraphs, lists,
     /// headings, tables, quotes, rules) renders via `GramFoldingMarkdown`.
     @ViewBuilder
-    private func prose(_ blocks: [ChatMarkdownBlock], index: Int) -> some View {
+    private func prose(_ blocks: [GramProseBlock], index: Int) -> some View {
         if !GramText.isRichMarkdown(blocks), case .paragraph(let paragraph) = blocks.first {
             GramFoldingText(
                 text: GramInline.styled(paragraph, size: 15, mine: mine),
@@ -435,17 +435,19 @@ private enum GramInline {
 
     static func styled(_ markdown: String, size: CGFloat, weight: Font.Weight = .regular, mine: Bool) -> AttributedString {
         let scale = Typography.scale
+        let linkForeground = mine ? Palette.onAccent : Palette.brand
         return cache.value(for: Key(markdown: markdown, size: size, weight: weight, mine: mine, scale: scale)) {
-            ChatInline.render(markdown, appearance: InlineMarkdownAppearance(
+            var styled = ChatInline.render(markdown, appearance: InlineMarkdownAppearance(
                 size: size,
                 weight: weight,
                 codeSizeOffset: 2,
                 codeBackground: mine ? Palette.onAccent.opacity(0.18) : Palette.surface,
                 codeForeground: mine ? Palette.onAccent : Palette.text,
-                linkForeground: mine ? Palette.onAccent : Palette.brand,
-                underlineLinks: mine,
-                detectBareURLs: true
+                linkForeground: linkForeground,
+                underlineLinks: mine
             ))
+            detectLinks(in: &styled, tint: linkForeground, underline: mine)
+            return styled
         }
     }
 }
@@ -453,7 +455,7 @@ private enum GramInline {
 /// Multi-block Markdown inside a Gram bubble (paragraphs, headings, lists, task items, tables,
 /// blockquotes, rules) with height-based folding past `foldedMaxHeight` behind Read more / Show less.
 private struct GramFoldingMarkdown: View {
-    let blocks: [ChatMarkdownBlock]
+    let blocks: [GramProseBlock]
     let mine: Bool
     @Binding var isExpanded: Bool
 
@@ -466,7 +468,7 @@ private struct GramFoldingMarkdown: View {
     private var hasWideBlock: Bool {
         blocks.contains { block in
             switch block {
-            case .table, .rule, .code, .diagram: return true
+            case .table, .rule: return true
             default: return false
             }
         }
@@ -522,7 +524,7 @@ private struct GramFoldingMarkdown: View {
     }
 
     @ViewBuilder
-    private func blockView(_ block: ChatMarkdownBlock, isFirst: Bool) -> some View {
+    private func blockView(_ block: GramProseBlock, isFirst: Bool) -> some View {
         switch block {
         case .paragraph(let text):
             Text(GramInline.styled(text, size: 15, mine: mine))
@@ -541,10 +543,6 @@ private struct GramFoldingMarkdown: View {
                     listRow(item, marker: markers[index])
                 }
             }
-        case .code(let language, let code):
-            GramCodeBlock(code: code, language: language)
-        case .diagram(let kind, let source):
-            GramCodeBlock(code: source, language: kind)
         case .table(let header, let rows):
             ChatMarkdownTable(header: header, rows: rows, style: tableStyle)
         case .quote(let text):

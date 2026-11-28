@@ -229,13 +229,13 @@ struct ChatMarkdownTable: View {
 @MainActor
 enum ChatMarkdownCache {
     private static var blocksByText = BoundedCache<String, [ChatMarkdownBlock]>(limit: 400)
-    private static var gramBlocksByText = BoundedCache<String, [ChatMarkdownBlock]>(limit: 400)
+    private static var gramBlocksByText = BoundedCache<String, [GramProseBlock]>(limit: 400)
 
     static func blocks(_ markdown: String) -> [ChatMarkdownBlock] {
         blocksByText.value(for: markdown) { ChatMarkdown.blocks(markdown) }
     }
 
-    static func gramProseBlocks(_ markdown: String) -> [ChatMarkdownBlock] {
+    static func gramProseBlocks(_ markdown: String) -> [GramProseBlock] {
         gramBlocksByText.value(for: markdown) { GramText.proseBlocks(markdown) }
     }
 
@@ -270,7 +270,6 @@ struct InlineMarkdownAppearance {
     let codeForeground: Color
     let linkForeground: Color
     let underlineLinks: Bool
-    let detectBareURLs: Bool
 }
 
 @MainActor
@@ -296,14 +295,12 @@ enum ChatInline {
                 codeBackground: Palette.surface,
                 codeForeground: dim ? Palette.textDim : Palette.text,
                 linkForeground: Palette.working,
-                underlineLinks: false,
-                detectBareURLs: false
+                underlineLinks: false
             ))
         }
     }
 
-    /// Parses inline Markdown with Foundation's inline parser and applies `appearance`,
-    /// optionally running bare-URL detection over non-code, non-link spans.
+    /// Parses inline Markdown with Foundation's inline parser and applies `appearance`.
     static func render(_ markdown: String, appearance: InlineMarkdownAppearance) -> AttributedString {
         let options = AttributedString.MarkdownParsingOptions(
             interpretedSyntax: .inlineOnlyPreservingWhitespace,
@@ -325,9 +322,6 @@ enum ChatInline {
                 styled[run.range].foregroundColor = appearance.linkForeground
                 if appearance.underlineLinks { styled[run.range].underlineStyle = .single }
             }
-        }
-        if appearance.detectBareURLs {
-            detectLinks(in: &styled, tint: appearance.linkForeground, underline: appearance.underlineLinks)
         }
         return styled
     }

@@ -29,12 +29,15 @@ public struct ChatMarkdownListItem: Equatable, Sendable {
     /// Non-nil only when a nested item's marker kind differs from the enclosing list's `ordered`
     /// flag (e.g. a bullet nested under an ordered item).
     public let markerOrdered: Bool?
+    /// Non-nil when a nested ordered sublist starts at an explicit ordinal other than 1.
+    public let orderedStart: Int?
 
-    public init(text: String, depth: Int = 0, checked: Bool? = nil, markerOrdered: Bool? = nil) {
+    public init(text: String, depth: Int = 0, checked: Bool? = nil, markerOrdered: Bool? = nil, orderedStart: Int? = nil) {
         self.text = text
         self.depth = depth
         self.checked = checked
         self.markerOrdered = markerOrdered
+        self.orderedStart = orderedStart
     }
 }
 
@@ -136,8 +139,10 @@ public enum ChatMarkdown {
                 while i < lines.count {
                     let next = lines[i]
                     if next.trimmingCharacters(in: .whitespaces).isEmpty {
-                        // A blank line inside a list continues it only if another item follows.
-                        if i + 1 < lines.count, let after = listItem(lines[i + 1]), after.ordered == first.ordered {
+                        // A blank line inside a list continues it when another item of the same
+                        // list or a nested child item follows.
+                        if i + 1 < lines.count, let after = listItem(lines[i + 1]),
+                           after.ordered == first.ordered || after.item.depth > 0 {
                             i += 1
                             continue
                         }
@@ -145,10 +150,14 @@ public enum ChatMarkdown {
                     }
                     if let item = listItem(next) {
                         guard item.ordered == first.ordered || item.item.depth > 0 else { break }
-                        let resolved = item.ordered == first.ordered
+                        let markerOrdered: Bool? = item.ordered == first.ordered ? nil : item.ordered
+                        let orderedStart: Int? = (item.ordered && item.item.depth > 0 && item.number != 1) ? item.number : nil
+                        let resolved = (markerOrdered == nil && orderedStart == nil)
                             ? item.item
                             : ChatMarkdownListItem(text: item.item.text, depth: item.item.depth,
-                                                   checked: item.item.checked, markerOrdered: item.ordered)
+                                                   checked: item.item.checked,
+                                                   markerOrdered: markerOrdered,
+                                                   orderedStart: orderedStart)
                         items.append(resolved)
                         i += 1
                         continue
@@ -158,7 +167,8 @@ public enum ChatMarkdown {
                         let last = items.removeLast()
                         items.append(ChatMarkdownListItem(
                             text: last.text + "\n" + next.trimmingCharacters(in: .whitespaces),
-                            depth: last.depth, checked: last.checked, markerOrdered: last.markerOrdered))
+                            depth: last.depth, checked: last.checked,
+                            markerOrdered: last.markerOrdered, orderedStart: last.orderedStart))
                         i += 1
                         continue
                     }
@@ -176,8 +186,8 @@ public enum ChatMarkdown {
     }
 
     /// Computes the display marker (`"1."`, `"•"`, …) for each item in a list, tracking ordered
-    /// numbering independently per nesting depth so nested bullets or sub-lists never consume
-    /// the outer list's sequence.
+    /// numbering independently per nesting depth and preserving nested ordered start ordinals so
+    /// nested bullets or sub-lists never consume the outer list's sequence.
     public static func listMarkers(ordered: Bool, start: Int, items: [ChatMarkdownListItem]) -> [String] {
         var nextByDepth: [Int: Int] = [:]
         var previousDepth = 0
@@ -189,8 +199,11 @@ public enum ChatMarkdown {
             }
             previousDepth = item.depth
             let itemOrdered = item.markerOrdered ?? ordered
-            guard itemOrdered else { return "•" }
-            let current = nextByDepth[item.depth] ?? (item.depth == 0 ? start : 1)
+            guard itemOrdered else {
+                nextByDepth.removeValue(forKey: item.depth)
+                return "•"
+            }
+            let current = nextByDepth[item.depth] ?? (item.depth == 0 ? start : (item.orderedStart ?? 1))
             nextByDepth[item.depth] = current + 1
             return "\(current)."
         }

@@ -6,14 +6,27 @@ public enum GramTextSegment: Equatable, Sendable {
     case code(String, language: String?)
 }
 
-/// Splits a gram's text into prose and fenced ``` code blocks, so the app can draw code in its
-/// own monospaced inset with a Copy button.
+/// Prose-only Markdown blocks rendered inside a Gram text segment (fenced code blocks are
+/// already extracted by `GramText.segments(_:)`, so `.code` and `.diagram` never appear here).
+public enum GramProseBlock: Equatable, Sendable {
+    case paragraph(String)
+    case heading(level: Int, String)
+    case list(ordered: Bool, start: Int, items: [ChatMarkdownListItem])
+    case table(header: [String], rows: [[String]])
+    case quote(String)
+    case rule
+}
+
+/// Splits a gram's text into prose and fenced ```` ``` ```` / `~~~` code blocks, so the app can
+/// draw code in its own monospaced inset with a Copy button.
 ///
 /// The rules, kept deliberately small:
-/// - A fence is a line that starts (after optional indentation) with three or more backticks.
-///   What follows the backticks is the info string; its first word is the language. An info
-///   string holding a backtick is not a fence (CommonMark), so ```` ```inline``` ```` stays prose.
-/// - The block closes on a line of only backticks, at least as many as the opening run.
+/// - A fence is a line that starts (after optional indentation) with three or more backticks
+///   (`` ` ``) or tildes (`~`). What follows the fence run is the info string; its first word is
+///   the language. A backtick fence whose info string holds a backtick is not a fence
+///   (CommonMark), so ```` ```inline``` ```` stays prose.
+/// - The block closes on a line of only the matching fence character, at least as many as the
+///   opening run.
 /// - An opening fence that never closes is prose: it and everything after it read as text.
 /// - The newline next to a fence belongs to the fence, so `"Run:\n```\nls\n```\nDone"` is
 ///   `Run:`, `ls`, `Done`. Prose that is only whitespace (between adjacent fences) is dropped.
@@ -55,15 +68,25 @@ public enum GramText {
     }
 
     /// Splits a Gram prose segment (already separated from closed fenced code blocks by
-    /// `segments(_:)`) into Markdown blocks without re-parsing block fences, so inline
+    /// `segments(_:)`) into prose-only Markdown blocks without re-parsing block fences, so inline
     /// triple-backtick spans (e.g. ```` ``` `42` ``` ````) and unclosed fences remain prose.
-    public static func proseBlocks(_ text: String) -> [ChatMarkdownBlock] {
-        ChatMarkdown.blocks(text, parseFences: false)
+    public static func proseBlocks(_ text: String) -> [GramProseBlock] {
+        ChatMarkdown.blocks(text, parseFences: false).compactMap { block in
+            switch block {
+            case .paragraph(let s): return .paragraph(s)
+            case .heading(let level, let s): return .heading(level: level, s)
+            case .list(let ordered, let start, let items): return .list(ordered: ordered, start: start, items: items)
+            case .table(let header, let rows): return .table(header: header, rows: rows)
+            case .quote(let s): return .quote(s)
+            case .rule: return .rule
+            case .code, .diagram: return nil
+            }
+        }
     }
 
     /// True when parsed prose blocks contain a GitHub-flavored Markdown table (used to widen
     /// the bubble to its cap so table columns have room).
-    public static func hasTable(_ blocks: [ChatMarkdownBlock]) -> Bool {
+    public static func hasTable(_ blocks: [GramProseBlock]) -> Bool {
         blocks.contains {
             if case .table = $0 { return true } else { return false }
         }
@@ -72,29 +95,32 @@ public enum GramText {
     /// True when parsed blocks contain multiple blocks or any non-paragraph block (lists,
     /// headings, tables, quotes, rules); false for a single paragraph so plain prose keeps
     /// the exact 8-line `GramFoldingText` layout.
-    public static func isRichMarkdown(_ blocks: [ChatMarkdownBlock]) -> Bool {
+    public static func isRichMarkdown(_ blocks: [GramProseBlock]) -> Bool {
         guard blocks.count == 1 else { return blocks.count > 1 }
         if case .paragraph = blocks[0] { return false }
         return true
     }
 
     private struct Fence {
-        let ticks: Int
+        let marker: Character
+        let count: Int
         let language: String?
 
         init?(opening line: Substring) {
             let body = line.drop(while: { $0 == " " || $0 == "\t" })
-            let ticks = body.prefix(while: { $0 == "`" }).count
-            guard ticks >= 3 else { return nil }
-            let info = body.dropFirst(ticks)
-            guard !info.contains("`") else { return nil }
-            self.ticks = ticks
+            guard let marker = body.first, marker == "`" || marker == "~" else { return nil }
+            let count = body.prefix(while: { $0 == marker }).count
+            guard count >= 3 else { return nil }
+            let info = body.dropFirst(count)
+            if marker == "`", info.contains("`") { return nil }
+            self.marker = marker
+            self.count = count
             self.language = info.split(whereSeparator: { $0.isWhitespace }).first.map(String.init)
         }
 
         func isClosed(by line: Substring) -> Bool {
             let body = line.trimmingCharacters(in: .whitespaces)
-            return body.count >= ticks && body.allSatisfy { $0 == "`" }
+            return body.count >= count && body.allSatisfy { $0 == marker }
         }
     }
 }

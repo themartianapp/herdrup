@@ -187,5 +187,28 @@ final class GramTextTests: XCTestCase {
         XCTAssertTrue(ordered)
         XCTAssertEqual(start, 1)
         XCTAssertEqual(ChatMarkdown.listMarkers(ordered: ordered, start: start, items: items), ["1.", "•", "2."])
+
+        // Nested ordered sublist preserves its starting ordinal and blank line before nested bullet
+        // keeps the outer ordered sequence intact (#903 P3).
+        let nestedOrdered = "5. Outer\n  6. Sub A\n  7. Sub B\n\n  - note\n6. Outer 2"
+        let nestedBlocks = GramText.proseBlocks(nestedOrdered)
+        guard nestedBlocks.count == 1, case .list(let nOrdered, let nStart, let nItems) = nestedBlocks[0] else {
+            return XCTFail("expected single nested list block, got \(nestedBlocks)")
+        }
+        XCTAssertEqual(ChatMarkdown.listMarkers(ordered: nOrdered, start: nStart, items: nItems),
+                       ["5.", "6.", "7.", "•", "6."])
+    }
+
+    func testTildeFencesRenderAsCodeSegmentsAndPreserveIndentationAndBackticks() {
+        let tilde = "Run:\n~~~swift\n    let x = 1\n```\ninner\n```\n~~~\nDone"
+        XCTAssertEqual(segments(tilde), [
+            .text("Run:"),
+            .code("    let x = 1\n```\ninner\n```", language: "swift"),
+            .text("Done"),
+        ])
+        // Backtick line does not close a tilde fence, and unclosed tilde fence stays prose.
+        XCTAssertEqual(segments("~~~bash\necho hi\n```"), [.text("~~~bash\necho hi\n```")])
+        // Longer closing tilde fence closes shorter opening tilde fence.
+        XCTAssertEqual(segments("~~~\na\n~~~~"), [.code("a", language: nil)])
     }
 }
