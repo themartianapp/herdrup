@@ -46,8 +46,8 @@ final class ChatMarkdownTests: XCTestCase {
                 ChatMarkdownListItem(text: "merged", checked: true),
             ]),
             .list(ordered: true, start: 1, items: [
-                ChatMarkdownListItem(text: "First"),
-                ChatMarkdownListItem(text: "Second"),
+                ChatMarkdownListItem(text: "First", marker: "1."),
+                ChatMarkdownListItem(text: "Second", marker: "2."),
             ]),
             .table(header: ["Metric", "Q5", "Change"], rows: [
                 ["Decode", "41.2 tok/s", "+36%"],
@@ -108,7 +108,10 @@ final class ChatMarkdownTests: XCTestCase {
 
     func testOrderedListKeepsItsStartNumber() {
         XCTAssertEqual(ChatMarkdown.blocks("3. three\n4. four"), [
-            .list(ordered: true, start: 3, items: [ChatMarkdownListItem(text: "three"), ChatMarkdownListItem(text: "four")]),
+            .list(ordered: true, start: 3, items: [
+                ChatMarkdownListItem(text: "three", marker: "3."),
+                ChatMarkdownListItem(text: "four", marker: "4."),
+            ]),
         ])
     }
 

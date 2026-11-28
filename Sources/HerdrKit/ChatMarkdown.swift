@@ -26,18 +26,15 @@ public struct ChatMarkdownListItem: Equatable, Sendable {
     public let depth: Int
     /// `- [x]` / `- [ ]` task items.
     public let checked: Bool?
-    /// Non-nil only when a nested item's marker kind differs from the enclosing list's `ordered`
-    /// flag (e.g. a bullet nested under an ordered item).
-    public let markerOrdered: Bool?
-    /// Non-nil when a nested ordered sublist starts at an explicit ordinal other than 1.
-    public let orderedStart: Int?
+    /// Resolved display marker (`"•"`, `"1."`, `"6."`, …), computed once during block parsing so
+    /// every view renders the item directly without duplicating run-restart bookkeeping.
+    public let marker: String
 
-    public init(text: String, depth: Int = 0, checked: Bool? = nil, markerOrdered: Bool? = nil, orderedStart: Int? = nil) {
+    public init(text: String, depth: Int = 0, checked: Bool? = nil, marker: String = "•") {
         self.text = text
         self.depth = depth
         self.checked = checked
-        self.markerOrdered = markerOrdered
-        self.orderedStart = orderedStart
+        self.marker = marker
     }
 }
 
@@ -134,20 +131,39 @@ public enum ChatMarkdown {
 
             if let first = listItem(line) {
                 flushParagraph()
-                var items = [first.item]
-                var seenOrderedDepths: Set<Int> = first.ordered ? [first.item.depth] : []
+                var nextByDepth: [Int: Int] = [:]
                 var previousDepth = first.item.depth
+                func resolveMarker(ordered: Bool, depth: Int, number: Int) -> String {
+                    if depth < previousDepth {
+                        for d in (depth + 1)...previousDepth {
+                            nextByDepth.removeValue(forKey: d)
+                        }
+                    }
+                    previousDepth = depth
+                    guard ordered else {
+                        nextByDepth.removeValue(forKey: depth)
+                        return "•"
+                    }
+                    let current = nextByDepth[depth] ?? number
+                    nextByDepth[depth] = current + 1
+                    return "\(current)."
+                }
+                let firstMarker = resolveMarker(ordered: first.ordered, depth: first.item.depth, number: first.number)
+                var items = [ChatMarkdownListItem(
+                    text: first.item.text, depth: first.item.depth, checked: first.item.checked, marker: firstMarker
+                )]
+                var parentColumns: [(depth: Int, contentColumn: Int)] = [(first.item.depth, first.contentColumn)]
                 i += 1
                 while i < lines.count {
                     let next = lines[i]
                     if next.trimmingCharacters(in: .whitespaces).isEmpty {
                         // A blank line inside a list continues it when another top-level item of
-                        // the same kind follows, or a child item indented past the parent marker
-                        // width follows (preventing independent lists or thematic breaks from
-                        // merging into the list, #916).
+                        // the same kind follows, or a child item indented to the active parent's
+                        // content column follows (#916, #924).
                         if i + 1 < lines.count, let after = listItem(lines[i + 1]) {
                             let sameTopLevel = after.ordered == first.ordered && after.item.depth == first.item.depth
-                            let nestedChild = leadingWidth(lines[i + 1]) >= first.markerWidth
+                            let parentCol = parentColumns.last(where: { $0.depth < after.item.depth })?.contentColumn
+                            let nestedChild = parentCol.map { leadingWidth(lines[i + 1]) >= $0 } ?? false
                             if sameTopLevel || nestedChild {
                                 i += 1
                                 continue
@@ -157,39 +173,30 @@ public enum ChatMarkdown {
                     }
                     if let item = listItem(next) {
                         guard item.ordered == first.ordered || item.item.depth > 0 else { break }
-                        if item.item.depth < previousDepth {
-                            for depth in (item.item.depth + 1)...previousDepth {
-                                seenOrderedDepths.remove(depth)
-                            }
+                        let marker = resolveMarker(ordered: item.ordered, depth: item.item.depth, number: item.number)
+                        items.append(ChatMarkdownListItem(
+                            text: item.item.text, depth: item.item.depth, checked: item.item.checked, marker: marker
+                        ))
+                        while let lastParent = parentColumns.last, lastParent.depth >= item.item.depth {
+                            parentColumns.removeLast()
                         }
-                        previousDepth = item.item.depth
-                        let markerOrdered: Bool? = item.ordered == first.ordered ? nil : item.ordered
-                        let orderedStart: Int?
-                        if item.ordered {
-                            let isSublistStart = item.item.depth > 0 && !seenOrderedDepths.contains(item.item.depth)
-                            seenOrderedDepths.insert(item.item.depth)
-                            orderedStart = (isSublistStart && item.number != 1) ? item.number : nil
-                        } else {
-                            seenOrderedDepths.remove(item.item.depth)
-                            orderedStart = nil
-                        }
-                        let resolved = (markerOrdered == nil && orderedStart == nil)
-                            ? item.item
-                            : ChatMarkdownListItem(text: item.item.text, depth: item.item.depth,
-                                                   checked: item.item.checked,
-                                                   markerOrdered: markerOrdered,
-                                                   orderedStart: orderedStart)
-                        items.append(resolved)
+                        parentColumns.append((item.item.depth, item.contentColumn))
                         i += 1
                         continue
                     }
+                    let nextTrimmed = next.trimmingCharacters(in: .whitespaces)
+                    let activeContentColumn = parentColumns.last?.contentColumn ?? first.contentColumn
+                    // A thematic break dedented before the active item's content column ends the
+                    // list instead of becoming lazy continuation text (#925).
+                    if isRule(nextTrimmed), leadingWidth(next) < activeContentColumn {
+                        break
+                    }
                     // A lazy continuation line belongs to the previous item.
-                    if leadingWidth(next) > 0 || !startsBlock(next.trimmingCharacters(in: .whitespaces), parseFences: parseFences) {
+                    if leadingWidth(next) > 0 || !startsBlock(nextTrimmed, parseFences: parseFences) {
                         let last = items.removeLast()
                         items.append(ChatMarkdownListItem(
-                            text: last.text + "\n" + next.trimmingCharacters(in: .whitespaces),
-                            depth: last.depth, checked: last.checked,
-                            markerOrdered: last.markerOrdered, orderedStart: last.orderedStart))
+                            text: last.text + "\n" + nextTrimmed,
+                            depth: last.depth, checked: last.checked, marker: last.marker))
                         i += 1
                         continue
                     }
@@ -204,30 +211,6 @@ public enum ChatMarkdown {
         }
         flushParagraph()
         return blocks
-    }
-
-    /// Computes the display marker (`"1."`, `"•"`, …) for each item in a list, tracking ordered
-    /// numbering independently per nesting depth and preserving nested ordered start ordinals so
-    /// nested bullets or sub-lists never consume the outer list's sequence.
-    public static func listMarkers(ordered: Bool, start: Int, items: [ChatMarkdownListItem]) -> [String] {
-        var nextByDepth: [Int: Int] = [:]
-        var previousDepth = 0
-        return items.map { item in
-            if item.depth < previousDepth {
-                for depth in (item.depth + 1)...previousDepth {
-                    nextByDepth.removeValue(forKey: depth)
-                }
-            }
-            previousDepth = item.depth
-            let itemOrdered = item.markerOrdered ?? ordered
-            guard itemOrdered else {
-                nextByDepth.removeValue(forKey: item.depth)
-                return "•"
-            }
-            let current = nextByDepth[item.depth] ?? (item.depth == 0 ? start : (item.orderedStart ?? 1))
-            nextByDepth[item.depth] = current + 1
-            return "\(current)."
-        }
     }
 
     // MARK: - Pieces
@@ -332,7 +315,7 @@ public enum ChatMarkdown {
         return width
     }
 
-    private static func listItem(_ line: String) -> (ordered: Bool, number: Int, markerWidth: Int, item: ChatMarkdownListItem)? {
+    private static func listItem(_ line: String) -> (ordered: Bool, number: Int, contentColumn: Int, item: ChatMarkdownListItem)? {
         let leading = leadingWidth(line)
         let depth = leading / 2
         let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -340,10 +323,10 @@ public enum ChatMarkdown {
         guard !isRule(trimmed) else { return nil }
         var ordered = false
         var number = 1
-        let markerWidth: Int
+        let markerLen: Int
         var rest: Substring
         if let marker = trimmed.first, "-*+".contains(marker), trimmed.dropFirst().first == " " {
-            markerWidth = leading + 2
+            markerLen = 1
             rest = trimmed.dropFirst(2)
         } else {
             let digits = trimmed.prefix { $0.isASCII && $0.isNumber }
@@ -352,9 +335,15 @@ public enum ChatMarkdown {
             guard let dot = after.first, dot == "." || dot == ")", after.dropFirst().first == " " else { return nil }
             ordered = true
             number = Int(digits) ?? 1
-            markerWidth = leading + digits.count + 2
+            markerLen = digits.count + 1
             rest = after.dropFirst(2)
         }
+        let extraPadding = rest.prefix { $0 == " " || $0 == "\t" }
+        let extraWidth = rest.dropFirst(extraPadding.count).isEmpty
+            ? 0
+            : extraPadding.reduce(0) { $0 + ($1 == "\t" ? 2 : 1) }
+        let contentColumn = leading + markerLen + 1 + extraWidth
+        rest = rest.dropFirst(extraPadding.count)
         // `[ ]` / `[x]` followed by a space or nothing: an empty task item is still one.
         var checked: Bool?
         for (box, value) in [("[ ]", false), ("[x]", true), ("[X]", true)] where rest.hasPrefix(box) {
@@ -364,7 +353,7 @@ public enum ChatMarkdown {
             rest = after
             break
         }
-        return (ordered, number, markerWidth, ChatMarkdownListItem(
+        return (ordered, number, contentColumn, ChatMarkdownListItem(
             text: rest.trimmingCharacters(in: .whitespaces), depth: depth, checked: checked))
     }
 }

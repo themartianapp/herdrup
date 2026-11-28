@@ -186,33 +186,55 @@ final class GramTextTests: XCTestCase {
         }
         XCTAssertTrue(ordered)
         XCTAssertEqual(start, 1)
-        XCTAssertEqual(ChatMarkdown.listMarkers(ordered: ordered, start: start, items: items), ["1.", "•", "2."])
+        XCTAssertEqual(items.map(\.marker), ["1.", "•", "2."])
 
-        // Nested ordered sublist preserves its starting ordinal (stored only on the sublist's
-        // first item) and a child indented past the parent marker continues across a blank line.
+        // Nested ordered sublist resolves its starting ordinal directly on each item, and a child
+        // indented to the active parent's content column continues across a blank line (#924).
         let nestedOrdered = "5. Outer\n  6. Sub A\n  7. Sub B\n\n   - note\n6. Outer 2"
         let nestedBlocks = GramText.proseBlocks(nestedOrdered)
-        guard nestedBlocks.count == 1, case .list(let nOrdered, let nStart, let nItems) = nestedBlocks[0] else {
+        guard nestedBlocks.count == 1, case .list(_, _, let nItems) = nestedBlocks[0] else {
             return XCTFail("expected single nested list block, got \(nestedBlocks)")
         }
-        XCTAssertEqual(nItems[1].orderedStart, 6)
-        XCTAssertNil(nItems[2].orderedStart)
-        XCTAssertEqual(ChatMarkdown.listMarkers(ordered: nOrdered, start: nStart, items: nItems),
-                       ["5.", "6.", "7.", "•", "6."])
+        XCTAssertEqual(nItems.map(\.marker), ["5.", "6.", "7.", "•", "6."])
 
-        // Thematic break and shallowly-indented separate bullet after a blank line never merge
-        // independent ordered lists (#916).
+        // Blank-line continuation compares against the ACTIVE parent's content column, not the
+        // first item's (#924): narrower active item accepts 3-space child; wider active item splits.
+        let narrowerActive = "100. First\n1. Second\n\n   - Child\n2. Third"
+        let narrowerBlocks = GramText.proseBlocks(narrowerActive)
+        guard narrowerBlocks.count == 1, case .list(_, _, let narrowerItems) = narrowerBlocks[0] else {
+            return XCTFail("expected single list block, got \(narrowerBlocks)")
+        }
+        XCTAssertEqual(narrowerItems.map(\.marker), ["100.", "101.", "•", "102."])
+
+        let widerActive = "9. First\n10. Second\n\n   - Separate bullet\n\n20. Third"
+        XCTAssertEqual(GramText.proseBlocks(widerActive), [
+            .list(ordered: true, start: 9, items: [
+                ChatMarkdownListItem(text: "First", marker: "9."),
+                ChatMarkdownListItem(text: "Second", marker: "10."),
+            ]),
+            .list(ordered: false, start: 1, items: [ChatMarkdownListItem(text: "Separate bullet", depth: 1)]),
+            .list(ordered: true, start: 20, items: [ChatMarkdownListItem(text: "Third", marker: "20.")]),
+        ])
+
+        // Thematic break (with or without a preceding blank line) and shallowly-indented separate
+        // bullet after a blank line never merge independent ordered lists (#916, #925).
         let withRule = "1. Ordered\n\n  - - -\n\n9. Independent ordered"
         XCTAssertEqual(GramText.proseBlocks(withRule), [
-            .list(ordered: true, start: 1, items: [ChatMarkdownListItem(text: "Ordered")]),
+            .list(ordered: true, start: 1, items: [ChatMarkdownListItem(text: "Ordered", marker: "1.")]),
             .rule,
-            .list(ordered: true, start: 9, items: [ChatMarkdownListItem(text: "Independent ordered")]),
+            .list(ordered: true, start: 9, items: [ChatMarkdownListItem(text: "Independent ordered", marker: "9.")]),
+        ])
+        let adjacentRule = "1. First\n  - - -\n9. New"
+        XCTAssertEqual(GramText.proseBlocks(adjacentRule), [
+            .list(ordered: true, start: 1, items: [ChatMarkdownListItem(text: "First", marker: "1.")]),
+            .rule,
+            .list(ordered: true, start: 9, items: [ChatMarkdownListItem(text: "New", marker: "9.")]),
         ])
         let separated = "10. First\n\n  - Separate bullet\n\n20. Second"
         XCTAssertEqual(GramText.proseBlocks(separated), [
-            .list(ordered: true, start: 10, items: [ChatMarkdownListItem(text: "First")]),
+            .list(ordered: true, start: 10, items: [ChatMarkdownListItem(text: "First", marker: "10.")]),
             .list(ordered: false, start: 1, items: [ChatMarkdownListItem(text: "Separate bullet", depth: 1)]),
-            .list(ordered: true, start: 20, items: [ChatMarkdownListItem(text: "Second")]),
+            .list(ordered: true, start: 20, items: [ChatMarkdownListItem(text: "Second", marker: "20.")]),
         ])
     }
 
@@ -227,7 +249,14 @@ final class GramTextTests: XCTestCase {
         XCTAssertEqual(segments("~~~bash\necho hi\n```"), [.text("~~~bash\necho hi\n```")])
         // Longer closing tilde fence closes shorter opening tilde fence.
         XCTAssertEqual(segments("~~~\na\n~~~~"), [.code("a", language: nil)])
-        // Unclosed indented tilde opener inside a list item or 4-space indented literal `~~~`
+        // Top-level 1..3-space tilde fence (with unindented body) and 4-space tilde fence inside
+        // a 4-column list item both extract as code cards (#922).
+        XCTAssertEqual(segments("  ~~~sh\npwd\n  ~~~"), [.code("pwd", language: "sh")])
+        XCTAssertEqual(segments("10. Example:\n\n    ~~~sh\n    pwd\n    ~~~"), [
+            .text("10. Example:\n"),
+            .code("    pwd", language: "sh"),
+        ])
+        // Unclosed indented tilde opener inside a list item or 4-space top-level literal `~~~`
         // never swallows a later top-level code card (#915).
         let indentedInList = "- Example:\n\n  ~~~sh\n  echo hi\n\nNext:\n\n```sh\npwd\n```"
         XCTAssertEqual(segments(indentedInList), [
