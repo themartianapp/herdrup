@@ -1,0 +1,308 @@
+# Automatically vendors jerryfane/herdrup-desktop's Guest Web bundle into GuestRelay/public/web/
+# and opens/updates a PR whenever a newer desktop release or main commit is available.
+#
+# Privilege separation:
+# - Job `build` runs with read-only permissions (no write token, persist-credentials: false) while
+#   executing upstream jerryfane/herdrup-desktop build tooling and GuestRelay tests, and uploads only
+#   the verified GuestRelay/public/web bundle artifact.
+# - Job `publish` executes zero upstream code, checks out `main` explicitly, applies the verified
+#   artifact onto `chore/auto-vendor-guest-web`, and opens/updates the PR.
+#
+# Touches ONLY GuestRelay/public/web/ so macserve's matrix_skip_paths (GuestRelay/**) skips all
+# iOS simulator UI test shards automatically.
+name: Auto-vendor Guest Web
+
+on:
+  workflow_dispatch:
+    inputs:
+      desktop_ref:
+        description: "Branch, tag, or commit of jerryfane/herdrup-desktop (default: main)"
+        default: main
+        required: false
+  repository_dispatch:
+    types: [herdrup-desktop-release]
+  schedule:
+    # Hourly lightweight check (~3s early exit when sourceCommit already matches).
+    - cron: "15 * * * *"
+
+concurrency:
+  group: vendor-guest-web
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  build:
+    name: Build & verify Guest Web bundle (read-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      build_needed: ${{ steps.target.outputs.build_needed }}
+      publish_needed: ${{ steps.target.outputs.publish_needed }}
+      sha: ${{ steps.target.outputs.sha }}
+      short: ${{ steps.target.outputs.short }}
+      tag: ${{ steps.target.outputs.tag }}
+    steps:
+      - name: Checkout themartianapp/herdrup main (read-only)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Resolve target jerryfane/herdrup-desktop commit
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_REF: ${{ github.event.inputs.desktop_ref || github.event.client_payload.ref || 'main' }}
+          INPUT_TAG: ${{ github.event.client_payload.tag || '' }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$INPUT_REF" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]]; then
+            echo "::error::Invalid desktop_ref '$INPUT_REF'"
+            exit 1
+          fi
+          if [[ -n "$INPUT_TAG" && ! "$INPUT_TAG" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::Invalid desktop tag '$INPUT_TAG'"
+            exit 1
+          fi
+          CURRENT=$(jq -r '.sourceCommit // empty' GuestRelay/public/web/manifest.json)
+          DESKTOP_URL="https://github.com/jerryfane/herdrup-desktop.git"
+          if [[ "$INPUT_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            TARGET_SHA="$INPUT_REF"
+          else
+            LS_OUT=$(git ls-remote -- "$DESKTOP_URL" \
+              "refs/heads/$INPUT_REF" \
+              "refs/tags/$INPUT_REF" \
+              "refs/tags/$INPUT_REF^{}")
+            # Match full ref names strictly (never suffix matches): peeled tag > tag > branch.
+            TARGET_SHA=$(printf '%s\n' "$LS_OUT" | awk -v r="refs/tags/${INPUT_REF}^{}" '$2 == r {print $1; exit}')
+            if [ -z "$TARGET_SHA" ]; then
+              TARGET_SHA=$(printf '%s\n' "$LS_OUT" | awk -v r="refs/tags/${INPUT_REF}" '$2 == r {print $1; exit}')
+            fi
+            if [ -z "$TARGET_SHA" ]; then
+              TARGET_SHA=$(printf '%s\n' "$LS_OUT" | awk -v r="refs/heads/${INPUT_REF}" '$2 == r {print $1; exit}')
+            fi
+          fi
+          if [ -z "$TARGET_SHA" ]; then
+            echo "::error::Could not resolve jerryfane/herdrup-desktop ref '$INPUT_REF'"
+            exit 1
+          fi
+          # Only attach a release tag label when the exact refs/tags/$INPUT_TAG points to TARGET_SHA.
+          VERIFIED_TAG=""
+          if [ -n "$INPUT_TAG" ]; then
+            TAG_LS=$(git ls-remote -- "$DESKTOP_URL" \
+              "refs/tags/$INPUT_TAG" \
+              "refs/tags/$INPUT_TAG^{}")
+            TAG_SHA=$(printf '%s\n' "$TAG_LS" | awk -v r="refs/tags/${INPUT_TAG}^{}" '$2 == r {print $1; exit}')
+            if [ -z "$TAG_SHA" ]; then
+              TAG_SHA=$(printf '%s\n' "$TAG_LS" | awk -v r="refs/tags/${INPUT_TAG}" '$2 == r {print $1; exit}')
+            fi
+            if [ "$TAG_SHA" = "$TARGET_SHA" ]; then
+              VERIFIED_TAG="$INPUT_TAG"
+            fi
+          fi
+          echo "sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
+          echo "short=${TARGET_SHA:0:7}" >> "$GITHUB_OUTPUT"
+          echo "tag=$VERIFIED_TAG" >> "$GITHUB_OUTPUT"
+
+          if [ "$CURRENT" = "$TARGET_SHA" ]; then
+            echo "build_needed=false" >> "$GITHUB_OUTPUT"
+            echo "publish_needed=false" >> "$GITHUB_OUTPUT"
+            echo "GuestRelay/public/web on main is already at herdrup-desktop@$TARGET_SHA"
+            exit 0
+          fi
+
+          # For automated triggers, fail closed on ancestry check so an API error or older ref
+          # can never propose a Guest Web downgrade.
+          if [ "$EVENT_NAME" != "workflow_dispatch" ] && [ -n "$CURRENT" ]; then
+            CMP_STATUS=$(curl -fsSL \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/jerryfane/herdrup-desktop/compare/${CURRENT}...${TARGET_SHA}" \
+              | jq -r '.status // empty')
+            case "$CMP_STATUS" in
+              behind|identical)
+                echo "build_needed=false" >> "$GITHUB_OUTPUT"
+                echo "publish_needed=false" >> "$GITHUB_OUTPUT"
+                echo "Skipping downgrade: $TARGET_SHA is $CMP_STATUS relative to already-vendored $CURRENT"
+                exit 0
+                ;;
+              ahead|diverged)
+                ;;
+              *)
+                echo "::error::Ancestry check failed for ${CURRENT}...${TARGET_SHA} (status='$CMP_STATUS')"
+                exit 1
+                ;;
+            esac
+          fi
+
+          # Check if the remote vendor branch (explicit refs/heads/$BRANCH, never a same-named tag)
+          # already holds TARGET_SHA, and separately whether an open PR exists.
+          BRANCH="chore/auto-vendor-guest-web"
+          BRANCH_MATCHES=false
+          REMOTE_BRANCH_SHA=$(git ls-remote --heads origin "refs/heads/$BRANCH" | awk -v r="refs/heads/$BRANCH" '$2 == r {print $1; exit}')
+          if [ -n "$REMOTE_BRANCH_SHA" ]; then
+            git fetch --depth=1 --no-tags origin "refs/heads/$BRANCH"
+            PR_CURRENT=$(git show "FETCH_HEAD:GuestRelay/public/web/manifest.json" 2>/dev/null | jq -r '.sourceCommit // empty' || true)
+            if [ "$PR_CURRENT" = "$TARGET_SHA" ]; then
+              BRANCH_MATCHES=true
+            fi
+          fi
+          EXISTING_PR=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ "$BRANCH_MATCHES" = "true" ] && [ -n "$EXISTING_PR" ]; then
+            echo "build_needed=false" >> "$GITHUB_OUTPUT"
+            echo "publish_needed=false" >> "$GITHUB_OUTPUT"
+            echo "Open PR #$EXISTING_PR ($BRANCH) is already at herdrup-desktop@$TARGET_SHA"
+            exit 0
+          fi
+          if [ "$BRANCH_MATCHES" = "true" ]; then
+            echo "build_needed=false" >> "$GITHUB_OUTPUT"
+            echo "publish_needed=true" >> "$GITHUB_OUTPUT"
+            echo "Branch $BRANCH already has herdrup-desktop@$TARGET_SHA without an open PR; reconciling PR only"
+            exit 0
+          fi
+
+          echo "build_needed=true" >> "$GITHUB_OUTPUT"
+          echo "publish_needed=true" >> "$GITHUB_OUTPUT"
+          echo "Update needed: $CURRENT -> $TARGET_SHA"
+
+      - name: Setup Node
+        if: steps.target.outputs.build_needed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Bun
+        if: steps.target.outputs.build_needed == 'true'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Checkout jerryfane/herdrup-desktop at target commit
+        if: steps.target.outputs.build_needed == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: jerryfane/herdrup-desktop
+          ref: ${{ steps.target.outputs.sha }}
+          path: _desktop
+          persist-credentials: false
+
+      - name: Build clean guest-web bundle
+        if: steps.target.outputs.build_needed == 'true'
+        working-directory: _desktop
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun run build:guest-web
+          jq -e --arg sha "$TARGET_SHA" '.sourceDirty == false and .sourceCommit == $sha' dist-web/manifest.json
+
+      - name: Stage vendored bundle and run GuestRelay checks
+        if: steps.target.outputs.build_needed == 'true'
+        run: |
+          set -euo pipefail
+          rm -rf GuestRelay/public/web
+          cp -a _desktop/dist-web GuestRelay/public/web
+          rm -rf _desktop
+          cd GuestRelay
+          npm ci
+          npm test
+          npm run typecheck
+
+      - name: Upload verified guest-web bundle artifact
+        if: steps.target.outputs.build_needed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: guest-web-bundle
+          path: GuestRelay/public/web
+          retention-days: 1
+
+  publish:
+    name: Open or update Guest Web vendor PR
+    needs: build
+    if: needs.build.outputs.publish_needed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout themartianapp/herdrup main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.AUTO_VENDOR_TOKEN || github.token }}
+
+      - name: Download verified guest-web bundle
+        if: needs.build.outputs.build_needed == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: guest-web-bundle
+          path: _verified_web
+
+      - name: Commit verified bundle to vendor branch
+        if: needs.build.outputs.build_needed == 'true'
+        env:
+          SHORT: ${{ needs.build.outputs.short }}
+          SHA: ${{ needs.build.outputs.sha }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          set -euo pipefail
+          jq -e --arg sha "$SHA" '.sourceDirty == false and .sourceCommit == $sha' _verified_web/manifest.json
+          rm -rf GuestRelay/public/web
+          cp -a _verified_web GuestRelay/public/web
+          rm -rf _verified_web
+          if [ -z "$(git status --porcelain -- GuestRelay/public/web)" ]; then
+            echo "No file changes in GuestRelay/public/web"
+            exit 0
+          fi
+          BRANCH="chore/auto-vendor-guest-web"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add -A GuestRelay/public/web
+          LABEL="$SHORT"
+          [ -n "$TAG" ] && LABEL="$TAG ($SHORT)"
+          git commit -m "chore(web): vendor herdrup-desktop@$LABEL"
+          git push --force origin "HEAD:refs/heads/$BRANCH"
+
+      - name: Reconcile Guest Web vendor PR
+        env:
+          GH_TOKEN: ${{ secrets.AUTO_VENDOR_TOKEN || github.token }}
+          SHORT: ${{ needs.build.outputs.short }}
+          SHA: ${{ needs.build.outputs.sha }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          set -euo pipefail
+          BRANCH="chore/auto-vendor-guest-web"
+          # Only create or update the PR when the explicit remote branch refs/heads/$BRANCH exists
+          # and holds SHA. Surface git transport errors instead of treating them as a skip.
+          REMOTE_BRANCH_SHA=$(git ls-remote --heads origin "refs/heads/$BRANCH" | awk -v r="refs/heads/$BRANCH" '$2 == r {print $1; exit}')
+          if [ -z "$REMOTE_BRANCH_SHA" ]; then
+            echo "Remote branch refs/heads/$BRANCH does not exist; skipping PR reconciliation"
+            exit 0
+          fi
+          git fetch --depth=1 --no-tags origin "refs/heads/$BRANCH"
+          BRANCH_SHA=$(git show "FETCH_HEAD:GuestRelay/public/web/manifest.json" 2>/dev/null | jq -r '.sourceCommit // empty' || true)
+          if [ "$BRANCH_SHA" != "$SHA" ]; then
+            echo "Remote branch refs/heads/$BRANCH holds '$BRANCH_SHA' instead of '$SHA'; skipping PR reconciliation"
+            exit 0
+          fi
+          LABEL="$SHORT"
+          [ -n "$TAG" ] && LABEL="$TAG ($SHORT)"
+          TITLE="chore(web): vendor herdrup-desktop@$LABEL"
+          BODY=$(printf '%s\n\n%s' \
+            "Automated Guest Web bundle sync from \`jerryfane/herdrup-desktop@$SHA\` (\`sourceDirty: false\`)." \
+            "Verified in read-only build job: \`GuestRelay\` \`npm test\` (bundle manifest + vitest) and \`npm run typecheck\`.")
+          EXISTING=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/pulls/$EXISTING" -f title="$TITLE" -f body="$BODY" >/dev/null
+            echo "Updated PR #$EXISTING"
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" --title "$TITLE" --body "$BODY"
+          fi

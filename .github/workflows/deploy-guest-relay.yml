@@ -1,0 +1,78 @@
+# Deploys GuestRelay to https://guest.herdrup.app when GuestRelay/** merges to main.
+# Uses environment `guest-relay` secrets (CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID).
+# Gracefully no-ops if credentials are not configured yet so main stays green.
+name: Deploy GuestRelay
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "GuestRelay/**"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-guest-relay
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy GuestRelay Worker
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: guest-relay
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Check Cloudflare deploy credentials
+        id: creds
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID not configured in the guest-relay environment; skipping automatic wrangler deploy."
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node
+        if: steps.creds.outputs.ready == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test and deploy GuestRelay
+        if: steps.creds.outputs.ready == 'true'
+        working-directory: GuestRelay
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          npm ci
+          npm test
+          npm run typecheck
+          npx wrangler deploy
+          EXPECTED=$(jq -r '.sourceCommit' public/web/manifest.json)
+          LIVE=""
+          HEALTH_OK=""
+          for attempt in 1 2 3 4 5 6; do
+            LIVE=$(curl -fsS -H "Cache-Control: no-cache" "https://guest.herdrup.app/web/manifest.json?t=$(date +%s)" | jq -r '.sourceCommit // empty' || true)
+            HEALTH_OK=$(curl -fsS -H "Cache-Control: no-cache" "https://guest.herdrup.app/v1/health?t=$(date +%s)" | jq -r '.ok // empty' || true)
+            echo "Attempt $attempt: asset sourceCommit=$LIVE (expected=$EXPECTED), worker health ok=$HEALTH_OK"
+            if [ "$EXPECTED" = "$LIVE" ] && [ "$HEALTH_OK" = "true" ]; then
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::Post-deploy verification failed (asset sourceCommit=$LIVE expected=$EXPECTED, worker health ok=$HEALTH_OK)"
+          exit 1

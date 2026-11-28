@@ -1,0 +1,225 @@
+{
+  "version": 1,
+  "description": "Shared cross-platform Gram Markdown conformance corpus (byte-identical between jerryfane/herdrup-desktop and themartianapp/herdrup).",
+  "cases": [
+    {
+      "id": "plain-single-paragraph",
+      "input": "Deployed. vetrina.dev is live.\nSecond line of the same paragraph.",
+      "expect": {
+        "blocks": ["paragraph"],
+        "hasTable": false,
+        "hasCode": false,
+        "containsText": ["Deployed.", "Second line of the same paragraph."],
+        "allowedLinks": [],
+        "forbiddenSubstrings": ["<script", "javascript:", "<table", "<pre>"]
+      }
+    },
+    {
+      "id": "two-paragraphs",
+      "input": "First paragraph.\n\nSecond paragraph.",
+      "expect": {
+        "blocks": ["paragraph", "paragraph"],
+        "hasTable": false,
+        "hasCode": false,
+        "containsText": ["First paragraph.", "Second paragraph."],
+        "allowedLinks": [],
+        "forbiddenSubstrings": ["<table", "<pre>"]
+      }
+    },
+    {
+      "id": "headings-and-hashtag-prose",
+      "input": "# Release Notes\n\n## Highlights\n\n### Details\n\n#hashtag stays a paragraph.",
+      "expect": {
+        "blocks": ["heading:1", "heading:2", "heading:3", "paragraph"],
+        "hasTable": false,
+        "hasCode": false,
+        "containsText": ["Release Notes", "Highlights", "Details", "#hashtag stays a paragraph."],
+        "allowedLinks": [],
+        "forbiddenSubstrings": ["<h1>hashtag"]
+      }
+    },
+    {
+      "id": "unordered-nested-list",
+      "input": "- First item\n- Second item\n  - Nested detail\n- Third item",
+      "expect": {
+        "blocks": ["list:unordered"],
+        "hasTable": false,
+        "hasCode": false,
+        "containsText": ["First item", "Second item", "Nested detail", "Third item"],
+        "allowedLinks": [],
+        "forbiddenSubstrings": ["<ol>"]
+      }
+    },
+    {
+      "id": "ordered-list-start",
+      "input": "3. Third step\n4. Fourth step",
+      "expect": {
+        "blocks": ["list:ordered:3"],
+        "hasTable": false,
+        "hasCode": false,
+        "containsText": ["Third step", "Fourth step"],
+        "allowedLinks": [],
+        "forbiddenSubstrings": []
+      }
+    },
+    {
+      "id": "task-list-checked-unchecked",
+      "input": "- [x] Merged\n- [ ] Follow-up",
+      "expect": {
+        "blocks": ["list:unordered"],
+        "hasTable": false,
+        "hasCode": false,
+        "containsText": ["Merged", "Follow-up"],
+        "allowedLinks": [],
+        "forbiddenSubstrings": ["<input"]
+      }
+    },
+    {
+      "id": "gfm-table-with-alignment",
+      "input": "| Service | Latency | Status |\n|---|:---:|---:|\n| API | 42ms | OK |\n| Relay | 18ms | OK |",
+      "expect": {
+        "blocks": ["table"],
+        "hasTable": true,
+        "hasCode": false,
+        "containsText": ["Service", "Latency", "Status", "API", "42ms", "Relay", "18ms"],
+        "allowedLinks": [],
+        "forbiddenSubstrings": []
+      }
+    },
+    {
+      "id": "stray-pipe-not-table",
+      "input": "plain prose with a | pipe and no delimiter row",
+      "expect": {
+        "blocks": ["paragraph"],
+        "hasTable": false,
+        "hasCode": false,
+        "containsText": ["plain prose with a | pipe and no delimiter row"],
+        "allowedLinks": [],
+        "forbiddenSubstrings": ["<table"]
+      }
+    },
+    {
+      "id": "blockquote-and-rule",
+      "input": "> Quoted note\n> second line\n\n---",
+      "expect": {
+        "blocks": ["quote", "rule"],
+        "hasTable": false,
+        "hasCode": false,
+        "containsText": ["Quoted note", "second line"],
+        "allowedLinks": [],
+        "forbiddenSubstrings": []
+      }
+    },
+    {
+      "id": "fenced-backtick-code",
+      "input": "```sh\necho hello\n```",
+      "expect": {
+        "blocks": ["code:sh"],
+        "hasTable": false,
+        "hasCode": true,
+        "containsText": ["echo hello"],
+        "allowedLinks": [],
+        "forbiddenSubstrings": []
+      }
+    },
+    {
+      "id": "fenced-tilde-containing-backticks",
+      "input": "~~~md\nExample:\n```sh\necho hi\n```\n~~~",
+      "expect": {
+        "blocks": ["code:md"],
+        "hasTable": false,
+        "hasCode": true,
+        "containsText": ["Example:", "echo hi"],
+        "allowedLinks": [],
+        "forbiddenSubstrings": []
+      }
+    },
+    {
+      "id": "unclosed-fence",
+      "input": "```\nlet x = 1",
+      "expect": {
+        "blocks": ["code"],
+        "iosBlocks": ["paragraph"],
+        "hasTable": false,
+        "hasCode": true,
+        "iosHasCode": false,
+        "iosNote": "iOS GramText intentionally renders unclosed top-level fences as prose.",
+        "containsText": ["let x = 1"],
+        "allowedLinks": [],
+        "forbiddenSubstrings": []
+      }
+    },
+    {
+      "id": "inline-styles-and-safe-links",
+      "input": "Shipped **v1.3** with *zero* downtime, `herdr`, [docs](https://herdrup.app), and [email](mailto:team@herdrup.app).",
+      "expect": {
+        "blocks": ["paragraph"],
+        "hasTable": false,
+        "hasCode": false,
+        "containsText": ["v1.3", "zero", "herdr", "docs", "email"],
+        "allowedLinks": ["https://herdrup.app", "mailto:team@herdrup.app"],
+        "forbiddenSubstrings": []
+      }
+    },
+    {
+      "id": "unsafe-link-schemes-blocked",
+      "input": "Try [click](javascript:alert(1)), [img](data:text/html,<script>1</script>), and [files](ftp://host/file).",
+      "expect": {
+        "blocks": ["paragraph"],
+        "hasTable": false,
+        "hasCode": false,
+        "containsText": ["click", "img", "files"],
+        "allowedLinks": [],
+        "forbiddenSubstrings": ["href=\"javascript:", "href=\"data:", "href=\"ftp:", "<script>"]
+      }
+    },
+    {
+      "id": "html-and-script-escaped",
+      "input": "Raw <script>alert(1)</script> & <img src=x onerror=alert(1)> stay literal.",
+      "expect": {
+        "blocks": ["paragraph"],
+        "hasTable": false,
+        "hasCode": false,
+        "containsText": ["stay literal."],
+        "allowedLinks": [],
+        "forbiddenSubstrings": ["<script>", "<img "]
+      }
+    },
+    {
+      "id": "code-span-protects-markup",
+      "input": "Inline `**not bold** <script>1</script>` stays literal.",
+      "expect": {
+        "blocks": ["paragraph"],
+        "hasTable": false,
+        "hasCode": false,
+        "containsText": ["stays literal."],
+        "allowedLinks": [],
+        "forbiddenSubstrings": ["<strong>not bold</strong>", "<script>1</script>"]
+      }
+    },
+    {
+      "id": "deeply-nested-blockquote-bounded",
+      "input": ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> ok",
+      "expect": {
+        "blocks": ["quote"],
+        "hasTable": false,
+        "hasCode": false,
+        "containsText": ["ok"],
+        "allowedLinks": [],
+        "forbiddenSubstrings": []
+      }
+    },
+    {
+      "id": "mixed-morning-gram",
+      "input": "AGY: **Gram Markdown formatting is live**.\n\n| Surface | Version | Status |\n| --- | --- | --- |\n| **iOS** | `v1.3.24` | Uploaded |\n| **Web** | `ad3206f` | Live |\n\n### What renders\n- **Tables** and lists\n- Inline `code` and [links](https://guest.herdrup.app)\n\n> Zero P0/P1 findings.",
+      "expect": {
+        "blocks": ["paragraph", "table", "heading:3", "list:unordered", "quote"],
+        "hasTable": true,
+        "hasCode": false,
+        "containsText": ["Surface", "v1.3.24", "ad3206f", "What renders", "Tables", "Zero P0/P1 findings."],
+        "allowedLinks": ["https://guest.herdrup.app"],
+        "forbiddenSubstrings": ["<script", "onerror="]
+      }
+    }
+  ]
+}
