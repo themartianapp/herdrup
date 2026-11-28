@@ -57,7 +57,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
-          INPUT_REF: ${{ github.event.inputs.desktop_ref || 'main' }}
+          INPUT_REF: ${{ github.event.inputs.desktop_ref || github.event.client_payload.ref || 'main' }}
           INPUT_TAG: ${{ github.event.client_payload.tag || '' }}
         run: |
           set -euo pipefail
@@ -87,9 +87,23 @@ jobs:
             echo "::error::Could not resolve jerryfane/herdrup-desktop ref '$INPUT_REF'"
             exit 1
           fi
+          # Only attach a release tag label when that tag actually points to TARGET_SHA.
+          VERIFIED_TAG=""
+          if [ -n "$INPUT_TAG" ]; then
+            TAG_LS=$(git ls-remote -- https://github.com/jerryfane/herdrup-desktop.git \
+              "refs/tags/$INPUT_TAG" \
+              "refs/tags/$INPUT_TAG^{}")
+            TAG_SHA=$(printf '%s\n' "$TAG_LS" | awk '$2 ~ /\^\{\}$/ {print $1; exit}')
+            if [ -z "$TAG_SHA" ]; then
+              TAG_SHA=$(printf '%s\n' "$TAG_LS" | awk 'NR==1 {print $1}')
+            fi
+            if [ "$TAG_SHA" = "$TARGET_SHA" ]; then
+              VERIFIED_TAG="$INPUT_TAG"
+            fi
+          fi
           echo "sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
           echo "short=${TARGET_SHA:0:7}" >> "$GITHUB_OUTPUT"
-          echo "tag=$INPUT_TAG" >> "$GITHUB_OUTPUT"
+          echo "tag=$VERIFIED_TAG" >> "$GITHUB_OUTPUT"
 
           if [ "$CURRENT" = "$TARGET_SHA" ]; then
             echo "build_needed=false" >> "$GITHUB_OUTPUT"
@@ -98,18 +112,28 @@ jobs:
             exit 0
           fi
 
-          # For automated triggers, prevent proposing a downgrade if TARGET_SHA is behind CURRENT.
+          # For automated triggers, fail closed on ancestry check so an API error or older ref
+          # can never propose a Guest Web downgrade.
           if [ "$EVENT_NAME" != "workflow_dispatch" ] && [ -n "$CURRENT" ]; then
             CMP_STATUS=$(curl -fsSL \
               -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
               "https://api.github.com/repos/jerryfane/herdrup-desktop/compare/${CURRENT}...${TARGET_SHA}" \
-              | jq -r '.status // empty' || true)
-            if [ "$CMP_STATUS" = "behind" ] || [ "$CMP_STATUS" = "identical" ]; then
-              echo "build_needed=false" >> "$GITHUB_OUTPUT"
-              echo "publish_needed=false" >> "$GITHUB_OUTPUT"
-              echo "Skipping downgrade: $TARGET_SHA is $CMP_STATUS relative to already-vendored $CURRENT"
-              exit 0
-            fi
+              | jq -r '.status // empty')
+            case "$CMP_STATUS" in
+              behind|identical)
+                echo "build_needed=false" >> "$GITHUB_OUTPUT"
+                echo "publish_needed=false" >> "$GITHUB_OUTPUT"
+                echo "Skipping downgrade: $TARGET_SHA is $CMP_STATUS relative to already-vendored $CURRENT"
+                exit 0
+                ;;
+              ahead|diverged)
+                ;;
+              *)
+                echo "::error::Ancestry check failed for ${CURRENT}...${TARGET_SHA} (status='$CMP_STATUS')"
+                exit 1
+                ;;
+            esac
           fi
 
           # Check if the vendor branch already holds TARGET_SHA, and separately whether an open PR exists,
@@ -250,6 +274,17 @@ jobs:
         run: |
           set -euo pipefail
           BRANCH="chore/auto-vendor-guest-web"
+          # Only create or update the PR when the remote vendor branch actually holds SHA,
+          # preventing a no-op publish (when main already caught up) from relabeling an older PR.
+          if ! git fetch --depth=1 --no-tags origin "$BRANCH" 2>/dev/null; then
+            echo "Remote branch $BRANCH does not exist; skipping PR reconciliation"
+            exit 0
+          fi
+          BRANCH_SHA=$(git show "FETCH_HEAD:GuestRelay/public/web/manifest.json" 2>/dev/null | jq -r '.sourceCommit // empty' || true)
+          if [ "$BRANCH_SHA" != "$SHA" ]; then
+            echo "Remote branch $BRANCH holds '$BRANCH_SHA' instead of '$SHA'; skipping PR reconciliation"
+            exit 0
+          fi
           LABEL="$SHORT"
           [ -n "$TAG" ] && LABEL="$TAG ($SHORT)"
           TITLE="chore(web): vendor herdrup-desktop@$LABEL"
