@@ -536,11 +536,10 @@ private struct GramFoldingMarkdown: View {
                 .lineSpacing(2)
                 .padding(.top, isFirst ? 0 : 2)
                 .fixedSize(horizontal: false, vertical: true)
-        case .list(let ordered, let start, let items):
-            let markers = ChatMarkdown.listMarkers(ordered: ordered, start: start, items: items)
+        case .list(_, _, let items):
             VStack(alignment: .leading, spacing: 4) {
-                ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                    listRow(item, marker: markers[index])
+                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                    listRow(item)
                 }
             }
         case .table(let header, let rows):
@@ -584,7 +583,7 @@ private struct GramFoldingMarkdown: View {
         )
     }
 
-    private func listRow(_ item: ChatMarkdownListItem, marker: String) -> some View {
+    private func listRow(_ item: ChatMarkdownListItem) -> some View {
         let markerColor: Color = mine ? Palette.onAccentDim : Palette.textDim
         return HStack(alignment: .firstTextBaseline, spacing: 8) {
             Group {
@@ -593,7 +592,7 @@ private struct GramFoldingMarkdown: View {
                         .font(.system(size: 13 * Typography.scale, weight: .medium))
                         .foregroundStyle(mine ? Palette.onAccent : (checked ? Palette.brand : Palette.textDim))
                 } else {
-                    Text(marker)
+                    Text(item.marker)
                         .font(Typography.app(15))
                         .foregroundStyle(markerColor)
                 }

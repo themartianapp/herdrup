@@ -45,52 +45,47 @@ public enum GramText {
             if joined.contains(where: { !$0.isWhitespace }) { segments.append(.text(joined)) }
         }
 
+        var enclosingIndents: [Int] = []
+        var failedTildeBlock: (end: Int, blockIndent: Int, minCount: Int)?
         var index = lines.startIndex
         while index < lines.endIndex {
             let line = lines[index]
-            guard let fence = Fence(opening: line) else {
-                prose.append(line)
-                index += 1
-                continue
-            }
-            if fence.marker == "~", fence.indent > 0 {
-                // An indented tilde opener (e.g. inside a list item) belongs to its enclosing
-                // indented block: stop scanning at a dedented non-blank line so an unclosed
-                // indented tilde fence never swallows a later top-level code card (#915).
-                var close: Int?
-                var scan = index + 1
-                while scan < lines.endIndex {
-                    let candidate = lines[scan]
-                    if fence.isClosed(by: candidate) {
-                        close = scan
-                        break
-                    }
-                    if candidate.contains(where: { !$0.isWhitespace }),
-                       Self.leadingSpaceCount(candidate) < fence.indent {
-                        break
-                    }
-                    scan += 1
+            let isBlank = !line.contains(where: { !$0.isWhitespace })
+            let lineIndent = isBlank ? 0 : Self.leadingSpaceCount(line)
+            if !isBlank {
+                while let top = enclosingIndents.last, lineIndent < top {
+                    enclosingIndents.removeLast()
                 }
-                guard let foundClose = close else {
+            }
+            let blockIndent = enclosingIndents.last ?? 0
+            if let fence = Fence(opening: line, blockIndent: blockIndent) {
+                if let close = Self.findClose(
+                    for: fence,
+                    from: index + 1,
+                    blockIndent: blockIndent,
+                    in: lines,
+                    failedTildeBlock: &failedTildeBlock
+                ) {
+                    flushProse()
+                    segments.append(.code(lines[(index + 1)..<close].joined(separator: "\n"),
+                                          language: fence.language))
+                    index = close + 1
+                    continue
+                }
+                if blockIndent > 0, fence.marker == "~" {
                     prose.append(line)
                     index += 1
                     continue
                 }
-                flushProse()
-                segments.append(.code(lines[(index + 1)..<foundClose].joined(separator: "\n"),
-                                      language: fence.language))
-                index = foundClose + 1
-                continue
-            }
-            guard let close = lines[(index + 1)...].firstIndex(where: fence.isClosed(by:)) else {
-                // Unclosed: the rest of the message is prose, fence line included.
+                // Unclosed top-level fence: the rest of the message is prose, fence line included.
                 prose.append(contentsOf: lines[index...])
                 break
             }
-            flushProse()
-            segments.append(.code(lines[(index + 1)..<close].joined(separator: "\n"),
-                                  language: fence.language))
-            index = close + 1
+            if !isBlank, let col = Self.listContentColumn(line) {
+                enclosingIndents.append(col)
+            }
+            prose.append(line)
+            index += 1
         }
         flushProse()
         return segments
@@ -130,6 +125,76 @@ public enum GramText {
         return true
     }
 
+    /// Finds the closing fence line index for `fence`, bounded by `blockIndent` when inside an
+    /// indented list item so unclosed nested tilde fences never swallow later code cards (#915),
+    /// while preserving top-level 1..3-space fences and list-indented 4+-space fences (#922).
+    /// Failed nested tilde scans record `(end, blockIndent, minCount)` so repeated unclosed
+    /// openers inside the same block stay O(N) (#923).
+    private static func findClose(
+        for fence: Fence,
+        from start: Int,
+        blockIndent: Int,
+        in lines: [Substring],
+        failedTildeBlock: inout (end: Int, blockIndent: Int, minCount: Int)?
+    ) -> Int? {
+        if fence.marker == "~", blockIndent > 0 {
+            if let failed = failedTildeBlock,
+               start <= failed.end,
+               blockIndent >= failed.blockIndent,
+               fence.count >= failed.minCount {
+                return nil
+            }
+            var maxCloserCount = 0
+            var scan = start
+            while scan < lines.endIndex {
+                let candidate = lines[scan]
+                if candidate.contains(where: { !$0.isWhitespace }),
+                   leadingSpaceCount(candidate) < blockIndent {
+                    break
+                }
+                let trimmed = candidate.trimmingCharacters(in: .whitespaces)
+                if trimmed.count >= 3, trimmed.allSatisfy({ $0 == "~" }) {
+                    if trimmed.count >= fence.count { return scan }
+                    maxCloserCount = max(maxCloserCount, trimmed.count)
+                }
+                scan += 1
+            }
+            failedTildeBlock = (end: scan, blockIndent: blockIndent, minCount: max(3, maxCloserCount + 1))
+            return nil
+        }
+        return lines[start...].firstIndex(where: fence.isClosed(by:))
+    }
+
+    private static func listContentColumn(_ line: Substring) -> Int? {
+        let leading = leadingSpaceCount(line)
+        let body = line.drop(while: { $0 == " " || $0 == "\t" })
+        guard let first = body.first else { return nil }
+        // Reject thematic breaks (`- - -`, `* * *`, `_ _ _`).
+        let compact = body.filter { $0 != " " && $0 != "\t" }
+        if compact.count >= 3, "-*_".contains(first), compact.allSatisfy({ $0 == first }) {
+            return nil
+        }
+        let markerLen: Int
+        let afterMarker: Substring
+        if "-*+".contains(first), let sp = body.dropFirst().first, sp == " " || sp == "\t" {
+            markerLen = 1
+            afterMarker = body.dropFirst()
+        } else {
+            let digits = body.prefix { $0.isASCII && $0.isNumber }
+            guard !digits.isEmpty, digits.count <= 9 else { return nil }
+            let rest = body.dropFirst(digits.count)
+            guard let dot = rest.first, dot == "." || dot == ")",
+                  let sp = rest.dropFirst().first, sp == " " || sp == "\t" else { return nil }
+            markerLen = digits.count + 1
+            afterMarker = rest.dropFirst()
+        }
+        let padding = afterMarker.prefix { $0 == " " || $0 == "\t" }
+        let padWidth = afterMarker.dropFirst(padding.count).isEmpty
+            ? 1
+            : padding.reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
+        return leading + markerLen + padWidth
+    }
+
     private static func leadingSpaceCount(_ line: Substring) -> Int {
         var count = 0
         for ch in line {
@@ -143,22 +208,20 @@ public enum GramText {
     private struct Fence {
         let marker: Character
         let count: Int
-        let indent: Int
         let language: String?
 
-        init?(opening line: Substring) {
+        init?(opening line: Substring, blockIndent: Int) {
             let indent = GramText.leadingSpaceCount(line)
             let body = line.drop(while: { $0 == " " || $0 == "\t" })
             guard let marker = body.first, marker == "`" || marker == "~" else { return nil }
-            // CommonMark §4.5: a 4+ space indented tilde line is an indented code block, not a fence (#915).
-            if marker == "~", indent > 3 { return nil }
+            // CommonMark §4.5: 4+ spaces relative to the enclosing block is indented code, not a fence (#915, #922).
+            if marker == "~", indent - blockIndent > 3 { return nil }
             let count = body.prefix(while: { $0 == marker }).count
             guard count >= 3 else { return nil }
             let info = body.dropFirst(count)
             if marker == "`", info.contains("`") { return nil }
             self.marker = marker
             self.count = count
-            self.indent = indent
             self.language = info.split(whereSeparator: { $0.isWhitespace }).first.map(String.init)
         }
 

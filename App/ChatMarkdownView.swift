@@ -41,11 +41,10 @@ struct ChatMarkdownView: View {
                 .lineSpacing(2)
                 .padding(.top, 4)
                 .fixedSize(horizontal: false, vertical: true)
-        case .list(let ordered, let start, let items):
-            let markers = ChatMarkdown.listMarkers(ordered: ordered, start: start, items: items)
+        case .list(_, _, let items):
             VStack(alignment: .leading, spacing: 6) {
-                ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                    listRow(item, marker: markers[index])
+                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                    listRow(item)
                 }
             }
             .padding(.top, 2)
@@ -69,14 +68,14 @@ struct ChatMarkdownView: View {
         }
     }
 
-    private func listRow(_ item: ChatMarkdownListItem, marker: String) -> some View {
+    private func listRow(_ item: ChatMarkdownListItem) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Group {
                 if let checked = item.checked {
                     Image(systemName: checked ? "checkmark.square" : "square")
                         .font(.system(size: 13 * textScale, weight: .medium))
                 } else {
-                    Text(marker).font(Typography.app(16 * textScale))
+                    Text(item.marker).font(Typography.app(16 * textScale))
                 }
             }
             .foregroundStyle(tone.marker)
