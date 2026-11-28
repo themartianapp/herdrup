@@ -53,6 +53,35 @@ public enum GramText {
                 index += 1
                 continue
             }
+            if fence.marker == "~", fence.indent > 0 {
+                // An indented tilde opener (e.g. inside a list item) belongs to its enclosing
+                // indented block: stop scanning at a dedented non-blank line so an unclosed
+                // indented tilde fence never swallows a later top-level code card (#915).
+                var close: Int?
+                var scan = index + 1
+                while scan < lines.endIndex {
+                    let candidate = lines[scan]
+                    if fence.isClosed(by: candidate) {
+                        close = scan
+                        break
+                    }
+                    if candidate.contains(where: { !$0.isWhitespace }),
+                       Self.leadingSpaceCount(candidate) < fence.indent {
+                        break
+                    }
+                    scan += 1
+                }
+                guard let foundClose = close else {
+                    prose.append(line)
+                    index += 1
+                    continue
+                }
+                flushProse()
+                segments.append(.code(lines[(index + 1)..<foundClose].joined(separator: "\n"),
+                                      language: fence.language))
+                index = foundClose + 1
+                continue
+            }
             guard let close = lines[(index + 1)...].firstIndex(where: fence.isClosed(by:)) else {
                 // Unclosed: the rest of the message is prose, fence line included.
                 prose.append(contentsOf: lines[index...])
@@ -101,20 +130,35 @@ public enum GramText {
         return true
     }
 
+    private static func leadingSpaceCount(_ line: Substring) -> Int {
+        var count = 0
+        for ch in line {
+            if ch == " " { count += 1 }
+            else if ch == "\t" { count += 4 }
+            else { break }
+        }
+        return count
+    }
+
     private struct Fence {
         let marker: Character
         let count: Int
+        let indent: Int
         let language: String?
 
         init?(opening line: Substring) {
+            let indent = GramText.leadingSpaceCount(line)
             let body = line.drop(while: { $0 == " " || $0 == "\t" })
             guard let marker = body.first, marker == "`" || marker == "~" else { return nil }
+            // CommonMark §4.5: a 4+ space indented tilde line is an indented code block, not a fence (#915).
+            if marker == "~", indent > 3 { return nil }
             let count = body.prefix(while: { $0 == marker }).count
             guard count >= 3 else { return nil }
             let info = body.dropFirst(count)
             if marker == "`", info.contains("`") { return nil }
             self.marker = marker
             self.count = count
+            self.indent = indent
             self.language = info.split(whereSeparator: { $0.isWhitespace }).first.map(String.init)
         }
 
