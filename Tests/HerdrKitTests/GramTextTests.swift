@@ -137,10 +137,10 @@ final class GramTextTests: XCTestCase {
 
     func testPlainMultiLineReportStaysSingleNonRichParagraph() {
         let report = "Deployed. vetrina.dev is live.\n• Build 412 passed\n• 2 migrations ran clean"
-        let blocks = GramText.blocks(report)
+        let blocks = GramText.proseBlocks(report)
         XCTAssertEqual(blocks, [.paragraph(report)])
         XCTAssertFalse(GramText.isRichMarkdown(blocks))
-        XCTAssertFalse(GramText.hasTable(report))
+        XCTAssertFalse(GramText.hasTable(blocks))
     }
 
     func testRichMarkdownAndTableDetection() {
@@ -154,14 +154,38 @@ final class GramTextTests: XCTestCase {
         |---|---|
         | API | +12% |
         """
-        let blocks = GramText.blocks(rich)
+        let blocks = GramText.proseBlocks(rich)
         XCTAssertTrue(GramText.isRichMarkdown(blocks))
-        XCTAssertTrue(GramText.hasTable(rich))
+        XCTAssertTrue(GramText.hasTable(blocks))
         XCTAssertEqual(blocks.count, 3)
 
-        let twoParagraphs = "First paragraph.\n\nSecond paragraph."
-        XCTAssertTrue(GramText.isRichMarkdown(GramText.blocks(twoParagraphs)))
+        let twoParagraphs = GramText.proseBlocks("First paragraph.\n\nSecond paragraph.")
+        XCTAssertTrue(GramText.isRichMarkdown(twoParagraphs))
         XCTAssertFalse(GramText.hasTable(twoParagraphs))
-        XCTAssertFalse(GramText.hasTable("plain prose with a | pipe"))
+        XCTAssertFalse(GramText.hasTable(GramText.proseBlocks("plain prose with a | pipe")))
+    }
+
+    func testInlineTripleBacktickSpanAndUnclosedFenceStayProseInProseBlocks() {
+        let inlineSpan = "``` `42` ```\n\nSecond paragraph."
+        XCTAssertEqual(segments(inlineSpan), [.text(inlineSpan)])
+        XCTAssertEqual(GramText.proseBlocks(inlineSpan), [
+            .paragraph("``` `42` ```"),
+            .paragraph("Second paragraph."),
+        ])
+
+        let unclosed = "Try this:\n```bash\nrm -rf build"
+        XCTAssertEqual(segments(unclosed), [.text(unclosed)])
+        XCTAssertEqual(GramText.proseBlocks(unclosed), [.paragraph(unclosed)])
+    }
+
+    func testOrderedListWithNestedBulletPreservesOuterNumbering() {
+        let md = "1. First\n  - nested bullet\n2. Second"
+        let blocks = GramText.proseBlocks(md)
+        guard case .list(let ordered, let start, let items) = blocks.first else {
+            return XCTFail("expected list block, got \(blocks)")
+        }
+        XCTAssertTrue(ordered)
+        XCTAssertEqual(start, 1)
+        XCTAssertEqual(ChatMarkdown.listMarkers(ordered: ordered, start: start, items: items), ["1.", "•", "2."])
     }
 }

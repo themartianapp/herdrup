@@ -351,7 +351,6 @@ struct GramTextPart<Card: View>: View {
 
     var body: some View {
         let hasCode = segments.contains { if case .code = $0 { return true } else { return false } }
-        let hasTable = segments.contains { if case .text(let text) = $0 { return GramText.hasTable(text) } else { return false } }
         if segments.isEmpty, hasCard {
             card(false)
         } else if hasCode || hasCard {
@@ -359,7 +358,7 @@ struct GramTextPart<Card: View>: View {
                 ForEach(Array(segments.enumerated()), id: \.offset) { index, segment in
                     switch segment {
                     case .text(let text):
-                        prose(text, index: index)
+                        prose(ChatMarkdownCache.gramProseBlocks(text), index: index)
                             .padding(.horizontal, 12)
                             .padding(.top, 7)
                     case .code(let code, let language):
@@ -379,11 +378,15 @@ struct GramTextPart<Card: View>: View {
             .background(fill)
             .clipShape(bubbleShape)
         } else {
+            // Parse each text segment once (cached) and derive table width from those blocks.
+            let parsed: [(index: Int, blocks: [ChatMarkdownBlock])] = segments.enumerated().compactMap { index, segment in
+                guard case .text(let text) = segment else { return nil }
+                return (index, ChatMarkdownCache.gramProseBlocks(text))
+            }
+            let hasTable = parsed.contains { GramText.hasTable($0.blocks) }
             VStack(alignment: .leading, spacing: 8) {
-                ForEach(Array(segments.enumerated()), id: \.offset) { index, segment in
-                    if case .text(let text) = segment {
-                        prose(text, index: index)
-                    }
+                ForEach(parsed, id: \.index) { item in
+                    prose(item.blocks, index: item.index)
                 }
             }
             .frame(maxWidth: hasTable ? .infinity : nil, alignment: .leading)
@@ -397,8 +400,7 @@ struct GramTextPart<Card: View>: View {
     /// keep `GramFoldingText`'s exact 8-line fold, while multi-block Markdown (paragraphs, lists,
     /// headings, tables, quotes, rules) renders via `GramFoldingMarkdown`.
     @ViewBuilder
-    private func prose(_ text: String, index: Int) -> some View {
-        let blocks = ChatMarkdownCache.blocks(text)
+    private func prose(_ blocks: [ChatMarkdownBlock], index: Int) -> some View {
         if !GramText.isRichMarkdown(blocks), case .paragraph(let paragraph) = blocks.first {
             GramFoldingText(
                 text: GramInline.styled(paragraph, size: 15, mine: mine),
@@ -417,8 +419,8 @@ struct GramTextPart<Card: View>: View {
     }
 }
 
-/// Inline Markdown + bare URL detection for Gram bubbles, tinted for incoming (`Palette.text` /
-/// `Palette.brand`) or outgoing (`Palette.onAccent` on violet). Cached by `(text, size, weight,
+/// Inline Markdown + bare URL detection for Gram bubbles, delegating parsing and intent styling
+/// to `ChatInline.render` with Gram's bubble colours and sizes. Cached by `(text, size, weight,
 /// mine, scale)` so scrolling/redrawing does not re-parse.
 @MainActor
 private enum GramInline {
@@ -434,35 +436,17 @@ private enum GramInline {
     static func styled(_ markdown: String, size: CGFloat, weight: Font.Weight = .regular, mine: Bool) -> AttributedString {
         let scale = Typography.scale
         return cache.value(for: Key(markdown: markdown, size: size, weight: weight, mine: mine, scale: scale)) {
-            parse(markdown, size: size, weight: weight, mine: mine)
+            ChatInline.render(markdown, appearance: InlineMarkdownAppearance(
+                size: size,
+                weight: weight,
+                codeSizeOffset: 2,
+                codeBackground: mine ? Palette.onAccent.opacity(0.18) : Palette.surface,
+                codeForeground: mine ? Palette.onAccent : Palette.text,
+                linkForeground: mine ? Palette.onAccent : Palette.brand,
+                underlineLinks: mine,
+                detectBareURLs: true
+            ))
         }
-    }
-
-    private static func parse(_ markdown: String, size: CGFloat, weight: Font.Weight, mine: Bool) -> AttributedString {
-        let options = AttributedString.MarkdownParsingOptions(
-            interpretedSyntax: .inlineOnlyPreservingWhitespace,
-            failurePolicy: .returnPartiallyParsedIfPossible)
-        var styled = (try? AttributedString(markdown: markdown, options: options)) ?? AttributedString(markdown)
-        let linkTint: Color = mine ? Palette.onAccent : Palette.brand
-        for run in styled.runs {
-            let intent = run.inlinePresentationIntent ?? []
-            if intent.contains(.code) {
-                styled[run.range].font = Typography.machine(max(size - 2, 10))
-                styled[run.range].backgroundColor = mine ? Palette.onAccent.opacity(0.18) : Palette.surface
-                styled[run.range].foregroundColor = mine ? Palette.onAccent : Palette.text
-                continue
-            }
-            var font = Typography.app(size, intent.contains(.stronglyEmphasized) ? .semibold : weight)
-            if intent.contains(.emphasized) { font = font.italic() }
-            styled[run.range].font = font
-            if intent.contains(.strikethrough) { styled[run.range].strikethroughStyle = .single }
-            if run.link != nil {
-                styled[run.range].foregroundColor = linkTint
-                if mine { styled[run.range].underlineStyle = .single }
-            }
-        }
-        detectLinks(in: &styled, tint: linkTint, underline: mine)
-        return styled
     }
 }
 
@@ -551,9 +535,10 @@ private struct GramFoldingMarkdown: View {
                 .padding(.top, isFirst ? 0 : 2)
                 .fixedSize(horizontal: false, vertical: true)
         case .list(let ordered, let start, let items):
+            let markers = ChatMarkdown.listMarkers(ordered: ordered, start: start, items: items)
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                    listRow(item, marker: ordered ? "\(start + index)." : "•")
+                    listRow(item, marker: markers[index])
                 }
             }
         case .code(let language, let code):
@@ -561,7 +546,7 @@ private struct GramFoldingMarkdown: View {
         case .diagram(let kind, let source):
             GramCodeBlock(code: source, language: kind)
         case .table(let header, let rows):
-            GramMarkdownTable(header: header, rows: rows, mine: mine)
+            ChatMarkdownTable(header: header, rows: rows, style: tableStyle)
         case .quote(let text):
             Text(GramInline.styled(text, size: 14.5, mine: mine))
                 .foregroundStyle(mine ? Palette.onAccentDim : Palette.textDim)
@@ -579,6 +564,26 @@ private struct GramFoldingMarkdown: View {
                 .frame(height: 1)
                 .padding(.vertical, 2)
         }
+    }
+
+    private var tableStyle: MarkdownTableStyle {
+        let isMine = mine
+        return MarkdownTableStyle(
+            minColumnWidth: 92 * Typography.scale,
+            horizontalPadding: 10,
+            verticalPadding: 6,
+            cornerRadius: 10,
+            headerBackground: isMine ? Palette.onAccent.opacity(0.14) : Palette.surface,
+            borderColor: isMine ? Palette.onAccent.opacity(0.28) : Palette.hairline,
+            dividerColor: isMine ? Palette.onAccent.opacity(0.20) : Palette.hairlineQuiet,
+            headerInk: isMine ? Palette.onAccentDim : Palette.textDim,
+            bodyInk: isMine ? Palette.onAccent : Palette.text,
+            gainInk: isMine ? Palette.onAccent : ChatStyle.ok,
+            accessibilityIdentifier: "gram-markdown-table",
+            headerText: { GramInline.styled($0, size: 12.5, weight: .semibold, mine: isMine) },
+            numberText: { GramInline.styled($0, size: 13, mine: isMine) },
+            bodyText: { GramInline.styled($0, size: 13.5, mine: isMine) }
+        )
     }
 
     private func listRow(_ item: ChatMarkdownListItem, marker: String) -> some View {
@@ -601,85 +606,6 @@ private struct GramFoldingMarkdown: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.leading, CGFloat(item.depth) * 16 + 4)
-    }
-}
-
-/// Compact rounded GitHub-flavored Markdown table for Gram bubbles, scrolling horizontally when
-/// columns need more width than the bubble offers.
-private struct GramMarkdownTable: View {
-    let header: [String]
-    let rows: [[String]]
-    let mine: Bool
-    private let columns: Int
-    @State private var viewportWidth: CGFloat = 0
-
-    init(header: [String], rows: [[String]], mine: Bool) {
-        self.header = header
-        self.rows = rows
-        self.mine = mine
-        columns = max(1, rows.reduce(header.count) { max($0, $1.count) })
-    }
-
-    var body: some View {
-        let cellWidth = max(92 * Typography.scale, floor(viewportWidth / CGFloat(columns)))
-        let innerWidth = max(1, cellWidth - 20)
-        let headerBg: Color = mine ? Palette.onAccent.opacity(0.14) : Palette.surface
-        let borderColor: Color = mine ? Palette.onAccent.opacity(0.28) : Palette.hairline
-        let dividerColor: Color = mine ? Palette.onAccent.opacity(0.20) : Palette.hairlineQuiet
-        let headerInk: Color = mine ? Palette.onAccentDim : Palette.textDim
-        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
-
-        ScrollView(.horizontal) {
-            Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
-                GridRow {
-                    ForEach(0..<columns, id: \.self) { column in
-                        Text(GramInline.styled(column < header.count ? header[column] : "", size: 12.5, weight: .semibold, mine: mine))
-                            .foregroundStyle(headerInk)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(width: innerWidth, alignment: .leading)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                    }
-                }
-                .background(headerBg)
-                ForEach(rows.indices, id: \.self) { index in
-                    Rectangle().fill(dividerColor).frame(height: 1).gridCellUnsizedAxes(.horizontal)
-                    GridRow {
-                        ForEach(0..<columns, id: \.self) { column in
-                            cell(column < rows[index].count ? rows[index][column] : "", innerWidth: innerWidth)
-                        }
-                    }
-                }
-            }
-            .clipShape(shape)
-            .overlay(shape.strokeBorder(borderColor, lineWidth: 1))
-        }
-        .frame(maxWidth: .infinity)
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { viewportWidth = $0 }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("gram-markdown-table")
-    }
-
-    private func cell(_ value: String, innerWidth: CGFloat) -> some View {
-        let trimmed = value.trimmingCharacters(in: .whitespaces)
-        let numeric = (trimmed.first.map { $0.isNumber || "+-−$".contains($0) } ?? false)
-            && trimmed.contains(where: \.isNumber)
-        let bodyInk: Color = mine ? Palette.onAccent : Palette.text
-        return Group {
-            if numeric {
-                Text(GramInline.styled(trimmed, size: 13, mine: mine))
-                    .monospacedDigit()
-                    .foregroundStyle((!mine && trimmed.hasPrefix("+")) ? ChatStyle.ok : bodyInk)
-            } else {
-                Text(GramInline.styled(value, size: 13.5, mine: mine))
-                    .foregroundStyle(bodyInk)
-            }
-        }
-        .multilineTextAlignment(numeric ? .trailing : .leading)
-        .fixedSize(horizontal: false, vertical: true)
-        .frame(width: innerWidth, alignment: numeric ? .trailing : .leading)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
     }
 }
 
