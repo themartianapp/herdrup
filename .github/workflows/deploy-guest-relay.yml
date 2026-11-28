@@ -1,6 +1,6 @@
 # Deploys GuestRelay to https://guest.herdrup.app when GuestRelay/** merges to main.
 # Uses environment `guest-relay` secrets (CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID).
-# Gracefully no-ops if CLOUDFLARE_API_TOKEN is not configured yet so main stays green.
+# Gracefully no-ops if credentials are not configured yet so main stays green.
 name: Deploy GuestRelay
 
 on:
@@ -20,12 +20,16 @@ permissions:
 jobs:
   deploy:
     name: Deploy GuestRelay Worker
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: guest-relay
     steps:
-      - name: Checkout
+      - name: Checkout main
         uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
 
       - name: Check Cloudflare deploy credentials
         id: creds
@@ -60,13 +64,15 @@ jobs:
           npx wrangler deploy
           EXPECTED=$(jq -r '.sourceCommit' public/web/manifest.json)
           LIVE=""
+          HEALTH_OK=""
           for attempt in 1 2 3 4 5 6; do
             LIVE=$(curl -fsS -H "Cache-Control: no-cache" "https://guest.herdrup.app/web/manifest.json?t=$(date +%s)" | jq -r '.sourceCommit // empty' || true)
-            echo "Attempt $attempt: expected sourceCommit=$EXPECTED, live=$LIVE"
-            if [ "$EXPECTED" = "$LIVE" ]; then
+            HEALTH_OK=$(curl -fsS -H "Cache-Control: no-cache" "https://guest.herdrup.app/v1/health?t=$(date +%s)" | jq -r '.ok // empty' || true)
+            echo "Attempt $attempt: asset sourceCommit=$LIVE (expected=$EXPECTED), worker health ok=$HEALTH_OK"
+            if [ "$EXPECTED" = "$LIVE" ] && [ "$HEALTH_OK" = "true" ]; then
               exit 0
             fi
             sleep 3
           done
-          echo "::error::Live GuestRelay manifest sourceCommit ($LIVE) did not match expected ($EXPECTED)"
+          echo "::error::Post-deploy verification failed (asset sourceCommit=$LIVE expected=$EXPECTED, worker health ok=$HEALTH_OK)"
           exit 1

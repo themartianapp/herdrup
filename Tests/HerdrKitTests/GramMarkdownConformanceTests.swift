@@ -20,8 +20,10 @@ final class GramMarkdownConformanceTests: XCTestCase {
 
     private struct FixtureExpect: Decodable {
         let blocks: [String]
+        let iosBlocks: [String]?
         let hasTable: Bool
         let hasCode: Bool
+        let iosHasCode: Bool?
         let containsText: [String]
         let allowedLinks: [String]
         let forbiddenSubstrings: [String]
@@ -35,45 +37,115 @@ final class GramMarkdownConformanceTests: XCTestCase {
         return try JSONDecoder().decode(Corpus.self, from: data)
     }
 
-    private func blockTag(_ block: ChatMarkdownBlock) -> String {
+    private func proseBlockTag(_ block: GramProseBlock) -> String {
         switch block {
         case .paragraph: return "paragraph"
         case .heading(let level, _): return "heading:\(level)"
         case .list(let ordered, let start, _):
             if ordered { return start == 1 ? "list:ordered" : "list:ordered:\(start)" }
             return "list:unordered"
-        case .code(let lang, _):
-            return lang.map { "code:\($0)" } ?? "code"
-        case .diagram(let kind, _): return "diagram:\(kind)"
         case .table: return "table"
         case .quote: return "quote"
         case .rule: return "rule"
         }
     }
 
-    private func blockPlainText(_ blocks: [ChatMarkdownBlock]) -> String {
-        blocks.map { block in
-            switch block {
-            case .paragraph(let s): return s
-            case .heading(_, let s): return s
-            case .list(_, _, let items): return items.map(\.text).joined(separator: "\n")
-            case .code(_, let s): return s
-            case .diagram(_, let s): return s
-            case .table(let h, let rows):
-                return (h + rows.flatMap { $0 }).joined(separator: " ")
-            case .quote(let s): return s
-            case .rule: return ""
-            }
-        }.joined(separator: "\n")
+    private func proseBlockPlainText(_ block: GramProseBlock) -> String {
+        switch block {
+        case .paragraph(let s): return s
+        case .heading(_, let s): return s
+        case .list(_, _, let items): return items.map(\.text).joined(separator: "\n")
+        case .table(let h, let rows): return (h + rows.flatMap { $0 }).joined(separator: " ")
+        case .quote(let s): return s
+        case .rule: return ""
+        }
     }
 
-    private func assertSafeHTML(_ html: String, context: String, file: StaticString = #filePath, line: UInt = #line) {
-        let lower = html.lowercased()
-        for bad in ["<script", "<iframe", "<object", "<embed", "<img ", "href=\"javascript:", "href=\"data:", "href=\"ftp:"] {
-            XCTAssertFalse(lower.contains(bad), "\(context): unexpected \(bad)", file: file, line: line)
+    /// Runs the production Gram message parsing pipeline (`GramText.segments` + `GramText.proseBlocks`).
+    private func parseGramProduction(_ input: String) -> (tags: [String], hasTable: Bool, hasCode: Bool, plainText: String) {
+        let segments = GramText.segments(input)
+        var tags: [String] = []
+        var hasTable = false
+        var hasCode = false
+        var textParts: [String] = []
+
+        for segment in segments {
+            switch segment {
+            case .code(let code, let language):
+                hasCode = true
+                tags.append(language.map { "code:\($0)" } ?? "code")
+                textParts.append(code)
+            case .text(let prose):
+                let blocks = GramText.proseBlocks(prose)
+                if GramText.hasTable(blocks) { hasTable = true }
+                for block in blocks {
+                    tags.append(proseBlockTag(block))
+                    textParts.append(proseBlockPlainText(block))
+                }
+            }
         }
-        let hasLiveHandler = html.range(of: #"<[^>]*\bon(?:error|load|click|mouseover|focus)\s*="#, options: [.regularExpression, .caseInsensitive]) != nil
-        XCTAssertFalse(hasLiveHandler, "\(context): live HTML event handler attribute", file: file, line: line)
+        return (tags, hasTable, hasCode, textParts.joined(separator: "\n"))
+    }
+
+    /// Minimal quote-aware HTML tag/attribute scanner so quoted attribute values (e.g. title="onload=1")
+    /// are never mistaken for live event handlers.
+    private func assertSafeHTML(_ html: String, context: String, file: StaticString = #filePath, line: UInt = #line) {
+        let forbiddenElements: Set<String> = ["script", "iframe", "object", "embed", "img"]
+        let chars = Array(html)
+        var i = 0
+        while i < chars.count {
+            guard chars[i] == "<" else { i += 1; continue }
+            var pos = i + 1
+            if pos < chars.count, chars[pos] == "/" {
+                while pos < chars.count, chars[pos] != ">" { pos += 1 }
+                i = min(pos + 1, chars.count)
+                continue
+            }
+            let nameStart = pos
+            while pos < chars.count, chars[pos].isLetter || chars[pos].isNumber || chars[pos] == "-" {
+                pos += 1
+            }
+            let tagName = String(chars[nameStart..<pos]).lowercased()
+            guard !tagName.isEmpty else { i += 1; continue }
+            XCTAssertFalse(forbiddenElements.contains(tagName), "\(context): unexpected <\(tagName)>", file: file, line: line)
+
+            while pos < chars.count {
+                while pos < chars.count, chars[pos].isWhitespace { pos += 1 }
+                if pos >= chars.count || chars[pos] == ">" { pos += 1; break }
+                if chars[pos] == "/", pos + 1 < chars.count, chars[pos + 1] == ">" { pos += 2; break }
+                let attrStart = pos
+                while pos < chars.count, !chars[pos].isWhitespace, chars[pos] != "=", chars[pos] != "/", chars[pos] != ">" {
+                    pos += 1
+                }
+                let attrName = String(chars[attrStart..<pos]).lowercased()
+                guard !attrName.isEmpty else { pos += 1; continue }
+                while pos < chars.count, chars[pos].isWhitespace { pos += 1 }
+                var attrValue = ""
+                if pos < chars.count, chars[pos] == "=" {
+                    pos += 1
+                    while pos < chars.count, chars[pos].isWhitespace { pos += 1 }
+                    if pos < chars.count, chars[pos] == "\"" || chars[pos] == "'" {
+                        let quote = chars[pos]
+                        pos += 1
+                        let valStart = pos
+                        while pos < chars.count, chars[pos] != quote { pos += 1 }
+                        attrValue = String(chars[valStart..<pos])
+                        if pos < chars.count, chars[pos] == quote { pos += 1 }
+                    } else {
+                        let valStart = pos
+                        while pos < chars.count, !chars[pos].isWhitespace, chars[pos] != ">" { pos += 1 }
+                        attrValue = String(chars[valStart..<pos])
+                    }
+                }
+                XCTAssertFalse(attrName.hasPrefix("on"), "\(context): live HTML event handler attribute \(attrName)", file: file, line: line)
+                if attrName == "href" {
+                    let lowerHref = attrValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    let safe = lowerHref.hasPrefix("http://") || lowerHref.hasPrefix("https://") || lowerHref.hasPrefix("mailto:")
+                    XCTAssertTrue(safe, "\(context): unsafe href '\(attrValue)'", file: file, line: line)
+                }
+            }
+            i = pos
+        }
     }
 
     func testSharedGramMarkdownConformanceCorpus() throws {
@@ -82,21 +154,18 @@ final class GramMarkdownConformanceTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(corpus.cases.count, 15)
 
         for fixture in corpus.cases {
-            let blocks = ChatMarkdown.blocks(fixture.input)
-            XCTAssertFalse(blocks.isEmpty, "fixture \(fixture.id) produced no blocks")
+            let parsed = parseGramProduction(fixture.input)
+            XCTAssertFalse(parsed.tags.isEmpty, "fixture \(fixture.id) produced no blocks")
 
-            let gotTags = blocks.map(blockTag)
-            XCTAssertEqual(gotTags, fixture.expect.blocks, "fixture \(fixture.id) block structure mismatch")
+            let expectedBlocks = fixture.expect.iosBlocks ?? fixture.expect.blocks
+            XCTAssertEqual(parsed.tags, expectedBlocks, "fixture \(fixture.id) GramText block structure mismatch")
 
-            let gotTable = blocks.contains { if case .table = $0 { return true }; return false }
-            XCTAssertEqual(gotTable, fixture.expect.hasTable, "fixture \(fixture.id) hasTable mismatch")
+            XCTAssertEqual(parsed.hasTable, fixture.expect.hasTable, "fixture \(fixture.id) hasTable mismatch")
+            let expectedCode = fixture.expect.iosHasCode ?? fixture.expect.hasCode
+            XCTAssertEqual(parsed.hasCode, expectedCode, "fixture \(fixture.id) hasCode mismatch")
 
-            let gotCode = blocks.contains { if case .code = $0 { return true }; return false }
-            XCTAssertEqual(gotCode, fixture.expect.hasCode, "fixture \(fixture.id) hasCode mismatch")
-
-            let plain = blockPlainText(blocks)
             for snippet in fixture.expect.containsText {
-                XCTAssertTrue(plain.contains(snippet), "fixture \(fixture.id) missing text '\(snippet)' in '\(plain)'")
+                XCTAssertTrue(parsed.plainText.contains(snippet), "fixture \(fixture.id) missing text '\(snippet)' in '\(parsed.plainText)'")
             }
 
             let html = Markdown.toStyledHTML(fixture.input)
@@ -110,11 +179,15 @@ final class GramMarkdownConformanceTests: XCTestCase {
         }
     }
 
-    private struct SeededRNG {
+    /// Deterministic SplitMix64 generator (full 64-bit output mixing before range reduction).
+    private struct SplitMix64 {
         var state: UInt64
         mutating func next() -> UInt64 {
-            state = state &* 6364136223846793005 &+ 1442695040888963407
-            return state
+            state &+= 0x9E3779B97F4A7C15
+            var z = state
+            z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9
+            z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
+            return z ^ (z >> 31)
         }
         mutating func int(in range: Range<Int>) -> Int {
             let span = UInt64(range.upperBound - range.lowerBound)
@@ -150,7 +223,7 @@ final class GramMarkdownConformanceTests: XCTestCase {
     ]
 
     func testPropertyFuzz400SeededMarkdownDocuments() {
-        var rng = SeededRNG(state: 0x5EED2026)
+        var rng = SplitMix64(state: 0x5EED2026)
         for i in 0..<400 {
             let lineCount = rng.int(in: 1..<15)
             var lines: [String] = []
@@ -159,25 +232,31 @@ final class GramMarkdownConformanceTests: XCTestCase {
                 lines.append(Self.fuzzFragments[rng.int(in: 0..<Self.fuzzFragments.count)])
             }
             let doc = lines.joined(separator: "\n")
-            _ = ChatMarkdown.blocks(doc)
+            _ = parseGramProduction(doc)
             let html = Markdown.toStyledHTML(doc)
             assertSafeHTML(html, context: "fuzz#\(i)")
         }
     }
 
-    func testPropertyFuzz1500LineAdversarialInputLinearTime() {
-        var lines: [String] = []
-        lines.reserveCapacity(1500)
-        for i in 0..<500 {
-            lines.append("- item \(i) with **bold** `code` ftp://host/\(i) <script>\(i)</script>")
-            lines.append("  ~~~md")
-            lines.append("  > quote \(i) | col")
+    func testAdversarialNestedTildeInputLatencySmoke() {
+        func makeAdversarialDoc(repeats: Int) -> String {
+            var lines: [String] = []
+            lines.reserveCapacity(repeats * 3)
+            for i in 0..<repeats {
+                lines.append("- item \(i) with **bold** `code` ftp://host/\(i) <script>\(i)</script>")
+                lines.append("  ~~~md")
+                lines.append("  > quote \(i) | col")
+            }
+            return lines.joined(separator: "\n")
         }
-        let doc = lines.joined(separator: "\n")
-        let start = Date()
-        let blocks = ChatMarkdown.blocks(doc)
-        let elapsed = Date().timeIntervalSince(start)
-        XCTAssertFalse(blocks.isEmpty)
-        XCTAssertLessThan(elapsed, 2.0, "ChatMarkdown.blocks took \(elapsed)s on 1500-line adversarial input")
+
+        for repeats in [100, 500] {
+            let doc = makeAdversarialDoc(repeats: repeats)
+            let start = Date()
+            let parsed = parseGramProduction(doc)
+            let elapsed = Date().timeIntervalSince(start)
+            XCTAssertFalse(parsed.tags.isEmpty)
+            XCTAssertLessThan(elapsed, 2.0, "GramText production pipeline took \(elapsed)s on \(repeats * 3)-line adversarial input")
+        }
     }
 }

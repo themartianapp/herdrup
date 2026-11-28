@@ -139,8 +139,11 @@
       "input": "```\nlet x = 1",
       "expect": {
         "blocks": ["code"],
+        "iosBlocks": ["paragraph"],
         "hasTable": false,
         "hasCode": true,
+        "iosHasCode": false,
+        "iosNote": "iOS GramText intentionally renders unclosed top-level fences as prose.",
         "containsText": ["let x = 1"],
         "allowedLinks": [],
         "forbiddenSubstrings": []
